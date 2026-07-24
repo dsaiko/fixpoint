@@ -1,0 +1,75 @@
+# Shared base for every task config. Not runnable on its own — it defines no
+# roles. Reference it with `extends: defaults` and override what you need.
+#
+# See README.md in this directory for how bundles are found, how `extends`
+# merges, and the security model. Comments here stay short on purpose: this file
+# is meant to be copied and edited, and an essay is hard to diff.
+
+target:
+  mode: directory # git-diff | pr | directory
+
+  # target.path is intentionally unset: it defaults to the project root, so the
+  # same command reviews the whole project from anywhere inside it.
+
+  # In a git repository .gitignore already decides scope, so build output,
+  # caches, and local binaries need no entry here. List only what is COMMITTED
+  # but not worth reviewing. Patterns match at any depth unless anchored — use
+  # "target/**" rather than "**/target/**" for a build directory, or it will also
+  # match a source package called target.
+  #
+  # Credential-shaped paths (.env*, *.pem, *.key, id_rsa, ...) are excluded by
+  # fixpoint itself and cannot be re-enabled here.
+  exclude:
+    - "**/vendor/**" # committed dependencies
+    - "**/testdata/**" # committed fixtures; remove to review them too
+
+loop:
+  max_iterations: 5 # safety cap on review->fix rounds
+
+  # Findings handed to the coder per round (0 = unlimited). Keeps one coder
+  # session inside its timeout: 17 findings blew a 30m cap, ~8 fits at effort
+  # high. Worst severity first, and every deferral promotes a finding one tier so
+  # the tail cannot be starved by a lens that always has more to say.
+  max_findings_per_round: 8
+
+  # Consecutive zero-finding rounds required to stop. 2 pairs with
+  # strategy: rotate — a differently-assigned panel must confirm the clean result.
+  clean_rounds_to_stop: 2
+
+  # Trust gates. Both stay false in every shipped config: they permit fix rounds,
+  # and the coder edits files with permission checks disabled. Opt in per
+  # invocation with -trusted-target / -allow-untrusted-fix, so it is a deliberate
+  # act by someone who knows what the target contains.
+  trusted_target: false
+  allow_untrusted_fix: false
+
+  # Commit header per fix round; {round} {fixed} {rejected}. The body is built
+  # from the coder's own report.
+  commit_message: "fixpoint: round {round} ({fixed} fixed, {rejected} rejected)"
+
+# Ping every agent with a trivial prompt before the run, in parallel, so an
+# expired login fails before tokens are spent or git is touched.
+ping_agents: true
+
+logs:
+  # Path template, resolved against the project root.
+  #   {timestamp}  the RUN's start time — one value for the whole run
+  #   {round}      the loop iteration
+  # The literal prefix is what round commits and collection exclude, so it must
+  # be non-empty. It is hidden and tool-owned because fixpoint runs against
+  # projects it does not own: a generic name like "logs" would collide with a
+  # project's real logs directory and silently drop it from review.
+  # The {timestamp} segment and its ancestors hold the summary; below it is
+  # per-round. Add .fixpoint/ to the project's .gitignore.
+  dir: .fixpoint/{timestamp}/round-{round}
+
+  # md | json | raw. Artifacts can contain secrets even after redaction — see
+  # README.md. Owner-only permissions and keeping this directory out of any
+  # commit or backup are the real controls.
+  formats: [md, json, raw]
+
+  # Per-step filename inside the round directory.
+  #   {role} {agent} {prompt} {round} {timestamp} {ext}
+  pattern: "{role}-{agent}-{prompt}-{timestamp}.{ext}"
+  summary_pattern: "summary-{timestamp}.{ext}"
+  timestamp_format: "20060102-150405" # Go layout (ref: Mon Jan 2 15:04:05 2006)

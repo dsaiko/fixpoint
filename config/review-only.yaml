@@ -1,0 +1,21 @@
+# One review round, no edits. The safe starting point: the coder is never
+# invoked, so nothing is modified and no trust gate is needed.
+extends: defaults
+
+roles:
+  # Still required even though it never runs: validation checks the whole
+  # configuration up front rather than leaving a review-only run half-checked.
+  coder: { agent: claude-coder, prompt: fix }
+  review:
+    strategy: rotate
+    agents: [codex, claude, gemma4, glm]
+    prompts:
+      - review-bugs
+      - review-security
+      - review-concurrency
+      - review-tests
+      - { prompt: review-maintainability, advisory: true }
+      - { agent: claude, prompt: review-design, advisory: true, once: true }
+
+loop:
+  review_only: true

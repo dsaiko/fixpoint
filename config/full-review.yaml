@@ -1,0 +1,29 @@
+# The full review -> fix -> commit loop over a whole project.
+#
+# Fix rounds are refused unless you assert the target is trusted, because the
+# coder edits files with permission checks disabled and is not confined to the
+# target: a prompt-injection payload in ANY reviewed file could steer it. Pass
+# -trusted-target on the command line when you know what the target contains.
+extends: defaults
+
+roles:
+  coder: { agent: claude-coder, prompt: fix }
+  review:
+    # rotate: each round a lens is assigned to a different agent, so fixes are
+    # re-reviewed by fresh eyes rather than by the model that reported them.
+    # fixed = pin every lens; all = every lens on every agent (max coverage,
+    # pool-size x the cost).
+    strategy: rotate
+    agents: [codex, claude, gemma4, glm]
+    prompts:
+      - review-bugs # correctness
+      - review-security # security
+      - review-concurrency # concurrency
+      - review-tests # coverage of what the run changed
+      # advisory: reported for a human, never handed to the coder, and excluded
+      # from the loop's termination condition -- so an open-ended lens cannot
+      # keep the run from ever converging.
+      - { prompt: review-maintainability, advisory: true }
+      # once: round 1 only. Architecture barely changes between fix rounds, so
+      # this produces one report per run instead of paying a session every round.
+      - { agent: claude, prompt: review-design, advisory: true, once: true }

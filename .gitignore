@@ -1,0 +1,6 @@
+.fixpoint/
+# Pre-rename artifact directory. Kept ignored so a run's old logs -- which hold
+# reviewed material and possibly secrets -- can never be swept into a commit.
+logs/
+/fixpoint
+coverage.out

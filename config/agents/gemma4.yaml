@@ -1,0 +1,14 @@
+# Gemma via ollama, wrapped in Claude Code's agentic harness (ollama serves an
+# Anthropic-compatible API), so it can explore the repository like the others.
+# Flags after `--` are passed through to claude itself.
+model: gemma4:31b-cloud
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - -p # no permission-skip flag: reads work, edit tools are denied
+prompt_via: stdin
+timeout: 15m # local models are slower; give them headroom
+can_edit: false

@@ -1,0 +1,19 @@
+# NOTE: gpt-5-codex is NOT available on ChatGPT-account auth; gpt-5.6-sol is the
+# default and is verified working.
+model: gpt-5.6-sol
+effort: high # low | medium | high | xhigh
+command:
+  - codex
+  - exec
+  - --sandbox read-only # reviewer duty: enforced no-write sandbox
+  - --skip-git-repo-check # allow running in non-git target dirs
+  - --color never # keep raw logs clean
+  - --model {{model}}
+  - -c model_reasoning_effort={{effort}}
+  - "-" # read the prompt from stdin, keeping it off argv (ps / /proc)
+prompt_via: stdin
+timeout: 10m
+can_edit: false
+# To use codex as the coder, copy this to codex-coder.yaml with
+# --dangerously-bypass-approvals-and-sandbox instead of --sandbox read-only,
+# and can_edit: true.

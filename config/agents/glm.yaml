@@ -1,0 +1,13 @@
+# GLM via ollama, same claude-harness wrapping as gemma4. A reasoning model, so
+# it can run slower than gemma4 for the same prompt.
+model: glm-5.2:cloud
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - -p # no permission-skip flag: reads work, edit tools are denied
+prompt_via: stdin
+timeout: 15m # local models are slower; give them headroom
+can_edit: false

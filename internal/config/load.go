@@ -1,0 +1,212 @@
+package config
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Source records where every file a run is built from was resolved, so the run
+// can report and persist it. These files decide what agents are told to do and
+// which trust gates apply, so a bare "loaded config X" is not enough provenance:
+// a project-local prompt shadowing the installed one changes behavior in a way
+// only the resolved path reveals.
+type Source struct {
+	Config  string            // the task config
+	Extends string            // the config it inherited from, if any
+	Agents  map[string]string // agent name -> file
+	Prompts map[string]string // prompt name -> file
+}
+
+// Loaded is a fully resolved configuration plus the provenance of its parts.
+type Loaded struct {
+	Config      *Config
+	Source      Source
+	ProjectRoot string
+}
+
+// LoadBundle resolves and loads a run's configuration from a bundle name (or a
+// path), anchored at projectRoot. It performs the whole flow: resolve the task
+// config, apply `extends` inheritance, load every referenced agent from
+// agents/<name>.yaml, resolve every prompt to a path, then default and validate.
+//
+// Validation stays eager and complete here -- an unresolvable prompt or agent
+// must fail before any agent process starts, not mid-run after tokens are spent.
+func LoadBundle(r *Resolver, nameOrPath, projectRoot string) (*Loaded, error) {
+	path, err := r.Config(nameOrPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg, extendsPath, err := loadWithExtends(r, path)
+	if err != nil {
+		return nil, err
+	}
+	src := Source{
+		Config:  path,
+		Extends: extendsPath,
+		Agents:  map[string]string{},
+		Prompts: map[string]string{},
+	}
+	// Defaults first, then anchor: logs.dir gets its default value in
+	// applyDefaults, and anchoring before that would leave the default relative to
+	// the working directory -- scattering artifact directories through the project.
+	cfg.applyDefaults()
+	cfg.anchor(projectRoot)
+	if err := cfg.resolveAgents(r, src.Agents); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := cfg.resolvePrompts(r, src.Prompts); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot}, nil
+}
+
+// loadWithExtends decodes a task config and, when it names a base with
+// `extends`, merges it over that base. Inheritance is ONE level deep on purpose:
+// a chain makes the effective value of any field require reading N files, and the
+// whole point of naming the base explicitly is that the reader can see it.
+func loadWithExtends(r *Resolver, path string) (*Config, string, error) {
+	cfg, err := decodeFile(path)
+	if err != nil {
+		return nil, "", err
+	}
+	if cfg.Extends == "" {
+		return cfg, "", nil
+	}
+	basePath, err := r.Config(cfg.Extends)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: extends: %w", path, err)
+	}
+	base, err := decodeFile(basePath)
+	if err != nil {
+		return nil, "", err
+	}
+	if base.Extends != "" {
+		return nil, "", fmt.Errorf("%s: extends %s, which itself extends %s; inheritance is one level deep so the effective configuration stays readable from two files",
+			path, cfg.Extends, base.Extends)
+	}
+	// Re-decode the child over the base: yaml overwrites only the keys the child
+	// actually sets, which gives per-key override without a hand-written merge (and
+	// without a deep merge's surprises). A list the child sets REPLACES the base's
+	// list rather than appending -- appending would make an inherited entry
+	// impossible to remove, and the entries that must never be dropped are
+	// enforced in code instead (see mandatoryExcludes).
+	merged := base
+	if err := decodeInto(path, merged); err != nil {
+		return nil, "", err
+	}
+	merged.Extends = cfg.Extends
+	return merged, basePath, nil
+}
+
+func decodeFile(path string) (*Config, error) {
+	var cfg Config
+	if err := decodeInto(path, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// decodeInto decodes a YAML file over an existing value, which is what gives
+// `extends` its per-key override: decoding the child over the base leaves keys
+// the child omits untouched. Unknown keys are errors, so a typo in any bundle
+// file fails at startup instead of being silently ignored.
+func decodeInto(path string, target any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true) // typos in keys are errors, not silent defaults
+	if err := dec.Decode(target); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+// resolveAgents loads every agent the run references from its own file. Agents
+// live in one file each so a task config states which agents it uses without
+// restating how to invoke them -- and so fixing an agent's command fixes it for
+// every config at once.
+func (c *Config) resolveAgents(r *Resolver, into map[string]string) error {
+	names := append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent)
+	if c.Agents == nil {
+		c.Agents = map[string]Agent{}
+	}
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, done := c.Agents[name]; done {
+			continue
+		}
+		path, err := r.Agent(name)
+		if err != nil {
+			return err
+		}
+		var a Agent
+		if err := decodeInto(path, &a); err != nil {
+			return err
+		}
+		a.applyDefaults()
+		c.Agents[name] = a
+		into[name] = path
+	}
+	return nil
+}
+
+// resolvePrompts turns every bare prompt name into a concrete file path, stored
+// alongside the name so logs keep reporting the name while the loader reads the
+// file. Resolution happens for all prompts up front so a missing one fails at
+// startup.
+func (c *Config) resolvePrompts(r *Resolver, into map[string]string) error {
+	resolve := func(name string) (string, error) {
+		if name == "" {
+			return "", nil
+		}
+		if p, done := into[name]; done {
+			return p, nil
+		}
+		p, err := r.Prompt(name)
+		if err != nil {
+			return "", err
+		}
+		into[name] = p
+		return p, nil
+	}
+	p, err := resolve(c.Roles.Coder.Prompt)
+	if err != nil {
+		return err
+	}
+	c.Roles.Coder.PromptPath = p
+	for i := range c.Roles.Review.Prompts {
+		p, err := resolve(c.Roles.Review.Prompts[i].Prompt)
+		if err != nil {
+			return err
+		}
+		c.Roles.Review.Prompts[i].PromptPath = p
+	}
+	return nil
+}
+
+// anchor makes every relative path in the configuration resolve against the
+// project root rather than the working directory, so a run behaves identically
+// from anywhere inside the project. Without this, `fixpoint full-review` from a
+// subdirectory would review only that subtree and create its artifact directory
+// there.
+func (c *Config) anchor(projectRoot string) {
+	if projectRoot == "" {
+		return
+	}
+	if c.Target.Path == "" || c.Target.Path == "." {
+		c.Target.Path = projectRoot
+	} else if !filepath.IsAbs(c.Target.Path) {
+		c.Target.Path = filepath.Join(projectRoot, c.Target.Path)
+	}
+	if c.Logs.Dir != "" && !filepath.IsAbs(c.Logs.Dir) {
+		c.Logs.Dir = filepath.Join(projectRoot, c.Logs.Dir)
+	}
+}

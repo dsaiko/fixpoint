@@ -1,0 +1,17 @@
+# Antigravity (Google) -- reviewer duty, read-only via plan mode.
+#
+# `agy models` lists ids; reasoning effort is baked into the model name
+# (gemini-3.6-flash-high, gemini-3.1-pro-high, ...), so there is no effort field.
+model: gemini-3.6-flash-high
+command:
+  - agy
+  - --model {{model}}
+  - --dangerously-skip-permissions # headless agy denies even read_file without it
+  - --mode plan # ...and plan mode is what blocks all edits
+  - --print-timeout 10m # agy's own non-interactive wait (default 5m)
+  - -p # -p consumes the NEXT arg as the prompt -- MUST stay last
+# arg mode exposes the prompt on argv and triggers a run-start warning. Check
+# whether agy can read the prompt from stdin before re-enabling this agent.
+prompt_via: arg
+timeout: 10m
+can_edit: false
