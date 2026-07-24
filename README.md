@@ -46,10 +46,19 @@ nothing in the code is provider-specific.
    suggestion).
 3. **Fix.** Findings are concatenated and handed to the coder agent, which
    validates each one: it fixes the genuine issues by editing files directly
-   and rejects false positives with a reason. The orchestrator then commits
-   the round's changes as one inspectable, individually revertable commit
-   whose body lists every fixed and rejected finding.
-4. **Repeat.** Each round, reviewers receive the history of prior findings
+   and rejects false positives with a reason.
+4. **Verify.** fixpoint then runs the project's own configured build, test, and
+   static checks *itself* — see `verify` in the config. This is the only signal
+   in the loop that no model produced: without it, "fixed" means an agent said
+   it fixed something and "converged" means other agents said they saw nothing.
+   A round that fails the gate gets one bounded correction attempt from the
+   coder; if it still fails, the round is **discarded** (edits stashed, not
+   committed), because committing them would put later rounds on a broken base.
+   Under the default `no_regressions` policy a check that was already failing
+   before the run may keep failing — only newly broken checks block.
+5. **Commit.** The round's changes land as one inspectable, individually
+   revertable commit whose body lists every fixed and rejected finding.
+6. **Repeat.** Each round, reviewers receive the history of prior findings
    and coder verdicts, so rejected findings are not re-reported forever. The
    loop ends after a configurable number of consecutive clean rounds, when
    the coder rejects every finding in a round, or at the iteration cap.
@@ -182,9 +191,10 @@ Or directly:
 | `-check` | Validate the configuration and exit. |
 | `-check-live` | Validate, ping every agent, and exit. |
 
-Exit codes: `0` converged / review-only / all findings rejected, `2` hit
-`max_iterations` without converging (or usage error), `1` any other failure or
-interruption. `SIGINT`/`SIGTERM` stop the run cleanly.
+Exit codes: `0` converged or review-only completed, `2` hit `max_iterations`
+without converging (or a usage error), `3` the coder rejected every finding so
+nothing changed — deliberately *not* `0`, since "nobody agreed there was a
+problem" is not "the code is clean", `1` any other failure or interruption. `SIGINT`/`SIGTERM` stop the run cleanly.
 
 ## Configuration
 

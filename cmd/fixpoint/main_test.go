@@ -222,15 +222,17 @@ func TestRunReviewOnlySuccessExits0(t *testing.T) {
 // review-only. The orchestrator's TestRunAllRejected checks the enum but never
 // drives main's switch, so this is the only end-to-end coverage of that arm --
 // a regression mapping it to 1/2 would slip through otherwise.
-func TestRunAllRejectedExits0(t *testing.T) {
+func TestRunAllRejectedExits3(t *testing.T) {
 	f := newFixture(t)
 	f.respond(1, reviewResponse(t, aFinding("false positive")))
 	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "rejected", Detail: "by design"}))
 	var buf bytes.Buffer
 	// A directory fix run must clear the trust gate; trusted_target satisfies it.
 	cfg := f.configFile("directory", "", "  max_iterations: 3\n  clean_rounds_to_stop: 1\n  trusted_target: true")
-	if got := run([]string{"-config", cfg}, &buf, &buf); got != 0 {
-		t.Fatalf("run() = %d, want 0 for all-rejected; stderr:\n%s", got, buf.String())
+	// Exit 3, not 0: nothing changed, and automation keying on 0 must not read a
+	// no-op as a converged run.
+	if got := run([]string{"-config", cfg}, &buf, &buf); got != 3 {
+		t.Fatalf("run() = %d, want 3 for all-rejected; stderr:\n%s", got, buf.String())
 	}
 	if !strings.Contains(buf.String(), "done: "+model.TermAllRejected) {
 		t.Errorf("stderr missing all-rejected termination line:\n%s", buf.String())

@@ -22,6 +22,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
 	"github.com/dsaiko/fixpoint/internal/target"
+	"github.com/dsaiko/fixpoint/internal/verify"
 )
 
 // Orchestrator drives one run: it owns the collector, the log store, and the
@@ -40,6 +41,9 @@ type Orchestrator struct {
 	// inside target.path, so round commits and clean checks never touch the
 	// run's own logs.
 	gitExclude []string
+	// verifyBaseline is how the project's checks behaved before any fix round, so
+	// a pre-existing failure is not blamed on this run. Captured once at startup.
+	verifyBaseline verify.Report
 }
 
 // New sets up the log store, parses every referenced prompt and renders it once
@@ -287,6 +291,11 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 			return err
 		}
 	}
+
+	// Capture the verification baseline on the pristine tree: after the clean-tree
+	// checks (so nothing of the operator's is in it) and before any coder edits (so
+	// a pre-existing failure is attributable to the project, not to this run).
+	o.captureVerifyBaseline(ctx)
 
 	cleanStreak := 0
 	for round := 1; round <= o.cfg.Loop.MaxIterations; round++ {
@@ -631,25 +640,7 @@ func (o *Orchestrator) finalizeFix(ctx context.Context, rec *model.RoundRecord, 
 	}
 
 	if rec.Fixed > 0 {
-		sha, err := o.commit(ctx, rec)
-		if err != nil {
-			// Same TOCTOU window: cancellation can interrupt the commit's git add /
-			// commit after staging the coder's edits. Reconcile so the staged tree
-			// is stashed instead of left staged under a softened interruption.
-			if ctx.Err() != nil {
-				return false, o.reconcileInterrupt(rec.Round, err) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
-			}
-			// A non-cancellation commit failure (e.g. commit signing failed) leaves
-			// the coder's edits staged by Commit's `git add -A`. Left as-is, the
-			// dirty/staged tree violates the clean-tree invariant and the next run
-			// refuses to start. Stash the edits so the tree is clean again.
-			return false, o.reconcileFailedCommit(ctx, rec.Round, err)
-		}
-		rec.CommitSHA = sha
-		if sha != "" {
-			o.logf("round %d committed: %s", round, sha[:12])
-		}
-		return false, nil
+		return false, o.verifyAndCommit(ctx, rec, round)
 	}
 
 	// rec.Fixed == 0 with a clean tree: a genuine all-rejected round. It is a
@@ -1260,4 +1251,176 @@ func writeVerdictSection(b *strings.Builder, title string, findings []model.Find
 			fmt.Fprintf(b, "- [%s] %s — %s\n", f.Category, f.Title, f.VerdictDetail)
 		}
 	}
+}
+
+// captureVerifyBaseline records how the project's own checks behave BEFORE any
+// fix round, so a later failure can be attributed. Without it, no_regressions has
+// nothing to compare against and fixpoint could only offer must_pass -- which
+// would refuse to work on any repository that already has a failing check, i.e.
+// most real ones.
+//
+// A baseline failure is not an error: it is the fact being recorded.
+func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
+	if !o.cfg.Verify.Enabled() || o.cfg.Loop.ReviewOnly {
+		return
+	}
+	o.logf("verify: capturing baseline (%d command(s))", len(o.cfg.Verify.Commands))
+	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
+	o.verifyBaseline = rep
+	if rep.Passed() {
+		o.logf("verify baseline: all checks pass")
+		return
+	}
+	// Worth stating plainly: under no_regressions these checks are permitted to
+	// keep failing, which is easy to misread later as fixpoint ignoring them.
+	o.logf("verify baseline: %s", rep.Summary())
+	o.logf("verify baseline: the failing checks above are pre-existing; policy %s permits them to keep failing", o.cfg.Verify.Policy)
+}
+
+// verifyRound runs the gate over the coder's edits, giving the coder one bounded
+// correction attempt if it fails. It reports blocked=true when the round must not
+// be committed.
+//
+// One retry, not a loop: a coder that cannot make the project's own checks pass
+// with the failure output in hand is unlikely to succeed on the third attempt, and
+// an unbounded repair loop is how a run silently burns an entire budget.
+func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord) (blocked bool, err error) {
+	if !o.cfg.Verify.Enabled() {
+		return false, nil
+	}
+	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
+	rec.Verify = rep.Results
+	o.logf("round %d verify: %s", rec.Round, rep.Summary())
+	if ctx.Err() != nil {
+		return false, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+	}
+	blocking := rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)
+	if len(blocking) == 0 {
+		return false, nil
+	}
+
+	o.logf("round %d verify: %d blocking failure(s); asking the coder to correct them", rec.Round, len(blocking))
+	if err := o.fixVerification(ctx, rec, blocking); err != nil {
+		return false, err
+	}
+	rep = verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
+	rec.Verify = rep.Results
+	rec.VerifyRetried = true
+	o.logf("round %d verify (after correction): %s", rec.Round, rep.Summary())
+	if ctx.Err() != nil {
+		return false, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+	}
+	return len(rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)) > 0, nil
+}
+
+// rejectUnverifiedRound discards a round whose edits do not survive the gate:
+// stash the coder's work so the tree returns to its pre-round state, and fail.
+//
+// Discarding rather than committing is the fail-closed choice, and consistent with
+// the rest of the design: committing edits that break the project would put later
+// rounds on top of a broken base and let "converged" mean "converged on something
+// that does not build". The work is stashed rather than deleted so an operator can
+// inspect or recover it.
+func (o *Orchestrator) rejectUnverifiedRound(ctx context.Context, rec *model.RoundRecord) error {
+	failed := make([]string, 0, len(rec.Verify))
+	for _, r := range rec.Verify {
+		if !r.Optional && !r.Passed {
+			failed = append(failed, r.Name)
+		}
+	}
+	stashed, serr := o.collector.StashDirty(ctx, fmt.Sprintf("fixpoint: round %d discarded (verification failed)", rec.Round), o.gitExclude...)
+	base := fmt.Errorf("round %d: verification failed after a correction attempt (%s); the round was not committed",
+		rec.Round, strings.Join(failed, ", "))
+	if serr != nil {
+		return fmt.Errorf("%w; and the working tree could not be restored: %w", base, serr)
+	}
+	if stashed {
+		return fmt.Errorf("%w. The coder's edits were stashed -- recover them with `git stash pop`", base)
+	}
+	return base
+}
+
+// fixVerification invokes the coder a second time with the verification failures
+// in hand. It reuses the coder's own prompt template so the instructions,
+// contract, and history stay identical; only the extra Verification block differs.
+func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundRecord, blocking []verify.Result) error {
+	coder := o.cfg.Roles.Coder
+	a := o.cfg.Agents[coder.Agent]
+	d := prompt.FixData{
+		Mode:           o.cfg.Target.Mode,
+		Path:           o.cfg.Target.Path,
+		Round:          rec.Round,
+		Findings:       prompt.FormatFindings(activeFindings(rec)),
+		Verification:   verify.FormatForCoder(blocking),
+		OutputContract: prompt.FixContract,
+	}
+	text, err := prompt.Render(o.templates[coder.Prompt], d)
+	if err != nil {
+		return fmt.Errorf("render coder prompt for the verification correction: %w", err)
+	}
+	// Logged under its own prompt name so the correction attempt is a distinct,
+	// inspectable artifact rather than overwriting the round's first fix log.
+	const lens = "fix-verify"
+	if err := o.logs.Prompt("fix", coder.Agent, lens, rec.Round, text); err != nil {
+		o.logf("WARNING: failed to write the verification-correction prompt: %v", err)
+	}
+	res := agent.Run(ctx, a, text, o.cfg.Target.Path)
+	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, lens, len(text), res, res.Err != nil))
+	var out model.FixOutput
+	parseErr := agent.ExtractJSON(res.Stdout, "fix", &out)
+	if werr := o.logs.Step("fix", coder.Agent, lens, rec.Round, out, prompt.FormatFindings(nil), res.Raw(a.Argv())); werr != nil {
+		o.logf("WARNING: failed to write the verification-correction log: %v", werr)
+	}
+	// A failed or unparseable correction attempt is not fatal here: the caller
+	// re-verifies regardless, and the gate -- not the coder's self-report -- decides
+	// whether the round proceeds.
+	if res.Err != nil {
+		o.logf("round %d: verification-correction attempt failed: %v", rec.Round, res.Err)
+	} else if parseErr != nil {
+		o.logf("round %d: verification-correction output was unparseable: %v", rec.Round, parseErr)
+	}
+	return nil
+}
+
+// verifyAndCommit runs the deterministic gate over the coder's edits and, if they
+// hold up, commits the round. Split out of finalizeFix so the round's terminal
+// bookkeeping stays readable next to a phase that has three distinct failure
+// exits: blocked by the gate, reverted by the correction, and commit failure.
+func (o *Orchestrator) verifyAndCommit(ctx context.Context, rec *model.RoundRecord, round int) error {
+	// Verify BEFORE committing. The coder's own report is a model's claim about
+	// its work; this is the only check in the loop that is not. A round whose
+	// edits break the project must not become a commit that later rounds build
+	// on -- and must not count toward convergence.
+	if blocked, err := o.verifyRound(ctx, rec); err != nil {
+		return err
+	} else if blocked {
+		return o.rejectUnverifiedRound(ctx, rec)
+	}
+	// A correction attempt can revert the round's edits entirely, leaving a clean
+	// tree after verification passed. Commit would then no-op and the round would
+	// report fixes that never landed, so say so rather than passing silently.
+	if postClean, cerr := o.collector.GitClean(ctx, o.gitExclude...); cerr == nil && postClean {
+		o.logf("round %d: nothing left to commit -- the verification correction reverted the round's edits; the findings stay open", rec.Round)
+		rec.CoderError = "verification correction reverted the round's edits; nothing was committed"
+		return nil
+	}
+	sha, err := o.commit(ctx, rec)
+	if err != nil {
+		// Same TOCTOU window: cancellation can interrupt the commit's git add /
+		// commit after staging the coder's edits. Reconcile so the staged tree
+		// is stashed instead of left staged under a softened interruption.
+		if ctx.Err() != nil {
+			return o.reconcileInterrupt(rec.Round, err) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+		}
+		// A non-cancellation commit failure (e.g. commit signing failed) leaves
+		// the coder's edits staged by Commit's `git add -A`. Left as-is, the
+		// dirty/staged tree violates the clean-tree invariant and the next run
+		// refuses to start. Stash the edits so the tree is clean again.
+		return o.reconcileFailedCommit(ctx, rec.Round, err)
+	}
+	rec.CommitSHA = sha
+	if sha != "" {
+		o.logf("round %d committed: %s", round, sha[:12])
+	}
+	return nil
 }

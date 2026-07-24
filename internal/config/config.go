@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ type Config struct {
 	Agents map[string]Agent `yaml:"agents"`
 	Loop   Loop             `yaml:"loop"`
 	Logs   Logs             `yaml:"logs"`
+	Verify Verify           `yaml:"verify"`
 
 	// PingAgents: before a run, invoke every agent used by the run with a
 	// trivial prompt (in parallel) and abort if any fails. Catches expired
@@ -535,6 +537,7 @@ func (c *Config) applyDefaults() {
 	if c.Logs.TimestampFormat == "" {
 		c.Logs.TimestampFormat = "20060102-150405"
 	}
+	c.Verify.applyDefaults()
 	for name, a := range c.Agents {
 		a.applyDefaults()
 		c.Agents[name] = a
@@ -763,6 +766,9 @@ func (c *Config) Validate() error {
 	if c.Logs.SummaryPattern != "" && !strings.Contains(c.Logs.SummaryPattern, "{ext}") {
 		return fmt.Errorf("logs.summary_pattern %q must contain {ext}, else the JSON summary overwrites the Markdown one (and its path is returned as the Markdown path)", c.Logs.SummaryPattern)
 	}
+	if err := c.Verify.validate(); err != nil {
+		return err
+	}
 	return c.validateLogsDir()
 }
 
@@ -874,4 +880,102 @@ func (t Target) EffectiveExcludes() []string {
 		}
 	}
 	return out
+}
+
+// VerifyPolicy decides how a verification failure is treated. Verification is
+// the only non-model signal in the loop -- everything else is one agent's opinion
+// checked by another agent's opinion -- so what "failed" means is a policy
+// decision, not a detail.
+type VerifyPolicy string
+
+const (
+	// VerifyOff runs nothing. Also the effective policy when no commands are set.
+	VerifyOff VerifyPolicy = "off"
+	// VerifyNoRegressions compares against a baseline captured before the first
+	// fix round: a command already failing then may keep failing, but one that
+	// passed must not start failing. The right default for a real repository,
+	// which may well start red.
+	VerifyNoRegressions VerifyPolicy = "no_regressions"
+	// VerifyMustPass requires every required command to succeed regardless of the
+	// baseline.
+	VerifyMustPass VerifyPolicy = "must_pass"
+)
+
+var verifyPolicies = []VerifyPolicy{VerifyOff, VerifyNoRegressions, VerifyMustPass}
+
+// Verify configures the deterministic quality gate fixpoint runs itself, after
+// the coder and before the round commit.
+//
+// It is deliberately fixpoint's job rather than an instruction in the coder
+// prompt: the most objective step in the workflow should not depend on the least
+// deterministic participant, and a coder that self-reports "fixed" with nothing
+// checking it makes both "fixed" and "converged" mean only that a model said so.
+//
+// SECURITY: these commands run code from, and defined by, the target project.
+// They therefore execute only on the fix path, which already requires an explicit
+// trust assertion (see Loop.TrustedTarget), and a bundle resolved from inside the
+// target is itself treated as untrusted input -- see Config.ProjectSuppliedExec.
+type Verify struct {
+	Policy VerifyPolicy `yaml:"policy"`
+	// Timeout bounds EACH command. A hung test suite must not hang the run.
+	Timeout  Duration        `yaml:"timeout"`
+	Commands []VerifyCommand `yaml:"commands"`
+}
+
+// VerifyCommand is one check. Argv, not a shell string: there is no shell to
+// quote wrongly, and it matches how agents are configured.
+type VerifyCommand struct {
+	Name string   `yaml:"name"`
+	Run  []string `yaml:"run"`
+	// Optional records the result without ever failing the round. For a check
+	// that is informative but not a gate (a linter mid-cleanup, say).
+	Optional bool `yaml:"optional"`
+}
+
+// Enabled reports whether verification will run. No commands means off, whatever
+// the policy says, so a config can carry a policy without every project having to
+// define commands for it.
+func (v Verify) Enabled() bool {
+	return v.Policy != VerifyOff && len(v.Commands) > 0
+}
+
+func (v *Verify) applyDefaults() {
+	if v.Policy == "" {
+		// no_regressions rather than must_pass: fixpoint runs against repositories
+		// it did not write, and demanding green from the first round would refuse to
+		// work on any project with a pre-existing failure.
+		v.Policy = VerifyNoRegressions
+	}
+	if v.Timeout == 0 {
+		v.Timeout = Duration(10 * time.Minute)
+	}
+}
+
+func (v Verify) validate() error {
+	// Empty means unset: Load substitutes the default. Validating the zero value
+	// would reject a config that simply omits the section -- same convention as
+	// logs.dir and logs.pattern.
+	if v.Policy == "" && len(v.Commands) == 0 && v.Timeout == 0 {
+		return nil
+	}
+	if !slices.Contains(verifyPolicies, v.Policy) {
+		return fmt.Errorf("verify.policy %q is unknown (want %v)", v.Policy, verifyPolicies)
+	}
+	if v.Timeout.Std() < 0 {
+		return fmt.Errorf("verify.timeout %s must not be negative", v.Timeout.Std())
+	}
+	seen := map[string]bool{}
+	for i, c := range v.Commands {
+		if c.Name == "" {
+			return fmt.Errorf("verify.commands[%d]: name is required; it identifies the check in logs, in the summary, and in the report handed back to the coder", i)
+		}
+		if seen[c.Name] {
+			return fmt.Errorf("verify.commands: duplicate name %q; names must be unique so a baseline result maps to exactly one command", c.Name)
+		}
+		seen[c.Name] = true
+		if len(c.Run) == 0 {
+			return fmt.Errorf("verify.commands[%s]: run must be a non-empty argv list", c.Name)
+		}
+	}
+	return nil
 }

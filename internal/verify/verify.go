@@ -1,0 +1,232 @@
+// Package verify runs the deterministic quality gate: the configured build, test,
+// and static-check commands that fixpoint executes itself between the coder and
+// the round commit.
+//
+// This is the only part of the loop that produces a signal no model authored.
+// Everything else is one agent's judgment reviewed by another agent's judgment, so
+// without this a "fixed" finding means only that a model said it fixed something,
+// and a "converged" run means only that other models said they saw nothing.
+package verify
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/dsaiko/fixpoint/internal/agent"
+	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/model"
+)
+
+// maxOutput caps what is retained per command. Enough to diagnose a failure and
+// hand it back to the coder; bounded so a runaway test suite cannot exhaust memory
+// or blow the coder's context.
+const maxOutput = 64 << 10
+
+// Result is one command's outcome. Aliased to the shared shape in model so the
+// round record, the summary, and this package cannot drift apart.
+type Result = model.VerifyResult
+
+// Report is one verification pass.
+type Report struct {
+	Results []Result `json:"results"`
+}
+
+// Passed reports whether every non-optional command succeeded.
+func (r Report) Passed() bool {
+	for _, res := range r.Results {
+		if !res.Optional && !res.Passed {
+			return false
+		}
+	}
+	return true
+}
+
+// Failures returns the non-optional commands that did not pass.
+func (r Report) Failures() []Result {
+	var out []Result
+	for _, res := range r.Results {
+		if !res.Optional && !res.Passed {
+			out = append(out, res)
+		}
+	}
+	return out
+}
+
+// Regressions returns the non-optional commands that pass in the baseline but
+// fail in r. A command already failing before fixpoint touched anything is not
+// this run's fault, and treating it as one would refuse to work on any repository
+// that starts red. A command missing from the baseline counts as a regression:
+// absent evidence that it ever passed, the safe reading is that this run broke it.
+func (r Report) Regressions(baseline Report) []Result {
+	was := make(map[string]bool, len(baseline.Results))
+	for _, b := range baseline.Results {
+		was[b.Name] = b.Passed
+	}
+	var out []Result
+	for _, res := range r.Results {
+		if res.Optional || res.Passed {
+			continue
+		}
+		if passed, known := was[res.Name]; !known || passed {
+			out = append(out, res)
+		}
+	}
+	return out
+}
+
+// Blocking returns the results that must stop the round under the given policy,
+// or nil when the round may proceed.
+func (r Report) Blocking(policy config.VerifyPolicy, baseline Report) []Result {
+	switch policy {
+	case config.VerifyMustPass:
+		return r.Failures()
+	case config.VerifyNoRegressions:
+		return r.Regressions(baseline)
+	default: // VerifyOff -- Run is not called, but be explicit rather than clever
+		return nil
+	}
+}
+
+// Run executes every configured command in order, in dir, and returns the report.
+// Order is sequential and as configured, so a cheap build check fails before an
+// expensive test suite runs.
+//
+// A command that cannot be started, exits non-zero, or exceeds its timeout is a
+// failure; ctx cancellation stops the pass and is reported as such. The context
+// error is the caller's cue to distinguish "the run was interrupted" from "the
+// checks failed", which are very different outcomes for a round.
+func Run(ctx context.Context, cfg config.Verify, dir string) Report {
+	rep := Report{Results: make([]Result, 0, len(cfg.Commands))}
+	for _, c := range cfg.Commands {
+		rep.Results = append(rep.Results, runOne(ctx, c, cfg.Timeout.Std(), dir))
+		if ctx.Err() != nil {
+			break // interrupted: do not start further commands
+		}
+	}
+	return rep
+}
+
+func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, dir string) Result {
+	res := Result{Name: c.Name, Argv: c.Run, Optional: c.Optional}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, c.Run[0], c.Run[1:]...)
+	cmd.Dir = dir
+	// Same process-group discipline as agents: a build tool spawns children (a
+	// compiler, a test binary, a watch process), and killing only the leader on
+	// timeout would leave them running and holding the output pipe open.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return agent.KillProcessGroup(cmd) }
+	cmd.WaitDelay = 2 * time.Second
+
+	var buf boundedBuffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf // combined: a failure's cause is often split across both
+
+	start := time.Now()
+	err := cmd.Run()
+	res.Duration = time.Since(start)
+	// Output can quote anything the build printed, including a secret from the
+	// environment, and it is persisted and fed back to the coder.
+	res.Output = agent.RedactSecrets(buf.String())
+
+	switch {
+	case cmdCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
+		res.Err = fmt.Sprintf("timed out after %s", timeout)
+	case err == nil:
+		res.Passed = true
+	default:
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			res.ExitCode = ee.ExitCode()
+		} else {
+			// Could not start at all: a missing binary, a bad working directory. A
+			// misconfigured gate must fail loudly, never be treated as passing.
+			res.Err = err.Error()
+		}
+	}
+	return res
+}
+
+// FormatForCoder renders failures as the block handed back to the coder for its
+// correction attempt. It leads with the command and exit status, then the captured
+// output, because the coder needs to know what to run to reproduce.
+func FormatForCoder(blocking []Result) string {
+	var sb strings.Builder
+	sb.WriteString("## Verification failed\n")
+	sb.WriteString("fixpoint ran the project's own checks after your edits. These did not pass.\n")
+	sb.WriteString("Fix the cause. Do not disable, skip, or weaken a check to get past it.\n\n")
+	for _, r := range blocking {
+		fmt.Fprintf(&sb, "### %s — `%s`\n", r.Name, strings.Join(r.Argv, " "))
+		if r.Err != "" {
+			fmt.Fprintf(&sb, "could not run: %s\n", r.Err)
+		} else {
+			fmt.Fprintf(&sb, "exit status %d\n", r.ExitCode)
+		}
+		if out := strings.TrimSpace(r.Output); out != "" {
+			fmt.Fprintf(&sb, "\n```\n%s\n```\n", out)
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// Summary renders a one-line-per-command digest for the run log.
+func (r Report) Summary() string {
+	parts := make([]string, 0, len(r.Results))
+	for _, res := range r.Results {
+		status := "ok"
+		switch {
+		case res.Err != "":
+			status = res.Err
+		case !res.Passed:
+			status = fmt.Sprintf("exit %d", res.ExitCode)
+		}
+		if res.Optional && !res.Passed {
+			status += " (optional)"
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", res.Name, status))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// boundedBuffer accumulates at most maxOutput bytes and notes the truncation, so
+// a command producing gigabytes of output cannot exhaust memory. It is not safe
+// for concurrent use, which is why stdout and stderr share one instance: exec
+// serializes writes to a single writer.
+type boundedBuffer struct {
+	b        strings.Builder
+	dropped  bool
+	overflow int
+}
+
+func (w *boundedBuffer) Write(p []byte) (int, error) {
+	if room := maxOutput - w.b.Len(); room > 0 {
+		if len(p) <= room {
+			w.b.Write(p)
+			return len(p), nil
+		}
+		w.b.Write(p[:room])
+		w.dropped = true
+		w.overflow += len(p) - room
+		return len(p), nil
+	}
+	w.dropped = true
+	w.overflow += len(p)
+	return len(p), nil
+}
+
+func (w *boundedBuffer) String() string {
+	if !w.dropped {
+		return w.b.String()
+	}
+	return w.b.String() + fmt.Sprintf("\n[... %s of further output dropped; re-run the command to see it all ...]",
+		agent.HumanSize(w.overflow))
+}

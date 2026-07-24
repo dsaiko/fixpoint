@@ -133,8 +133,14 @@ type RoundRecord struct {
 	CommitSHA    string       `json:"commit_sha,omitempty"`
 	// CoderError is set when the coder failed mid-round but its partial edits
 	// were salvaged into CommitSHA; the loop then continued.
-	CoderError string     `json:"coder_error,omitempty"`
-	Steps      []StepStat `json:"steps,omitempty"` // per-invocation I/O figures
+	CoderError string `json:"coder_error,omitempty"`
+	// Verify holds the deterministic gate's results for this round, and
+	// VerifyRetried records that the coder was given a correction attempt. Kept on
+	// the round record so the summary can show what actually passed -- the one
+	// non-model signal in the loop deserves to be persisted, not just logged.
+	Verify        []VerifyResult `json:"verify,omitempty"`
+	VerifyRetried bool           `json:"verify_retried,omitempty"`
+	Steps         []StepStat     `json:"steps,omitempty"` // per-invocation I/O figures
 }
 
 // StepStat records one agent invocation's size and duration figures, so runs
@@ -186,4 +192,19 @@ type RunSources struct {
 	Extends string            `json:"extends,omitempty"`
 	Agents  map[string]string `json:"agents,omitempty"`
 	Prompts map[string]string `json:"prompts,omitempty"`
+}
+
+// VerifyResult is one deterministic-gate command's outcome. It lives here rather
+// than in the verify package because it is a shape shared by the orchestrator, the
+// round record, and the logs -- and keeping it here also stops model from
+// depending on a package that runs subprocesses.
+type VerifyResult struct {
+	Name     string        `json:"name"`
+	Argv     []string      `json:"argv"`
+	Optional bool          `json:"optional,omitempty"`
+	ExitCode int           `json:"exit_code"`
+	Passed   bool          `json:"passed"`
+	Output   string        `json:"output,omitempty"` // combined stdout+stderr, capped and redacted
+	Duration time.Duration `json:"duration"`
+	Err      string        `json:"error,omitempty"` // could not run at all (not a non-zero exit)
 }

@@ -72,11 +72,11 @@ tidy-check:
 
 ## check: static validation of the configuration (no agents invoked)
 check: build
-	./$(BINARY) --check $(CONFIG)
+	./$(BINARY) --check $(CONFIG) --trusted-target
 
 ## check-live: static validation + ping every configured agent
 check-live: build
-	./$(BINARY) --check-live $(CONFIG)
+	./$(BINARY) --check-live $(CONFIG) --trusted-target
 
 ## run: run the full review->fix cycle per the configuration
 ## The trust gate is a per-invocation flag, never a config default: we assert it
@@ -86,7 +86,7 @@ run: build test vet
 
 ## review-only: run a single review round; the coder is never invoked
 review-only: build
-	./$(BINARY) review-only
+	./$(BINARY) review-only --trusted-target
 
 ## clean: remove the built binary and coverage artifacts
 clean:

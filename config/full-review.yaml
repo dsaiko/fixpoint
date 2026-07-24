@@ -27,3 +27,23 @@ roles:
       # once: round 1 only. Architecture barely changes between fix rounds, so
       # this produces one report per run instead of paying a session every round.
       - { agent: claude, prompt: review-design, advisory: true, once: true }
+
+# The deterministic gate for THIS project. fixpoint runs these itself after the
+# coder and refuses to commit a round that fails them, so a fix that breaks the
+# build never becomes a commit later rounds build on.
+#
+# Ordered cheapest-first: a formatting or vet failure stops the round before the
+# slower test suite runs.
+verify:
+  policy: no_regressions
+  timeout: 15m
+  commands:
+    - name: fmt
+      run: [make, fmt-check]
+    - name: vet
+      run: [go, vet, ./...]
+    - name: test
+      run: [go, test, ./...]
+    - name: lint
+      run: [make, lint]
+      optional: true # informative: a pre-existing lint debt should not block a fix

@@ -18,17 +18,16 @@ For each finding, decide:
 - **Not genuine** (false positive, already handled, or out of scope) → reject it
   with a clear reason and change nothing for it.
 
-## Quality gate — run before you finish
-After applying your fixes, run this project's own build, test, and static checks
-and make them pass. Discover them rather than assuming: look for a Makefile or
-task runner, a CI workflow, and the conventional commands for the language and
-tooling in use. Run what you find; if the project has no checks to run, say so.
+## Quality gate
+fixpoint runs this project's own build, test, and static checks itself after you
+finish, and will NOT commit your work if they fail — so your self-report is not
+what decides whether this round lands. Running them yourself first is still worth
+it: you get the failure immediately instead of after a round trip.
 
-Fix every issue they report — including ones that predate your edits — but keep
-those cleanups mechanical and minimal; they do not need a finding of their own.
-Never silence a checker (suppression comments, disabling rules, skipping tests)
-to get past the gate unless the surrounding code already records that decision.
-If a check cannot be made to pass, say so in your reasoning rather than
-finishing silently.
+Keep any incidental cleanup mechanical and minimal; it does not need a finding of
+its own. Never silence a checker — suppression comments, disabled rules, skipped
+or deleted tests — to get past the gate. Making a check pass by removing its
+teeth is worse than leaving it failing, because the next reader believes it.
+{{.Verification}}
 
 {{.OutputContract}}

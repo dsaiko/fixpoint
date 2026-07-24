@@ -307,6 +307,7 @@ func renderSummaryMD(sum *model.RunSummary) string {
 			}
 			sb.WriteString("\n")
 		}
+		renderVerify(&sb, r)
 		if len(r.Steps) > 0 {
 			sb.WriteString("Steps:\n\n")
 			for _, st := range r.Steps {
@@ -357,6 +358,33 @@ func ioTotals(sum *model.RunSummary) (steps, promptBytes, outputBytes int) {
 // agents that edit code and the config carries the trust gates, so reading a
 // summary months later must not leave open the question of whether a local file
 // shadowed the installed one.
+// renderVerify records the deterministic gate's outcome for a round. It is the
+// only evidence in the summary that is not a model's opinion, so it is reported
+// per round rather than folded into a total.
+func renderVerify(sb *strings.Builder, rec model.RoundRecord) {
+	if len(rec.Verify) == 0 {
+		return
+	}
+	sb.WriteString("\nVerification")
+	if rec.VerifyRetried {
+		sb.WriteString(" (after one coder correction attempt)")
+	}
+	sb.WriteString(":\n")
+	for _, v := range rec.Verify {
+		status := "PASS"
+		switch {
+		case v.Err != "":
+			status = "ERROR: " + v.Err
+		case !v.Passed:
+			status = fmt.Sprintf("FAIL (exit %d)", v.ExitCode)
+		}
+		if v.Optional {
+			status += " [optional]"
+		}
+		fmt.Fprintf(sb, "- %s: %s — `%s` in %s\n", v.Name, status, strings.Join(v.Argv, " "), v.Duration.Round(time.Millisecond))
+	}
+}
+
 func renderSources(sb *strings.Builder, src model.RunSources) {
 	if src.Config == "" {
 		return

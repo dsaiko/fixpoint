@@ -29,11 +29,14 @@ type ReviewData struct {
 
 // FixData is the placeholder set available to the coder prompt template.
 type FixData struct {
-	Mode           config.Mode
-	Path           string
-	Round          int
-	Findings       string // concatenated findings to resolve
-	History        string // prior rounds' findings + verdicts
+	Mode     config.Mode
+	Path     string
+	Round    int
+	Findings string // concatenated findings to resolve
+	History  string // prior rounds' findings + verdicts
+	// Verification is empty on the first fix attempt of a round and holds the
+	// deterministic gate's failures on the one correction attempt that follows.
+	Verification   string
 	OutputContract string
 }
 

@@ -2133,3 +2133,130 @@ func TestDeferOverCapDoesNotAgeResolvedFindings(t *testing.T) {
 		t.Error("expected the low finding to be deferred; fixed/rejected history must not grant aging")
 	}
 }
+
+// verifyGate points the fixture's verification at a marker file the mock coder
+// creates when it "fixes" something: present => the check fails. That models the
+// real case (the coder's edits break the build) without needing a real toolchain.
+func (f *fixture) verifyGate(policy config.VerifyPolicy, failWhenPresent string) {
+	f.t.Helper()
+	script := filepath.Join(f.t.TempDir(), "check.sh")
+	body := "#!/bin/sh\nif [ -e " + filepath.Join(f.repo, failWhenPresent) + " ]; then echo 'check failed: build is broken'; exit 1; fi\nexit 0\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	f.cfg.Verify = config.Verify{
+		Policy:   policy,
+		Timeout:  config.Duration(time.Minute),
+		Commands: []config.VerifyCommand{{Name: "build", Run: []string{script}}},
+	}
+}
+
+// breakBuildOn makes the mock agent's n-th invocation create the marker file that
+// the configured check fails on -- i.e. a coder whose "fix" breaks the build.
+func (f *fixture) breakBuildOn(n int, path string) {
+	f.t.Helper()
+	// A real edit AND the breakage, which is the realistic shape: the coder does
+	// useful work and also breaks something. A correction that only removes the
+	// breakage must therefore still leave something to commit.
+	testfixture.WriteSide(f.t, f.respDir, n, fmt.Sprintf("#!/bin/sh\necho 'fix %d' >> '%s'\necho broken > '%s'\n",
+		n, filepath.Join(f.repo, "main.go"), filepath.Join(f.repo, path)))
+}
+
+// repairBuildOn makes the n-th invocation remove that marker, i.e. a successful
+// correction attempt.
+func (f *fixture) repairBuildOn(n int, path string) {
+	f.t.Helper()
+	testfixture.WriteSide(f.t, f.respDir, n, fmt.Sprintf("#!/bin/sh\nrm -f '%s'\n", filepath.Join(f.repo, path)))
+}
+
+// A round whose edits fail the gate must NOT be committed, even though the coder
+// reported a successful fix. Committing it would put later rounds on a broken
+// base and let "converged" mean "converged on something that does not build".
+func TestVerifyFailureDiscardsRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	before := f.commitCount()
+
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	// The coder creates the file that makes the check fail, and claims success.
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "done"}))
+	// Invocation 3 is the correction attempt: it does not remove the file.
+	f.respond(3, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "still done"}))
+
+	_, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() = nil, want an error: a round failing verification must not be reported as success")
+	}
+	if !strings.Contains(err.Error(), "verification failed") {
+		t.Errorf("error should say verification failed: %v", err)
+	}
+	if got := f.commitCount(); got != before {
+		t.Errorf("commit count = %d, want %d: an unverified round must not be committed", got, before)
+	}
+	// The coder's work is stashed, not silently deleted.
+	if out := gitRun(t, f.repo, "stash", "list"); !strings.Contains(out, "round 1") {
+		t.Errorf("the discarded round's edits should be recoverable from the stash, got:\n%s", out)
+	}
+	if clean := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(clean) != "" {
+		t.Errorf("the working tree must be restored, got:\n%s", clean)
+	}
+}
+
+// The coder gets exactly one correction attempt, and a round that passes after it
+// commits normally -- so a transient breakage does not throw away the round.
+func TestVerifyRetrySucceedsAndCommits(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	before := f.commitCount()
+
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "done"}))
+	// The correction attempt removes the offending file, so the gate passes.
+	f.repairBuildOn(3, "broken.txt")
+	f.respond(3, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "corrected"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() = %v, want the corrected round to commit", err)
+	}
+	if got := f.commitCount(); got != before+1 {
+		t.Errorf("commit count = %d, want %d: the corrected round should commit", got, before+1)
+	}
+	if len(sum.Rounds) == 0 || !sum.Rounds[0].VerifyRetried {
+		t.Error("the round record must note that a correction attempt was made")
+	}
+	if len(sum.Rounds[0].Verify) == 0 {
+		t.Error("verification results must be recorded on the round for the summary")
+	}
+}
+
+// no_regressions is what makes fixpoint usable on a repository that is already
+// red: a check failing before the run must not block a round that does not make
+// it worse.
+func TestVerifyNoRegressionsToleratesPreExistingFailure(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	// The marker exists from the start, so the baseline is already failing.
+	if err := os.WriteFile(filepath.Join(f.repo, "broken.txt"), []byte("pre-existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repo, "add", "-A")
+	gitRun(t, f.repo, "commit", "-q", "-m", "pre-existing breakage")
+	f.verifyGate(config.VerifyNoRegressions, "broken.txt")
+	before := f.commitCount()
+
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.editRepoOn(2) // an unrelated edit; the check still fails, as it did before
+	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "done"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() = %v, want a pre-existing failure to be tolerated under no_regressions", err)
+	}
+	if got := f.commitCount(); got != before+1 {
+		t.Errorf("commit count = %d, want %d: the round should commit", got, before+1)
+	}
+	if f.invocations() != 2 {
+		t.Errorf("invocations = %d, want 2: no correction attempt should have been needed", f.invocations())
+	}
+}

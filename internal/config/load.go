@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -209,4 +211,58 @@ func (c *Config) anchor(projectRoot string) {
 	if c.Logs.Dir != "" && !filepath.IsAbs(c.Logs.Dir) {
 		c.Logs.Dir = filepath.Join(projectRoot, c.Logs.Dir)
 	}
+}
+
+// ProjectSuppliedExec reports the bundle files that were resolved from INSIDE the
+// review target and that fixpoint executes: agent commands and verification
+// commands. It returns nil when none were.
+//
+// This closes a hole opened by making bundles shadowable per project. Resolution
+// prefers <project>/config, so a repository can ship its own agents/*.yaml or a
+// verify command -- and those are argv that fixpoint runs. That is direct code
+// execution from a file in the target, with no model and no prompt injection
+// involved, and it would otherwise happen even in a review-only run that promises
+// to change nothing.
+//
+// The caller gates on this: executing a target's own definitions requires the same
+// explicit trust assertion as letting the coder edit it.
+func (l *Loaded) ProjectSuppliedExec() []string {
+	if l.ProjectRoot == "" {
+		return nil
+	}
+	target := l.Config.Target.Path
+	if target == "" {
+		target = l.ProjectRoot
+	}
+	var out []string
+	for name, path := range l.Source.Agents {
+		if within(path, target) {
+			out = append(out, fmt.Sprintf("agent %s (%s)", name, path))
+		}
+	}
+	if l.Config.Verify.Enabled() && within(l.Source.Config, target) {
+		out = append(out, "verify commands in "+l.Source.Config)
+	}
+	if l.Config.Verify.Enabled() && l.Source.Extends != "" && within(l.Source.Extends, target) {
+		out = append(out, "verify commands in "+l.Source.Extends)
+	}
+	sort.Strings(out) // stable message regardless of map iteration order
+	return out
+}
+
+// within reports whether path lies inside root.
+func within(path, root string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

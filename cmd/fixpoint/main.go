@@ -13,7 +13,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -34,18 +33,6 @@ func main() {
 // stdout carries requested output (--list); stderr carries the run log. Keeping
 // them separate is what lets `fixpoint --list | grep` and shell completion work.
 func run(args []string, stdout, stderr io.Writer) int {
-	// Pull a LEADING positional out before flag parsing. Go's flag package stops
-	// at the first non-flag argument, so `fixpoint full-review --trusted-target`
-	// would otherwise leave the flag unparsed -- and that particular flag is the
-	// gate that permits file edits, so silently dropping it would be the worst
-	// possible thing to get wrong. Taking it only from position 0 keeps this
-	// unambiguous: a flag's value (e.g. `--max-iterations 3`) can never be
-	// mistaken for the config name.
-	var leading string
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		leading, args = args[0], args[1:]
-	}
-
 	fs := flag.NewFlagSet("fixpoint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -68,7 +55,8 @@ Flags:
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
 	checkLive := fs.Bool("check-live", false, "validate the configuration, ping every agent, and exit without running")
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseArgs(fs, args)
+	if err != nil {
 		return 2
 	}
 
@@ -105,7 +93,7 @@ Flags:
 		return listConfigs(resolver, projectRoot, stdout, stderr)
 	}
 
-	name, err := configName(leading, fs.Args(), *cfgPath)
+	name, err := configName(positionals, *cfgPath)
 	if err != nil {
 		logf("%v", err)
 		fs.Usage()
@@ -129,6 +117,10 @@ Flags:
 		allowUntrustedFix: *allowUntrustedFix,
 		trustedTarget:     *trustedTarget,
 	}.apply(cfg)
+	if !allowProjectSuppliedExec(loaded, logf) {
+		return 1
+	}
+
 	if err := cfg.Validate(); err != nil {
 		logf("config: %s: %v", loaded.Source.Config, err)
 		return 1
@@ -165,8 +157,15 @@ Flags:
 	}
 	logf("done: %s after %d round(s)", sum.Termination, len(sum.Rounds))
 	switch sum.Termination {
-	case model.TermConverged, model.TermReviewOnly, model.TermAllRejected:
+	case model.TermConverged, model.TermReviewOnly:
 		return 0
+	case model.TermAllRejected:
+		// NOT 0. "The coder rejected every finding" is not "the code is clean" --
+		// it could equally mean the reviewers are miscalibrated or the coder was
+		// unwilling. Nothing changed, so automation keying on exit 0 would read a
+		// no-op as a converged run. Distinct code, distinct meaning.
+		logf("no changes were made: the coder rejected every finding this round")
+		return 3
 	case model.TermMaxIterations:
 		return 2
 	default: // interrupted, error
@@ -178,11 +177,7 @@ Flags:
 // Both together is an error rather than a silent precedence rule: which one won
 // decides what gets reviewed and whether fixes are permitted, so a caller must
 // not have to guess.
-func configName(leading string, trailing []string, flagPath string) (string, error) {
-	names := trailing
-	if leading != "" {
-		names = append([]string{leading}, trailing...)
-	}
+func configName(names []string, flagPath string) (string, error) {
 	switch {
 	case len(names) > 1:
 		return "", fmt.Errorf("expected one config name, got %d: %v", len(names), names)
@@ -276,5 +271,47 @@ func (o overrides) apply(cfg *config.Config) {
 	// Zero stays "use config", per the flag help.
 	if o.maxIter != 0 {
 		cfg.Loop.MaxIterations = o.maxIter
+	}
+}
+
+// allowProjectSuppliedExec gates bundle files that were resolved from inside the
+// review target and that fixpoint executes -- agent commands and verify commands.
+// Those are executable policy, not data: a repository shipping its own
+// agents/*.yaml is supplying argv that fixpoint runs, which needs no model and no
+// prompt injection to exploit. It therefore requires the same explicit trust
+// assertion as letting the coder edit that repository.
+func allowProjectSuppliedExec(l *config.Loaded, logf func(string, ...any)) bool {
+	supplied := l.ProjectSuppliedExec()
+	if len(supplied) == 0 || l.Config.Loop.TrustedTarget {
+		return true
+	}
+	logf("refusing to run: the target supplies its own executable configuration, which fixpoint would execute:")
+	for _, s := range supplied {
+		logf("  %s", s)
+	}
+	logf("Read those files, then pass -trusted-target to assert the target is trusted -- or point -config at a bundle outside it.")
+	return false
+}
+
+// parseArgs parses flags that may appear BEFORE or AFTER the positional config
+// name, collecting the positionals. Go's flag package stops at the first non-flag
+// argument, so `fixpoint --check full-review --trusted-target` would otherwise
+// silently drop the trailing flag -- and that flag is the gate permitting file
+// edits, which makes losing it the worst possible parse failure. Looping over
+// Parse consumes each positional and resumes flag parsing after it, so every
+// argument order behaves the same, and a flag's own value can never be mistaken
+// for the config name because Parse has already consumed it.
+func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positionals []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return positionals, nil
+		}
+		positionals = append(positionals, rest[0])
+		args = rest[1:]
 	}
 }
