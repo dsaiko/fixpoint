@@ -121,29 +121,86 @@ func TestResolverShadowsPerFile(t *testing.T) {
 	}
 }
 
-// ListConfigs backs both --list and shell completion, so it must report the file
-// a run would actually use, not every copy on the path.
+// ListConfigs backs both --list and shell completion, so it must report the file a
+// run would actually use -- not every copy on the path -- and must say which
+// configs are runnable.
 func TestListConfigsOmitsShadowedCopies(t *testing.T) {
-	high := bundle(t, filepath.Join(t.TempDir(), "project"), map[string]string{"full": "target: {mode: directory}\n"}, nil, nil)
+	high := bundle(t, filepath.Join(t.TempDir(), "project"), map[string]string{"full": runnableBody}, nil, nil)
 	low := bundle(t, filepath.Join(t.TempDir(), "system"), map[string]string{
-		"full": "target: {mode: directory}\n",
-		"pr":   "target: {mode: pr, pr: 1}\n",
+		"full": runnableBody,
+		"pr":   runnableBody,
 	}, nil, nil)
 	r := &Resolver{Bundles: []string{high, low, "/nonexistent"}}
 	got, err := r.ListConfigs()
 	if err != nil {
 		t.Fatalf("a missing bundle on the path must not be an error: %v", err)
 	}
-	if want := filepath.Join(high, "full.yaml"); got["full"] != want {
-		t.Errorf("full resolved to %s, want the shadowing %s", got["full"], want)
-	}
-	if want := filepath.Join(low, "pr.yaml"); got["pr"] != want {
-		t.Errorf("pr resolved to %s, want %s", got["pr"], want)
-	}
 	if len(got) != 2 {
-		t.Errorf("got %d configs, want 2 (shadowed copies must not be listed twice)", len(got))
+		t.Fatalf("got %d configs, want 2 (a shadowed copy must not be listed twice): %+v", len(got), got)
+	}
+	byName := map[string]Entry{}
+	for _, c := range got {
+		byName[c.Name] = c
+	}
+	if want := filepath.Join(high, "full.yaml"); byName["full"].Path != want {
+		t.Errorf("full resolved to %s, want the shadowing %s", byName["full"].Path, want)
+	}
+	if want := filepath.Join(low, "pr.yaml"); byName["pr"].Path != want {
+		t.Errorf("pr resolved to %s, want %s", byName["pr"].Path, want)
 	}
 }
+
+// A base config -- one with no review lenses, existing to be inherited via
+// `extends` -- is listed but marked non-runnable. Listing it matters for
+// discovery: you cannot write `extends: defaults` without knowing it is there.
+// Marking it matters because an unmarked listing reads as "things you can run".
+//
+// The distinction is by SHAPE, not by the name "defaults": a bundle may hold
+// several bases under any names.
+func TestListConfigsMarksBaseConfigs(t *testing.T) {
+	dir := bundle(t, filepath.Join(t.TempDir(), "b"), map[string]string{
+		"task":        runnableBody,
+		"defaults":    "loop:\n  max_iterations: 3\n",
+		"shared-base": "target: {mode: directory}\n",
+	}, nil, nil)
+	got, err := (&Resolver{Bundles: []string{dir}}).ListConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnable := map[string]bool{}
+	for _, c := range got {
+		runnable[c.Name] = c.Runnable
+	}
+	if !runnable["task"] {
+		t.Error("a config with review lenses must be runnable")
+	}
+	for _, base := range []string{"defaults", "shared-base"} {
+		if runnable[base] {
+			t.Errorf("%q defines no lenses and must be marked non-runnable", base)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("got %d configs, want all 3 listed -- bases are marked, not hidden", len(got))
+	}
+}
+
+// An unparseable or partially invalid config must not vanish from the listing:
+// listing is discovery, and the loader is where correctness is reported with a
+// message that says what is wrong.
+func TestListConfigsKeepsUnparseableConfigs(t *testing.T) {
+	dir := bundle(t, filepath.Join(t.TempDir(), "b"), map[string]string{
+		"broken": "roles: [this is not a mapping",
+	}, nil, nil)
+	got, err := (&Resolver{Bundles: []string{dir}}).ListConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got[0].Runnable {
+		t.Errorf("an unparseable config must still be listed and left for the loader to reject: %+v", got)
+	}
+}
+
+const runnableBody = taskBody
 
 const taskBody = `roles:
   coder: {agent: mock, prompt: fix}

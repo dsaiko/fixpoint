@@ -42,7 +42,7 @@ a later upgrade rather than being ignored.
 | `review-only` | One review round, no edits. The safe starting point. |
 | `full-review` | The full review → fix → commit loop. Needs `-trusted-target`. |
 | `pr-review` | Review a GitHub pull request; review-only by default. |
-| `defaults` | Shared base — not runnable on its own. `extends: defaults`. |
+| `defaults` | Shared base — not runnable on its own; `fixpoint --list` marks it as such. Inherit it with `extends: defaults`. |
 
 `extends` is per-key and **one level deep**: keys the task config sets win, keys
 it omits are inherited, and a **list it sets replaces** the inherited list rather

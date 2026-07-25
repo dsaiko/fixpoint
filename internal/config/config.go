@@ -569,7 +569,7 @@ func (c *Config) Validate() error {
 	}
 
 	if len(c.Roles.Review.Prompts) == 0 {
-		return errors.New("roles.review.prompts: at least one review prompt is required")
+		return errors.New("roles.review.prompts: at least one review lens is required. A config with no lenses is a base meant to be inherited with `extends`, not run directly -- `fixpoint --list` marks which configs are runnable")
 	}
 	switch c.Roles.Review.Strategy {
 	case StrategyFixed:

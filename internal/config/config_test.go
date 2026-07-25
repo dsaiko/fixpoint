@@ -122,7 +122,7 @@ func TestValidate(t *testing.T) {
 		{"unknown mode", func(c *Config) { c.Target.Mode = "svn" }, "unknown mode"},
 		{"pr mode without number", func(c *Config) { c.Target.Mode = "pr" }, "PR number required"},
 		{"pr mode with number", func(c *Config) { c.Target.Mode = "pr"; c.Target.PR = 7 }, ""},
-		{"no review prompts", func(c *Config) { c.Roles.Review.Prompts = nil }, "at least one review prompt"},
+		{"no review prompts", func(c *Config) { c.Roles.Review.Prompts = nil }, "at least one review lens"},
 		{"unknown strategy", func(c *Config) { c.Roles.Review.Strategy = "random" }, "unknown strategy"},
 		{"fixed strategy without pinned agent", func(c *Config) { c.Roles.Review.Strategy = "fixed" }, "requires every lens to pin"},
 		{"fixed strategy fully pinned", func(c *Config) {

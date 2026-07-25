@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Layout of a config bundle. A bundle is a directory holding task configs at its
@@ -193,11 +196,24 @@ func (r *Resolver) find(kind, sub, file string) (string, error) {
 	return "", &NotFoundError{Kind: kind, Name: strings.TrimSuffix(file, filepath.Ext(file)), Tried: tried}
 }
 
-// ListConfigs returns the task configs visible on the search path, keyed by name,
-// with the bundle path each resolved from. Shadowed copies are omitted: the value
-// is the one a run would actually use. Backs both `--list` and shell completion.
-func (r *Resolver) ListConfigs() (map[string]string, error) {
-	out := map[string]string{}
+// Entry is one task config visible on the search path.
+type Entry struct {
+	Name string
+	Path string
+	// Runnable is false for a base config -- one that defines no review lenses and
+	// so exists to be inherited via `extends`, not executed. Determined by shape
+	// rather than by name: a bundle may hold several bases under any names, and
+	// hardcoding "defaults" would be a rule that only happens to fit this bundle.
+	Runnable bool
+}
+
+// ListConfigs returns the configs visible on the search path, sorted by name, each
+// with the file it resolved from. Shadowed copies are omitted: the entry is the one
+// a run would actually use. Backs both `--list` and shell completion -- which
+// should offer only the runnable ones.
+func (r *Resolver) ListConfigs() ([]Entry, error) {
+	seen := map[string]bool{}
+	var out []Entry
 	var errs []error
 	for _, b := range r.Bundles {
 		entries, err := os.ReadDir(b)
@@ -212,12 +228,41 @@ func (r *Resolver) ListConfigs() (map[string]string, error) {
 				continue
 			}
 			name := strings.TrimSuffix(e.Name(), configExt)
-			if _, shadowed := out[name]; !shadowed {
-				out[name] = filepath.Join(b, e.Name())
+			if seen[name] {
+				continue
 			}
+			seen[name] = true
+			path := filepath.Join(b, e.Name())
+			out = append(out, Entry{Name: name, Path: path, Runnable: isRunnable(path)})
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, errors.Join(errs...)
+}
+
+// isRunnable reports whether a config defines at least one review lens, which is
+// what makes it executable rather than a base for `extends`.
+//
+// The probe is deliberately lenient -- a lone unknown key, which the strict loader
+// rejects, must not make a config vanish from the listing. Listing is discovery;
+// the loader is where correctness is enforced, with a message that says what is
+// wrong.
+func isRunnable(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return true // unreadable: let the loader report it properly
+	}
+	var probe struct {
+		Roles struct {
+			Review struct {
+				Prompts []yaml.Node `yaml:"prompts"`
+			} `yaml:"review"`
+		} `yaml:"roles"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return true
+	}
+	return len(probe.Roles.Review.Prompts) > 0
 }
 
 // isPathLike reports whether an argument should be treated as a filesystem path

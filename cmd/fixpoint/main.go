@@ -237,8 +237,16 @@ func listConfigs(r *config.Resolver, projectRoot string, stdout, stderr io.Write
 			filepath.Join(projectRoot, "config"))
 		return 1
 	}
-	for _, name := range sortedKeys(configs) {
-		fmt.Fprintf(stdout, "%-20s %s\n", name, configs[name])
+	for _, c := range configs {
+		// Base configs are listed, not hidden: you need to know one exists to write
+		// `extends: defaults`. But they are marked, because an unmarked listing reads
+		// as "things you can run" and inviting someone to run a base is a wasted
+		// round trip through a validation error.
+		note := ""
+		if !c.Runnable {
+			note = "  (base — for `extends`, not runnable)"
+		}
+		fmt.Fprintf(stdout, "%-20s %s%s\n", c.Name, c.Path, note)
 	}
 	return 0
 }
