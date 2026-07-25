@@ -7,7 +7,10 @@ subdirectories, so one bare name resolves in one category:
     prompts/fix.md         a prompt, referenced as `fix`
     agents/claude.yaml     an agent, referenced as `claude`
 
-Run one with `fixpoint <name>`; list what's available with `fixpoint --list`.
+Run one with `fixpoint <name>`; list what's available with `fixpoint --list`. A
+config's optional one-line `description:` appears in that listing and in shell
+completion (`fixpoint completion zsh|bash|fish`), so write it for whoever has to
+choose between them.
 
 ## Where bundles are found
 

@@ -1,5 +1,7 @@
 # One review round, no edits. The safe starting point: the coder is never
 # invoked, so nothing is modified and no trust gate is needed.
+description: One review round, no edits. The safe starting point.
+
 extends: defaults
 
 roles:

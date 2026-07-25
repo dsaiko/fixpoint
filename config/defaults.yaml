@@ -5,6 +5,8 @@
 # merges, and the security model. Comments here stay short on purpose: this file
 # is meant to be copied and edited, and an essay is hard to diff.
 
+description: Shared base for the other configs; inherit with 'extends'.
+
 target:
   mode: directory # git-diff | pr | directory
 

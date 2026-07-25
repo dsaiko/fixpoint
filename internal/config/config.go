@@ -23,6 +23,11 @@ type Config struct {
 	// inherits; keys set here override it. One level deep -- see loadWithExtends.
 	Extends string `yaml:"extends"`
 
+	// Description is a one-line summary shown by `fixpoint --list` and by shell
+	// completion. Without it a list of bare names tells a new user nothing about
+	// which config is safe to run.
+	Description string `yaml:"description"`
+
 	Target Target           `yaml:"target"`
 	Roles  Roles            `yaml:"roles"`
 	Agents map[string]Agent `yaml:"agents"`

@@ -91,8 +91,10 @@ linters:
     errcheck:
       check-type-assertions: true # unchecked t := v.(T) panics at runtime
       exclude-functions:
-        # Best-effort logging to stderr; there is no meaningful recovery.
+        # Best-effort writes to stdout/stderr; there is no meaningful recovery
+        # from a failed write to a stream we do not own.
         - fmt.Fprintf
+        - fmt.Fprint
     exhaustive:
       # A switch with a default case is considered exhaustive: this codebase
       # uses default-branch validation for Mode/Strategy string enums.

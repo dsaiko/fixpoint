@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -42,6 +43,7 @@ Usage:
   fixpoint <config> [flags]     run a named config from the bundle search path
   fixpoint ./some.yaml [flags]  run a config by path
   fixpoint --list               list the configs available here
+  fixpoint completion <shell>   print a completion script (bash | zsh | fish)
 
 Flags:
 `)
@@ -53,6 +55,7 @@ Flags:
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
+	porcelain := fs.Bool("porcelain", false, "with --list, emit a stable tab-separated form for scripts and shell completion")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
 	checkLive := fs.Bool("check-live", false, "validate the configuration, ping every agent, and exit without running")
 	positionals, err := parseArgs(fs, args)
@@ -89,8 +92,9 @@ Flags:
 	}
 	resolver := config.NewResolver(projectRoot)
 
-	if *list {
-		return listConfigs(resolver, projectRoot, stdout, stderr)
+	// Modes that print something and exit, before any config is resolved.
+	if code, handled := earlyExit(resolver, projectRoot, positionals, *list, *porcelain, stdout, stderr); handled {
+		return code
 	}
 
 	name, err := configName(positionals, *cfgPath)
@@ -242,13 +246,43 @@ func listConfigs(r *config.Resolver, projectRoot string, stdout, stderr io.Write
 		// `extends: defaults`. But they are marked, because an unmarked listing reads
 		// as "things you can run" and inviting someone to run a base is a wasted
 		// round trip through a validation error.
-		note := ""
+		desc := c.Description
 		if !c.Runnable {
-			note = "  (base — for `extends`, not runnable)"
+			desc = strings.TrimSpace(desc + "  (base — for `extends`, not runnable)")
 		}
-		fmt.Fprintf(stdout, "%-20s %s%s\n", c.Name, c.Path, note)
+		fmt.Fprintf(stdout, "%-14s %s\n", c.Name, desc)
+		fmt.Fprintf(stdout, "%-14s %s\n", "", c.Path)
 	}
 	return 0
+}
+
+// listPorcelain writes the machine-readable listing that shell completion parses:
+// one config per line, tab-separated name, runnability, and description.
+//
+// Completion queries the binary rather than baking the config list into the
+// generated script, so adding a config to a bundle takes effect immediately -- a
+// script with names hardcoded at generation time would quietly go stale.
+func listPorcelain(r *config.Resolver, stdout, stderr io.Writer) int {
+	configs, err := r.ListConfigs()
+	if err != nil {
+		fmt.Fprintf(stderr, "listing configs: %v\n", err)
+		return 1
+	}
+	for _, c := range configs {
+		state := "base"
+		if c.Runnable {
+			state = "runnable"
+		}
+		// Tabs and newlines would break the format, and a description is
+		// operator-authored text that could contain either.
+		fmt.Fprintf(stdout, "%s\t%s\t%s\n", c.Name, state, sanitizeField(c.Description))
+	}
+	return 0
+}
+
+// sanitizeField flattens a value so it cannot break the tab-separated format.
+func sanitizeField(s string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\t", " ")), " ")
 }
 
 // overrides are the CLI flags that change the effective configuration. They are
@@ -322,4 +356,23 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 		positionals = append(positionals, rest[0])
 		args = rest[1:]
 	}
+}
+
+// earlyExit handles the modes that print and exit without resolving a config:
+// listing, its machine-readable form, and the completion subcommand. Split out of
+// run so the run path itself stays a readable sequence.
+//
+// `completion` is intercepted here because the argument parser treats bare words
+// as the config to run, so it would otherwise be looked up as a config name.
+func earlyExit(r *config.Resolver, projectRoot string, positionals []string, list, porcelain bool, stdout, stderr io.Writer) (int, bool) {
+	if len(positionals) > 0 && positionals[0] == "completion" {
+		return writeCompletion(positionals[1:], stdout, stderr), true
+	}
+	if list {
+		if porcelain {
+			return listPorcelain(r, stdout, stderr), true
+		}
+		return listConfigs(r, projectRoot, stdout, stderr), true
+	}
+	return 0, false
 }

@@ -5,6 +5,8 @@
 # externally authored code, and its content flows through reviewer findings into
 # the coder, which edits files with permission checks disabled. Enabling fixes
 # needs -allow-untrusted-fix, deliberately, per invocation.
+description: Review a GitHub pull request; review-only by default.
+
 extends: defaults
 
 target:

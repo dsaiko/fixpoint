@@ -4,6 +4,8 @@
 # coder edits files with permission checks disabled and is not confined to the
 # target: a prompt-injection payload in ANY reviewed file could steer it. Pass
 # -trusted-target on the command line when you know what the target contains.
+description: Full review -> fix -> verify -> commit loop. Needs -trusted-target.
+
 extends: defaults
 
 roles:

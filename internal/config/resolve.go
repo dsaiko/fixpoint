@@ -200,6 +200,8 @@ func (r *Resolver) find(kind, sub, file string) (string, error) {
 type Entry struct {
 	Name string
 	Path string
+	// Description is the config's own one-line summary, empty if it has none.
+	Description string
 	// Runnable is false for a base config -- one that defines no review lenses and
 	// so exists to be inherited via `extends`, not executed. Determined by shape
 	// rather than by name: a bundle may hold several bases under any names, and
@@ -233,36 +235,38 @@ func (r *Resolver) ListConfigs() ([]Entry, error) {
 			}
 			seen[name] = true
 			path := filepath.Join(b, e.Name())
-			out = append(out, Entry{Name: name, Path: path, Runnable: isRunnable(path)})
+			runnable, desc := probe(path)
+			out = append(out, Entry{Name: name, Path: path, Description: desc, Runnable: runnable})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, errors.Join(errs...)
 }
 
-// isRunnable reports whether a config defines at least one review lens, which is
-// what makes it executable rather than a base for `extends`.
+// probe reads the two things a listing needs from a config without loading it
+// properly: whether it defines any review lens (which is what makes it runnable
+// rather than a base for `extends`) and its description.
 //
-// The probe is deliberately lenient -- a lone unknown key, which the strict loader
-// rejects, must not make a config vanish from the listing. Listing is discovery;
-// the loader is where correctness is enforced, with a message that says what is
-// wrong.
-func isRunnable(path string) bool {
+// Deliberately lenient -- a lone unknown key, which the strict loader rejects,
+// must not make a config vanish from the listing. Listing is discovery; the loader
+// is where correctness is enforced, with a message that says what is wrong.
+func probe(path string) (runnable bool, description string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return true // unreadable: let the loader report it properly
+		return true, "" // unreadable: let the loader report it properly
 	}
-	var probe struct {
-		Roles struct {
+	var p struct {
+		Description string `yaml:"description"`
+		Roles       struct {
 			Review struct {
 				Prompts []yaml.Node `yaml:"prompts"`
 			} `yaml:"review"`
 		} `yaml:"roles"`
 	}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return true
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return true, ""
 	}
-	return len(probe.Roles.Review.Prompts) > 0
+	return len(p.Roles.Review.Prompts) > 0, strings.TrimSpace(p.Description)
 }
 
 // isPathLike reports whether an argument should be treated as a filesystem path
