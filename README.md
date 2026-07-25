@@ -192,6 +192,41 @@ so `effort` simply disappears for providers that don't support it.
 in enforced read-only modes (`can_edit: false`); only agents whose command
 allows writing files (`can_edit: true`) may be assigned as `roles.coder`.
 
+### The agent environment is filtered
+
+An agent process gets a **non-secret baseline** — `PATH`, `HOME`, temp dir, locale,
+TLS trust settings, proxy settings — plus only the variables its own file declares:
+
+```yaml
+env:
+  pass: [ANTHROPIC_API_KEY]   # inherited from fixpoint's environment, if set
+  set:  {NO_COLOR: "1"}       # literal values; override anything inherited
+```
+
+Everything else in fixpoint's environment — your `GITHUB_TOKEN`, cloud
+credentials, database passwords — is **absent from the process**. That matters
+because the environment is the one exfiltration surface a container does *not*
+close: the agents' own credentials have to be inside the container for the CLIs to
+work at all. A reviewer runs in a mode that denies *edits*, not *reads*; on Linux a
+process can read its own `/proc/self/environ`, and any CLI with a shell tool can
+just run `env`. Redaction only masks fixed-shape tokens like `ghp_…`, so a bare
+database password would otherwise pass straight through into a finding, the logs,
+and — in a fix run — the commit body.
+
+fixpoint doesn't need to know what each CLI requires, which is what made this
+tractable despite being provider-agnostic: the agent's file declares it, and
+whoever wrote its `command` is exactly who knows. A name that isn't set in
+fixpoint's environment is simply absent, not an error, since `claude` and `codex`
+read credentials from `~/.claude` and `~/.codex` when you've logged in
+interactively — in that case a reviewer runs with no credential in its environment
+at all.
+
+What this does **not** fix: an agent authenticating *via* an environment variable
+must still be given it, so its own credential stays reachable by the process that
+needs it. The win is everything else — your GitHub token is no longer inside the
+code reviewer. `env.inherit_all: true` opts back out entirely for a CLI whose
+requirements you don't know; fixpoint warns at run start when an agent does.
+
 ## Getting started
 
 Requirements:

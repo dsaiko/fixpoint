@@ -34,6 +34,26 @@ Reasoning budget per request; all five levels verified with `claude -p`:
 Higher effort buys judgment at the cost of latency. Reviewers run every round, so
 their effort multiplies across the loop; the coder runs once per round.
 
+## env
+
+Each agent receives a non-secret baseline (`PATH`, `HOME`, temp dir, locale, TLS
+trust, proxy settings) plus only what it declares:
+
+    env:
+      pass: [ANTHROPIC_API_KEY]   # inherit by name, if set in fixpoint's env
+      set:  {NO_COLOR: "1"}       # literal values; override anything inherited
+
+Everything else is absent from the process, so an exported secret the agent never
+asked for cannot be quoted into a finding. A declared name that is not set is
+simply absent — `claude` and `codex` read credentials from `~/.claude` and
+`~/.codex` after an interactive login, so in that case the agent needs no
+credential in its environment at all.
+
+If a CLI misbehaves after you add it, check whether it needs a variable you have
+not declared; `env.inherit_all: true` is the escape hatch, and gives up the
+protection for that agent. `--check-live` invokes every agent, so a missing
+variable surfaces there rather than mid-run.
+
 ## A note on prompt_via
 
 `stdin` keeps the prompt off the process argument list. `arg` puts the entire

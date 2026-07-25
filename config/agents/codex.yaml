@@ -17,3 +17,14 @@ can_edit: false
 # To use codex as the coder, copy this to codex-coder.yaml with
 # --dangerously-bypass-approvals-and-sandbox instead of --sandbox read-only,
 # and can_edit: true.
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # codex reads ~/.codex when logged in; these cover API-key auth.
+    - OPENAI_API_KEY
+    - CODEX_API_KEY

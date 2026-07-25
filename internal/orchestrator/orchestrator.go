@@ -216,6 +216,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 
 func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	o.warnArgModePrompts()
+	o.warnInheritedEnv()
 
 	// Enforce the fix-round trust gate; see checkFixTrust for the rationale.
 	if err := o.checkFixTrust(); err != nil {
@@ -689,6 +690,19 @@ func roundReviewErr(rec *model.RoundRecord) error {
 // reviewer quotes into a finding are world-readable via ps / /proc for the
 // invocation's lifetime, bypassing the 0600 log permissions and on-disk
 // redaction. The exposure is not silent; stdin is the secure default.
+// warnInheritedEnv reports agents that opted out of environment filtering. Worth a
+// warning rather than silence: the filtered default is what keeps an exported
+// secret out of a prompt-injectable reviewer, and inherit_all gives that up for
+// one agent without changing anything visible in the run's output.
+func (o *Orchestrator) warnInheritedEnv() {
+	for _, n := range o.activeAgentNames() {
+		if !o.cfg.Agents[n].Env.InheritAll {
+			continue
+		}
+		o.logf("WARNING: agent %q sets env.inherit_all -- it receives fixpoint's ENTIRE environment, so every exported secret (cloud credentials, database passwords, tokens for other services) is readable by that agent and can be quoted into a finding. Declare the variables it actually needs under env.pass instead", n)
+	}
+}
+
 func (o *Orchestrator) warnArgModePrompts() {
 	for _, n := range o.activeAgentNames() {
 		if o.cfg.Agents[n].PromptVia != config.PromptViaArg {

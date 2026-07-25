@@ -12,3 +12,13 @@ command:
 prompt_via: stdin
 timeout: 15m # local models are slower; give them headroom
 can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # ollama needs to find its server; the wrapped claude harness needs nothing more.
+    - OLLAMA_HOST

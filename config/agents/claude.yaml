@@ -10,3 +10,13 @@ command:
 prompt_via: stdin
 timeout: 10m
 can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # See claude-coder.yaml: only needed when authenticating by API key.
+    - ANTHROPIC_API_KEY

@@ -77,6 +77,26 @@ work.
 code, whatever `target.exclude` says (`.env*`, `*.pem`, `*.key`, `id_rsa`,
 `.netrc`, and similar). That bounds the blast radius; it is not a sandbox.
 
+**The agent environment is filtered.** Each agent receives a non-secret baseline —
+`PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LANGUAGE`/`LC_ALL`/`LC_CTYPE`,
+`TERM`, `TZ`, `USER`/`LOGNAME`, the `XDG_*` config paths, TLS trust
+(`SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`,
+`REQUESTS_CA_BUNDLE`), and proxy settings — plus the variables its own
+`agents/*.yaml` declares under `env.pass` / `env.set`. Nothing else is present in
+the process, so a prompt-injected reviewer cannot quote a secret it cannot see.
+
+The baseline is chosen so that dropping something does not break a CLI in a way
+that looks unrelated: without `HOME`, `claude` and `codex` cannot find their
+credentials; without the TLS entries, HTTPS fails certificate verification behind a
+corporate proxy. One caveat — proxy variables can embed credentials
+(`http://user:pass@proxy`), so they are the single baseline entry that may carry a
+secret; the redactor masks URI passwords, and an operator who cannot accept that
+should unset them for fixpoint's own process.
+
+`env.inherit_all: true` restores full inheritance for one agent, with a run-start
+warning. It exists for a CLI whose requirements are unknown, at the cost of
+re-exposing every exported secret to that agent.
+
 **Fix rounds are fail-closed.** The coder edits files with permission checks
 disabled and is not confined to the target, so a prompt-injection payload in any
 reviewed file could steer it. Fixes therefore require `-trusted-target` (or

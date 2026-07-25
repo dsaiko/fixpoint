@@ -127,22 +127,23 @@ func RedactSecrets(s string) string { return redactSecrets(s) }
 // sandbox (container/VM). Full in-process confinement (landlock/chroot) is not
 // implemented and is platform-specific; this is a documented limitation.
 //
-// SECURITY (the process ENVIRONMENT is inherited too): Run does not set cmd.Env,
-// so every agent inherits fixpoint's full environment -- including the API
-// tokens the agent CLIs authenticate with (ANTHROPIC_API_KEY, OPENAI_API_KEY,
-// GITHUB_TOKEN/GH_TOKEN) and any other exported secret (DB passwords, cloud
-// creds). Environment variables are thus a second exfiltration surface alongside
-// the filesystem: a prompt-injected reviewer can read its own env and quote a
-// value into a finding, which is persisted to logs and, in a fix run, echoed
-// into the pushed commit body. On-disk/commit redaction only masks fixed-shape
-// tokens, so a bare GITHUB_TOKEN value or a DB password passes through unmasked.
-// Crucially, the container/VM mitigation above does NOT cover this: the agents'
-// API tokens must be present in the container's environment for the CLIs to
-// work, so an env-based secret leaks even inside the recommended sandbox. A
-// minimal-allowlist cmd.Env is not viable generically because fixpoint is
-// provider-agnostic and cannot know which vars each configured CLI needs;
-// therefore reviewers must not be pointed at untrusted content in ANY
-// environment that also holds secrets they should not see.
+// SECURITY (the process ENVIRONMENT is filtered, not inherited): Run sets cmd.Env
+// to a baseline of non-secret variables plus whatever the agent's own file
+// declares, so an exported secret the agent did not ask for is simply absent from
+// the process. See internal/agent/env.go.
+//
+// This closes what was the one exfiltration surface a container could not: the
+// agents' credentials must be inside the container for the CLIs to work, so an
+// env-based secret used to leak even inside the recommended sandbox. A reviewer
+// runs in a mode that denies EDITS, not READS -- on Linux a process can read its
+// own /proc/self/environ, and any CLI with a shell tool can run `env` -- and
+// redaction only masks fixed-shape tokens, so a bare database password would pass
+// through unmasked.
+//
+// What it does NOT close: an agent authenticating via an environment variable must
+// be given that variable, so its own credential stays reachable by the process
+// that needs it. The win is everything else. An agent that declares
+// `env.inherit_all: true` opts back out entirely, and fixpoint warns at run start.
 //
 // SECURITY (descendants that escape the process group): KillProcessGroup below
 // SIGKILLs the command's process group, but a descendant that calls setpgrp or
@@ -176,6 +177,10 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
+	// Filtered environment: the baseline plus what this agent declared, and nothing
+	// else. nil means the agent opted into inherit_all, which exec reads as "inherit
+	// the parent's environment".
+	cmd.Env = buildEnv(a)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return KillProcessGroup(cmd) }
 	// Bound how long Wait blocks after cancel/exit: cmd.Stdout/Stderr are

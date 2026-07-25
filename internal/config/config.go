@@ -230,6 +230,42 @@ type Agent struct {
 	PromptVia string   `yaml:"prompt_via"` // stdin | arg
 	Timeout   Duration `yaml:"timeout"`
 	CanEdit   bool     `yaml:"can_edit"`
+
+	// Env controls what this agent's process can see of fixpoint's environment.
+	Env AgentEnv `yaml:"env"`
+}
+
+// AgentEnv declares the environment an agent runs with. Everything not covered
+// here is absent from the process.
+//
+// The environment is an exfiltration surface distinct from the filesystem, and the
+// only one a container does not close: the agents' own credentials must be inside
+// the container for the CLIs to work at all. A reviewer runs in a mode that denies
+// EDITS, not READS -- on Linux a process can read its own /proc/self/environ, and
+// any CLI with a shell tool can just run `env` -- so a prompt-injected reviewer can
+// quote a value into a finding, which is logged and, in a fix run, echoed into the
+// commit body. On-disk redaction only masks fixed-shape tokens, so a bare database
+// password or an opaque internal token passes through unmasked.
+//
+// Filtering is possible even though fixpoint is provider-agnostic and cannot know
+// what any given CLI needs, because it does not have to know: the agent's own file
+// declares it, and whoever wrote its `command` is exactly who knows.
+//
+// This shrinks the blast radius rather than closing it. An agent that authenticates
+// via an environment variable must still be given that variable, so its own
+// credential stays reachable by the process that needs it -- but your GitHub token
+// is no longer in the code reviewer.
+type AgentEnv struct {
+	// Pass names variables inherited from fixpoint's environment when set. A name
+	// that is not set in fixpoint's environment is simply absent, not an error:
+	// agents commonly accept either an env var or a config file for credentials.
+	Pass []string `yaml:"pass"`
+	// Set provides literal values, and overrides anything inherited via Pass.
+	Set map[string]string `yaml:"set"`
+	// InheritAll restores the old behavior of passing fixpoint's whole environment.
+	// An escape hatch for a CLI whose requirements are not known, at the cost of
+	// re-exposing every exported secret to that agent. fixpoint warns at run start.
+	InheritAll bool `yaml:"inherit_all"`
 }
 
 // placeholderValues maps each supported command placeholder to its
@@ -659,6 +695,16 @@ func (c *Config) Validate() error {
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("agents.%s: binary %q not found on PATH", name, argv[0])
 		}
+		for i, name := range a.Env.Pass {
+			if err := validEnvName(name); err != nil {
+				return fmt.Errorf("agents.%s: env.pass[%d]: %w", name, i, err)
+			}
+		}
+		for k := range a.Env.Set {
+			if err := validEnvName(k); err != nil {
+				return fmt.Errorf("agents.%s: env.set: %w", name, err)
+			}
+		}
 		if a.PromptVia != PromptViaStdin && a.PromptVia != PromptViaArg {
 			return fmt.Errorf("agents.%s: prompt_via must be stdin or arg, got %q", name, a.PromptVia)
 		}
@@ -981,6 +1027,18 @@ func (v Verify) validate() error {
 		if len(c.Run) == 0 {
 			return fmt.Errorf("verify.commands[%s]: run must be a non-empty argv list", c.Name)
 		}
+	}
+	return nil
+}
+
+// validEnvName rejects a name that cannot be an environment variable, so a typo
+// like `env.pass: [FOO=bar]` fails at startup instead of silently passing nothing.
+func validEnvName(name string) error {
+	switch {
+	case name == "":
+		return errors.New("an environment variable name must not be empty")
+	case strings.ContainsAny(name, "= \t\n\x00"):
+		return fmt.Errorf("%q is not a valid environment variable name: list names only, not assignments (use env.set for values)", name)
 	}
 	return nil
 }
