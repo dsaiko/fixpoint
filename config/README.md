@@ -66,12 +66,13 @@ untrusted content can be prompt-injected into reading a host secret
 That path has no trust gate. Point reviewers at untrusted content only on a host
 without sensitive files, or run fixpoint inside a container or VM.
 
-**The same applies to the environment.** Agents inherit fixpoint's full
-environment, so an injected reviewer can quote `ANTHROPIC_API_KEY`,
-`GITHUB_TOKEN`, cloud credentials, or a database password into a finding — which
-is logged and, in a fix run, echoed into a commit body. A container doesn't help
-here: the agents' own API tokens must live in that environment for the CLIs to
-work.
+**The environment is the other read surface**, and it is filtered rather than
+inherited — see "The agent environment is filtered" below. What an agent can still
+quote into a finding is its own declared credentials (an agent given
+`ANTHROPIC_API_KEY` can leak that key), so the filtering bounds which secrets are
+reachable, not whether a compromised reviewer can talk. A container does not help
+with the remainder: the agents' own API tokens have to be inside it for the CLIs to
+work at all.
 
 **fixpoint removes credential-shaped paths from collection unconditionally**, in
 code, whatever `target.exclude` says (`.env*`, `*.pem`, `*.key`, `id_rsa`,
@@ -102,6 +103,14 @@ disabled and is not confined to the target, so a prompt-injection payload in any
 reviewed file could steer it. Fixes therefore require `-trusted-target` (or
 `-allow-untrusted-fix` in `pr` mode) *per invocation* — never an inherited
 default. Review each round's commit before pushing.
+
+**A config cannot grant trust.** Setting `loop.trusted_target` or
+`loop.allow_untrusted_fix` in any config file is a hard load error, in the task
+config and in a base it `extends`. This directory is searched *before* the
+operator's own bundles, so it may be shipped by the repository under review: a
+trust key here would let reviewed code authorize fixpoint to execute the agent
+definitions it supplies and to run the write-capable coder against it — the exact
+thing the two gates above exist to prevent.
 
 **Artifacts can contain secrets.** The reviewed material, raw agent output, and
 reviewer-authored text are all persisted. Everything passes through a best-effort

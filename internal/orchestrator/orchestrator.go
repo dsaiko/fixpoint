@@ -351,9 +351,9 @@ func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context) error {
 		return nil
 	}
 	if !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
-		return fmt.Errorf("target %s has repo-local git config that would run repo-controlled programs fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status, so this is a code-execution path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or set loop.trusted_target: true (or -trusted-target) if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
+		return fmt.Errorf("target %s has repo-local git config that would run repo-controlled programs fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status, so this is a code-execution path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or pass -trusted-target if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
 	}
-	o.logf("WARNING: target %s has repo-local git config that runs repo-controlled programs during git diff/add/status (%s) which fixpoint cannot neutralize; loop.trusted_target/allow_untrusted_fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", "))
+	o.logf("WARNING: target %s has repo-local git config that runs repo-controlled programs during git diff/add/status (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", "))
 	return nil
 }
 
@@ -375,11 +375,11 @@ func (o *Orchestrator) checkFixTrust() error {
 	switch o.cfg.Target.Mode {
 	case config.ModePR:
 		if !o.cfg.Loop.AllowUntrustedFix {
-			return errors.New("mode pr reviews untrusted code, and fix rounds hand its content to a coder that edits files without permission checks; use review_only, or set loop.allow_untrusted_fix (or -allow-untrusted-fix) if you trust the PR author")
+			return errors.New("mode pr reviews untrusted code, and fix rounds hand its content to a coder that edits files without permission checks; use review_only, or pass -allow-untrusted-fix if you trust the PR author")
 		}
 	default:
 		if !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
-			return fmt.Errorf("fix rounds run a coder that edits files with permission checks disabled and is not confined to target.path, so reviewed content could steer it via prompt injection; set loop.trusted_target: true (or -trusted-target) to assert %q holds only code you trust, or use review_only", o.cfg.Target.Path)
+			return fmt.Errorf("fix rounds run a coder that edits files with permission checks disabled and is not confined to target.path, so reviewed content could steer it via prompt injection; pass -trusted-target to assert %q holds only code you trust, or use review_only", o.cfg.Target.Path)
 		}
 	}
 	return nil
@@ -482,33 +482,6 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	return o.finalizeFix(ctx, recP, round, sum)
 }
 
-// severities is the one authoritative severity vocabulary, ordered worst-first.
-// severityRank (the per-round cap's ordering) and validSeverities (the reviewer
-// gate's membership set) are both derived from it below, so adding or renaming a
-// severity here updates the ordering and the validation gate together and they
-// can never drift apart.
-var severities = []string{"critical", "high", "medium", "low"}
-
-// severityRank orders findings worst-first for the per-round cap; unknown
-// severities sort last. Derived from severities (rank = index).
-var severityRank = func() map[string]int {
-	m := make(map[string]int, len(severities))
-	for i, s := range severities {
-		m[s] = i
-	}
-	return m
-}()
-
-// validSeverities is the closed set a reviewer may report (per ReviewContract),
-// derived from severities so the reviewer gate and the ranking share one source.
-var validSeverities = func() map[string]bool {
-	m := make(map[string]bool, len(severities))
-	for _, s := range severities {
-		m[s] = true
-	}
-	return m
-}()
-
 // deferOverCap enforces loop.max_findings_per_round over ISSUES, not raw
 // observations: the worst maxN stay active for the coder and the rest are marked
 // deferred. Deferred issues appear in history as still open, so reviewers
@@ -535,11 +508,9 @@ func (o *Orchestrator) deferOverCap(rec *model.RoundRecord) {
 	}
 	rank := func(i int) int {
 		it := rec.Issues[i]
-		r, ok := severityRank[strings.ToLower(strings.TrimSpace(it.Severity))]
-		if !ok {
-			r = len(severityRank) // unknown severities sort last
-		}
-		return max(r-o.ledger.Deferrals(it.ID), 0)
+		// model.SeverityRank sorts unknown severities last, so an invented one
+		// cannot jump the queue ahead of a real critical.
+		return max(model.SeverityRank(it.Severity)-o.ledger.Deferrals(it.ID), 0)
 	}
 	sort.SliceStable(idx, func(a, b int) bool {
 		ra, rb := rank(idx[a]), rank(idx[b])
@@ -975,8 +946,8 @@ func validateReviewFindings(findings []model.ReviewFinding) error {
 		if strings.TrimSpace(f.Title) == "" {
 			return errors.New("finding has an empty title")
 		}
-		if !validSeverities[strings.ToLower(strings.TrimSpace(f.Severity))] {
-			return fmt.Errorf("finding %q has invalid severity %q (want critical | high | medium | low)", f.Title, f.Severity)
+		if !model.ValidSeverity(f.Severity) {
+			return fmt.Errorf("finding %q has invalid severity %q (want %s)", f.Title, f.Severity, strings.Join(model.Severities, " | "))
 		}
 	}
 	return nil
@@ -1150,12 +1121,27 @@ func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, com
 // malformed output). The coder edits files before it reports, so a failure
 // can leave real, per-file-complete work in the tree. That work is committed
 // as a clearly-labeled partial round and the loop continues -- the next round
-// re-reviews everything, so an incomplete or even broken intermediate state
-// is caught by reviewers rather than stranded. Only when nothing can be
-// committed (clean tree, or the commit itself fails) does the round become a
-// hard error; a failing commit additionally stashes the edits so the tree is
-// never left dirty.
+// re-reviews everything, so an incomplete state is caught by reviewers rather
+// than stranded. Only when nothing can be committed (clean tree, or the commit
+// itself fails) does the round become a hard error; a failing commit additionally
+// stashes the edits so the tree is never left dirty.
+//
+// The partial work passes the SAME verification gate as a normal round. A coder
+// that died mid-edit is the case most likely to leave a tree that does not build,
+// and committing it unverified would break the invariant verifyAndCommit exists to
+// hold: every commit a later round builds on, and that convergence can be declared
+// over, has passed the gate. "The next round re-reviews everything" is not a
+// substitute -- reviewers are models reading content, not a compiler.
+//
+// Unlike verifyRound this does NOT attempt a coder correction: the coder just
+// failed, so re-invoking it would most likely burn another timeout. Verification
+// here is a single pass, and a failure preserves the work and stops the run.
 func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRecord, active []model.Issue, runErr error) (salvaged bool, err error) {
+	if blocking, verr := o.verifyPass(ctx, rec, " (partial work from the failed coder)"); verr != nil {
+		return false, verr
+	} else if len(blocking) > 0 {
+		return false, o.rejectUnverifiedSalvage(ctx, rec, runErr, blocking)
+	}
 	header := fmt.Sprintf("fixpoint: round %d (partial, coder failed)", rec.Round)
 	var body strings.Builder
 	fmt.Fprintf(&body, "Coder failed before reporting verdicts: %v\n\nIssues it was working on:\n", runErr)
@@ -1316,32 +1302,39 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 // with the failure output in hand is unlikely to succeed on the third attempt, and
 // an unbounded repair loop is how a run silently burns an entire budget.
 func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord) (blocked bool, err error) {
-	if !o.cfg.Verify.Enabled() {
-		return false, nil
-	}
-	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
-	rec.Verify = rep.Results
-	o.logf("round %d verify: %s", rec.Round, rep.Summary())
-	if ctx.Err() != nil {
-		return false, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
-	}
-	blocking := rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)
-	if len(blocking) == 0 {
-		return false, nil
+	blocking, err := o.verifyPass(ctx, rec, "")
+	if err != nil || len(blocking) == 0 {
+		return false, err
 	}
 
 	o.logf("round %d verify: %d blocking failure(s); asking the coder to correct them", rec.Round, len(blocking))
 	if err := o.fixVerification(ctx, rec, blocking); err != nil {
 		return false, err
 	}
-	rep = verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
-	rec.Verify = rep.Results
 	rec.VerifyRetried = true
-	o.logf("round %d verify (after correction): %s", rec.Round, rep.Summary())
-	if ctx.Err() != nil {
-		return false, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+	blocking, err = o.verifyPass(ctx, rec, " (after correction)")
+	return len(blocking) > 0, err
+}
+
+// verifyPass runs the verification commands once over the current working tree
+// and returns the failures that block under the configured policy. It records the
+// results on the round and logs a summary; label distinguishes repeated passes in
+// the log.
+//
+// Extracted so every path that can produce a commit gates on the SAME check.
+// verifyRound adds one bounded coder correction on top of this; the salvage path
+// deliberately does not (see salvagePartialFix).
+func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, label string) ([]verify.Result, error) {
+	if !o.cfg.Verify.Enabled() {
+		return nil, nil
 	}
-	return len(rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)) > 0, nil
+	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
+	rec.Verify = rep.Results
+	o.logf("round %d verify%s: %s", rec.Round, label, rep.Summary())
+	if ctx.Err() != nil {
+		return nil, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+	}
+	return rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline), nil
 }
 
 // rejectUnverifiedRound discards a round whose edits do not survive the gate:
@@ -1367,6 +1360,32 @@ func (o *Orchestrator) rejectUnverifiedRound(ctx context.Context, rec *model.Rou
 	}
 	if stashed {
 		return fmt.Errorf("%w. The coder's edits were stashed -- recover them with `git stash pop`", base)
+	}
+	return base
+}
+
+// rejectUnverifiedSalvage handles the one case where a failed coder's partial work
+// cannot be kept: it does not pass verification. The work is stashed rather than
+// discarded (it may well contain the useful part of a fix an operator wants to
+// finish by hand) and the run stops.
+//
+// Stopping is the point. The alternative -- commit it and let the next round
+// re-review -- is what this replaces: it would put every later round on a base
+// known to be broken, and the run could then end as "converged" on a tree that
+// does not build.
+func (o *Orchestrator) rejectUnverifiedSalvage(ctx context.Context, rec *model.RoundRecord, runErr error, blocking []verify.Result) error {
+	names := make([]string, 0, len(blocking))
+	for _, r := range blocking {
+		names = append(names, r.Name)
+	}
+	base := fmt.Errorf("coder round %d failed (%w) and the partial work it left does not pass verification (%s); it was not committed",
+		rec.Round, runErr, strings.Join(names, ", "))
+	stashed, serr := o.collector.StashDirty(ctx, fmt.Sprintf("fixpoint: unverified partial work from failed round %d", rec.Round), o.gitExclude...)
+	if serr != nil {
+		return fmt.Errorf("%w; and the working tree could not be restored: %w", base, serr)
+	}
+	if stashed {
+		return fmt.Errorf("%w. The edits were stashed -- inspect or recover them with `git stash pop`", base)
 	}
 	return base
 }

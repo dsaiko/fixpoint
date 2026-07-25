@@ -209,7 +209,7 @@ func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 	obs.IssueID = it.ID
 	it.Observations = append(it.Observations, *obs)
 	it.LastRound = round
-	if worse(obs.Severity, it.Severity) {
+	if model.WorseSeverity(obs.Severity, it.Severity) {
 		it.Severity = obs.Severity
 		it.Title = obs.Title // keep the title and body from the worst reading
 		it.Description = obs.Description
@@ -309,20 +309,6 @@ var stopwords = map[string]bool{
 	"then": true, "this": true, "to": true, "when": true, "which": true,
 	"with": true, "would": true,
 }
-
-// severityRank orders severities worst-first; unknown values sort last so a
-// reviewer inventing one cannot outrank a real critical.
-var severityRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3}
-
-func rank(s string) int {
-	if r, ok := severityRank[strings.ToLower(strings.TrimSpace(s))]; ok {
-		return r
-	}
-	return len(severityRank)
-}
-
-// worse reports whether a is more severe than b.
-func worse(a, b string) bool { return rank(a) < rank(b) }
 
 func abs(n int) int {
 	if n < 0 {

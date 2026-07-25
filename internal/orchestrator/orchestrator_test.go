@@ -600,6 +600,66 @@ func TestRunSalvagesPartialFixWork(t *testing.T) {
 	}
 }
 
+// The salvage path must obey the same verification gate as a normal round.
+// Otherwise a coder that dies mid-edit -- the case MOST likely to leave a tree
+// that does not build -- gets its work committed unverified, later rounds build on
+// that base, and the run can end as "converged" on a broken tree. That is exactly
+// the outcome the verify gate exists to prevent, so the recovery path must not be a
+// way around it.
+func TestRunDoesNotCommitUnverifiedPartialWork(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.verifyGate(config.VerifyMustPass, "broken")
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	// The coder edits, breaks the build, then fails to report -- the salvage case.
+	f.breakBuildOn(2, "broken")
+	f.respond(2, "I changed files but forgot the <fix> envelope.")
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatalf("Run() must fail: partial work that does not verify cannot be committed (termination %q)", sum.Termination)
+	}
+	if !strings.Contains(err.Error(), "does not pass verification") {
+		t.Errorf("error should say verification rejected the partial work, got: %v", err)
+	}
+	if len(sum.Rounds) > 0 && sum.Rounds[0].CommitSHA != "" {
+		t.Error("unverified partial work was committed; later rounds would build on a broken base")
+	}
+	// No round commit at all: HEAD must still be the pre-run commit.
+	if subjects := gitRun(t, f.repo, "log", "--format=%s"); strings.Contains(subjects, "partial") {
+		t.Errorf("a partial round was committed despite failing verification:\n%s", subjects)
+	}
+	// The work is preserved, not silently dropped: it may hold the useful part of
+	// a fix an operator wants to finish by hand.
+	if stashes := gitRun(t, f.repo, "stash", "list"); !strings.Contains(stashes, "unverified partial work") {
+		t.Errorf("the rejected edits must be stashed for recovery, got stash list: %q", stashes)
+	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("working tree left dirty after rejecting the salvage: %q", status)
+	}
+}
+
+// The converse: partial work that DOES verify is still salvaged and the loop
+// continues. The gate must reject broken work, not abandon the recovery behavior.
+func TestRunSalvagesVerifiedPartialWork(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.verifyGate(config.VerifyMustPass, "broken") // never created: the edit is sound
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.editRepoOn(2)
+	f.respond(2, "I changed files but forgot the <fix> envelope.")
+	f.respond(3, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want salvage + continue for work that passes the gate", err)
+	}
+	if sum.Rounds[0].CommitSHA == "" {
+		t.Error("verified partial work must still be committed as a partial round")
+	}
+	if sum.Termination != model.TermConverged {
+		t.Errorf("termination = %q, want converged", sum.Termination)
+	}
+}
+
 // writeSide installs a custom side-effect script for the coder's invocation
 // (call 2: review is call 1). editRepoOn writes a fixed one; this lets a test
 // script arbitrary repo mutations, e.g. failing the salvage commit.
@@ -929,11 +989,14 @@ func TestRunRefusesUntrustedPRFixRounds(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.cfg.Target.Mode = "pr"
 	f.cfg.Target.PR = 1
-	// trusted_target must not bypass the pr gate: a PR is untrusted regardless.
+	// -trusted-target must not bypass the pr gate: a PR is untrusted regardless.
 	f.cfg.Loop.TrustedTarget = true
 	_, err := f.orchestrator().Run(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "allow_untrusted_fix") {
-		t.Fatalf("Run() err = %v, want untrusted-PR refusal naming the opt-in", err)
+	// The message must name the FLAG: these fields are no longer settable in YAML,
+	// so pointing a reader at loop.allow_untrusted_fix would send them to a config
+	// key that now fails to load.
+	if err == nil || !strings.Contains(err.Error(), "-allow-untrusted-fix") {
+		t.Fatalf("Run() err = %v, want untrusted-PR refusal naming the opt-in flag", err)
 	}
 	if got := f.invocations(); got != 0 {
 		t.Errorf("agent invocations = %d, want 0 (must refuse before running anything)", got)
@@ -947,8 +1010,8 @@ func TestRunRefusesUntrustedDirectoryFixRounds(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.cfg.Loop.TrustedTarget = false // undo the fixture's trusted default
 	_, err := f.orchestrator().Run(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "trusted_target") {
-		t.Fatalf("Run() err = %v, want untrusted-target refusal naming trusted_target", err)
+	if err == nil || !strings.Contains(err.Error(), "-trusted-target") {
+		t.Fatalf("Run() err = %v, want untrusted-target refusal naming the -trusted-target flag", err)
 	}
 	if got := f.invocations(); got != 0 {
 		t.Errorf("agent invocations = %d, want 0 (must refuse before running anything)", got)

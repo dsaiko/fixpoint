@@ -177,3 +177,36 @@ func TestModeGuidance(t *testing.T) {
 		t.Error("ModeGuidance(other) should be empty")
 	}
 }
+
+// The rubric in ReviewContract and model.Severities must describe the same
+// vocabulary. They are separately authored on purpose -- the rubric is per-severity
+// prose that explains what each level MEANS, which generating from a list would
+// only make worse -- but they must not drift: a severity the contract teaches
+// reviewers to use but the validator rejects turns every finding at that level into
+// a reviewer error, and one the validator accepts but the contract never mentions
+// gets rated by each lens's own guesswork, which is the inconsistency the rubric
+// exists to end.
+func TestReviewContractMatchesSeverityVocabulary(t *testing.T) {
+	for _, s := range model.Severities {
+		// The rubric line for each severity, e.g. "- critical: ".
+		if !strings.Contains(ReviewContract, "\n- "+s+": ") {
+			t.Errorf("ReviewContract has no rubric line for severity %q; reviewers would rate it by guesswork", s)
+		}
+	}
+	// And the JSON example's severity placeholder must enumerate exactly the same
+	// set, since that line is what a reviewer copies.
+	want := `"severity": "` + strings.Join(model.Severities, "|") + `"`
+	if !strings.Contains(ReviewContract, want) {
+		t.Errorf("ReviewContract's example severity placeholder does not match model.Severities; want it to contain %s", want)
+	}
+	// No rubric line for a severity the validator would reject.
+	for _, line := range strings.Split(ReviewContract, "\n") {
+		name, _, isRubric := strings.Cut(strings.TrimPrefix(line, "- "), ": ")
+		if !isRubric || !strings.HasPrefix(line, "- ") || strings.Contains(name, " ") {
+			continue
+		}
+		if !model.ValidSeverity(name) {
+			t.Errorf("ReviewContract teaches severity %q, which model.ValidSeverity rejects", name)
+		}
+	}
+}

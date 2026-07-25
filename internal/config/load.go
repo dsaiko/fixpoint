@@ -71,6 +71,9 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string) (*Loaded, error) {
 // a chain makes the effective value of any field require reading N files, and the
 // whole point of naming the base explicitly is that the reader can see it.
 func loadWithExtends(r *Resolver, path string) (*Config, string, error) {
+	if err := rejectTrustKeys(path); err != nil {
+		return nil, "", err
+	}
 	cfg, err := decodeFile(path)
 	if err != nil {
 		return nil, "", err
@@ -81,6 +84,11 @@ func loadWithExtends(r *Resolver, path string) (*Config, string, error) {
 	basePath, err := r.Config(cfg.Extends)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: extends: %w", path, err)
+	}
+	// The base is checked too: inheritance would otherwise be the way around the
+	// rule, since a hostile bundle can ship both files.
+	if err := rejectTrustKeys(basePath); err != nil {
+		return nil, "", err
 	}
 	base, err := decodeFile(basePath)
 	if err != nil {
@@ -102,6 +110,54 @@ func loadWithExtends(r *Resolver, path string) (*Config, string, error) {
 	}
 	merged.Extends = cfg.Extends
 	return merged, basePath, nil
+}
+
+// trustKeys are the authorization keys a task config may not set. They are
+// deliberately absent from the Loop struct (see Loop.TrustedTarget for why), so
+// the decoder would already reject them as unknown fields -- but as "field
+// trusted_target not found in type config.Loop", which reads like a schema
+// mismatch to fix rather than a boundary being enforced. Naming them here is what
+// turns the refusal into an explanation.
+var trustKeys = []struct {
+	key, flag string
+}{
+	{"trusted_target", "-trusted-target"},
+	{"allow_untrusted_fix", "-allow-untrusted-fix"},
+}
+
+// rejectTrustKeys fails when a task config tries to assert its own trust.
+//
+// Configs are resolved from <project>/config first, so this file may well have
+// come from the repository being reviewed: a config that could grant trust would
+// let the code under review authorize executing its own agent definitions and
+// running the write-capable coder against itself.
+func rejectTrustKeys(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	// A permissive probe: this runs BEFORE the strict decode, so it must not fail
+	// on unrelated keys and steal the better error message the real decode gives.
+	var probe struct {
+		Loop map[string]yaml.Node `yaml:"loop"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		// Not this function's error to report: it runs BEFORE the strict decode, so
+		// returning a parse error here would replace the decoder's precise message
+		// (with line and column) with a worse one from a probe the caller did not
+		// ask about. Nothing is skipped by continuing -- a file the permissive probe
+		// cannot parse cannot be parsed by the strict decode either, so it fails a
+		// few lines later and never reaches a run.
+		return nil //nolint:nilerr // deliberate: the strict decode reports this file's syntax properly
+	}
+	for _, tk := range trustKeys {
+		if _, ok := probe.Loop[tk.key]; ok {
+			return fmt.Errorf("%s: loop.%s cannot be set in a configuration file; pass %s on the command line instead. "+
+				"Configs are searched in the target's own directory first, so a config that could grant trust would let reviewed code authorize fixpoint to execute its agent definitions and run the coder against it -- the very thing that assertion is meant to gate",
+				path, tk.key, tk.flag)
+		}
+	}
+	return nil
 }
 
 func decodeFile(path string) (*Config, error) {

@@ -65,9 +65,14 @@ repeat until a full reviewer panel reports nothing
    rejects everything in a round, or at the iteration cap.
 
 If the coder dies mid-round (timeout, session limit, malformed output) after
-editing files, its partial work is committed as a "partial" round and the loop
-continues — the next round re-reviews everything, so the run self-heals
-instead of stranding valid edits.
+editing files, its partial work is put through the same verification gate as a
+normal round. If it passes, it is committed as a "partial" round and the loop
+continues — the next round re-reviews everything, so the run self-heals instead of
+stranding valid edits. If it fails, the edits are stashed for you to inspect
+(`git stash pop`) and the run stops rather than building later rounds on a base
+that is known to be broken. A coder that died mid-edit is the case most likely to
+leave a tree that does not compile, so this is the path that most needs the gate;
+reviewers are models reading content, not a substitute for a compiler.
 
 ## Target modes
 
@@ -94,16 +99,16 @@ committed `.env`.
 
 ## Review lenses and assignment strategies
 
-Prompts under [prompts/](prompts/) are a library you can grow freely; only the
+Prompts under [config/prompts/](config/prompts/) are a library you can grow freely; only the
 ones referenced in the configuration are used. The shipped lenses:
 
-- [review-bugs.md](prompts/review-bugs.md) — correctness
-- [review-security.md](prompts/review-security.md) — security
-- [review-concurrency.md](prompts/review-concurrency.md) — concurrency
-- [review-tests.md](prompts/review-tests.md) — test coverage of what the run changed
-- [review-maintainability.md](prompts/review-maintainability.md) — smells, simplification, docs (advisory)
-- [review-design.md](prompts/review-design.md) — architecture (advisory, round 1 only)
-- [fix.md](prompts/fix.md) — the coder's instructions
+- [review-bugs.md](config/prompts/review-bugs.md) — correctness
+- [review-security.md](config/prompts/review-security.md) — security
+- [review-concurrency.md](config/prompts/review-concurrency.md) — concurrency
+- [review-tests.md](config/prompts/review-tests.md) — test coverage of what the run changed
+- [review-maintainability.md](config/prompts/review-maintainability.md) — smells, simplification, docs (advisory)
+- [review-design.md](config/prompts/review-design.md) — architecture (advisory, round 1 only)
+- [fix.md](config/prompts/fix.md) — the coder's instructions
 
 Which agent runs which lens is decided by `roles.review.strategy`:
 
@@ -235,7 +240,7 @@ Requirements:
 - Go 1.26+
 - git (and `gh` for `pr` mode)
 - at least one agentic CLI installed and authenticated (e.g. `claude`,
-  `codex`, `ollama`) — verify the flags in `fixpoint.yaml` match what your
+  `codex`, `ollama`) — verify the flags in `config/agents/*.yaml` match what your
   installed versions expect
 
 ```sh
@@ -249,7 +254,8 @@ make run            # the full review->fix cycle (runs tests and vet first)
 Or directly:
 
 ```sh
-./fixpoint --config fixpoint.yaml [flags]
+./fixpoint <config-name> [flags]      # e.g. ./fixpoint review-only
+./fixpoint --config path/to/task.yaml [flags]
 ```
 
 | Flag | Effect |
@@ -296,17 +302,22 @@ The main sections of a task config:
   one coder session receives; worst severity goes first and the overflow is
   deferred to later rounds, but every deferral promotes an issue one severity tier,
   so nothing can be starved indefinitely by a steady supply of more-severe ones),
-  `review_only`, the trust gates, `commit_message` (placeholders
-  `{round}`, `{fixed}`, `{rejected}`), and `clean_rounds_to_stop` (how many
-  consecutive clean rounds end the run — `2` pairs well with `strategy: rotate`,
-  so a differently-assigned panel must confirm the clean result).
+  `review_only`, `commit_message` (placeholders `{round}`, `{fixed}`,
+  `{rejected}`), and `clean_rounds_to_stop` (how many consecutive clean rounds end
+  the run — `2` pairs well with `strategy: rotate`, so a differently-assigned panel
+  must confirm the clean result). The trust gates are deliberately **not** here:
+  they are command-line flags only, for the reason given under
+  [Security model](#security-model).
 - **`verify`** — the deterministic gate fixpoint runs itself between the coder and
   the commit: `commands` (argv, per project, cheapest first), a per-command
   `timeout`, and `policy` — `no_regressions` (the default: a check already failing
   before the run may keep failing, one that passed may not start failing),
   `must_pass`, or `off`. No commands means the gate is off, which is why the shipped
   defaults define none. Commands execute code from the target, so they run only on
-  the fix path, which already requires the trust assertion.
+  the fix path, which already requires the trust assertion. Every path that can
+  produce a commit passes this gate — including the recovery path for a coder that
+  failed mid-edit — so a commit later rounds build on, and that convergence can be
+  declared over, has always been verified.
 - **`logs`** — where and in which formats run artifacts are written.
 
 ## Logs
@@ -354,17 +365,26 @@ best-effort credential redactor — but see below.
 
 ## Security model
 
-Read this before pointing the tool at code you did not write. The comments in
-[fixpoint.yaml](fixpoint.yaml) cover each point in depth.
+Read this before pointing the tool at code you did not write.
+[config/README.md](config/README.md) and the comments in
+[config/defaults.yaml](config/defaults.yaml) cover each point in depth.
 
 - **The coder edits files with permission checks disabled** and is not
   confined to `target.path`. A prompt-injection payload hidden in any reviewed
   file could steer it into writing elsewhere on your machine. Fix rounds are
   therefore **fail-closed**: they are refused unless you affirm the target is
-  trusted (`loop.trusted_target` / `-trusted-target`), and in `pr` mode —
-  where the reviewed code is by definition untrusted — they additionally
-  require an explicit `loop.allow_untrusted_fix` / `-allow-untrusted-fix`
-  opt-in. Review each round commit before pushing.
+  trusted with `-trusted-target`, and in `pr` mode — where the reviewed code is
+  by definition untrusted — they additionally require `-allow-untrusted-fix`.
+  Review each round commit before pushing.
+- **Trust is asserted on the command line only, never in a config file.**
+  fixpoint refuses to load a config that sets `loop.trusted_target` or
+  `loop.allow_untrusted_fix`. Bundles are shadowable and `<project>/config` is
+  searched *first*, so a config key would let the repository under review declare
+  itself trustworthy — one line in a hostile repo's own config, authorizing both
+  the execution of the agent definitions it ships and the write-capable coder,
+  with no involvement from you. Keeping the assertion in the invocation is also
+  what stops it becoming an inherited default that silently applies to the next
+  untrusted repository you clone.
 - **Reviewers can read anything, even in review-only mode.** Read-only agent
   flags block edits but do not confine reads: a reviewer fed untrusted content
   can be prompt-injected into reading a host secret (`~/.ssh`,
@@ -408,8 +428,8 @@ internal/issue/          groups observations into issues; tracks them across rou
 internal/verify/         runs the deterministic gate (build / test / static checks)
 internal/logstore/       per-step logs and the run summary
 internal/testfixture/    shared test helpers
-prompts/                 the review-lens and coder prompt library
-fixpoint.yaml          the fully-commented reference configuration
+config/                  the shipped bundle: task configs, prompts/, agents/
+config/defaults.yaml     the commented base every task config extends
 ```
 
 ## Development

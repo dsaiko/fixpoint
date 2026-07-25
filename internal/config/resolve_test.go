@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // bundle writes a minimal, valid bundle into dir and returns dir.
@@ -239,6 +241,68 @@ func TestLoadBundleExtends(t *testing.T) {
 	}
 	if l.Source.Extends == "" {
 		t.Error("Source.Extends must record the base file for provenance")
+	}
+}
+
+// A config must not be able to assert its own trust. Bundles resolve from
+// <project>/config FIRST, so the file under test here is one a reviewed repository
+// can ship: honoring a trust key in it would let hostile code authorize both
+// executing the agent definitions it supplies and running the write-capable coder
+// against it -- defeating the two gates that exist for exactly that case.
+//
+// Every field is checked in both positions (the task config and the base it
+// extends), because inheritance would otherwise be the way around the rule.
+func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
+	for _, key := range []string{"trusted_target", "allow_untrusted_fix"} {
+		t.Run(key+"/direct", func(t *testing.T) {
+			root := t.TempDir()
+			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+				"task": "target: {mode: directory}\nloop:\n  " + key + ": true\n" + taskBody,
+			}, []string{"fix", "review-bugs"}, []string{"mock"})
+			_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root)
+			if err == nil {
+				t.Fatalf("loading a config that sets loop.%s must fail: reviewed code could authorize itself", key)
+			}
+			if !strings.Contains(err.Error(), "cannot be set in a configuration file") {
+				t.Errorf("the error must explain the boundary, got: %v", err)
+			}
+		})
+		// Setting it to false is refused too. Allowing the key with a "safe" value
+		// would mean the loader has to be right about which values are safe, and a
+		// reader of the config would reasonably conclude the key works.
+		t.Run(key+"/false-is-also-refused", func(t *testing.T) {
+			root := t.TempDir()
+			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+				"task": "target: {mode: directory}\nloop:\n  " + key + ": false\n" + taskBody,
+			}, []string{"fix", "review-bugs"}, []string{"mock"})
+			if _, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root); err == nil {
+				t.Fatalf("loop.%s: false must also be refused, so the key never looks supported", key)
+			}
+		})
+		t.Run(key+"/via-extends", func(t *testing.T) {
+			root := t.TempDir()
+			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+				"base": "target: {mode: directory}\nloop:\n  " + key + ": true\n",
+				"task": "extends: base\n" + taskBody,
+			}, []string{"fix", "review-bugs"}, []string{"mock"})
+			if _, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root); err == nil {
+				t.Fatalf("loop.%s must be refused in an inherited base too, or extends is the way around the rule", key)
+			}
+		})
+	}
+}
+
+// The trust fields must not be reachable through YAML at all -- the test above
+// asserts the friendly refusal, this one asserts the type itself cannot carry the
+// value, which is what makes silent acceptance impossible if rejectTrustKeys is
+// ever bypassed or removed.
+func TestTrustFieldsAreNotYAMLDecodable(t *testing.T) {
+	var cfg Config
+	if err := yaml.Unmarshal([]byte("loop:\n  trusted_target: true\n  allow_untrusted_fix: true\n"), &cfg); err != nil {
+		t.Fatalf("permissive decode should not error here: %v", err)
+	}
+	if cfg.Loop.TrustedTarget || cfg.Loop.AllowUntrustedFix {
+		t.Error("YAML set a trust field; these must be settable only by the CLI flags")
 	}
 }
 

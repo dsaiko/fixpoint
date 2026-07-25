@@ -40,12 +40,11 @@ loop:
   # strategy: rotate — a differently-assigned panel must confirm the clean result.
   clean_rounds_to_stop: 2
 
-  # Trust gates. Both stay false in every shipped config: they permit fix rounds,
-  # and the coder edits files with permission checks disabled. Opt in per
-  # invocation with -trusted-target / -allow-untrusted-fix, so it is a deliberate
-  # act by someone who knows what the target contains.
-  trusted_target: false
-  allow_untrusted_fix: false
+  # There are deliberately NO trust keys here. Fix rounds are authorized only by
+  # -trusted-target / -allow-untrusted-fix on the command line, and fixpoint
+  # refuses to load a config that sets either: this file may itself come from the
+  # repository under review (<project>/config is searched first), and code being
+  # reviewed must not be able to declare itself trustworthy.
 
   # Commit header per fix round; {round} {fixed} {rejected}. The body is built
   # from the coder's own report.

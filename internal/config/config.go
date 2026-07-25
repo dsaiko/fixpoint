@@ -330,8 +330,11 @@ type Loop struct {
 	// externally-authored code: its content flows through reviewer findings
 	// into the coder prompt, and the coder edits files with permission checks
 	// disabled, so a malicious PR can steer it via prompt injection. Off by
-	// default; also available as the -allow-untrusted-fix CLI flag.
-	AllowUntrustedFix bool `yaml:"allow_untrusted_fix"`
+	// default.
+	//
+	// Set ONLY by the -allow-untrusted-fix flag; see TrustedTarget for why
+	// neither trust field is readable from YAML.
+	AllowUntrustedFix bool `yaml:"-"`
 
 	// TrustedTarget asserts that a directory/git-diff target contains only code
 	// the operator trusts. Fix rounds run the coder with permission checks
@@ -340,9 +343,29 @@ type Loop struct {
 	// That risk is not unique to pr mode: a directory/git-diff tree can hold
 	// vendored deps, a fetched base_ref, or a cloned third-party project. So
 	// fix rounds in those modes are refused unless this is set (fail-closed by
-	// default); pr mode uses AllowUntrustedFix instead. Also available as the
-	// -trusted-target CLI flag.
-	TrustedTarget bool `yaml:"trusted_target"`
+	// default); pr mode uses AllowUntrustedFix instead.
+	//
+	// Set ONLY by the -trusted-target flag: `yaml:"-"` is load-bearing SECURITY,
+	// not style. Bundles are shadowable and the FIRST search location is
+	// <project>/config -- the target's own directory -- so a YAML-readable trust
+	// field lets the code under review assert that it is trustworthy. One line in
+	// a hostile repository's own config would then authorize both executing the
+	// agent definitions it ships and running the write-capable coder, with no
+	// operator involvement. The two gates that consult these fields
+	// (allowProjectSuppliedExec and checkFixTrust) exist precisely to defend
+	// against target-supplied configuration, so their input must come from the
+	// invocation, which the target cannot influence.
+	//
+	// Keeping the keys out of the struct also makes the attempt LOUD rather than
+	// ignored: the decoder runs with KnownFields(true), so a config setting either
+	// key fails to load. rejectTrustKeys turns that into a message that explains
+	// the flag, but the type is what makes silent acceptance impossible.
+	//
+	// This is also what makes "trust is asserted per invocation, never inherited"
+	// true. A trust default in an operator-owned bundle would be no safer: it would
+	// apply to every project the operator ever runs it in, including the next
+	// untrusted repository they clone.
+	TrustedTarget bool `yaml:"-"`
 }
 
 // Logs configures where run artifacts are written and in which renderings.

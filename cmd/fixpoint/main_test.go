@@ -154,8 +154,8 @@ func TestRunCheck(t *testing.T) {
 
 func TestRunCheckLive(t *testing.T) {
 	// -check-live pings the write-capable coder, so it must clear the same
-	// fix-round trust gate a real run does; the trusted_target opt-in satisfies it
-	// for a directory target. The coder and reviewer are pinged in parallel and
+	// fix-round trust gate a real run does; -trusted-target satisfies it for a
+	// directory target (it is a flag, not a config key: a config cannot grant trust). The coder and reviewer are pinged in parallel and
 	// share one mock response counter, so register an OK for each invocation index
 	// either ordering can land on.
 	t.Run("responding agents exit 0", func(t *testing.T) {
@@ -163,14 +163,14 @@ func TestRunCheckLive(t *testing.T) {
 		f.respond(1, "OK")
 		f.respond(2, "OK")
 		var buf bytes.Buffer
-		if got := run([]string{"-config", f.configFile("directory", "", "  trusted_target: true"), "-check-live"}, &buf, &buf); got != 0 {
+		if got := run([]string{"-config", f.configFile("directory", "", ""), "-trusted-target", "-check-live"}, &buf, &buf); got != 0 {
 			t.Fatalf("run(-check-live) = %d, want 0; stderr:\n%s", got, buf.String())
 		}
 	})
 	t.Run("failing agent exits 1", func(t *testing.T) {
 		f := newFixture(t) // no responses: the mock exits non-zero
 		var buf bytes.Buffer
-		if got := run([]string{"-config", f.configFile("directory", "", "  trusted_target: true"), "-check-live"}, &buf, &buf); got != 1 {
+		if got := run([]string{"-config", f.configFile("directory", "", ""), "-trusted-target", "-check-live"}, &buf, &buf); got != 1 {
 			t.Fatalf("run(-check-live) = %d, want 1; stderr:\n%s", got, buf.String())
 		}
 	})
@@ -183,8 +183,8 @@ func TestRunCheckLive(t *testing.T) {
 		if got := run([]string{"-config", f.configFile("directory", "", ""), "-check-live"}, &buf, &buf); got != 1 {
 			t.Fatalf("run(-check-live) = %d, want 1; stderr:\n%s", got, buf.String())
 		}
-		if !strings.Contains(buf.String(), "trusted_target") {
-			t.Errorf("stderr must name the opt-in:\n%s", buf.String())
+		if !strings.Contains(buf.String(), "-trusted-target") {
+			t.Errorf("stderr must name the opt-in flag:\n%s", buf.String())
 		}
 		if got := f.invocations(); got != 0 {
 			t.Errorf("agent invocations = %d, want 0 (refusal comes before any ping)", got)
@@ -227,11 +227,11 @@ func TestRunAllRejectedExits3(t *testing.T) {
 	f.respond(1, reviewResponse(t, aFinding("false positive")))
 	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "by design"}))
 	var buf bytes.Buffer
-	// A directory fix run must clear the trust gate; trusted_target satisfies it.
-	cfg := f.configFile("directory", "", "  max_iterations: 3\n  clean_rounds_to_stop: 1\n  trusted_target: true")
+	// A directory fix run must clear the trust gate, which only the flag can do.
+	cfg := f.configFile("directory", "", "  max_iterations: 3\n  clean_rounds_to_stop: 1")
 	// Exit 3, not 0: nothing changed, and automation keying on 0 must not read a
 	// no-op as a converged run.
-	if got := run([]string{"-config", cfg}, &buf, &buf); got != 3 {
+	if got := run([]string{"-config", cfg, "-trusted-target"}, &buf, &buf); got != 3 {
 		t.Fatalf("run() = %d, want 3 for all-rejected; stderr:\n%s", got, buf.String())
 	}
 	if !strings.Contains(buf.String(), "done: "+model.TermAllRejected) {
@@ -408,8 +408,8 @@ func TestRunMaxIterationsFlagExits2(t *testing.T) {
 	f.editRepoOn(2)
 	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 	var buf bytes.Buffer
-	cfg := f.configFile("directory", "", "  max_iterations: 3\n  trusted_target: true")
-	if got := run([]string{"-config", cfg, "-max-iterations", "1"}, &buf, &buf); got != 2 {
+	cfg := f.configFile("directory", "", "  max_iterations: 3")
+	if got := run([]string{"-config", cfg, "-max-iterations", "1", "-trusted-target"}, &buf, &buf); got != 2 {
 		t.Fatalf("run(-max-iterations 1) = %d, want 2; stderr:\n%s", got, buf.String())
 	}
 }
@@ -420,7 +420,7 @@ func TestRunMaxIterationsFlagExits2(t *testing.T) {
 func TestRunNegativeMaxIterationsFlagExits1(t *testing.T) {
 	f := newFixture(t)
 	var buf bytes.Buffer
-	cfg := f.configFile("directory", "", "  max_iterations: 3\n  trusted_target: true")
+	cfg := f.configFile("directory", "", "  max_iterations: 3")
 	if got := run([]string{"-config", cfg, "-max-iterations", "-1"}, &buf, &buf); got != 1 {
 		t.Fatalf("run(-max-iterations -1) = %d, want 1; stderr:\n%s", got, buf.String())
 	}
@@ -432,8 +432,9 @@ func TestRunNegativeMaxIterationsFlagExits1(t *testing.T) {
 	}
 }
 
-// The -trusted-target flag must clear the directory/git-diff fix-round gate
-// that the bare config (trusted_target absent) fails closed on.
+// The -trusted-target flag must clear the directory/git-diff fix-round gate that a
+// bare config fails closed on. The flag is the ONLY way to clear it: trust is not a
+// config key, because a config can come from the repository under review.
 func TestRunTrustedTargetFlag(t *testing.T) {
 	t.Run("directory fix rounds refused without the flag", func(t *testing.T) {
 		f := newFixture(t)
@@ -442,8 +443,8 @@ func TestRunTrustedTargetFlag(t *testing.T) {
 		if got := run([]string{"-config", p}, &buf, &buf); got != 1 {
 			t.Fatalf("run() = %d, want 1; stderr:\n%s", got, buf.String())
 		}
-		if !strings.Contains(buf.String(), "trusted_target") {
-			t.Errorf("stderr must name the opt-in:\n%s", buf.String())
+		if !strings.Contains(buf.String(), "-trusted-target") {
+			t.Errorf("stderr must name the opt-in flag:\n%s", buf.String())
 		}
 		if got := f.invocations(); got != 0 {
 			t.Errorf("agent invocations = %d, want 0 (refusal comes first)", got)
@@ -460,8 +461,28 @@ func TestRunTrustedTargetFlag(t *testing.T) {
 		if got := run([]string{"-config", p, "-trusted-target"}, &buf, &buf); got != 0 {
 			t.Fatalf("run(-trusted-target) = %d, want 0; stderr:\n%s", got, buf.String())
 		}
-		if strings.Contains(buf.String(), "set loop.trusted_target") {
+		if strings.Contains(buf.String(), "pass -trusted-target") {
 			t.Errorf("-trusted-target did not suppress the refusal:\n%s", buf.String())
+		}
+	})
+	// The attack this closes, end to end at the CLI: a config asserting its own
+	// trust must not run. Bundles resolve from <project>/config first, so this file
+	// is one a hostile repository can ship -- and honoring it would authorize both
+	// executing the agent definitions that repository supplies and running the
+	// write-capable coder against it. No agent may be invoked.
+	t.Run("a config cannot grant its own trust", func(t *testing.T) {
+		f := newFixture(t)
+		f.respond(1, reviewResponse(t))
+		var buf bytes.Buffer
+		p := f.configFile("directory", "", "  trusted_target: true")
+		if got := run([]string{"-config", p}, &buf, &buf); got != 1 {
+			t.Fatalf("run() = %d, want 1: a config that grants itself trust must not load; stderr:\n%s", got, buf.String())
+		}
+		if !strings.Contains(buf.String(), "cannot be set in a configuration file") {
+			t.Errorf("stderr must explain why the key is refused:\n%s", buf.String())
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0: refusal must precede every process launch", got)
 		}
 	})
 }
@@ -475,8 +496,8 @@ func TestRunAllowUntrustedFixFlag(t *testing.T) {
 		if got := run([]string{"-config", p}, &buf, &buf); got != 1 {
 			t.Fatalf("run() = %d, want 1; stderr:\n%s", got, buf.String())
 		}
-		if !strings.Contains(buf.String(), "allow_untrusted_fix") {
-			t.Errorf("stderr must name the opt-in:\n%s", buf.String())
+		if !strings.Contains(buf.String(), "-allow-untrusted-fix") {
+			t.Errorf("stderr must name the opt-in flag:\n%s", buf.String())
 		}
 		if got := f.invocations(); got != 0 {
 			t.Errorf("agent invocations = %d, want 0 (refusal comes first)", got)
@@ -509,7 +530,7 @@ func TestRunAllowUntrustedFixFlag(t *testing.T) {
 		if !strings.Contains(buf.String(), marker) {
 			t.Errorf("run did not reach PR preparation (gh stub never ran):\n%s", buf.String())
 		}
-		if strings.Contains(buf.String(), "allow_untrusted_fix") {
+		if strings.Contains(buf.String(), "-allow-untrusted-fix if you trust") {
 			t.Errorf("-allow-untrusted-fix did not suppress the refusal:\n%s", buf.String())
 		}
 	})
