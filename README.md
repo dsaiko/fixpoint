@@ -8,7 +8,7 @@ repeats until reviews come back clean.
 
 The name is the termination condition: the loop iterates review→fix until the
 code stops changing — a [fixed point](https://en.wikipedia.org/wiki/Fixed_point_(mathematics)),
-reached when a full reviewer panel reports zero findings.
+reached when a full reviewer panel reports nothing left to fix.
 
 Any agentic CLI works as a reviewer or coder: an agent is just a command that
 receives a prompt and prints text to stdout. The shipped configuration mixes
@@ -18,18 +18,15 @@ nothing in the code is provider-specific.
 ## How it works
 
 ```
-        ┌──────────────────────────────────────────────────────────┐
-        │                       one round                          │
-        │                                                          │
-        │   review-bugs ──► agent A ─┐                             │
-        │   review-security ► agent B│  findings                   │
-        │   review-concurrency ► ... ├───────────► coder agent     │
-        │   review-tests ──► agent D │             fixes / rejects │
-        │   review-maintain. ► ...  ─┘                  │          │
-        │                                               ▼          │
-        │                                          git commit      │
-        └──────────────────────────────────────────────────────────┘
-                       repeat until reviews come back clean
+one round:
+
+  review-bugs ─────────► agent A ─┐
+  review-security ─────► agent B  │   observations      issues
+  review-concurrency ──► agent C  ├──► (raw reports) ──► (deduped) ──► coder ──► verify ──► commit
+  review-tests ────────► agent D  │                                    fixes    build/test
+  review-maintainability ► ...  ──┘
+
+repeat until a full reviewer panel reports nothing
 ```
 
 1. **Validate.** Before anything runs, the configuration is statically
@@ -42,12 +39,16 @@ nothing in the code is provider-specific.
    before tokens are spent or git is touched.
 2. **Review.** Each review lens (a prompt file) is assigned to an agent per
    the configured strategy and all reviewers run in parallel, each reporting
-   structured findings (category, severity, file/line, description,
+   structured observations (category, severity, file/line, description,
    suggestion).
-3. **Fix.** Findings are concatenated and handed to the coder agent, which
-   validates each one: it fixes the genuine issues by editing files directly
-   and rejects false positives with a reason.
-4. **Verify.** fixpoint then runs the project's own configured build, test, and
+3. **Aggregate.** Observations are grouped into **issues** — see
+   [Observations and issues](#observations-and-issues). Several reviewers
+   reporting one problem produce one issue, so agreement between agents raises
+   confidence instead of consuming the round's budget twice.
+4. **Fix.** The issues are handed to the coder agent, which validates each one:
+   it fixes the genuine ones by editing files directly and rejects the rest with
+   a reason.
+5. **Verify.** fixpoint then runs the project's own configured build, test, and
    static checks *itself* — see `verify` in the config. This is the only signal
    in the loop that no model produced: without it, "fixed" means an agent said
    it fixed something and "converged" means other agents said they saw nothing.
@@ -56,12 +57,12 @@ nothing in the code is provider-specific.
    committed), because committing them would put later rounds on a broken base.
    Under the default `no_regressions` policy a check that was already failing
    before the run may keep failing — only newly broken checks block.
-5. **Commit.** The round's changes land as one inspectable, individually
-   revertable commit whose body lists every fixed and rejected finding.
-6. **Repeat.** Each round, reviewers receive the history of prior findings
-   and coder verdicts, so rejected findings are not re-reported forever. The
-   loop ends after a configurable number of consecutive clean rounds, when
-   the coder rejects every finding in a round, or at the iteration cap.
+6. **Commit.** The round's changes land as one inspectable, individually
+   revertable commit whose body lists every fixed and rejected issue.
+7. **Repeat.** Each round, reviewers receive the history of prior issues and
+   coder verdicts, so a rejected issue is not re-reported forever. The loop ends
+   after a configurable number of consecutive clean rounds, when the coder
+   rejects everything in a round, or at the iteration cap.
 
 If the coder dies mid-round (timeout, session limit, malformed output) after
 editing files, its partial work is committed as a "partial" round and the loop
@@ -115,14 +116,51 @@ Which agent runs which lens is decided by `roles.review.strategy`:
 
 Per-lens modifiers:
 
-- **`advisory: true`** — findings are logged as a report but never handed to
-  the coder, and don't count toward the loop's termination condition. Use it for
+- **`advisory: true`** — observations are logged as a report but never aggregated
+  into issues or handed to the coder, and don't count toward termination. Use it for
   lenses where automated fixing is too risky (design/architecture), and for any
   lens whose findings are open-ended enough that requiring them to reach zero
   would keep the loop from ever converging.
 - **`once: true`** — the lens runs in round 1 only. Pairs well with an
   advisory design lens: one report per run instead of a full agent session
   every round.
+
+## Observations and issues
+
+A reviewer's report is an **observation**. What the coder works from is an
+**issue**: one distinct problem, with every observation that reported it attached.
+
+The distinction is not bookkeeping. When a finding was simultaneously a reviewer's
+report, the unit of work, and the thing tracked across rounds, two agents reporting
+the same problem produced two findings — each consuming a slot against
+`loop.max_findings_per_round`. Agreement between reviewers therefore *reduced* how
+many distinct problems a round could fix. In one real run two lenses reported a
+single racy-ordinal defect at the same file and line, one calling it `concurrency`
+and the other `tests`, and it cost two of that round's eight slots.
+
+Now the panel's agreement is surfaced as corroboration — to the coder ("reported
+independently by 2 agents") and in the run summary — and costs one slot.
+
+Grouping works in two stages, because matching within a round and matching across
+rounds are different problems:
+
+- **Fingerprint** — normalized path plus the exact line, or a normalized title when
+  no line is given. Nearby lines (within 5) merge only when the titles also agree,
+  since three unrelated defects on consecutive lines are three issues: merging them
+  would tell the coder to fix one thing when there are three, which is worse than
+  leaving a duplicate that merely costs a slot. The category is deliberately **not**
+  part of identity — the real duplicate above arrived under two different ones.
+- **Across rounds** — a reviewer may set `"issue": "<id>"` on a report to declare it
+  is the same problem as an entry in the history it was shown. No lexical rule gets
+  from *"Severity vocabulary has two independent declarations"* to *"duplicated
+  severity vocabulary"* while the line number moves underneath it, so the reviewer
+  that can see both is asked. A nonexistent id falls back to the fingerprint.
+
+An issue carries its own status across rounds, and a re-report means different
+things depending on how it was closed. A **rejected** issue stays rejected and is
+not handed back — re-submitting a decided question would spend a slot every round.
+A **fixed** issue **reopens**: reviewers still seeing it is evidence the fix did not
+work, and treating it as closed would let a failed fix end the run as converged.
 
 ## Agents
 
@@ -192,7 +230,7 @@ Or directly:
 | `-check-live` | Validate, ping every agent, and exit. |
 
 Exit codes: `0` converged or review-only completed, `2` hit `max_iterations`
-without converging (or a usage error), `3` the coder rejected every finding so
+without converging (or a usage error), `3` the coder rejected every issue so
 nothing changed — deliberately *not* `0`, since "nobody agreed there was a
 problem" is not "the code is clean", `1` any other failure or interruption. `SIGINT`/`SIGTERM` stop the run cleanly.
 
@@ -219,15 +257,21 @@ The main sections of a task config:
 - **`roles`** — the coder (agent + prompt) and the review lens list with its
   assignment strategy and agent pool.
 - **`agents`** — the command templates described above.
-- **`loop`** — `max_iterations`, `max_findings_per_round` (caps one coder
-  session; worst severity goes first and the overflow is deferred to later
-  rounds, but every deferral promotes a finding one severity tier, so nothing
-  can be starved indefinitely by a steady supply of more-severe findings),
+- **`loop`** — `max_iterations`, `max_findings_per_round` (caps how many **issues**
+  one coder session receives; worst severity goes first and the overflow is
+  deferred to later rounds, but every deferral promotes an issue one severity tier,
+  so nothing can be starved indefinitely by a steady supply of more-severe ones),
   `review_only`, the trust gates, `commit_message` (placeholders
   `{round}`, `{fixed}`, `{rejected}`), and `clean_rounds_to_stop` (how many
-  consecutive zero-finding rounds end the run — `2` pairs well with
-  `strategy: rotate`, so a differently-assigned panel must confirm the clean
-  result).
+  consecutive clean rounds end the run — `2` pairs well with `strategy: rotate`,
+  so a differently-assigned panel must confirm the clean result).
+- **`verify`** — the deterministic gate fixpoint runs itself between the coder and
+  the commit: `commands` (argv, per project, cheapest first), a per-command
+  `timeout`, and `policy` — `no_regressions` (the default: a check already failing
+  before the run may keep failing, one that passed may not start failing),
+  `must_pass`, or `off`. No commands means the gate is off, which is why the shipped
+  defaults define none. Commands execute code from the target, so they run only on
+  the fix path, which already requires the trust assertion.
 - **`logs`** — where and in which formats run artifacts are written.
 
 ## Logs
@@ -243,7 +287,7 @@ The main sections of a task config:
     fix-<agent>-fix-<timestamp>.{md,json,raw}
     *.prompt                                          # exact prompt, written at invocation start
   round-2/...
-  summary-<timestamp>.{md,json}                       # assignments, findings, verdicts, termination
+  summary-<timestamp>.{md,json}                       # assignments, issues, verdicts, verification, termination
 ```
 
 The prefix is a hidden, tool-owned name on purpose. fixpoint is meant to run
@@ -324,7 +368,9 @@ internal/agent/          runs an agent CLI as a subprocess, extracts the JSON
 internal/prompt/         renders prompt templates (role placeholders + output contract)
 internal/target/         collects review material per mode; git operations
                          (base pinning, clean-tree checks, round commits)
-internal/model/          findings, verdicts, round/run summaries
+internal/model/          shared data shapes: observations, issues, verdicts, summaries
+internal/issue/          groups observations into issues; tracks them across rounds
+internal/verify/         runs the deterministic gate (build / test / static checks)
 internal/logstore/       per-step logs and the run summary
 internal/testfixture/    shared test helpers
 prompts/                 the review-lens and coder prompt library

@@ -26,13 +26,15 @@ target:
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
 
-  # Findings handed to the coder per round (0 = unlimited). Keeps one coder
-  # session inside its timeout: 17 findings blew a 30m cap, ~8 fits at effort
-  # high. Worst severity first, and every deferral promotes a finding one tier so
-  # the tail cannot be starved by a lens that always has more to say.
+  # ISSUES handed to the coder per round (0 = unlimited) -- issues, not raw
+  # reports: several reviewers reporting one problem is one unit of work, so
+  # agreement no longer eats the budget twice. Keeps one coder session inside its
+  # timeout: 17 blew a 30m cap, ~8 fits at effort high. Worst severity first, and
+  # every deferral promotes an issue one tier so the tail cannot be starved by a
+  # lens that always has more to say.
   max_findings_per_round: 8
 
-  # Consecutive zero-finding rounds required to stop. 2 pairs with
+  # Consecutive zero-issue rounds required to stop. 2 pairs with
   # strategy: rotate — a differently-assigned panel must confirm the clean result.
   clean_rounds_to_stop: 2
 
