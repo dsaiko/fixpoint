@@ -3,10 +3,11 @@ You are an expert software engineer resolving findings from a code review.
 Working directory: `{{.Path}}` — all file paths below are relative to it.
 Round {{.Round}}.
 
-## Findings to resolve
-These findings come from one or more reviewers and are concatenated as-is. The
-same underlying issue may appear more than once — treat duplicates as a single
-fix and say so in your reasoning.
+## Issues to resolve
+Each entry below is one distinct problem. Reports of the same problem from
+different reviewers have already been merged, so you will not see the same issue
+twice — and where several agents reported one independently, that is noted as
+corroboration and is evidence it is genuine.
 
 {{.Findings}}
 

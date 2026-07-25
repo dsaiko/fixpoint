@@ -225,7 +225,7 @@ func TestRunReviewOnlySuccessExits0(t *testing.T) {
 func TestRunAllRejectedExits3(t *testing.T) {
 	f := newFixture(t)
 	f.respond(1, reviewResponse(t, aFinding("false positive")))
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "rejected", Detail: "by design"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "by design"}))
 	var buf bytes.Buffer
 	// A directory fix run must clear the trust gate; trusted_target satisfies it.
 	cfg := f.configFile("directory", "", "  max_iterations: 3\n  clean_rounds_to_stop: 1\n  trusted_target: true")
@@ -406,7 +406,7 @@ func TestRunMaxIterationsFlagExits2(t *testing.T) {
 	f := newFixture(t)
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	f.editRepoOn(2)
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 	var buf bytes.Buffer
 	cfg := f.configFile("directory", "", "  max_iterations: 3\n  trusted_target: true")
 	if got := run([]string{"-config", cfg, "-max-iterations", "1"}, &buf, &buf); got != 2 {
@@ -453,7 +453,7 @@ func TestRunTrustedTargetFlag(t *testing.T) {
 		f := newFixture(t)
 		f.respond(1, reviewResponse(t, aFinding("bug")))
 		f.editRepoOn(2)
-		f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched"}))
+		f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 		f.respond(3, reviewResponse(t)) // clean round -> converge, exit 0
 		var buf bytes.Buffer
 		p := f.configFile("directory", "", "")

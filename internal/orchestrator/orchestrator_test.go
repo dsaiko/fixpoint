@@ -130,7 +130,7 @@ func TestRunConverges(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("off by one")))
 	f.editRepoOn(2)
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 	f.respond(3, reviewResponse(t)) // round 2: clean
 
 	sum, err := f.orchestrator().Run(t.Context())
@@ -256,7 +256,7 @@ func TestRunReviewOnly(t *testing.T) {
 func TestRunAllRejected(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("false positive")))
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "rejected", Detail: "by design"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "by design"}))
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -281,7 +281,7 @@ func TestRunAllRejectedWithReviewerErrorFails(t *testing.T) {
 	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts,
 		config.ReviewLens{Agent: "bad", Prompt: f.cfg.Roles.Review.Prompts[0].Prompt})
 	f.respond(1, reviewResponse(t, aFinding("false positive")))
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "rejected", Detail: "by design"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "by design"}))
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "reviewer(s) failed") {
@@ -314,10 +314,10 @@ func TestRunMaxIterations(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("bug one")))
 	f.editRepoOn(2)
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "d"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "d"}))
 	f.respond(3, reviewResponse(t, aFinding("bug two")))
 	f.editRepoOn(4)
-	f.respond(4, fixResponse(t, model.FixResult{ID: "r2.1", Verdict: "fixed", Detail: "d"}))
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "d"}))
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -363,8 +363,8 @@ func TestRunCoderContractViolationFailsRound(t *testing.T) {
 	f.respond(2, fixResponse(t, model.FixResult{ID: "r9.9", Verdict: "fixed", Detail: "d"}))
 
 	sum, err := f.orchestrator().Run(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "unknown finding id") {
-		t.Fatalf("Run() err = %v, want unknown finding id error", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown issue id") {
+		t.Fatalf("Run() err = %v, want unknown issue id error", err)
 	}
 	if sum.Termination != model.TermError {
 		t.Errorf("termination = %q, want error", sum.Termination)
@@ -468,7 +468,7 @@ func TestRunExcludesInRepoLogsDir(t *testing.T) {
 	f.cfg.Logs.Dir = filepath.Join(f.repo, "logs") // logs under the target root
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	f.editRepoOn(2)
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 	f.respond(3, reviewResponse(t)) // clean round -> converge
 
 	sum, err := f.orchestrator().Run(t.Context())
@@ -677,7 +677,7 @@ func TestRunNormalCommitFailsStashSucceeds(t *testing.T) {
 	// aborts git commit, while git stash never signs, so the fallback succeeds.
 	f.writeSide(fmt.Sprintf("echo 'fixed' >> '%s'\ngit -C '%s' config commit.gpgsign true\ngit -C '%s' config gpg.program /bin/false\n",
 		filepath.Join(f.repo, "main.go"), f.repo, f.repo))
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 
 	_, err := f.orchestrator().Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "git commit") {
@@ -703,7 +703,7 @@ func TestRunNormalCommitFailsStashFails(t *testing.T) {
 	// so both the round commit's `git add` and the fallback `git stash` fail.
 	lock := filepath.Join(f.repo, ".git", "index.lock")
 	f.writeSide(fmt.Sprintf("echo 'fixed' >> '%s'\n: > '%s'\n", filepath.Join(f.repo, "main.go"), lock))
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 
 	_, err := f.orchestrator().Run(t.Context())
 	if err == nil {
@@ -742,7 +742,7 @@ func TestRunFixedVerdictWithNoEditFails(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	// Verdict "fixed" but no editRepoOn: the tree stays clean.
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "claimed"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "claimed"}))
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "left the working tree unchanged") {
@@ -764,7 +764,7 @@ func TestRunAllRejectedWithEditFails(t *testing.T) {
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	// Verdict "rejected" for every finding, yet the coder dirties the tree.
 	f.editRepoOn(2)
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "rejected", Detail: "by design"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "by design"}))
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "rejected every finding yet modified") {
@@ -783,11 +783,13 @@ func TestRunDefersFindingsOverCap(t *testing.T) {
 	low := model.ReviewFinding{Category: "tests", Severity: "low", File: "main.go", Line: 1, Title: "low prio"}
 	high := model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 2, Title: "high prio"}
 	med := model.ReviewFinding{Category: "bugs", Severity: "medium", File: "main.go", Line: 3, Title: "med prio"}
-	f.respond(1, reviewResponse(t, low, high, med)) // ids r1.1(low) r1.2(high) r1.3(med)
+	// Three distinct issues: i1(low) i2(high) i3(med). The cap of 2 keeps the two
+	// worst, so the coder is asked about i2 and i3 only.
+	f.respond(1, reviewResponse(t, low, high, med))
 	f.editRepoOn(2)
 	f.respond(2, fixResponse(t,
-		model.FixResult{ID: "r1.2", Verdict: "fixed", Detail: "fixed"},
-		model.FixResult{ID: "r1.3", Verdict: "fixed", Detail: "fixed"},
+		model.FixResult{ID: "i2", Verdict: "fixed", Detail: "fixed"},
+		model.FixResult{ID: "i3", Verdict: "fixed", Detail: "fixed"},
 	))
 	f.respond(3, reviewResponse(t)) // round 2: clean
 
@@ -806,6 +808,8 @@ func TestRunDefersFindingsOverCap(t *testing.T) {
 	for _, fd := range r1.Findings {
 		byID[fd.ID] = fd
 	}
+	// Verdicts are mirrored from issues back onto the observations that reported
+	// them, so these assertions still speak in reviewer terms.
 	if byID["r1.1"].Verdict != model.VerdictDeferred {
 		t.Errorf("low-severity finding verdict = %q, want deferred", byID["r1.1"].Verdict)
 	}
@@ -821,11 +825,11 @@ func TestRunDefersFindingsOverCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "[r1.1]") {
-		t.Error("deferred finding leaked into the coder prompt")
+	if strings.Contains(string(b), "[i1]") {
+		t.Error("deferred issue leaked into the coder prompt")
 	}
-	if !strings.Contains(string(b), "[r1.2]") || !strings.Contains(string(b), "[r1.3]") {
-		t.Error("active findings missing from the coder prompt")
+	if !strings.Contains(string(b), "[i2]") || !strings.Contains(string(b), "[i3]") {
+		t.Error("active issues missing from the coder prompt")
 	}
 }
 
@@ -840,11 +844,12 @@ func TestRunAllActiveRejectedContinuesForDeferred(t *testing.T) {
 	// Round 1: two findings, cap 1 -> r1.1(high) active, r1.2(low) deferred.
 	f.respond(1, reviewResponse(t, high, low))
 	// Coder rejects the only active finding; the tree stays clean.
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "rejected", Detail: "by design"}))
-	// Round 2: only the previously-deferred low finding remains; fix it.
-	f.respond(3, reviewResponse(t, low)) // r2.1(low)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "by design"}))
+	// Round 2: only the previously-deferred low issue remains -- it keeps its id
+	// (i2) across rounds, which is the point of the ledger.
+	f.respond(3, reviewResponse(t, low))
 	f.editRepoOn(4)
-	f.respond(4, fixResponse(t, model.FixResult{ID: "r2.1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "patched"}))
 	// Round 3: clean -> converge.
 	f.respond(5, reviewResponse(t))
 
@@ -877,32 +882,37 @@ func TestRunAllActiveRejectedContinuesForDeferred(t *testing.T) {
 	}
 }
 
-// deferOverCap ranks findings worst-severity-first; a severity not in
-// severityRank falls back to len(severityRank) and therefore sorts last, so
-// unknown/empty severities are deferred first. validateReviewFindings rejects
-// invalid severities upstream, so this fallback is unreachable through the full
-// loop and is covered here by calling deferOverCap directly.
+// deferOverCap ranks issues worst-severity-first; a severity not in the known
+// vocabulary must sort last rather than winning a slot. Reviewers are told the
+// vocabulary but nothing forces them to obey it, so an invented severity must
+// never outrank a real critical. Driven through the ledger, which is where issue
+// identity and deferral counts live.
 func TestDeferOverCapUnknownSeverityRankedLast(t *testing.T) {
-	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, MaxFindingsPerRound: 2})
+	f := newFixture(t, config.Loop{MaxFindingsPerRound: 2})
 	o := f.orchestrator()
 	rec := &model.RoundRecord{Round: 1, Findings: []model.Finding{
-		{ID: "r1.1", Severity: "low", Title: "known low"},
-		{ID: "r1.2", Severity: "", Title: "empty severity"},
-		{ID: "r1.3", Severity: "high", Title: "known high"},
-		{ID: "r1.4", Severity: "bogus", Title: "unknown severity"},
+		{Severity: "low", File: "a.go", Line: 1, Title: "known low"},
+		{Severity: "", File: "b.go", Line: 1, Title: "empty severity"},
+		{Severity: "high", File: "c.go", Line: 1, Title: "known high"},
+		{Severity: "bogus", File: "d.go", Line: 1, Title: "unknown severity"},
 	}}
-	o.deferOverCap(rec, nil)
-	byID := map[string]model.Finding{}
-	for _, fd := range rec.Findings {
-		byID[fd.ID] = fd
+	rec.Issues = o.ledger.Absorb(1, rec.Findings)
+	o.deferOverCap(rec)
+
+	byTitle := map[string]model.Issue{}
+	for _, it := range rec.Issues {
+		byTitle[it.Title] = it
 	}
-	// Cap 2: the two known severities (high, low) stay active; the two unknown
-	// ones (empty, bogus) rank last and are deferred.
-	if byID["r1.1"].Verdict == model.VerdictDeferred || byID["r1.3"].Verdict == model.VerdictDeferred {
-		t.Errorf("a known-severity finding was deferred over an unknown one: %+v", rec.Findings)
+	// Cap 2: the two known severities stay active; the two unknown ones rank last.
+	for _, title := range []string{"known high", "known low"} {
+		if byTitle[title].Verdict == model.VerdictDeferred {
+			t.Errorf("%q was deferred; known severities must win slots over unknown ones", title)
+		}
 	}
-	if byID["r1.2"].Verdict != model.VerdictDeferred || byID["r1.4"].Verdict != model.VerdictDeferred {
-		t.Errorf("unknown-severity findings not deferred: %+v", rec.Findings)
+	for _, title := range []string{"empty severity", "unknown severity"} {
+		if byTitle[title].Verdict != model.VerdictDeferred {
+			t.Errorf("%q was not deferred; an unknown severity must sort last", title)
+		}
 	}
 }
 
@@ -1148,7 +1158,7 @@ func TestRunInterruptedAfterSuccessfulCoderDoesNotCommit(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	f.editRepoOn(2) // the coder edits the repo...
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -1272,7 +1282,7 @@ func TestRunInterruptedDuringFinalizeCommit(t *testing.T) {
 	}
 	f.writeSide(fmt.Sprintf("echo 'partial edit' >> '%s'\ngit -C '%s' config commit.gpgsign true\ngit -C '%s' config gpg.program '%s'\n",
 		filepath.Join(f.repo, "main.go"), f.repo, f.repo, signer))
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -1503,8 +1513,8 @@ func TestCommitBodyIncludesFixedAndRejectedSections(t *testing.T) {
 	))
 	f.editRepoOn(2) // the coder makes a real edit for the fixed finding
 	f.respond(2, fixResponse(t,
-		model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "patched the bug"},
-		model.FixResult{ID: "r1.2", Verdict: "rejected", Detail: "intentional by design"},
+		model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched the bug"},
+		model.FixResult{ID: "i2", Verdict: "rejected", Detail: "intentional by design"},
 	))
 	f.respond(3, reviewResponse(t)) // round 2: clean -> converge
 
@@ -1826,60 +1836,77 @@ func TestPingAgentSelection(t *testing.T) {
 
 // ---- unit tests for the loop's pure pieces -------------------------------------
 
+// applyVerdicts validates the coder's result set against the round's ISSUES and
+// applies nothing unless the whole set is valid -- the run summary is always
+// written and must never carry a partially applied response.
 func TestApplyVerdicts(t *testing.T) {
-	rec := func() *model.RoundRecord {
-		return &model.RoundRecord{Findings: []model.Finding{{ID: "r1.1"}, {ID: "r1.2"}}}
+	setup := func(t *testing.T) (*Orchestrator, *model.RoundRecord, string, string) {
+		t.Helper()
+		f := newFixture(t, config.Loop{})
+		o := f.orchestrator()
+		rec := &model.RoundRecord{Round: 1, Findings: []model.Finding{
+			{ID: "r1.1", Severity: "high", File: "a.go", Line: 1, Title: "one"},
+			{ID: "r1.2", Severity: "low", File: "b.go", Line: 1, Title: "two"},
+		}}
+		rec.Issues = o.ledger.Absorb(1, rec.Findings)
+		if len(rec.Issues) != 2 {
+			t.Fatalf("fixture produced %d issues, want 2", len(rec.Issues))
+		}
+		return o, rec, rec.Issues[0].ID, rec.Issues[1].ID
 	}
+
+	t.Run("valid set applies and mirrors onto observations", func(t *testing.T) {
+		o, rec, id1, id2 := setup(t)
+		if err := o.applyVerdicts(rec, []model.FixResult{
+			{ID: id1, Verdict: "fixed", Detail: "d"},
+			{ID: id2, Verdict: "rejected", Detail: "d"},
+		}); err != nil {
+			t.Fatalf("applyVerdicts() = %v", err)
+		}
+		if rec.Fixed != 1 || rec.Rejected != 1 {
+			t.Errorf("fixed=%d rejected=%d, want 1/1", rec.Fixed, rec.Rejected)
+		}
+		// The verdict must reach the observations too, so history and the summary
+		// keep speaking in the terms the reviewers used.
+		for _, f := range rec.Findings {
+			if f.Verdict == "" {
+				t.Errorf("verdict was not mirrored onto observation %s", f.ID)
+			}
+		}
+	})
+
 	cases := []struct {
 		name    string
-		results []model.FixResult
+		results func(id1, id2 string) []model.FixResult
 		wantErr string
 	}{
-		{"valid", []model.FixResult{
-			{ID: "r1.1", Verdict: "fixed", Detail: "d"},
-			{ID: "r1.2", Verdict: "rejected", Detail: "d"},
-		}, ""},
-		{"unknown id", []model.FixResult{
-			{ID: "r1.1", Verdict: "fixed"}, {ID: "r9.9", Verdict: "fixed"},
-		}, "unknown finding id"},
-		{"duplicate id", []model.FixResult{
-			{ID: "r1.1", Verdict: "fixed"}, {ID: "r1.1", Verdict: "rejected"},
+		{"unknown id", func(id1, _ string) []model.FixResult {
+			return []model.FixResult{{ID: id1, Verdict: "fixed"}, {ID: "i999", Verdict: "fixed"}}
+		}, "unknown issue id"},
+		{"duplicate id", func(id1, _ string) []model.FixResult {
+			return []model.FixResult{{ID: id1, Verdict: "fixed"}, {ID: id1, Verdict: "rejected"}}
 		}, "more than once"},
-		{"invalid verdict", []model.FixResult{
-			{ID: "r1.1", Verdict: "maybe"}, {ID: "r1.2", Verdict: "fixed"},
+		{"invalid verdict", func(id1, id2 string) []model.FixResult {
+			return []model.FixResult{{ID: id1, Verdict: "maybe"}, {ID: id2, Verdict: "fixed"}}
 		}, "unknown verdict"},
-		{"missing finding", []model.FixResult{
-			{ID: "r1.1", Verdict: "fixed"},
+		{"missing issue", func(id1, _ string) []model.FixResult {
+			return []model.FixResult{{ID: id1, Verdict: "fixed"}}
 		}, "did not give a verdict"},
-		{"empty result set", nil, "did not give a verdict"},
+		{"empty result set", func(string, string) []model.FixResult { return nil }, "did not give a verdict"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := rec()
-			err := applyVerdicts(r, tc.results)
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("applyVerdicts() = %v", err)
-				}
-				if r.Fixed != 1 || r.Rejected != 1 {
-					t.Errorf("fixed=%d rejected=%d, want 1/1", r.Fixed, r.Rejected)
-				}
-				if r.Findings[0].Verdict != "fixed" || r.Findings[1].Verdict != "rejected" {
-					t.Errorf("verdicts not applied: %+v", r.Findings)
-				}
-				return
-			}
+			o, rec, id1, id2 := setup(t)
+			err := o.applyVerdicts(rec, tc.results(id1, id2))
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("applyVerdicts() = %v, want error containing %q", err, tc.wantErr)
 			}
-			// A rejected result set must leave the round untouched: the run
-			// summary is always written and must not carry partial verdicts.
-			if r.Fixed != 0 || r.Rejected != 0 {
-				t.Errorf("failed validation mutated counts: fixed=%d rejected=%d", r.Fixed, r.Rejected)
+			if rec.Fixed != 0 || rec.Rejected != 0 {
+				t.Errorf("failed validation mutated counts: fixed=%d rejected=%d", rec.Fixed, rec.Rejected)
 			}
-			for _, f := range r.Findings {
-				if f.Verdict != "" || f.VerdictDetail != "" {
-					t.Errorf("failed validation mutated finding %s: %+v", f.ID, f)
+			for _, it := range rec.Issues {
+				if it.Verdict != "" {
+					t.Errorf("failed validation mutated issue %s: %+v", it.ID, it)
 				}
 			}
 		})
@@ -2043,100 +2070,91 @@ func TestEchoedContractExampleRejected(t *testing.T) {
 	}
 }
 
-// Aging bounds how long the cap can starve a finding. Reproduces the pathology
-// from a real 5-round run: an unbounded generator of medium-severity findings (a
-// test-coverage lens can always want more coverage) kept a one-line low-severity
-// README error out of every fix round, so it was reported three times and never
-// once scheduled. Each deferral promotes a finding one severity tier, so the wait
-// is bounded by its distance from the generator's severity -- here one round --
-// instead of being unbounded.
-func TestDeferOverCapAgesDeferredFindings(t *testing.T) {
-	o := &Orchestrator{
-		cfg:  &config.Config{Loop: config.Loop{MaxFindingsPerRound: 2}},
-		logf: func(string, ...any) {},
-	}
-	// The starved finding: low severity, same (file, category) every round, and
-	// deliberately listed LAST so nothing depends on input order.
-	starved := func(round int) model.Finding {
-		return model.Finding{
-			ID: fmt.Sprintf("r%d.3", round), Severity: "low",
-			Category: "maintainability", File: "README.md", Title: "doc error",
-		}
-	}
-	// The generator: two fresh medium findings every round, in new files.
-	round := func(n int) model.RoundRecord {
-		return model.RoundRecord{Round: n, Findings: []model.Finding{
-			{ID: fmt.Sprintf("r%d.1", n), Severity: "medium", Category: "tests", File: fmt.Sprintf("a%d.go", n), Title: "untested"},
-			{ID: fmt.Sprintf("r%d.2", n), Severity: "medium", Category: "tests", File: fmt.Sprintf("b%d.go", n), Title: "untested"},
-			starved(n),
+// Aging bounds how long the cap can starve an issue. Reproduces the pathology from
+// a real five-round run: an unbounded generator of medium-severity findings (a
+// coverage lens can always want more coverage) kept a one-line low-severity README
+// error out of every fix round, so it was reported three times and never once
+// scheduled. Each deferral promotes an issue one severity tier, so the wait is
+// bounded by its distance from the generator's severity -- one round here.
+//
+// The deferral count is now exact, read from the ledger, where it used to be
+// approximated from (file, category).
+func TestDeferOverCapAgesDeferredIssues(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxFindingsPerRound: 2})
+	o := f.orchestrator()
+
+	// The starved issue is listed LAST so nothing depends on input order.
+	round := func(n int) *model.RoundRecord {
+		rec := &model.RoundRecord{Round: n, Findings: []model.Finding{
+			{Severity: "medium", Category: "tests", File: fmt.Sprintf("a%d.go", n), Line: 1, Title: "untested"},
+			{Severity: "medium", Category: "tests", File: fmt.Sprintf("b%d.go", n), Line: 1, Title: "untested"},
+			{Severity: "low", Category: "maintainability", File: "README.md", Line: 7, Title: "doc error"},
 		}}
+		rec.Issues = o.ledger.Absorb(n, rec.Findings)
+		return rec
 	}
-	verdict := func(rec model.RoundRecord, id string) string {
-		for _, f := range rec.Findings {
-			if f.ID == id {
-				return f.VerdictOrDefault()
+	deferredDoc := func(rec *model.RoundRecord) bool {
+		for _, it := range rec.Issues {
+			if it.File == "README.md" {
+				return it.Verdict == model.VerdictDeferred
 			}
 		}
-		t.Fatalf("finding %s missing from round record", id)
-		return ""
+		t.Fatal("the README issue is missing from the round")
+		return false
 	}
 
-	// Round 1: nothing has waited yet, so severity alone applies and the low
-	// finding loses both slots to the fresh mediums.
+	// Round 1: nothing has waited yet, so severity alone decides and the low issue
+	// loses both slots to the fresh mediums.
 	r1 := round(1)
-	o.deferOverCap(&r1, nil)
-	if got := verdict(r1, "r1.3"); got != model.VerdictDeferred {
-		t.Fatalf("round 1: low finding verdict = %q, want deferred (severity should decide the first round)", got)
+	o.deferOverCap(r1)
+	if !deferredDoc(r1) {
+		t.Fatal("round 1: severity should decide the first round, deferring the low issue")
 	}
 
-	// Round 2: one deferral promotes low to the mediums' tier, and the age
-	// tie-break awards the slot to the finding that already waited. Before aging
-	// this finding lost every round forever.
+	// Round 2: one deferral promotes it to the mediums' tier and the age tie-break
+	// awards the slot to what already waited. Before aging it lost every round.
 	r2 := round(2)
-	o.deferOverCap(&r2, []model.RoundRecord{r1})
-	if got := verdict(r2, "r2.3"); got == model.VerdictDeferred {
-		t.Error("round 2: the aged finding was deferred again; the cap can starve it indefinitely")
+	o.deferOverCap(r2)
+	if deferredDoc(r2) {
+		t.Error("round 2: the aged issue was deferred again; the cap can starve it indefinitely")
 	}
-	if verdict(r2, "r2.1") == model.VerdictDeferred || verdict(r2, "r2.2") == model.VerdictDeferred {
-		// One generator finding must yield its slot -- the cap is 2 and three
-		// findings compete, so exactly one is deferred.
-		return
-	}
-	t.Error("round 2: no generator finding yielded its slot to the aged finding")
 }
 
-// Only unresolved findings age. A fixed or rejected finding is closed, so a later
-// report of the same (file, category) must start from its own severity rather
-// than inheriting priority from work that is already done.
-func TestDeferOverCapDoesNotAgeResolvedFindings(t *testing.T) {
-	o := &Orchestrator{
-		cfg:  &config.Config{Loop: config.Loop{MaxFindingsPerRound: 1}},
-		logf: func(string, ...any) {},
-	}
-	prior := []model.RoundRecord{{Round: 1, Findings: []model.Finding{
-		{ID: "r1.1", Severity: "low", Category: "maintainability", File: "README.md", Verdict: model.VerdictFixed},
-		{ID: "r1.2", Severity: "low", Category: "tests", File: "a.go", Verdict: model.VerdictRejected},
-	}}}
-	rec := model.RoundRecord{Round: 2, Findings: []model.Finding{
-		{ID: "r2.1", Severity: "low", Category: "maintainability", File: "README.md", Title: "new doc nit"},
-		{ID: "r2.2", Severity: "high", Category: "bugs", File: "b.go", Title: "real bug"},
+// Only unresolved issues age. A fixed or rejected issue is closed, so a later
+// report of the same location starts from its own severity rather than inheriting
+// priority from work already done.
+func TestDeferOverCapDoesNotAgeResolvedIssues(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxFindingsPerRound: 1})
+	o := f.orchestrator()
+
+	r1 := &model.RoundRecord{Round: 1, Findings: []model.Finding{
+		{Severity: "low", Category: "maintainability", File: "README.md", Line: 7, Title: "doc nit"},
 	}}
-	o.deferOverCap(&rec, prior)
-	byID := map[string]model.Finding{}
-	for _, f := range rec.Findings {
-		byID[f.ID] = f
-	}
-	if byID["r2.2"].Verdict == model.VerdictDeferred {
-		t.Error("a high-severity finding lost its slot to a low whose predecessor was already fixed")
-	}
-	if byID["r2.1"].Verdict != model.VerdictDeferred {
-		t.Error("expected the low finding to be deferred; fixed/rejected history must not grant aging")
+	r1.Issues = o.ledger.Absorb(1, r1.Findings)
+	// Resolved, not deferred: no aging credit.
+	o.setIssueVerdict(r1, 0, model.VerdictFixed, "done")
+
+	r2 := &model.RoundRecord{Round: 2, Findings: []model.Finding{
+		{Severity: "low", Category: "maintainability", File: "README.md", Line: 7, Title: "doc nit again"},
+		{Severity: "high", Category: "bugs", File: "b.go", Line: 1, Title: "real bug"},
+	}}
+	r2.Issues = o.ledger.Absorb(2, r2.Findings)
+	o.deferOverCap(r2)
+
+	for _, it := range r2.Issues {
+		switch it.File {
+		case "b.go":
+			if it.Verdict == model.VerdictDeferred {
+				t.Error("a high-severity issue lost its slot to a low whose predecessor was already fixed")
+			}
+		case "README.md":
+			if it.Verdict != model.VerdictDeferred {
+				t.Error("expected the low issue to be deferred; fixed history must not grant aging")
+			}
+		}
 	}
 }
 
-// verifyGate points the fixture's verification at a marker file the mock coder
-// creates when it "fixes" something: present => the check fails. That models the
-// real case (the coder's edits break the build) without needing a real toolchain.
 func (f *fixture) verifyGate(policy config.VerifyPolicy, failWhenPresent string) {
 	f.t.Helper()
 	script := filepath.Join(f.t.TempDir(), "check.sh")
@@ -2180,9 +2198,9 @@ func TestVerifyFailureDiscardsRound(t *testing.T) {
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	// The coder creates the file that makes the check fail, and claims success.
 	f.breakBuildOn(2, "broken.txt")
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "done"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
 	// Invocation 3 is the correction attempt: it does not remove the file.
-	f.respond(3, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "still done"}))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "still done"}))
 
 	_, err := f.orchestrator().Run(t.Context())
 	if err == nil {
@@ -2212,10 +2230,10 @@ func TestVerifyRetrySucceedsAndCommits(t *testing.T) {
 
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	f.breakBuildOn(2, "broken.txt")
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "done"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
 	// The correction attempt removes the offending file, so the gate passes.
 	f.repairBuildOn(3, "broken.txt")
-	f.respond(3, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "corrected"}))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "corrected"}))
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -2248,7 +2266,7 @@ func TestVerifyNoRegressionsToleratesPreExistingFailure(t *testing.T) {
 
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	f.editRepoOn(2) // an unrelated edit; the check still fails, as it did before
-	f.respond(2, fixResponse(t, model.FixResult{ID: "r1.1", Verdict: "fixed", Detail: "done"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
 
 	if _, err := f.orchestrator().Run(t.Context()); err != nil {
 		t.Fatalf("Run() = %v, want a pre-existing failure to be tolerated under no_regressions", err)
@@ -2258,5 +2276,54 @@ func TestVerifyNoRegressionsToleratesPreExistingFailure(t *testing.T) {
 	}
 	if f.invocations() != 2 {
 		t.Errorf("invocations = %d, want 2: no correction attempt should have been needed", f.invocations())
+	}
+}
+
+// The bug this aggregation exists to fix, end to end: two agents reporting the
+// same problem must cost ONE slot against the per-round cap, not two. Before, a
+// cap of 1 with two agreeing reviewers meant one report was deferred and the
+// panel's agreement actively reduced how much got fixed.
+func TestCorroboratedReportsCostOneCapSlot(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	// Two lenses, two agents, the same defect at the same location -- as happened
+	// in a real run where one lens called it concurrency and the other tests.
+	f.cfg.Roles.Review.Prompts = []config.ReviewLens{
+		{Agent: "mock", Prompt: f.cfg.Roles.Review.Prompts[0].Prompt},
+		{Agent: "mock2", Prompt: f.cfg.Roles.Review.Prompts[0].Prompt},
+	}
+	f.cfg.Agents["mock2"] = f.cfg.Agents["mock"]
+
+	same := model.ReviewFinding{Category: "concurrency", Severity: "high", File: "main.go", Line: 33, Title: "racy ordinal allocation"}
+	other := model.ReviewFinding{Category: "tests", Severity: "high", File: "main.go", Line: 33, Title: "ordinals allocated racily"}
+	f.respond(1, reviewResponse(t, same))
+	f.respond(2, reviewResponse(t, other))
+	f.editRepoOn(3)
+	// ONE issue, so one verdict -- and it fits the cap of 1.
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "made it atomic"}))
+	f.respond(4, reviewResponse(t))
+	f.respond(5, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	r1 := sum.Rounds[0]
+	if len(r1.Findings) != 2 {
+		t.Fatalf("got %d observations, want both preserved", len(r1.Findings))
+	}
+	if len(r1.Issues) != 1 {
+		t.Fatalf("got %d issues, want 1: the same defect reported twice is one unit of work", len(r1.Issues))
+	}
+	// Nothing was deferred: agreement no longer consumes budget.
+	for _, it := range r1.Issues {
+		if it.Verdict == model.VerdictDeferred {
+			t.Errorf("issue %s was deferred despite a cap of 1 and only one distinct problem", it.ID)
+		}
+	}
+	if r1.Fixed != 1 {
+		t.Errorf("round 1 fixed = %d, want 1", r1.Fixed)
+	}
+	if agents := r1.Issues[0].Agents(); len(agents) != 2 {
+		t.Errorf("Agents() = %v, want the corroboration recorded", agents)
 	}
 }

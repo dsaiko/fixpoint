@@ -307,6 +307,7 @@ func renderSummaryMD(sum *model.RunSummary) string {
 			}
 			sb.WriteString("\n")
 		}
+		renderIssues(&sb, r)
 		renderVerify(&sb, r)
 		if len(r.Steps) > 0 {
 			sb.WriteString("Steps:\n\n")
@@ -358,6 +359,38 @@ func ioTotals(sum *model.RunSummary) (steps, promptBytes, outputBytes int) {
 // agents that edit code and the config carries the trust gates, so reading a
 // summary months later must not leave open the question of whether a local file
 // shadowed the installed one.
+// renderIssues reports the deduplicated view the coder actually worked from, and
+// -- more usefully when reading a run back -- which issues several agents found
+// independently. Corroboration is the strongest evidence a panel produces, and it
+// was previously invisible: two agents agreeing looked like two unrelated findings.
+func renderIssues(sb *strings.Builder, rec model.RoundRecord) {
+	if len(rec.Issues) == 0 {
+		return
+	}
+	corroborated := 0
+	for _, it := range rec.Issues {
+		if len(it.Agents()) > 1 {
+			corroborated++
+		}
+	}
+	fmt.Fprintf(sb, "\nIssues (%d distinct from %d observation(s)", len(rec.Issues), len(rec.Findings))
+	if corroborated > 0 {
+		fmt.Fprintf(sb, "; %d corroborated by more than one agent", corroborated)
+	}
+	sb.WriteString("):\n")
+	for _, it := range rec.Issues {
+		fmt.Fprintf(sb, "- **%s** [%s] (%s, %s) %s — %s",
+			strings.ToUpper(it.StatusOrDefault()), it.ID, it.Category, it.Severity, it.Loc(), it.Title)
+		if agents := it.Agents(); len(agents) > 1 {
+			fmt.Fprintf(sb, " _(reported by %s)_", strings.Join(agents, ", "))
+		}
+		sb.WriteString("\n")
+		if it.VerdictDetail != "" {
+			fmt.Fprintf(sb, "  - %s\n", it.VerdictDetail)
+		}
+	}
+}
+
 // renderVerify records the deterministic gate's outcome for a round. It is the
 // only evidence in the summary that is not a model's opinion, so it is reported
 // per round rather than folded into a total.

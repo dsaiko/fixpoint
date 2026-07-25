@@ -110,6 +110,7 @@ End your response with exactly one <review> block containing valid JSON:
 {
   "findings": [
     {
+      "issue": "<id from the History section if this is the SAME problem, else omit>",
       "category": "<the category your instructions above told you to set>",
       "severity": "critical|high|medium|low",
       "file": "relative/path.go",
@@ -123,6 +124,7 @@ End your response with exactly one <review> block containing valid JSON:
 </review>
 
 If you have no findings, output "findings": [].
+Set "issue" only to re-report a problem already listed in History; omit it otherwise.
 The <review> block must be the LAST thing you print. The JSON must be valid:
 no comments, no trailing commas, no markdown fences inside the block.`
 
@@ -140,12 +142,52 @@ End your response with exactly one <fix> block containing valid JSON:
 }
 </fix>
 
-Every finding id you were given must appear exactly once in results. Use
-verdict "fixed" for findings you resolved (a duplicate of a finding you fixed
-also counts as "fixed" -- say so in detail). Use "rejected" for findings you
-decided not to act on, with the reason.
+Every ISSUE id you were given must appear exactly once in results. Use verdict
+"fixed" for issues you resolved and "rejected" for ones you decided not to act on,
+with the reason. Duplicate reports have already been merged into single issues, so
+you should not need to reconcile them yourself.
 The <fix> block must be the LAST thing you print. The JSON must be valid: no
 comments, no trailing commas, no markdown fences inside the block.`
+
+// FormatIssues renders the issues handed to the coder: one entry per distinct
+// problem, with every reviewer's description of it beneath.
+//
+// Corroboration is stated explicitly. Two independent agents reaching the same
+// conclusion is the strongest evidence a review panel produces, and the coder
+// deciding what is genuine should be told when it is present -- previously it saw
+// two separate findings and had to work out for itself that they were one thing.
+func FormatIssues(issues []model.Issue) string {
+	var sb strings.Builder
+	for _, it := range issues {
+		fmt.Fprintf(&sb, "### [%s] (%s, %s) %s — %s\n", it.ID, it.Category, it.Severity, it.Loc(), it.Title)
+		if agents := it.Agents(); len(agents) > 1 {
+			fmt.Fprintf(&sb, "**Reported independently by %d agents (%s)** — corroborated, so treat it as more likely genuine.\n",
+				len(agents), strings.Join(agents, ", "))
+		}
+		if it.Description != "" {
+			sb.WriteString(it.Description + "\n")
+		}
+		if it.Suggestion != "" {
+			sb.WriteString("Suggested: " + it.Suggestion + "\n")
+		}
+		// Additional readings, when they differ: a second description of the same
+		// defect often names the cause the first one only gestured at.
+		for _, o := range it.Observations {
+			if o.Description == it.Description || o.Description == "" {
+				continue
+			}
+			fmt.Fprintf(&sb, "\nAlso reported by %s via %s: %s\n", o.Agent, o.Lens, o.Description)
+			if o.Suggestion != "" && o.Suggestion != it.Suggestion {
+				sb.WriteString("Suggested: " + o.Suggestion + "\n")
+			}
+		}
+		if it.Deferrals > 0 {
+			fmt.Fprintf(&sb, "(deferred in %d earlier round(s) by the per-round cap)\n", it.Deferrals)
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
 
 // FormatFindings renders findings as the markdown block handed to the coder.
 func FormatFindings(findings []model.Finding) string {
@@ -173,14 +215,22 @@ func FormatHistory(rounds []model.RoundRecord) string {
 	sb.WriteString("\n## History of previous rounds\n")
 	sb.WriteString("Do NOT re-report findings that were rejected below unless you have strong new evidence.\n")
 	sb.WriteString("Findings marked FIXED were addressed -- verify the fix rather than re-reporting the original.\n")
-	sb.WriteString("Findings marked DEFERRED or UNRESOLVED were NOT yet addressed -- report them again if still present.\n\n")
+	sb.WriteString("Findings marked DEFERRED or UNRESOLVED were NOT yet addressed -- report them again if still present.\n")
+	sb.WriteString("Each entry starts with its issue id in brackets. If you report the SAME problem as one of these,\n")
+	sb.WriteString("set \"issue\" to that id -- rewording it or pointing at a moved line would otherwise look like a new issue.\n\n")
 	for _, r := range rounds {
 		fmt.Fprintf(&sb, "Round %d (%d fixed, %d rejected):\n", r.Round, r.Fixed, r.Rejected)
 		if len(r.Findings) == 0 {
 			sb.WriteString("- no findings\n")
 		}
 		for _, f := range r.Findings {
-			fmt.Fprintf(&sb, "- [%s] %s %s — %s: %s\n", f.ID, f.Loc(), f.Title, strings.ToUpper(f.VerdictOrDefault()), f.VerdictDetail)
+			// The ISSUE id, not the observation id: that is what a reviewer must cite
+			// to declare a re-report, and what the ledger matches on.
+			id := f.IssueID
+			if id == "" {
+				id = f.ID
+			}
+			fmt.Fprintf(&sb, "- [%s] %s %s — %s: %s\n", id, f.Loc(), f.Title, strings.ToUpper(f.VerdictOrDefault()), f.VerdictDetail)
 		}
 		sb.WriteString("\n")
 	}

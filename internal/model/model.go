@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -24,6 +25,9 @@ type Finding struct {
 	Description string `json:"description,omitempty"`
 	Suggestion  string `json:"suggestion,omitempty"`
 	Advisory    bool   `json:"advisory,omitempty"`
+	// IssueID is the issue this observation was grouped under. Several
+	// observations from different agents and lenses can share one.
+	IssueID string `json:"issue_id,omitempty"`
 
 	// Filled in after the coder round.
 	Verdict       string `json:"verdict,omitempty"` // fixed | rejected | deferred
@@ -91,6 +95,15 @@ func (r *ReviewOutput) UnmarshalJSON(b []byte) error {
 // ReviewFinding is a finding as emitted by the model, before the orchestrator
 // assigns IDs and provenance.
 type ReviewFinding struct {
+	// Issue optionally names an issue id from the History section, declaring that
+	// this report is the SAME problem as an earlier one. Cross-round identity
+	// cannot be recovered lexically -- the same issue was described as "Severity
+	// vocabulary has two independent declarations", then "declared twice
+	// (severityRank and validSeverities)", then "duplicated severity vocabulary",
+	// while its line number moved as the code around it changed -- so the reviewer
+	// that can see both is asked to say so. Empty is fine; the fingerprint below
+	// is the fallback.
+	Issue       string `json:"issue"`
 	Category    string `json:"category"`
 	Severity    string `json:"severity"`
 	File        string `json:"file"`
@@ -123,14 +136,17 @@ type Assignment struct {
 
 // RoundRecord is everything that happened in one loop iteration.
 type RoundRecord struct {
-	Round        int          `json:"round"`
-	Assignments  []Assignment `json:"assignments"`
-	Findings     []Finding    `json:"findings"`           // non-advisory, with verdicts after fix
-	Advisory     []Finding    `json:"advisory,omitempty"` // report-only findings
-	ReviewErrors []string     `json:"review_errors,omitempty"`
-	Fixed        int          `json:"fixed"`
-	Rejected     int          `json:"rejected"`
-	CommitSHA    string       `json:"commit_sha,omitempty"`
+	Round       int          `json:"round"`
+	Assignments []Assignment `json:"assignments"`
+	Findings    []Finding    `json:"findings"` // raw observations, with verdicts mirrored after fix
+	// Issues is the deduplicated view the coder actually works from: one entry per
+	// distinct problem, however many reviewers reported it.
+	Issues       []Issue   `json:"issues,omitempty"`
+	Advisory     []Finding `json:"advisory,omitempty"` // report-only findings
+	ReviewErrors []string  `json:"review_errors,omitempty"`
+	Fixed        int       `json:"fixed"`
+	Rejected     int       `json:"rejected"`
+	CommitSHA    string    `json:"commit_sha,omitempty"`
 	// CoderError is set when the coder failed mid-round but its partial edits
 	// were salvaged into CommitSHA; the loop then continued.
 	CoderError string `json:"coder_error,omitempty"`
@@ -207,4 +223,81 @@ type VerifyResult struct {
 	Output   string        `json:"output,omitempty"` // combined stdout+stderr, capped and redacted
 	Duration time.Duration `json:"duration"`
 	Err      string        `json:"error,omitempty"` // could not run at all (not a non-zero exit)
+}
+
+// Issue statuses. An issue's status is its own, tracked across rounds, and is
+// deliberately separate from the observations that reported it: several reviewers
+// can corroborate one issue, and it is the ISSUE that gets fixed or rejected.
+const (
+	StatusOpen = "open"
+)
+
+// Issue is one distinct problem, aggregated from every observation that reported
+// it. It exists because findings alone conflated three things: a reviewer's raw
+// report, the unit of work handed to the coder, and the thing whose state persists
+// across rounds.
+//
+// The practical consequence of that conflation was a bug, not just untidiness:
+// two agents reporting the same problem produced two findings, each consuming a
+// slot against loop.max_findings_per_round -- so agreement between reviewers
+// REDUCED how many distinct problems got fixed in a round. Corroboration is
+// signal; it should not cost budget.
+type Issue struct {
+	ID          string `json:"id"`
+	Fingerprint string `json:"fingerprint"`
+	Status      string `json:"status"` // open | fixed | rejected | deferred
+	Category    string `json:"category"`
+	Severity    string `json:"severity"` // worst severity any observation assigned
+	File        string `json:"file,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	Suggestion  string `json:"suggestion,omitempty"`
+	Advisory    bool   `json:"advisory,omitempty"`
+
+	// Observations are every raw report grouped under this issue, preserved rather
+	// than collapsed: which agent and which lens found a problem is evidence about
+	// the panel, and the coder benefits from more than one description of it.
+	Observations []Finding `json:"observations,omitempty"`
+
+	// FirstRound is where the issue was first seen and Deferrals counts the rounds
+	// it was deferred by the cap. Deferrals drives the cap's aging directly, which
+	// replaces the earlier (file, category) approximation of identity.
+	FirstRound int `json:"first_round"`
+	LastRound  int `json:"last_round"`
+	Deferrals  int `json:"deferrals,omitempty"`
+
+	Verdict       string `json:"verdict,omitempty"`
+	VerdictDetail string `json:"verdict_detail,omitempty"`
+}
+
+// Agents returns the distinct agents that reported this issue, sorted. Two
+// independent agents agreeing is the corroboration signal the coder is shown.
+func (i Issue) Agents() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, o := range i.Observations {
+		if o.Agent != "" && !seen[o.Agent] {
+			seen[o.Agent] = true
+			out = append(out, o.Agent)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Loc renders the issue location for display, like Finding.Loc.
+func (i Issue) Loc() string {
+	if i.Line > 0 {
+		return fmt.Sprintf("%s:%d", i.File, i.Line)
+	}
+	return i.File
+}
+
+// StatusOrDefault reports the issue's status, defaulting to open.
+func (i Issue) StatusOrDefault() string {
+	if i.Status == "" {
+		return StatusOpen
+	}
+	return i.Status
 }

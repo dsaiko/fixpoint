@@ -18,6 +18,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/issue"
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
@@ -44,6 +45,9 @@ type Orchestrator struct {
 	// verifyBaseline is how the project's checks behaved before any fix round, so
 	// a pre-existing failure is not blamed on this run. Captured once at startup.
 	verifyBaseline verify.Report
+	// ledger groups raw observations into issues and carries their state across
+	// rounds, so a problem two agents both reported costs one slot, not two.
+	ledger *issue.Ledger
 }
 
 // New sets up the log store, parses every referenced prompt and renders it once
@@ -96,6 +100,7 @@ func New(cfg *config.Config, source config.Source, logf func(string, ...any)) (*
 		logs:      logs,
 		templates: templates,
 		logf:      logf,
+		ledger:    issue.NewLedger(),
 	}
 	// Exclude the template's literal prefix, not the rendered path: the rendered
 	// path changes every run (and every round), so only the static base is a
@@ -422,6 +427,16 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	sum.Rounds = append(sum.Rounds, rec)
 	recP := &sum.Rounds[len(sum.Rounds)-1]
 
+	// Group observations into issues before anything counts them. Two reviewers
+	// agreeing is corroboration, not two units of work: without this, agreement
+	// consumed two slots against the per-round cap and so REDUCED how many
+	// distinct problems a round could fix.
+	recP.Issues = o.ledger.Absorb(round, recP.Findings)
+	if dup := len(recP.Findings) - len(recP.Issues); dup > 0 {
+		o.logf("round %d: %d observation(s) grouped into %d issue(s) (%d corroborating report(s))",
+			round, len(recP.Findings), len(recP.Issues), dup)
+	}
+
 	o.logf("round %d: %d finding(s), %d advisory, %d reviewer error(s)",
 		round, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
 
@@ -448,11 +463,10 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	}
 	*cleanStreak = 0
 
-	// recP is the round just appended, so the earlier rounds -- which the cap's
-	// aging reads to see what has been waiting -- are everything before it.
-	prior := sum.Rounds[:len(sum.Rounds)-1]
-	o.deferOverCap(recP, prior)
+	o.deferOverCap(recP)
 
+	// recP is the round just appended, so prior rounds are everything before it.
+	prior := sum.Rounds[:len(sum.Rounds)-1]
 	salvaged, err := o.fix(ctx, recP, prior)
 	if err != nil {
 		return false, err
@@ -494,64 +508,37 @@ var validSeverities = func() map[string]bool {
 	return m
 }()
 
-// deferralKey identifies a finding across rounds for aging. Reviewers re-report
-// an unfixed finding with a fresh id and often reworded prose, so identity cannot
-// come from the id or the title: (file, category) is what stays stable when the
-// same gap is reported again by a different agent in a later round. Two distinct
-// issues in one file and category share a key, which only ever grants the second
-// one an earlier turn -- an acceptable trade for bounding starvation.
-func deferralKey(f model.Finding) string { return f.File + "\x00" + f.Category }
-
-// priorDeferrals counts, per deferralKey, how many earlier rounds ended with that
-// key deferred or unresolved -- i.e. reported but never acted on.
-func priorDeferrals(prior []model.RoundRecord) map[string]int {
-	n := map[string]int{}
-	for _, r := range prior {
-		seen := map[string]bool{} // one increment per round, not per duplicate report
-		for _, f := range r.Findings {
-			switch f.Verdict {
-			case model.VerdictFixed, model.VerdictRejected:
-				continue // resolved; nothing to age
-			}
-			if k := deferralKey(f); !seen[k] {
-				seen[k] = true
-				n[k]++
-			}
-		}
-	}
-	return n
-}
-
-// deferOverCap enforces loop.max_findings_per_round: the worst maxN findings stay
-// active for the coder, the rest are marked deferred. Deferred findings appear in
-// history as DEFERRED (still open), so reviewers re-report them and they reach the
-// coder in a later round.
+// deferOverCap enforces loop.max_findings_per_round over ISSUES, not raw
+// observations: the worst maxN stay active for the coder and the rest are marked
+// deferred. Deferred issues appear in history as still open, so reviewers
+// re-report them and they reach the coder in a later round.
 //
-// Ordering is worst-severity-first with AGING: each earlier round that deferred a
-// finding promotes it one severity tier. Without that, an unbounded generator of
-// medium-severity findings (a test-coverage lens can always want more coverage)
-// starves everything below it forever -- in one 5-round run a one-line README
-// error was reported three times and never once scheduled. Aging bounds the wait
-// instead: a "low" finding reaches top priority after three skips, so every
-// finding is guaranteed a turn while severity still decides the common case.
-func (o *Orchestrator) deferOverCap(rec *model.RoundRecord, prior []model.RoundRecord) {
+// Ordering is worst-severity-first with AGING: each round an issue has already
+// been deferred promotes it one severity tier. Without that, an unbounded
+// generator of medium-severity findings (a coverage lens can always want more
+// coverage) starves everything below it forever -- in one five-round run a
+// one-line README error was reported three times and never once scheduled. Aging
+// bounds the wait: a "low" issue reaches top priority after three skips.
+//
+// The deferral count is now exact, read from the ledger. It used to be
+// approximated from (file, category) because findings had no identity that
+// survived a round.
+func (o *Orchestrator) deferOverCap(rec *model.RoundRecord) {
 	maxN := o.cfg.Loop.MaxFindingsPerRound
-	if maxN <= 0 || len(rec.Findings) <= maxN {
+	if maxN <= 0 || len(rec.Issues) <= maxN {
 		return
 	}
-	aged := priorDeferrals(prior)
-	idx := make([]int, len(rec.Findings))
+	idx := make([]int, len(rec.Issues))
 	for i := range idx {
 		idx[i] = i
 	}
 	rank := func(i int) int {
-		f := rec.Findings[i]
-		r, ok := severityRank[strings.ToLower(strings.TrimSpace(f.Severity))]
+		it := rec.Issues[i]
+		r, ok := severityRank[strings.ToLower(strings.TrimSpace(it.Severity))]
 		if !ok {
 			r = len(severityRank) // unknown severities sort last
 		}
-		r -= aged[deferralKey(f)]
-		return max(r, 0)
+		return max(r-o.ledger.Deferrals(it.ID), 0)
 	}
 	sort.SliceStable(idx, func(a, b int) bool {
 		ra, rb := rank(idx[a]), rank(idx[b])
@@ -559,18 +546,46 @@ func (o *Orchestrator) deferOverCap(rec *model.RoundRecord, prior []model.RoundR
 			return ra < rb
 		}
 		// Equal effective rank: whichever has waited longer goes first. The tie
-		// would otherwise fall to assignment order -- deterministic, but it lets a
-		// fresh finding edge out one already skipped, which is the starvation this
-		// aging exists to stop.
-		return aged[deferralKey(rec.Findings[idx[a]])] > aged[deferralKey(rec.Findings[idx[b]])]
+		// would otherwise fall to review order -- deterministic, but it lets a fresh
+		// issue edge out one already skipped, which is the starvation aging exists
+		// to stop.
+		return o.ledger.Deferrals(rec.Issues[idx[a]].ID) > o.ledger.Deferrals(rec.Issues[idx[b]].ID)
 	})
+	detail := fmt.Sprintf("deferred: fix round capped at %d issue(s) by loop.max_findings_per_round (gains priority each round it is deferred)", maxN)
 	for _, i := range idx[maxN:] {
-		rec.Findings[i].Verdict = model.VerdictDeferred
-		rec.Findings[i].VerdictDetail = fmt.Sprintf(
-			"deferred: fix round capped at %d finding(s) by loop.max_findings_per_round (gains priority each round it is deferred)", maxN)
+		o.setIssueVerdict(rec, i, model.VerdictDeferred, detail)
 	}
-	o.logf("round %d: %d finding(s) exceed the per-round cap of %d; %d deferred to later rounds",
-		rec.Round, len(rec.Findings), maxN, len(rec.Findings)-maxN)
+	o.logf("round %d: %d issue(s) exceed the per-round cap of %d; %d deferred to later rounds",
+		rec.Round, len(rec.Issues), maxN, len(rec.Issues)-maxN)
+}
+
+// setIssueVerdict records a verdict on one of the round's issues, in the ledger,
+// and on every observation that reported it -- so history and the run summary keep
+// speaking in the terms reviewers used while the coder works from issues.
+func (o *Orchestrator) setIssueVerdict(rec *model.RoundRecord, i int, verdict, detail string) {
+	it := &rec.Issues[i]
+	it.Verdict = verdict
+	it.VerdictDetail = detail
+	it.Status = verdict
+	o.ledger.Record(it.ID, verdict, detail)
+	for j := range rec.Findings {
+		if rec.Findings[j].IssueID == it.ID {
+			rec.Findings[j].Verdict = verdict
+			rec.Findings[j].VerdictDetail = detail
+		}
+	}
+}
+
+// activeIssues returns the issues actually handed to the coder this round
+// (everything the cap did not defer).
+func activeIssues(rec *model.RoundRecord) []model.Issue {
+	out := make([]model.Issue, 0, len(rec.Issues))
+	for _, it := range rec.Issues {
+		if it.Verdict != model.VerdictDeferred {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // activeFindings returns the round's findings that are actually handed to the
@@ -1034,12 +1049,12 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	coder := o.cfg.Roles.Coder
 	promptName := config.LensName(coder.Prompt)
 	label := "fix: " + coder.Agent
-	active := activeFindings(rec)
+	active := activeIssues(rec)
 	d := prompt.FixData{
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
 		Round:          rec.Round,
-		Findings:       prompt.FormatFindings(active),
+		Findings:       prompt.FormatIssues(active),
 		History:        prompt.FormatHistory(history),
 		OutputContract: prompt.FixContract,
 	}
@@ -1047,7 +1062,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	if err != nil {
 		return false, err
 	}
-	o.logf("%s starting on %d finding(s) (prompt %s)", label, len(active), logstore.SizeDesc(len(text)))
+	o.logf("%s starting on %d issue(s) (prompt %s)", label, len(active), logstore.SizeDesc(len(text)))
 	res := o.runAgent(ctx, label, "fix", coder.Agent, promptName, rec.Round, text)
 	var out model.FixOutput
 	runErr := res.Err
@@ -1059,7 +1074,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	// verdict; anything else fails the round rather than being silently
 	// miscounted (an empty result set must not read as "all rejected").
 	if runErr == nil {
-		runErr = applyVerdicts(rec, out.Results)
+		runErr = o.applyVerdicts(rec, out.Results)
 	}
 
 	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, promptName, len(text), res, runErr != nil))
@@ -1126,12 +1141,12 @@ func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, com
 // committed (clean tree, or the commit itself fails) does the round become a
 // hard error; a failing commit additionally stashes the edits so the tree is
 // never left dirty.
-func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRecord, active []model.Finding, runErr error) (salvaged bool, err error) {
+func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRecord, active []model.Issue, runErr error) (salvaged bool, err error) {
 	header := fmt.Sprintf("fixpoint: round %d (partial, coder failed)", rec.Round)
 	var body strings.Builder
-	fmt.Fprintf(&body, "Coder failed before reporting verdicts: %v\n\nFindings it was working on:\n", runErr)
-	for _, f := range active {
-		fmt.Fprintf(&body, "- [%s] (%s, %s) %s\n", f.ID, f.Category, f.Severity, f.Title)
+	fmt.Fprintf(&body, "Coder failed before reporting verdicts: %v\n\nIssues it was working on:\n", runErr)
+	for _, it := range active {
+		fmt.Fprintf(&body, "- [%s] (%s, %s) %s\n", it.ID, it.Category, it.Severity, it.Title)
 	}
 	// Redact reviewer-authored finding text before it lands in the pushed
 	// commit message, mirroring the normal round commit and the logstore.
@@ -1165,30 +1180,34 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 	return true, nil
 }
 
-// applyVerdicts validates the coder's result set against the round's
-// findings -- every ID exactly once, only known IDs, only valid verdicts --
-// and applies it. Any violation is an error for the round, and nothing is
-// applied unless the whole set is valid: the always-written run summary must
-// never carry a partially applied response.
-func applyVerdicts(rec *model.RoundRecord, results []model.FixResult) error {
-	// Deferred findings were never handed to the coder, so they neither
-	// expect nor accept a verdict.
-	byID := map[string]*model.Finding{}
+// applyVerdicts validates the coder's result set against the round's ISSUES --
+// every id exactly once, only known ids, only valid verdicts -- and applies it.
+// Any violation fails the round, and nothing is applied unless the whole set is
+// valid: the always-written run summary must never carry a partially applied
+// response.
+//
+// Verdicts land on the issue and are mirrored onto every observation that reported
+// it, so the summary and the reviewers' history keep speaking in the terms the
+// reviewers used.
+func (o *Orchestrator) applyVerdicts(rec *model.RoundRecord, results []model.FixResult) error {
+	// Deferred issues were never handed to the coder, so they neither expect nor
+	// accept a verdict.
+	index := map[string]int{}
 	expected := 0
-	for i := range rec.Findings {
-		if rec.Findings[i].Verdict == model.VerdictDeferred {
+	for i := range rec.Issues {
+		if rec.Issues[i].Verdict == model.VerdictDeferred {
 			continue
 		}
-		byID[rec.Findings[i].ID] = &rec.Findings[i]
+		index[rec.Issues[i].ID] = i
 		expected++
 	}
 	seen := map[string]bool{}
 	for _, r := range results {
-		if _, ok := byID[r.ID]; !ok {
-			return fmt.Errorf("coder referenced unknown finding id %q", r.ID)
+		if _, ok := index[r.ID]; !ok {
+			return fmt.Errorf("coder referenced unknown issue id %q", r.ID)
 		}
 		if seen[r.ID] {
-			return fmt.Errorf("coder returned finding id %q more than once", r.ID)
+			return fmt.Errorf("coder returned issue id %q more than once", r.ID)
 		}
 		seen[r.ID] = true
 		if r.Verdict != model.VerdictFixed && r.Verdict != model.VerdictRejected {
@@ -1196,20 +1215,18 @@ func applyVerdicts(rec *model.RoundRecord, results []model.FixResult) error {
 		}
 	}
 	if len(seen) != expected {
-		// Range the ordered findings slice, not the byID map, so the reported
-		// ids keep their r<round>.<n> order and the error text is deterministic.
+		// Range the ordered issues slice, not the index map, so reported ids keep
+		// their order and the error text is deterministic.
 		var missing []string
-		for _, f := range rec.Findings {
-			if f.Verdict != model.VerdictDeferred && !seen[f.ID] {
-				missing = append(missing, f.ID)
+		for _, it := range rec.Issues {
+			if it.Verdict != model.VerdictDeferred && !seen[it.ID] {
+				missing = append(missing, it.ID)
 			}
 		}
-		return fmt.Errorf("coder did not give a verdict for finding(s): %s", strings.Join(missing, ", "))
+		return fmt.Errorf("coder did not give a verdict for issue(s): %s", strings.Join(missing, ", "))
 	}
 	for _, r := range results {
-		f := byID[r.ID]
-		f.Verdict = r.Verdict
-		f.VerdictDetail = r.Detail
+		o.setIssueVerdict(rec, index[r.ID], r.Verdict, r.Detail)
 		if r.Verdict == model.VerdictFixed {
 			rec.Fixed++
 		} else {
@@ -1350,7 +1367,7 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
 		Round:          rec.Round,
-		Findings:       prompt.FormatFindings(activeFindings(rec)),
+		Findings:       prompt.FormatIssues(activeIssues(rec)),
 		Verification:   verify.FormatForCoder(blocking),
 		OutputContract: prompt.FixContract,
 	}
