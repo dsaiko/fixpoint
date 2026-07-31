@@ -3,8 +3,8 @@
 // canned response builders, and the throwaway git repository. Keeping the
 // mock-agent contract (count file, resp-N, side-N.sh, stdin drain) in one place
 // means a change to the protocol lands in both suites at once instead of
-// silently diverging. The count file gave way to atomic per-call ordinal-claim
-// directories so parallel reviewer lenses cannot collide on one ordinal.
+// silently diverging. The count file gave way to atomic per-call ordinal claims so
+// parallel reviewer lenses cannot collide on one ordinal.
 // Per-suite config wiring (a *config.Config vs a YAML file)
 // stays in each suite; only the reusable machinery lives here.
 package testfixture
@@ -27,12 +27,24 @@ import (
 // side-effect script (side-N.sh) before answering. It drains stdin so a
 // prompt-piping caller does not block.
 //
-// The ordinal is claimed with `mkdir n-<k>` in a loop: mkdir is atomic on POSIX
-// and fails if the directory already exists, so two mock processes running in
-// parallel (the orchestrator fans reviewer lenses out concurrently against one
-// shared respDir) can never both take the same ordinal -- a cat+printf on a
-// shared count file was a racy read-modify-write that lost invocations and served
-// one resp-N twice. Invocations counts these claim directories.
+// The ordinal is claimed with a NOCLOBBER redirect -- `( set -C; : > n-<k> )` in a
+// loop -- because the orchestrator fans reviewer lenses out concurrently against one
+// shared respDir, so two mock processes must never take the same ordinal. A shared
+// count file came first and was a racy read-modify-write that lost invocations and
+// served one resp-N twice; `mkdir n-<k>` replaced it and was correct in theory.
+//
+// It is a shell BUILTIN on purpose. `mkdir n-<k>` broke on Ubuntu 26.04, which ships
+// uutils coreutils (the Rust rewrite) as /usr/bin/mkdir: its mkdir checks for the
+// path and then creates it, so two concurrent invocations BOTH exit 0 (~78% of races
+// on one machine) while only one directory appears. It reports EEXIST correctly when
+// run sequentially, which is what made this so quiet. Two reviewers then shared
+// ordinal 1 and the coder was served a reviewer's canned response, failing with "no
+// <fix> block found in agent output" -- a test failure that looked like a bug in the
+// code under test. noclobber is O_EXCL inside the shell itself, so no external
+// coreutils implementation can weaken it. Go's own os.Mkdir is unaffected (verified
+// atomic on that machine), so production code that claims a directory is fine.
+//
+// Invocations counts these claim files.
 func WriteMockScript(t *testing.T, respDir string) string {
 	t.Helper()
 	script := filepath.Join(respDir, "mock.sh")
@@ -41,7 +53,10 @@ func WriteMockScript(t *testing.T, respDir string) string {
 		"n=0\n" +
 		"while :; do\n" +
 		"  n=$((n+1))\n" +
-		"  if mkdir \"$dir/n-$n\" 2>/dev/null; then break; fi\n" +
+		// The subshell scopes `set -C` and lets the losing racer's "File exists"
+		// message be dropped: dash writes it even when the redirect itself is
+		// silenced, and it would otherwise pollute every mock agent's stderr.
+		"  if ( set -C; : > \"$dir/n-$n\" ) 2>/dev/null; then break; fi\n" +
 		"done\n" +
 		"cat > /dev/null\n" + // drain the prompt from stdin
 		"if [ -x \"$dir/side-$n.sh\" ]; then \"$dir/side-$n.sh\"; fi\n" +
@@ -78,7 +93,9 @@ func WriteSide(t *testing.T, respDir string, n int, body string) {
 }
 
 // Invocations reports how many times the mock agent has been called by counting
-// the ordinal-claim directories (n-<k>) it creates atomically per call.
+// the ordinal-claim files (n-<k>) it creates atomically per call. A count lower
+// than the number of agent invocations the run made would mean the claim raced and
+// two processes shared an ordinal -- see WriteMockScript.
 func Invocations(t *testing.T, respDir string) int {
 	t.Helper()
 	entries, err := os.ReadDir(respDir)
@@ -90,7 +107,7 @@ func Invocations(t *testing.T, respDir string) int {
 	}
 	n := 0
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "n-") {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "n-") {
 			n++
 		}
 	}
