@@ -506,3 +506,52 @@ func TestLensName(t *testing.T) {
 		t.Errorf("LensName() = %q, want review-bugs", got)
 	}
 }
+
+// The mandatory credential excludes are the reason directory-mode collection never
+// lists a key file to a reviewer, and they live in code precisely so no config can
+// drop them ("a safety property must not be something a config can forget"). This
+// asserts the property that makes that true: whatever target.exclude says --
+// nothing, or a duplicate of one of them -- every mandatory pattern comes back.
+func TestEffectiveExcludesAlwaysCarriesTheMandatoryPatterns(t *testing.T) {
+	has := func(globs []string, want string) bool {
+		for _, g := range globs {
+			if g == want {
+				return true
+			}
+		}
+		return false
+	}
+	for _, tc := range []struct {
+		name    string
+		exclude []string
+	}{
+		{"empty", nil},
+		{"configured", []string{"vendor/**", "*.md"}},
+		{"duplicating a mandatory pattern", []string{"**/*.pem", "vendor/**"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Target{Exclude: tc.exclude}.EffectiveExcludes()
+			for _, want := range mandatoryExcludes {
+				if !has(got, want) {
+					t.Errorf("EffectiveExcludes() = %v, missing mandatory %q", got, want)
+				}
+			}
+			for _, want := range tc.exclude {
+				if !has(got, want) {
+					t.Errorf("EffectiveExcludes() = %v, dropped configured %q", got, want)
+				}
+			}
+			seen := map[string]bool{}
+			for _, g := range got {
+				if seen[g] {
+					t.Errorf("EffectiveExcludes() = %v, repeats %q", got, g)
+				}
+				seen[g] = true
+			}
+		})
+	}
+	// The list itself is the control, so an empty one is a broken control.
+	if len(mandatoryExcludes) == 0 {
+		t.Fatal("mandatoryExcludes is empty: nothing keeps credential files out of directory-mode collection")
+	}
+}

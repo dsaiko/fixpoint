@@ -69,6 +69,11 @@ const (
 	DiscardSalvageFailed = "salvage_verify_failed"
 	DiscardInterrupted   = "interrupted"
 	DiscardCommitFailed  = "commit_failed"
+	// DiscardSalvageCommitFailed is the round where a failed coder's partial work
+	// PASSED verification but its commit failed anyway (a failing signature, a
+	// wedged git): distinct from salvage_verify_failed, because the work was good
+	// and the reason it was not kept has nothing to do with the coder.
+	DiscardSalvageCommitFailed = "salvage_commit_failed"
 	// DiscardRejectedWithEdits is the round where the coder rejected every issue
 	// yet edited files: no verdict claims the edits, so they are stashed instead
 	// of committed.

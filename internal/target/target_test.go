@@ -1,6 +1,14 @@
 package target
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/dsaiko/fixpoint/internal/config"
+)
 
 func TestCompileGlobs(t *testing.T) {
 	cases := []struct {
@@ -48,5 +56,53 @@ func TestShortSHA(t *testing.T) {
 		if got := shortSHA(tc.sha); got != tc.want {
 			t.Errorf("shortSHA(%q) = %q, want %q", tc.sha, got, tc.want)
 		}
+	}
+}
+
+// ghRemote must compare a remote's OWNER/REPO identity for equality, not look for
+// the desired repository as a substring of the URL: acme/widget is a substring of
+// acme/widget-fork and acme/widgets, and if such a remote sorts first the PR base
+// OID would be fetched from the wrong repository -- failing even though a correct
+// remote is configured.
+func TestRemoteIdentity(t *testing.T) {
+	cases := []struct{ url, want string }{
+		{"https://github.com/acme/widget.git", "acme/widget"},
+		{"https://github.com/acme/widget", "acme/widget"},
+		{"https://github.com/Acme/Widget.git\n", "acme/widget"},
+		{"https://token:x-oauth-basic@github.com/acme/widget.git", "acme/widget"},
+		{"http://ghe.example.com/acme/widget.git", "acme/widget"},
+		{"ssh://git@github.com:22/acme/widget.git", "acme/widget"},
+		{"git@github.com:acme/widget.git", "acme/widget"},
+		{"git@github.com:acme/widget", "acme/widget"},
+		// The near misses a substring test would accept.
+		{"https://github.com/acme/widget-fork.git", "acme/widget-fork"},
+		{"https://github.com/acme/widgets.git", "acme/widgets"},
+		{"git@github.com:acme/widget-fork.git", "acme/widget-fork"},
+		// Not an owner/repo remote at all: no identity to compare, so ghRemote falls
+		// back to origin rather than matching by accident.
+		{"/srv/git/widget.git", ""},
+		{"file:///srv/git/acme/widget.git", ""},
+		{"https://github.com/acme", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := remoteIdentity(tc.url); got != tc.want {
+			t.Errorf("remoteIdentity(%q) = %q, want %q", tc.url, got, tc.want)
+		}
+	}
+}
+
+// The filesystem walk is the one collection path that runs no subprocess, so
+// nothing else carries the cancellation into it: a Ctrl-C during a directory-mode
+// run over a large non-git tree must stop the walk rather than finish it.
+func TestWalkFilesObservesContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, err := New(config.Target{Mode: "directory", Path: dir}).walkFiles(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("walkFiles() err = %v, want context.Canceled", err)
 	}
 }

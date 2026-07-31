@@ -292,3 +292,55 @@ func TestAbsorbMergesExactLineRegardlessOfTitle(t *testing.T) {
 		t.Fatalf("got %d issues, want 1: the same line is the same place", len(got))
 	}
 }
+
+// A later round's report re-anchors the issue. A reviewer-declared re-report of a
+// defect that MOVED (an earlier round's edits shifted it) arrives with the current
+// location; if it does not raise the severity, the issue would otherwise keep
+// pointing at the old code -- and FormatIssues prints only that canonical location,
+// so the coder would be sent to a line that no longer holds the defect.
+func TestAbsorbReanchorsOnALaterRoundReport(t *testing.T) {
+	l := NewLedger()
+	first := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "main.go", 10, "nil deref on the config pointer"),
+	})
+	if len(first) != 1 {
+		t.Fatalf("got %d issues, want 1", len(first))
+	}
+	moved := obs("b", "bugs", "bug", "low", "main.go", 120, "config pointer is still dereferenced when nil")
+	moved.IssueID = first[0].ID // the reviewer declares the re-report
+	moved.Description = "the fix moved the call but not the check"
+	moved.Suggestion = "check before dereferencing"
+
+	got := l.Absorb(2, []model.Finding{moved})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want the declared re-report to join the existing issue", len(got))
+	}
+	it := got[0]
+	if it.Line != 120 || it.File != "main.go" {
+		t.Errorf("Loc() = %s, want main.go:120: a re-report at a lower severity must still re-anchor", it.Loc())
+	}
+	if it.Title != moved.Title || it.Description != moved.Description || it.Suggestion != moved.Suggestion {
+		t.Errorf("issue text = %q/%q/%q, want this round's reading", it.Title, it.Description, it.Suggestion)
+	}
+	// Severity is what schedules the issue under the per-round cap, so it keeps the
+	// worst reading any round produced rather than following the newest one down.
+	if it.Severity != "high" {
+		t.Errorf("Severity = %q, want high preserved", it.Severity)
+	}
+}
+
+// Within ONE round the worst-severity reading still wins, so the result does not
+// depend on which reviewer finished first.
+func TestAbsorbDoesNotReanchorWithinARound(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "main.go", 10, "nil deref on the config pointer"),
+		obs("b", "tests", "bug", "low", "main.go", 10, "config pointer may be nil"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1", len(got))
+	}
+	if got[0].Title != "nil deref on the config pointer" || got[0].Severity != "high" {
+		t.Errorf("issue = %q (%s), want the worst reading within the round", got[0].Title, got[0].Severity)
+	}
+}

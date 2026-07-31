@@ -216,10 +216,19 @@ func (c *Collector) listFiles(ctx context.Context) (int, string, error) {
 	if err != nil {
 		return 0, "", fmt.Errorf("target.exclude: %w", err)
 	}
-	if c.IsGitRepo(ctx) {
+	// Only a CONFIRMED non-worktree falls back to the filesystem walk. The two
+	// paths do not review the same set of files -- the walk ignores .gitignore --
+	// so treating a canceled, timed-out, or otherwise failed probe as "not a git
+	// repository" would silently change the review's scope, and on Ctrl-C would
+	// spend the cancellation walking the tree instead of stopping.
+	isRepo, err := c.IsGitRepo(ctx)
+	if err != nil {
+		return 0, "", err
+	}
+	if isRepo {
 		return c.listGitFiles(ctx, excludes)
 	}
-	return c.walkFiles(excludes)
+	return c.walkFiles(ctx, excludes)
 }
 
 // listGitFiles asks git for the scope instead of walking the filesystem:
@@ -354,13 +363,19 @@ func (c *Collector) skipFile(rel string, excludes []*regexp.Regexp) bool {
 
 // walkFiles is the non-git fallback: target.path may be any directory, so scope
 // comes from the filesystem and only target.exclude narrows it.
-func (c *Collector) walkFiles(excludes []*regexp.Regexp) (int, string, error) {
+//
+// It observes ctx: a large tree can take a long time to walk, and Ctrl-C has to
+// reach the one collection path that runs no subprocess of its own.
+func (c *Collector) walkFiles(ctx context.Context, excludes []*regexp.Regexp) (int, string, error) {
 	count := 0
 	var sb strings.Builder
 	root := c.cfg.Path
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
@@ -417,9 +432,39 @@ func (c *Collector) GitClean(ctx context.Context, exclude ...string) (bool, erro
 }
 
 // IsGitRepo reports whether target.path is inside a git work tree.
-func (c *Collector) IsGitRepo(ctx context.Context) bool {
-	_, err := c.git(ctx, "rev-parse", "--git-dir")
-	return err == nil
+//
+// It returns an error rather than a bare false for an OPERATIONAL failure --
+// cancellation, the operation timeout, an unreadable .git -- because every caller
+// does something materially different with "no git here": directory collection
+// switches to a filesystem walk that ignores .gitignore, and the untrusted-config
+// guard skips its check entirely. Collapsing a failed probe into false would let a
+// canceled Ctrl-C or a wedged git silently change what gets reviewed, and silently
+// skip a security check, with no diagnostic.
+func (c *Collector) IsGitRepo(ctx context.Context) (bool, error) {
+	out, err := c.git(ctx, "rev-parse", "--is-inside-work-tree")
+	if err == nil {
+		return strings.TrimSpace(out) == "true", nil
+	}
+	// A confirmed answer: git ran and said this is not a repository (exit 128), or
+	// git is not installed at all -- in neither case is there a work tree to list
+	// from, so the walk is the right scope and not a silent diversion.
+	if ctx.Err() == nil && (notARepository(err) || errors.Is(err, exec.ErrNotFound)) {
+		return false, nil
+	}
+	return false, fmt.Errorf("determine whether %s is a git work tree: %w", c.cfg.Path, err)
+}
+
+// notARepository reports whether a failed git command failed because there is no
+// repository, as opposed to failing for any other reason. git answers that with
+// exit 128 plus a specific message; the exit status alone covers every fatal, so
+// both are required before a failure is read as an answer.
+func notARepository(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 128 {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not a git repository") || strings.Contains(msg, "not a work tree")
 }
 
 // AtRepoRoot reports whether target.path is the top level of its git
@@ -458,7 +503,7 @@ func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 		if want := strings.ToLower(strings.TrimSpace(nwo)); want != "" {
 			for _, r := range remotes {
 				if u, err := c.git(ctx, "remote", "get-url", r); err == nil &&
-					strings.Contains(strings.ToLower(u), want) {
+					remoteIdentity(u) == want {
 					return r, nil
 				}
 			}
@@ -472,14 +517,65 @@ func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 	return remotes[0], nil
 }
 
+// remoteIdentity reduces a git remote URL to the lowercased "owner/repo" identity
+// gh reports as nameWithOwner, or "" when the URL is not of that shape (a local
+// path, a file:// URL, a nested path). It exists so ghRemote compares identities
+// for EQUALITY: a substring test on the URL matches acme/widget inside
+// acme/widget-fork or acme/widgets, and if such a remote sorts first the PR base
+// would be fetched from the wrong repository.
+//
+// Both supported URL forms are handled: scheme://[user[:pass]@]host[:port]/owner/repo[.git]
+// and the scp-like [user@]host:owner/repo[.git]. Only the optional .git suffix is
+// stripped, since it is the only one git itself treats as decoration.
+func remoteIdentity(raw string) string {
+	s := strings.TrimSpace(raw)
+	var path string
+	if _, rest, ok := strings.Cut(s, "://"); ok {
+		// Everything up to the first slash is the authority (credentials, host, port).
+		_, p, ok := strings.Cut(rest, "/")
+		if !ok {
+			return ""
+		}
+		path = p
+	} else if _, p, ok := strings.Cut(s, ":"); ok {
+		// scp-like syntax has no port, so the whole remainder is the path.
+		path = p
+	} else {
+		return ""
+	}
+	path = strings.Trim(path, "/")
+	path = strings.TrimSuffix(path, ".git")
+	owner, repo, ok := strings.Cut(strings.Trim(path, "/"), "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return ""
+	}
+	return strings.ToLower(owner + "/" + repo)
+}
+
 // Commit stages everything except the excluded paths and commits with the
 // given header and body. Returns the new commit SHA, or "" if there was
 // nothing to commit.
+//
+// The excluded paths are left exactly as they were, in the worktree AND in the
+// index. A non-nil error with a non-empty SHA means the commit landed but that
+// restoration did not; the error names the SHA, since callers treat an error as
+// "no commit".
 func (c *Collector) Commit(ctx context.Context, header, body string, exclude ...string) (string, error) {
 	if clean, err := c.GitClean(ctx, exclude...); err != nil {
 		return "", err
 	} else if clean {
 		return "", nil
+	}
+	// Snapshot the excluded paths' index entries before staging touches them.
+	// GitClean deliberately ignores the exclusion, so a run may legitimately start
+	// with STAGED changes under an excluded path -- and the add/reset pair below
+	// walks the caller's real index: `git add -A` replaces a staged-only version
+	// with the worktree version, and the reset then collapses the entry to HEAD.
+	// Both are needed to keep the excluded path out of the commit, so the staged
+	// version is preserved here and put back afterwards instead.
+	staged, err := c.stagedExcluded(ctx, exclude)
+	if err != nil {
+		return "", err
 	}
 	// Stage everything under the repo root, then unstage the excluded paths.
 	// Passing excludes to `git add` is not viable: it refuses a pathspec that
@@ -498,6 +594,116 @@ func (c *Collector) Commit(ctx context.Context, header, body string, exclude ...
 			return "", fmt.Errorf("git reset excluded %s: %w: %s", e, err, out)
 		}
 	}
+	sha, cerr := c.commitStaged(ctx, header, body)
+	// Put the excluded paths' pre-run index entries back, whether or not the commit
+	// itself succeeded. The commit above carried their HEAD version, so restoring the
+	// entries afterwards reproduces exactly the staged diff the run started with,
+	// without ever committing an excluded path.
+	// Cancellation must not be why the entries stay collapsed: on a dead context every
+	// git command fails instantly, and commitStaged may well have recovered a commit
+	// that landed. Restore on a fresh context then, still bounded per operation by
+	// gitOpTimeout, exactly as committedSHA re-reads HEAD.
+	rctx := ctx //nolint:contextcheck // deliberate fresh context below: ctx may be canceled, but the excluded paths' index entries must still be put back
+	if rctx.Err() != nil {
+		rctx = context.Background()
+	}
+	if rerr := c.restoreStagedExcluded(rctx, exclude, staged); rerr != nil {
+		if cerr != nil {
+			return "", fmt.Errorf("%w; and the staged state of the excluded path(s) could not be restored: %w", cerr, rerr)
+		}
+		// The commit landed: name it, because the returned error means the caller
+		// cannot report the SHA itself.
+		return sha, fmt.Errorf("commit %s landed but the staged state of the excluded path(s) could not be restored: %w", shortSHA(sha), rerr)
+	}
+	return sha, cerr
+}
+
+// stagedExcluded returns the raw `ls-files --stage -z` records for the index
+// entries currently under the excluded paths, or "" when there is nothing whose
+// loss the add/reset pair in Commit could cause. It is deliberately empty in the
+// ordinary case -- an index that matches HEAD there is reproduced exactly by the
+// reset -- so a normal round commit runs no index surgery at all.
+func (c *Collector) stagedExcluded(ctx context.Context, exclude []string) (string, error) {
+	if len(exclude) == 0 {
+		return "", nil
+	}
+	// No HEAD yet (an unborn branch): the reset in Commit fails before any commit
+	// lands, so there is no round commit whose staging could destroy anything.
+	if !c.hasHEAD(ctx) {
+		return "", nil
+	}
+	specs := literalPathspec(exclude)
+	diff, err := c.git(ctx, append([]string{"diff-index", "--cached", "--name-only", "-z", "HEAD", "--"}, specs...)...)
+	if err != nil {
+		return "", fmt.Errorf("check for staged changes under the excluded path(s): %w: %s", err, diff)
+	}
+	if strings.Trim(diff, "\x00") == "" {
+		return "", nil
+	}
+	out, err := c.git(ctx, append([]string{"ls-files", "--stage", "-z", "--"}, specs...)...)
+	if err != nil {
+		return "", fmt.Errorf("read index entries for the excluded path(s): %w: %s", err, out)
+	}
+	return out, nil
+}
+
+// hasHEAD reports whether HEAD resolves to a commit. A false covers both an unborn
+// branch and a failed lookup, which is deliberate here: the caller only uses it to
+// decide whether there is any pre-commit index state worth preserving, and every
+// later git command in Commit surfaces a real failure on its own.
+func (c *Collector) hasHEAD(ctx context.Context) bool {
+	out, err := c.git(ctx, "rev-parse", "--verify", "-q", "HEAD")
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
+// restoreStagedExcluded puts back the index entries stagedExcluded captured. The
+// removals and the re-adds go through ONE `update-index --index-info` run, so the
+// index is rewritten once: a partial restore is what would actually lose the
+// staged version. A mode of 0 tells --index-info to drop a path, which is how an
+// entry staging left behind (an untracked file under a non-ignored exclusion) is
+// removed, and how a staged deletion is reproduced rather than resurrected.
+func (c *Collector) restoreStagedExcluded(ctx context.Context, exclude []string, staged string) error {
+	if staged == "" {
+		return nil
+	}
+	current, err := c.git(ctx, append([]string{"ls-files", "--stage", "-z", "--"}, literalPathspec(exclude)...)...)
+	if err != nil {
+		return fmt.Errorf("read index entries for the excluded path(s): %w: %s", err, current)
+	}
+	var sb strings.Builder
+	for _, rec := range strings.Split(current, "\x00") {
+		// Each record is "<mode> <sha> <stage>\t<path>"; the path is everything after
+		// the first tab, verbatim under -z.
+		if _, path, ok := strings.Cut(rec, "\t"); ok && path != "" {
+			sb.WriteString("0 " + nullOID + "\t" + path + "\x00")
+		}
+	}
+	sb.WriteString(staged) // already NUL-terminated records
+	if out, err := c.gitInput(ctx, sb.String(), "update-index", "-z", "--index-info"); err != nil {
+		return fmt.Errorf("git update-index: %w: %s", err, out)
+	}
+	return nil
+}
+
+// nullOID is git's all-zero object name, the placeholder --index-info wants
+// beside a mode of 0 (which is what actually removes the path).
+const nullOID = "0000000000000000000000000000000000000000"
+
+// literalPathspec renders exclude paths as :(literal) pathspecs, matching the
+// exclusion used everywhere else so a path with pathspec metacharacters (a logs
+// dir literally named "logs[1]") is treated as that exact path.
+func literalPathspec(exclude []string) []string {
+	specs := make([]string, 0, len(exclude))
+	for _, e := range exclude {
+		specs = append(specs, ":(literal)"+e)
+	}
+	return specs
+}
+
+// commitStaged commits whatever Commit has staged, returning the new SHA. It is
+// separate so Commit's excluded-path restoration runs on every exit from the
+// commit itself, including the cancellation-recovery paths below.
+func (c *Collector) commitStaged(ctx context.Context, header, body string) (string, error) {
 	// Capture HEAD before committing so a cancellation landing between the commit
 	// and the SHA lookup below can still be recognized as a successful commit.
 	// rev-parse fails on an unborn HEAD (an empty repo); that is a valid snapshot
@@ -824,7 +1030,17 @@ func (c *Collector) git(ctx context.Context, args ...string) (string, error) {
 	return c.run(ctx, "git", append(append([]string{}, gitSafeConfig...), args...)...)
 }
 
+// gitInput runs a git command that reads its input from stdin (currently only
+// `update-index --index-info`), with the same hardening as every other git call.
+func (c *Collector) gitInput(ctx context.Context, stdin string, args ...string) (string, error) {
+	return c.runInput(ctx, strings.NewReader(stdin), "git", append(append([]string{}, gitSafeConfig...), args...)...)
+}
+
 func (c *Collector) run(ctx context.Context, name string, args ...string) (string, error) {
+	return c.runInput(ctx, nil, name, args...)
+}
+
+func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, args ...string) (string, error) {
 	// Honor the run's context so Ctrl-C actually terminates the subprocess
 	// (exec.Command ignored it, so a hung git/gh survived cancellation and the
 	// orchestrator could never reach its next ctx check), and bound the
@@ -863,6 +1079,7 @@ func (c *Collector) run(ctx context.Context, name string, args ...string) (strin
 	errBuf := agent.NewBoundedBuffer(maxRunOutput, agent.TruncationMarker(maxRunOutput))
 	cmd.Stdout = outBuf
 	cmd.Stderr = errBuf
+	cmd.Stdin = stdin
 	err := cmd.Run()
 	stdout := outBuf.String()
 	if err != nil {

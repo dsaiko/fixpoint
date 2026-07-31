@@ -229,6 +229,14 @@ func (l *Ledger) create(round int, obs model.Finding) int {
 // severity. Severity is the worst any reviewer assigned, not the first or the
 // average: it decides scheduling under the per-round cap, and one reviewer
 // spotting that a defect is exploitable should not be outvoted by two who did not.
+//
+// A LATER round's report re-anchors the issue: its location and text describe the
+// code as it is now. Without that, a reviewer-declared re-report of a defect that
+// moved (the fix shifted it, or an earlier round edited around it) at equal or
+// lower severity would leave the canonical file and line pointing at the old
+// code -- and FormatIssues prints only that canonical location, so the coder would
+// be sent to a line that no longer holds the defect. Severity still keeps the worst
+// value ever seen, because that is what drives scheduling.
 func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 	it := &l.issues[idx]
 	obs.IssueID = it.ID
@@ -236,8 +244,23 @@ func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 	// the whole run, and forRound needs to tell this round's reports from earlier
 	// ones to scope the corroboration claim.
 	obs.Round = round
+	reanchor := round > it.LastRound
 	it.Observations = append(it.Observations, *obs)
 	it.LastRound = round
+	if reanchor {
+		// Only the FIRST observation of a new round re-anchors: within one round the
+		// worst-severity rule below decides between simultaneous readings, which keeps
+		// the result independent of reviewer completion order.
+		if obs.File != "" {
+			it.File = obs.File
+			it.Line = obs.Line
+		}
+		if obs.Title != "" {
+			it.Title = obs.Title
+			it.Description = obs.Description
+			it.Suggestion = obs.Suggestion
+		}
+	}
 	if model.WorseSeverity(obs.Severity, it.Severity) {
 		it.Severity = obs.Severity
 		it.Title = obs.Title // keep the title and body from the worst reading
@@ -262,6 +285,22 @@ func (l *Ledger) Record(id, verdict, detail string) {
 	if verdict == model.VerdictDeferred {
 		it.Deferrals++
 	}
+}
+
+// Reopen withdraws a verdict already recorded for an issue and returns it to open,
+// for the case where the work behind a "fixed" verdict did not survive: the
+// verification correction reverted the round's edits, so nothing was committed and
+// the issue is still there. Without this the ledger would carry a fixed status no
+// commit backs, which the run summary reports and the next round's history repeats.
+func (l *Ledger) Reopen(id string) {
+	idx, ok := l.byID[id]
+	if !ok {
+		return
+	}
+	it := &l.issues[idx]
+	it.Status = model.StatusOpen
+	it.Verdict = ""
+	it.VerdictDetail = ""
 }
 
 // Deferrals reports how many rounds an issue has been deferred by the cap. This

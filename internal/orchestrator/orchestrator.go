@@ -314,7 +314,13 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// resulting findings to the PR.
 	requireCleanTree := !o.cfg.Loop.ReviewOnly || o.cfg.Target.Mode == config.ModePR
 	if !o.cfg.Loop.ReviewOnly {
-		if !o.collector.IsGitRepo(ctx) {
+		// A probe that could not answer is not an answer: surface it rather than
+		// reporting a repository as missing because git was canceled or wedged.
+		isRepo, err := o.collector.IsGitRepo(ctx)
+		if err != nil {
+			return err
+		}
+		if !isRepo {
 			return fmt.Errorf("target.path %s is not a git repository; fix rounds commit each round and require git (use review_only for a report-only run)", o.cfg.Target.Path)
 		}
 	}
@@ -454,7 +460,16 @@ func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context) error {
 	touchesGit := o.cfg.Target.Mode == config.ModeGitDiff ||
 		o.cfg.Target.Mode == config.ModePR ||
 		(!o.cfg.Loop.ReviewOnly && o.cfg.Target.Mode == config.ModeDirectory)
-	if !touchesGit || !o.collector.IsGitRepo(ctx) {
+	if !touchesGit {
+		return nil
+	}
+	// A failed probe must not silently skip this check: it decides whether a
+	// checkout with execution-capable git config is refused.
+	isRepo, err := o.collector.IsGitRepo(ctx)
+	if err != nil {
+		return err
+	}
+	if !isRepo {
 		return nil
 	}
 	keys, err := o.collector.UnsafeConfig(ctx)
@@ -735,6 +750,40 @@ func (o *Orchestrator) setIssueVerdict(rec *model.RoundRecord, i int, verdict, d
 			rec.Findings[j].VerdictDetail = detail
 		}
 	}
+}
+
+// reopenFixedIssues withdraws this round's fixed verdicts and returns how many it
+// withdrew, for the one case where a recorded fix did not land: the verification
+// correction reverted every edit, so there is nothing to commit. The verdict is
+// cleared everywhere setIssueVerdict wrote it -- the round's issue, the ledger, and
+// every observation that reported it -- and rec.Fixed is reset, so the summary, the
+// commit-less round, and the history the next reviewers read agree that the issue is
+// still open. An empty verdict renders as UNRESOLVED, which is exactly the
+// instruction reviewers need: report it again if it is still there.
+//
+// Rejections are left alone: a rejection is a judgement, not an edit, so reverting
+// edits does not withdraw it.
+func (o *Orchestrator) reopenFixedIssues(rec *model.RoundRecord) int {
+	reopened := 0
+	for i := range rec.Issues {
+		it := &rec.Issues[i]
+		if it.Verdict != model.VerdictFixed {
+			continue
+		}
+		it.Verdict = ""
+		it.VerdictDetail = ""
+		it.Status = model.StatusOpen
+		o.ledger.Reopen(it.ID)
+		for j := range rec.Findings {
+			if rec.Findings[j].IssueID == it.ID {
+				rec.Findings[j].Verdict = ""
+				rec.Findings[j].VerdictDetail = ""
+			}
+		}
+		reopened++
+	}
+	rec.Fixed = 0
+	return reopened
 }
 
 // coderWork reports whether one of the round's issues is work for THIS round's
@@ -1469,13 +1518,28 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 		if ctx.Err() != nil {
 			return false, o.reconcileInterrupt(rec.Round, runErr) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
 		}
+		// Both failures are the answer: runErr says why the coder stopped, cerr says
+		// why its verified partial work could not be kept. Returning only runErr made
+		// the API error and the run summary report a malformed output or a timeout while
+		// omitting the actual reason nothing landed (a failing commit signature, say).
+		base := fmt.Errorf("coder round %d failed: %w; and the partial work it left could not be committed: %w", rec.Round, runErr, cerr)
 		stashMsg := fmt.Sprintf("fixpoint: recovered edits from failed round %d", rec.Round)
-		if stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...); serr != nil {
-			return false, fmt.Errorf("coder round %d failed: %w; and the modified working tree could not be reconciled (it is left dirty): %w", rec.Round, runErr, serr)
-		} else if stashed {
+		stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...)
+		ev := model.JournalRoundDiscarded{
+			Reason:  model.DiscardSalvageCommitFailed,
+			Stashed: stashed,
+			Error:   base.Error(),
+		}
+		if serr != nil {
+			ev.Error = fmt.Sprintf("%v; tree left dirty: %v", base, serr)
+			o.journal(model.EvRoundDiscarded, rec.Round, ev)
+			return false, fmt.Errorf("%w; and the modified working tree could not be reconciled (it is left dirty): %w", base, serr)
+		}
+		o.journal(model.EvRoundDiscarded, rec.Round, ev)
+		if stashed {
 			o.logf("round %d: coder failed and the salvage commit also failed (%v); edits stashed (recover with `git stash`), clean tree restored", rec.Round, cerr)
 		}
-		return false, fmt.Errorf("coder round %d failed: %w", rec.Round, runErr)
+		return false, base
 	}
 	if sha == "" {
 		// Clean tree: the coder did nothing before failing -- a genuine error.
@@ -1848,7 +1912,13 @@ func (o *Orchestrator) verifyAndCommit(ctx context.Context, rec *model.RoundReco
 	// tree after verification passed. Commit would then no-op and the round would
 	// report fixes that never landed, so say so rather than passing silently.
 	if postClean, cerr := o.collector.GitClean(ctx, o.gitExclude...); cerr == nil && postClean {
-		o.logf("round %d: nothing left to commit -- the verification correction reverted the round's edits; the findings stay open", rec.Round)
+		// The findings only STAY open if they are put back: the coder's fixed verdicts
+		// are already recorded on the round, mirrored onto its observations and applied
+		// to the ledger, so leaving them would make the summary and the next round's
+		// reviewer history claim fixes that no commit contains -- contradicting the log
+		// line below and letting the run converge on work that was reverted.
+		reopened := o.reopenFixedIssues(rec)
+		o.logf("round %d: nothing left to commit -- the verification correction reverted the round's edits; %d finding(s) reopened", rec.Round, reopened)
 		rec.CoderError = "verification correction reverted the round's edits; nothing was committed"
 		return nil
 	}

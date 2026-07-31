@@ -692,11 +692,29 @@ func TestRunSalvageCommitFailsStashSucceeds(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "coder round 1 failed") {
 		t.Fatalf("Run() err = %v, want coder-failure error after stash recovery", err)
 	}
+	// The commit failure is the OTHER half of the answer: the partial work passed
+	// verification, so why it did not land has nothing to do with the coder, and
+	// reporting only the coder's malformed output hides the real reason.
+	for _, want := range []string{"could not be committed", "git commit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run() err = %v, want it to also report the commit failure (%q)", err, want)
+		}
+	}
 	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Errorf("working tree left dirty after failed commit; want clean (stashed): %q", status)
 	}
 	if list := gitRun(t, f.repo, "stash", "list"); !strings.Contains(list, "failed round 1") {
 		t.Errorf("expected a stash entry for the recovered edits, got %q", list)
+	}
+	// The stash exists because of a discard nobody asked for, so the journal has to
+	// say which one -- and this reason is distinct from salvage_verify_failed: the
+	// work was good.
+	d := f.discarded(model.DiscardSalvageCommitFailed)
+	if !d.Stashed {
+		t.Error("round_discarded.stashed = false, want the recovered edits recorded as stashed")
+	}
+	if !strings.Contains(d.Error, "could not be committed") {
+		t.Errorf("round_discarded.error = %q, want the failed salvage commit recorded", d.Error)
 	}
 }
 
@@ -2430,6 +2448,51 @@ func TestVerifyRetrySucceedsAndCommits(t *testing.T) {
 	}
 	if len(sum.Rounds[0].Verify) == 0 {
 		t.Error("verification results must be recorded on the round for the summary")
+	}
+}
+
+// A correction attempt that reverts the round's edits entirely leaves nothing to
+// commit -- so the "fixed" verdicts the coder already reported claim work that no
+// commit contains. They must be withdrawn: otherwise the summary, and the history
+// the next round's reviewers read, both say FIXED (which tells them to verify the
+// fix rather than re-report it) for a defect still sitting in the tree untouched.
+func TestVerifyCorrectionRevertingEverythingReopensTheIssues(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	before := f.commitCount()
+
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+	// The correction throws away everything the round did -- the breakage and the
+	// edit -- so the gate passes over a tree identical to the round's starting point.
+	testfixture.WriteSide(f.t, f.respDir, 3, fmt.Sprintf("#!/bin/sh\nrm -f '%s'\ngit -C '%s' checkout -- .\n",
+		filepath.Join(f.repo, "broken.txt"), f.repo))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "reverted it all"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() = %v, want the reverted round to end the run without an error", err)
+	}
+	if got := f.commitCount(); got != before {
+		t.Errorf("commit count = %d, want %d: a reverted round has nothing to commit", got, before)
+	}
+	r1 := sum.Rounds[0]
+	if r1.Fixed != 0 {
+		t.Errorf("round 1 fixed = %d, want 0: no fix landed", r1.Fixed)
+	}
+	for _, it := range r1.Issues {
+		if it.Verdict == model.VerdictFixed || it.StatusOrDefault() != model.StatusOpen {
+			t.Errorf("issue %s = %q/%q, want it reopened", it.ID, it.Verdict, it.StatusOrDefault())
+		}
+	}
+	// The observations carry the verdict into the reviewers' history, so they have to
+	// be withdrawn too -- an empty verdict renders as UNRESOLVED, which is what asks
+	// for the re-report.
+	for _, fnd := range r1.Findings {
+		if fnd.Verdict == model.VerdictFixed {
+			t.Errorf("observation %s still claims FIXED in the history handed to reviewers", fnd.ID)
+		}
 	}
 }
 

@@ -53,11 +53,50 @@ func writeFile(t *testing.T, dir, name, content string) {
 }
 
 func TestIsGitRepo(t *testing.T) {
-	if !New(config.Target{Path: gitRepo(t)}).IsGitRepo(t.Context()) {
-		t.Error("IsGitRepo() = false for a git repo")
+	if ok, err := New(config.Target{Path: gitRepo(t)}).IsGitRepo(t.Context()); err != nil || !ok {
+		t.Errorf("IsGitRepo() = %v, %v, want true for a git repo", ok, err)
 	}
-	if New(config.Target{Path: t.TempDir()}).IsGitRepo(t.Context()) {
-		t.Error("IsGitRepo() = true for a plain directory")
+	// A plain directory is a CONFIRMED answer, not a failure: directory collection
+	// falls back to the filesystem walk on it.
+	if ok, err := New(config.Target{Path: t.TempDir()}).IsGitRepo(t.Context()); err != nil || ok {
+		t.Errorf("IsGitRepo() = %v, %v, want false with no error for a plain directory", ok, err)
+	}
+}
+
+// A probe that could not answer must NOT be reported as "no repository": directory
+// collection would silently switch to the filesystem walk, which ignores
+// .gitignore and so reviews a different set of files, and on Ctrl-C would spend the
+// cancellation walking a large tree instead of stopping.
+func TestIsGitRepoOperationalFailureIsAnError(t *testing.T) {
+	repo := gitRepo(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if ok, err := New(config.Target{Path: repo}).IsGitRepo(ctx); err == nil || ok {
+		t.Errorf("IsGitRepo() = %v, %v on a canceled context, want false with an error", ok, err)
+	}
+
+	// A git that fails for a reason other than "not a repository" is likewise not an
+	// answer. Exit 1 with no such message is the shape of an unreadable repository.
+	shimGit(t, "rev-parse", "    echo 'fatal: unable to read the index' >&2\n    exit 1")
+	if ok, err := New(config.Target{Path: repo}).IsGitRepo(t.Context()); err == nil || ok {
+		t.Errorf("IsGitRepo() = %v, %v with a failing rev-parse, want false with an error", ok, err)
+	}
+}
+
+// The same diversion, seen from the collection path: a failed probe must fail the
+// round rather than quietly changing scope to the .gitignore-blind walk.
+func TestCollectDirectoryDoesNotFallBackOnAProbeFailure(t *testing.T) {
+	repo := gitRepo(t)
+	writeFile(t, repo, ".gitignore", "ignored/\n")
+	writeFile(t, repo, "ignored/vendored.go", "package vendored\n")
+	shimGit(t, "rev-parse", "    echo 'fatal: unable to read the index' >&2\n    exit 1")
+
+	out, err := New(config.Target{Mode: "directory", Path: repo}).Collect(t.Context())
+	if err == nil {
+		t.Fatalf("Collect() = %q, nil; want a failed git-worktree probe to fail collection", out)
+	}
+	if strings.Contains(out, "vendored.go") {
+		t.Errorf("collection fell back to the filesystem walk and picked up a gitignored file:\n%s", out)
 	}
 }
 
@@ -826,6 +865,68 @@ func TestCommitExcludesTrackedFileUnderIgnoredLogs(t *testing.T) {
 	}
 }
 
+// A round commit must leave the excluded paths' INDEX alone too, not just keep them
+// out of the commit. GitClean deliberately ignores the exclusion, so a run may
+// legitimately start with staged changes under an excluded path -- and Commit walks
+// the caller's real index: `git add -A` replaces the staged version with the
+// worktree version and the reset then collapses the entry to HEAD, so a staged-only
+// version would be destroyed by a commit that is supposed to leave the path
+// untouched (the blob is reachable from nothing afterwards).
+func TestCommitPreservesStagedStateUnderExcludedPaths(t *testing.T) {
+	repo := gitRepo(t)
+	writeFile(t, repo, "logs/run.log", "committed\n")
+	git(t, repo, "add", "logs/run.log")
+	git(t, repo, "commit", "-q", "-m", "a tracked log")
+
+	// Staged one thing, then modified further in the worktree: the two differ, so
+	// only an exact restore keeps both sides.
+	writeFile(t, repo, "logs/run.log", "staged\n")
+	git(t, repo, "add", "logs/run.log")
+	stagedBlob := strings.Fields(git(t, repo, "ls-files", "--stage", "--", "logs/run.log"))[1]
+	writeFile(t, repo, "logs/run.log", "worktree\n")
+	writeFile(t, repo, "fixed.go", "package main\n") // the round's own work
+
+	c := New(config.Target{Path: repo})
+	sha, err := c.Commit(t.Context(), "fixpoint: round 1", "body", "logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha == "" {
+		t.Fatal("expected a commit for fixed.go")
+	}
+	if shown := git(t, repo, "show", "--name-only", "--format=", "HEAD"); strings.Contains(shown, "logs/run.log") {
+		t.Errorf("the round commit carried an excluded path:\n%s", shown)
+	}
+	if got := strings.Fields(git(t, repo, "ls-files", "--stage", "--", "logs/run.log"))[1]; got != stagedBlob {
+		t.Errorf("staged blob = %s, want %s: the round commit destroyed the staged version of an excluded path", got, stagedBlob)
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "logs", "run.log")); err != nil || string(b) != "worktree\n" {
+		t.Errorf("worktree content = %q (%v), want it untouched", b, err)
+	}
+}
+
+// The same guarantee for an excluded path staged as an ADDITION: it is absent from
+// HEAD, so restoring it means re-adding an entry the reset removed outright.
+func TestCommitPreservesStagedAdditionUnderExcludedPaths(t *testing.T) {
+	repo := gitRepo(t)
+	writeFile(t, repo, "logs/new.log", "staged addition\n")
+	git(t, repo, "add", "logs/new.log")
+	stagedBlob := strings.Fields(git(t, repo, "ls-files", "--stage", "--", "logs/new.log"))[1]
+	writeFile(t, repo, "fixed.go", "package main\n")
+
+	c := New(config.Target{Path: repo})
+	if _, err := c.Commit(t.Context(), "fixpoint: round 1", "body", "logs"); err != nil {
+		t.Fatal(err)
+	}
+	if shown := git(t, repo, "show", "--name-only", "--format=", "HEAD"); strings.Contains(shown, "logs/new.log") {
+		t.Errorf("the round commit carried an excluded path:\n%s", shown)
+	}
+	entry := git(t, repo, "ls-files", "--stage", "--", "logs/new.log")
+	if !strings.Contains(entry, stagedBlob) {
+		t.Errorf("index entry = %q, want the staged addition %s preserved", entry, stagedBlob)
+	}
+}
+
 func TestStashDirty(t *testing.T) {
 	repo := gitRepo(t)
 	c := New(config.Target{Path: repo})
@@ -1353,6 +1454,80 @@ func TestCollectDirectoryHonorsGitignore(t *testing.T) {
 	}
 }
 
+// credentialFiles are one path per mandatory-exclude pattern shape, at the root and
+// nested, plus the ordinary source file that must survive the filtering. Directory
+// mode renders this listing into every reviewer prompt, and reviewers run
+// unsandboxed and read whatever path they are pointed at, so a credential path
+// appearing here is the realistic leak: a reviewer steered by injected content in
+// the same tree quotes the key into a finding, which is persisted and echoed into
+// the fix commit body.
+var credentialFiles = []string{
+	".env", ".env.local", "svc/.env.production",
+	"key.pem", "certs/server.pem", "certs/bundle.p12", "certs/bundle.pfx",
+	"server.key", "certs/tls.key",
+	"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "home/.ssh/id_ed25519",
+	".npmrc", ".netrc", ".pgpass", "home/.netrc",
+	"credentials", "home/.aws/credentials",
+	"secrets.kdbx", "vault/secrets.kdbx",
+}
+
+// writeCredentialTree writes every credential shape plus one ordinary source file
+// into dir.
+func writeCredentialTree(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range credentialFiles {
+		writeFile(t, dir, name, "SECRET=leaked\n")
+	}
+	writeFile(t, dir, "pkg/a.go", "package pkg\n")
+}
+
+// assertNoCredentials checks the collected material lists the source file and none
+// of the credential paths.
+func assertNoCredentials(t *testing.T, material string) {
+	t.Helper()
+	for _, name := range credentialFiles {
+		if strings.Contains(material, name) {
+			t.Errorf("collected material names credential file %q:\n%s", name, material)
+		}
+	}
+	if !strings.Contains(material, "pkg/a.go") {
+		t.Errorf("collected material dropped an ordinary source file:\n%s", material)
+	}
+}
+
+// The mandatory credential excludes are a safety property, which is why they live
+// in code rather than config ("a safety property must not be something a config can
+// forget"). This is the test that keeps them working: an EMPTY target.exclude, no
+// .gitignore, and every shape of credential path in the tree. It covers BOTH
+// collection paths, because they filter at different call sites -- listGitFiles via
+// skipFile, walkFiles via matchAny -- and a change to either one, or to compileGlobs'
+// "**/" expansion, would otherwise leave the suite green while every directory-mode
+// prompt started naming the operator's key files.
+func TestCollectDirectoryAlwaysExcludesCredentialFiles(t *testing.T) {
+	t.Run("git", func(t *testing.T) {
+		repo := gitRepo(t)
+		writeCredentialTree(t, repo)
+		// TRACKED, which is the harder case: --cached lists index entries no ignore
+		// rule can remove, so only the mandatory excludes stand between a tracked
+		// id_rsa fixture and the reviewer prompt.
+		git(t, repo, "add", "-A")
+		material, err := New(config.Target{Mode: "directory", Path: repo, Exclude: nil}).Collect(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertNoCredentials(t, material)
+	})
+	t.Run("walk", func(t *testing.T) {
+		dir := t.TempDir()
+		writeCredentialTree(t, dir)
+		material, err := New(config.Target{Mode: "directory", Path: dir, Exclude: nil}).Collect(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertNoCredentials(t, material)
+	})
+}
+
 // target.exclude still applies on top of .gitignore, for committed material that
 // is not worth reviewing (vendored deps, fixtures).
 func TestCollectDirectoryGitExcludeGlobsStillApply(t *testing.T) {
@@ -1485,8 +1660,8 @@ func TestCollectDirectoryOversizedEntryFails(t *testing.T) {
 // gitScanNUL drains stdout and then Waits, so a canceled run must be terminated by
 // the Cancel hook rather than left to finish: listGitFiles is called with the run's
 // context and Ctrl-C has to reach it. Asserted on listGitFiles directly, because
-// listFiles' IsGitRepo probe fails under a canceled context and would silently
-// divert to the filesystem walk.
+// listFiles' work-tree probe is itself a git command and fails first under a
+// canceled context, so it would never reach the listing.
 func TestListGitFilesCanceledContextReturnsPromptly(t *testing.T) {
 	repo := gitRepo(t)
 	c := New(config.Target{Mode: "directory", Path: repo})
