@@ -15,7 +15,7 @@ import (
 // Layout of a config bundle. A bundle is a directory holding task configs at its
 // root plus these two subdirectories, so one name resolves in one category:
 //
-//	<bundle>/full-review.yaml     a task config, referenced as "full-review"
+//	<bundle>/fix-code.yaml        a task config, referenced as "fix-code"
 //	<bundle>/prompts/fix.md       a prompt, referenced as "fix"
 //	<bundle>/agents/claude.yaml   an agent, referenced as "claude"
 const (
@@ -67,7 +67,7 @@ func systemBundleDirs() []string {
 // from dir for a marker: an existing bundle directory, or a git repository root.
 // Everything relative in a run -- the review target and the artifact directory --
 // resolves against this, NOT against the working directory, so `fixpoint
-// full-review` behaves identically from the repository root and from three
+// fix-code` behaves identically from the repository root and from three
 // directories down. Anchoring to the working directory instead would silently
 // review only the subtree you happened to stand in and scatter artifact
 // directories through the project.

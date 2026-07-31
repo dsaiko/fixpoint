@@ -247,14 +247,14 @@ Requirements:
 make build          # compile the fixpoint binary
 make check          # static validation of the configuration (no agents invoked)
 make check-live     # static validation + ping every configured agent
-make review-only    # one review round, coder never invoked (no edits; pr mode still checks out the PR branch)
+make review-code    # one review round, coder never invoked (no edits; pr mode still checks out the PR branch)
 make run            # the full review->fix cycle (runs tests and vet first)
 ```
 
 Or directly:
 
 ```sh
-./fixpoint <config-name> [flags]      # e.g. ./fixpoint review-only
+./fixpoint <config-name> [flags]      # e.g. ./fixpoint review-code
 ./fixpoint --config path/to/task.yaml [flags]
 ```
 
@@ -282,6 +282,18 @@ Configuration is a **bundle**: task configs at the root of a directory plus
 See [config/README.md](config/README.md) for the search path, `extends` merge
 rules, and the security model; [config/defaults.yaml](config/defaults.yaml) is
 the commented reference for the settings themselves.
+
+Shipped configs are named `<verb>-<scope>`, with the verb first because it is the
+safety property: a `review-` config never invokes the coder and cannot modify a
+file, a `fix-` config edits your working tree and needs a trust assertion on the
+command line.
+
+| Config | What it does |
+|---|---|
+| [review-code](config/review-code.yaml) | Review a whole project once, no edits. The safe starting point. |
+| [review-pr](config/review-pr.yaml) | Review a GitHub pull request; review-only by default. |
+| [fix-code](config/fix-code.yaml) | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
+| [defaults](config/defaults.yaml) | Shared base the others extend; not runnable on its own. |
 
 Bundles are searched most-specific first — `<project>/config/`, `~/.fixpoint/`,
 the OS per-user config dir, then the package-installed bundle — **per file**, so a

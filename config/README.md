@@ -3,7 +3,7 @@
 A bundle is a directory holding task configs at its root plus two
 subdirectories, so one bare name resolves in one category:
 
-    full-review.yaml       a task config, referenced as `full-review`
+    fix-code.yaml          a task config, referenced as `fix-code`
     prompts/fix.md         a prompt, referenced as `fix`
     agents/claude.yaml     an agent, referenced as `claude`
 
@@ -40,12 +40,23 @@ a later upgrade rather than being ignored.
 
 ## Shipped configs
 
+Names are `<verb>-<scope>`. The **verb comes first because it is the safety
+property**: a `review-` config never invokes the coder and so never modifies a
+file, while a `fix-` config edits your working tree and needs an explicit trust
+assertion on the command line. Naming that way puts the consequential half of the
+name where you read it first, and keeps the two groups apart in `fixpoint --list`
+and in shell completion. The scope says what is examined.
+
 | Config | What it does |
 |---|---|
-| `review-only` | One review round, no edits. The safe starting point. |
-| `full-review` | The full review → fix → commit loop. Needs `-trusted-target`. |
-| `pr-review` | Review a GitHub pull request; review-only by default. |
+| `review-code` | Review a whole project once, no edits. The safe starting point. |
+| `review-pr` | Review a GitHub pull request; review-only by default. |
+| `fix-code` | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
 | `defaults` | Shared base — not runnable on its own; `fixpoint --list` marks it as such. Inherit it with `extends: defaults`. |
+
+Keep new configs in the scheme: `fix-tests`, `review-design`, `fix-design`. A
+`fix-` and a `review-` config over the same scope should share a lens panel, so
+the read-only one previews what the fixing one would hand the coder.
 
 `extends` is per-key and **one level deep**: keys the task config sets win, keys
 it omits are inherited, and a **list it sets replaces** the inherited list rather

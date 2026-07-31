@@ -1,6 +1,8 @@
-# One review round, no edits. The safe starting point: the coder is never
-# invoked, so nothing is modified and no trust gate is needed.
-description: One review round, no edits. The safe starting point.
+# One review round over a whole project's code, no edits. The safe starting
+# point: the coder is never invoked, so nothing is modified and no trust gate is
+# needed. Same lens panel as fix-code, so it also previews what fix-code would
+# be handed.
+description: Review a whole project once, no edits. The safe starting point.
 
 extends: defaults
 

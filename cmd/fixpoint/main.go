@@ -198,7 +198,7 @@ func configName(names []string, flagPath string) (string, error) {
 
 // logSource reports where every file the run is built from was resolved. These
 // files decide what agents are told to do and which trust gates apply, so a run
-// that says only "loaded full-review" hides the thing most worth knowing: whether
+// that says only "loaded fix-code" hides the thing most worth knowing: whether
 // a project-local prompt shadowed the installed one.
 func logSource(logf func(string, ...any), l *config.Loaded) {
 	logf("project root: %s", l.ProjectRoot)
@@ -337,7 +337,7 @@ func allowProjectSuppliedExec(l *config.Loaded, logf func(string, ...any)) bool 
 
 // parseArgs parses flags that may appear BEFORE or AFTER the positional config
 // name, collecting the positionals. Go's flag package stops at the first non-flag
-// argument, so `fixpoint --check full-review --trusted-target` would otherwise
+// argument, so `fixpoint --check fix-code --trusted-target` would otherwise
 // silently drop the trailing flag -- and that flag is the gate permitting file
 // edits, which makes losing it the worst possible parse failure. Looping over
 // Parse consumes each positional and resumes flag parsing after it, so every
