@@ -48,6 +48,56 @@ type Orchestrator struct {
 	// ledger groups raw observations into issues and carries their state across
 	// rounds, so a problem two agents both reported costs one slot, not two.
 	ledger *issue.Ledger
+	// overrides names the CLI assertions that shaped this run, for the journal:
+	// fix rounds are authorized by flag, never by config, so the bundle files alone
+	// do not explain why editing was permitted.
+	overrides []string
+	// journalWarn keeps a broken journal to ONE warning. A full disk would
+	// otherwise emit a line per transition and bury the run's real output.
+	journalWarn sync.Once
+}
+
+// openJournal writes the run's first record and reports where the journal lives.
+//
+// It is called from the middle of run(), not the top, because this is the first
+// point at which writing a TRANSITION record is safe. The symlink check that
+// immediately precedes it is what establishes that an artifact write lands inside
+// the lexical logs exclusion rather than somewhere a later `git add -A` would sweep
+// into a commit -- and every record from here on is followed by rounds that commit.
+// Journaling the gates above would mean writing through exactly the redirected path
+// that check exists to refuse.
+//
+// Run's closing EvRunFinished is deliberately NOT gated this way, so a run refused
+// by a gate still leaves a one-record journal naming the refusal. That write carries
+// no such exposure for the same reason the unconditional summary write does not:
+// nothing commits after it.
+func (o *Orchestrator) openJournal() {
+	o.journal(model.EvRunStarted, 0, model.JournalRunStarted{
+		Config:        o.source.Config,
+		Mode:          string(o.cfg.Target.Mode),
+		Path:          o.cfg.Target.Path,
+		Strategy:      string(o.cfg.Roles.Review.Strategy),
+		ReviewOnly:    o.cfg.Loop.ReviewOnly,
+		MaxIterations: o.cfg.Loop.MaxIterations,
+		Overrides:     o.overrides,
+	})
+	if p := o.logs.JournalPath(); p != "" {
+		o.logf("journal: %s", p)
+	}
+}
+
+// journal records one state transition, best-effort.
+//
+// A journal failure never fails the run. The journal is an audit artifact; losing
+// it must not discard fixes that already passed verification and were committed.
+// The inverse -- failing the run to protect the audit trail -- would make the
+// observability feature the most likely cause of a lost round.
+func (o *Orchestrator) journal(typ string, round int, data any) {
+	if err := o.logs.Journal(typ, round, data); err != nil {
+		o.journalWarn.Do(func() {
+			o.logf("WARNING: run journal unavailable (%v); the run continues without it", err)
+		})
+	}
 }
 
 // New sets up the log store, parses every referenced prompt and renders it once
@@ -58,7 +108,13 @@ type Orchestrator struct {
 // New does NOT perform the config-level startup validation (agents defined and
 // on PATH, strategy satisfiable): that lives in config.Validate, which the
 // caller must run beforehand.
-func New(cfg *config.Config, source config.Source, logf func(string, ...any)) (*Orchestrator, error) {
+//
+// It takes the whole *config.Loaded rather than a Config and a Source, because a
+// run is defined by all three of its parts: the effective configuration, the files
+// it was built from, and the flag assertions that authorized it. Splitting them at
+// this boundary is how the last one went unrecorded.
+func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
+	cfg, source := l.Config, l.Source
 	logs, err := logstore.New(cfg.Logs)
 	if err != nil {
 		return nil, err
@@ -101,6 +157,7 @@ func New(cfg *config.Config, source config.Source, logf func(string, ...any)) (*
 		templates: templates,
 		logf:      logf,
 		ledger:    issue.NewLedger(),
+		overrides: l.Overrides.Applied(),
 	}
 	// Exclude the template's literal prefix, not the rendered path: the rendered
 	// path changes every run (and every round), so only the static base is a
@@ -206,6 +263,14 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 			sum.Error = err.Error()
 		}
 	}
+	// Journal the outcome BEFORE writing the summary, so the ordering on disk
+	// matches reality: the summary is a whole-run rewrite that can itself fail,
+	// and its failure is exactly when the journal has to already hold the verdict.
+	o.journal(model.EvRunFinished, 0, model.JournalRunFinished{
+		Termination: sum.Termination,
+		Rounds:      len(sum.Rounds),
+		Error:       sum.Error,
+	})
 	if mdPath, werr := o.logs.Summary(sum); werr != nil {
 		o.logf("WARNING: failed to write summary: %v", werr)
 	} else {
@@ -283,6 +348,8 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	if err := o.checkLogsNotSymlinked(); err != nil {
 		return err
 	}
+
+	o.openJournal()
 
 	// The pre-Prepare clean check above protects the checkout itself, but
 	// Prepare then switches branches (pr mode runs gh pr checkout) without
@@ -424,9 +491,19 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	if !o.cfg.Loop.ReviewOnly && len(rec.Assignments) == 0 {
 		return false, fmt.Errorf("round %d has no reviewer assignments to verify the fix; configure at least one recurring (non-once) reviewer lens", round)
 	}
+	// Under strategy: rotate the assignment differs every round, and it decides who
+	// confirmed a clean result -- which is the whole reason rotation exists.
+	o.journal(model.EvRoundStarted, round, model.JournalRoundStarted{
+		Assignments: journalAssignments(rec.Assignments),
+	})
 	o.review(ctx, &rec, material, sum.Rounds)
 	sum.Rounds = append(sum.Rounds, rec)
 	recP := &sum.Rounds[len(sum.Rounds)-1]
+	o.journal(model.EvReviewFinished, round, model.JournalReviewFinished{
+		Observations: len(recP.Findings),
+		Advisory:     len(recP.Advisory),
+		Errors:       recP.ReviewErrors,
+	})
 
 	// Group observations into issues before anything counts them. Two reviewers
 	// agreeing is corroboration, not two units of work: without this, agreement
@@ -437,6 +514,11 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		o.logf("round %d: %d observation(s) grouped into %d issue(s) (%d corroborating report(s))",
 			round, len(recP.Findings), len(recP.Issues), dup)
 	}
+	o.journal(model.EvIssuesAggregated, round, model.JournalIssuesAggregated{
+		Observations: len(recP.Findings),
+		Issues:       len(recP.Issues),
+		Corroborated: corroboratedCount(recP.Issues),
+	})
 
 	o.logf("round %d: %d finding(s), %d advisory, %d reviewer error(s)",
 		round, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
@@ -524,11 +606,22 @@ func (o *Orchestrator) deferOverCap(rec *model.RoundRecord) {
 		return o.ledger.Deferrals(rec.Issues[idx[a]].ID) > o.ledger.Deferrals(rec.Issues[idx[b]].ID)
 	})
 	detail := fmt.Sprintf("deferred: fix round capped at %d issue(s) by loop.max_findings_per_round (gains priority each round it is deferred)", maxN)
+	deferred := make([]string, 0, len(idx)-maxN)
 	for _, i := range idx[maxN:] {
 		o.setIssueVerdict(rec, i, model.VerdictDeferred, detail)
+		deferred = append(deferred, rec.Issues[i].ID)
 	}
 	o.logf("round %d: %d issue(s) exceed the per-round cap of %d; %d deferred to later rounds",
 		rec.Round, len(rec.Issues), maxN, len(rec.Issues)-maxN)
+	// Record WHICH issues waited, not just how many: aging is meant to bound the
+	// wait, and the bug it fixed (a finding reported three times and never once
+	// scheduled) is only visible by tracking an id across rounds.
+	o.journal(model.EvIssuesDeferred, rec.Round, model.JournalIssuesDeferred{
+		Cap:      maxN,
+		Active:   maxN,
+		Deferred: len(deferred),
+		IDs:      deferred,
+	})
 }
 
 // setIssueVerdict records a verdict on one of the round's issues, in the ledger,
@@ -584,6 +677,13 @@ func (o *Orchestrator) checkCleanStreak(rec *model.RoundRecord, round int, sum *
 		*cleanStreak = 0
 		o.logf("round %d had reviewer errors; clean streak reset", round)
 	}
+	// Convergence is decided here, so the streak is journaled here -- including the
+	// reset case, where a clean round produced no progress because a reviewer failed.
+	o.journal(model.EvRoundClean, round, model.JournalRoundClean{
+		Streak:       *cleanStreak,
+		Needed:       o.cfg.Loop.CleanRoundsToStop,
+		ReviewErrors: len(rec.ReviewErrors),
+	})
 	if *cleanStreak >= o.cfg.Loop.CleanRoundsToStop {
 		sum.Termination = model.TermConverged
 		return true
@@ -646,6 +746,32 @@ func (o *Orchestrator) finalizeFix(ctx context.Context, rec *model.RoundRecord, 
 	}
 	sum.Termination = model.TermAllRejected
 	return true, nil
+}
+
+// journalAssignments renders the round's lens-to-agent mapping in the same
+// "lens→agent" form the summary uses, so the two artifacts read alike.
+func journalAssignments(asgs []model.Assignment) []string {
+	out := make([]string, 0, len(asgs))
+	for _, a := range asgs {
+		s := config.LensName(a.Lens) + "->" + a.Agent
+		if a.Advisory {
+			s += " (advisory)"
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// corroboratedCount is how many issues more than one agent reported independently.
+// It is the panel's strongest evidence and is invisible in any raw count.
+func corroboratedCount(issues []model.Issue) int {
+	n := 0
+	for _, it := range issues {
+		if len(it.Agents()) > 1 {
+			n++
+		}
+	}
+	return n
 }
 
 // roundReviewErr aggregates a round's reviewer failures into one error.
@@ -1066,6 +1192,18 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	md := logstore.RenderFixMD(coder.Agent, rec.Round, rec.Findings, out.Notes, runErr)
 	o.logStep("fix", coder.Agent, promptName, rec.Round, runErr == nil, out, md, res)
 	o.logf("%s done (%s, output %s)", label, res.Duration.Round(time.Second), logstore.SizeDesc(len(res.Stdout)+len(res.Stderr)))
+	// The coder's self-report, recorded as such. Whether any of it survives is
+	// decided by the verify_finished record that follows.
+	fixEv := model.JournalFixFinished{
+		Agent:    coder.Agent,
+		Issues:   len(active),
+		Fixed:    rec.Fixed,
+		Rejected: rec.Rejected,
+	}
+	if runErr != nil {
+		fixEv.Error = runErr.Error()
+	}
+	o.journal(model.EvFixFinished, rec.Round, fixEv)
 	// A context cancellation (e.g. Ctrl-C) is the user asking to stop, not a
 	// salvageable coder failure: committing the coder's edits would defy that
 	// request. This holds even when the coder returned valid output (runErr ==
@@ -1096,9 +1234,21 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 // own operation deadline.
 func (o *Orchestrator) reconcileInterrupt(round int, cause error) error {
 	stashMsg := fmt.Sprintf("fixpoint: interrupted round %d", round)
-	if _, serr := o.collector.StashDirty(context.Background(), stashMsg, o.gitExclude...); serr != nil {
+	stashed, serr := o.collector.StashDirty(context.Background(), stashMsg, o.gitExclude...)
+	ev := model.JournalRoundDiscarded{
+		Reason:  model.DiscardInterrupted,
+		Stashed: stashed,
+		Error:   cause.Error(),
+	}
+	if serr != nil {
+		// The tree is LEFT DIRTY. Recording that is the single most useful thing the
+		// journal can do here: it is the one exit where fixpoint knowingly leaves
+		// unreconciled edits behind, and the summary may not get written at all.
+		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", cause, serr)
+		o.journal(model.EvRoundDiscarded, round, ev)
 		return fmt.Errorf("coder round %d interrupted: %w; and the modified working tree could not be reconciled (it is left dirty): %w: %w", round, cause, serr, errInterruptedTreeDirty)
 	}
+	o.journal(model.EvRoundDiscarded, round, ev)
 	return cause
 }
 
@@ -1109,9 +1259,19 @@ func (o *Orchestrator) reconcileInterrupt(round int, cause error) error {
 // original commit error to surface, or a combined error if the stash also fails.
 func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, commitErr error) error {
 	stashMsg := fmt.Sprintf("fixpoint: recovered edits from failed commit in round %d", round)
-	if stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...); serr != nil {
+	stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...)
+	ev := model.JournalRoundDiscarded{
+		Reason:  model.DiscardCommitFailed,
+		Stashed: stashed,
+		Error:   commitErr.Error(),
+	}
+	if serr != nil {
+		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", commitErr, serr)
+		o.journal(model.EvRoundDiscarded, round, ev)
 		return fmt.Errorf("round %d commit failed: %w; and the modified working tree could not be reconciled (it is left dirty): %w", round, commitErr, serr)
-	} else if stashed {
+	}
+	o.journal(model.EvRoundDiscarded, round, ev)
+	if stashed {
 		o.logf("round %d: commit failed (%v); edits stashed (recover with `git stash`), clean tree restored", round, commitErr)
 	}
 	return commitErr
@@ -1137,7 +1297,7 @@ func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, com
 // failed, so re-invoking it would most likely burn another timeout. Verification
 // here is a single pass, and a failure preserves the work and stops the run.
 func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRecord, active []model.Issue, runErr error) (salvaged bool, err error) {
-	if blocking, verr := o.verifyPass(ctx, rec, " (partial work from the failed coder)"); verr != nil {
+	if blocking, verr := o.verifyPass(ctx, rec, model.VerifyAttemptSalvage); verr != nil {
 		return false, verr
 	} else if len(blocking) > 0 {
 		return false, o.rejectUnverifiedSalvage(ctx, rec, runErr, blocking)
@@ -1177,6 +1337,13 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 	rec.CoderError = runErr.Error()
 	rec.CommitSHA = sha
 	o.logf("round %d: coder failed (%v) but had modified the tree; partial work committed as %s -- continuing, next round re-reviews", rec.Round, runErr, sha[:12])
+	// Partial: committed with UNKNOWN verdicts, because the coder died before
+	// reporting them. A reader must be able to tell this commit apart from a normal
+	// round, since its Fixed count is not a claim anyone made.
+	o.journal(model.EvRoundCommitted, rec.Round, model.JournalRoundCommitted{
+		SHA:     sha,
+		Partial: true,
+	})
 	return true, nil
 }
 
@@ -1284,6 +1451,14 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 	o.logf("verify: capturing baseline (%d command(s))", len(o.cfg.Verify.Commands))
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
 	o.verifyBaseline = rep
+	// The baseline is what makes every later "blocking" judgement meaningful under
+	// no_regressions, so it is recorded rather than only logged: a reader cannot
+	// otherwise tell whether a failing check was this run's fault.
+	o.journal(model.EvVerifyBaseline, 0, model.JournalVerifyFinished{
+		Policy: string(o.cfg.Verify.Policy),
+		Passed: rep.Passed(),
+		Checks: journalChecks(rep.Results),
+	})
 	if rep.Passed() {
 		o.logf("verify baseline: all checks pass")
 		return
@@ -1302,7 +1477,7 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 // with the failure output in hand is unlikely to succeed on the third attempt, and
 // an unbounded repair loop is how a run silently burns an entire budget.
 func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord) (blocked bool, err error) {
-	blocking, err := o.verifyPass(ctx, rec, "")
+	blocking, err := o.verifyPass(ctx, rec, model.VerifyAttemptInitial)
 	if err != nil || len(blocking) == 0 {
 		return false, err
 	}
@@ -1312,8 +1487,36 @@ func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord) 
 		return false, err
 	}
 	rec.VerifyRetried = true
-	blocking, err = o.verifyPass(ctx, rec, " (after correction)")
+	blocking, err = o.verifyPass(ctx, rec, model.VerifyAttemptCorrection)
 	return len(blocking) > 0, err
+}
+
+// journalChecks reduces gate results to the journal's per-check shape, dropping
+// each command's output: the journal is an index of what happened, and the full
+// output is already in the round's own artifacts.
+func journalChecks(results []model.VerifyResult) []model.JournalCheck {
+	out := make([]model.JournalCheck, 0, len(results))
+	for _, r := range results {
+		out = append(out, model.JournalCheck{
+			Name:     r.Name,
+			Passed:   r.Passed,
+			Optional: r.Optional,
+			ExitCode: r.ExitCode,
+			Error:    r.Err,
+		})
+	}
+	return out
+}
+
+// blockingNames lists the checks that block a commit under the active policy --
+// narrower than "the failing checks", since no_regressions permits a check that was
+// already failing at the baseline to keep failing.
+func blockingNames(blocking []verify.Result) []string {
+	out := make([]string, 0, len(blocking))
+	for _, r := range blocking {
+		out = append(out, r.Name)
+	}
+	return out
 }
 
 // verifyPass runs the verification commands once over the current working tree
@@ -1324,17 +1527,40 @@ func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord) 
 // Extracted so every path that can produce a commit gates on the SAME check.
 // verifyRound adds one bounded coder correction on top of this; the salvage path
 // deliberately does not (see salvagePartialFix).
-func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, label string) ([]verify.Result, error) {
+//
+// attempt is one of model.VerifyAttempt*: it names the occasion for the journal and
+// selects the log line's human suffix, so the machine and human records of one gate
+// run cannot drift apart.
+func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, attempt string) ([]verify.Result, error) {
 	if !o.cfg.Verify.Enabled() {
 		return nil, nil
 	}
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
 	rec.Verify = rep.Results
-	o.logf("round %d verify%s: %s", rec.Round, label, rep.Summary())
+	o.logf("round %d verify%s: %s", rec.Round, verifyAttemptLabel[attempt], rep.Summary())
+	blocking := rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)
+	// Journal before the cancellation check: the gate DID run and its verdict is the
+	// one fact in the loop no model produced, so an interruption immediately after
+	// must not be the reason it goes unrecorded.
+	o.journal(model.EvVerifyFinished, rec.Round, model.JournalVerifyFinished{
+		Attempt:  attempt,
+		Policy:   string(o.cfg.Verify.Policy),
+		Passed:   len(blocking) == 0,
+		Checks:   journalChecks(rep.Results),
+		Blocking: blockingNames(blocking),
+	})
 	if ctx.Err() != nil {
 		return nil, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
 	}
-	return rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline), nil
+	return blocking, nil
+}
+
+// verifyAttemptLabel is the human suffix for each gate occasion, kept beside the
+// machine names so one is never updated without the other.
+var verifyAttemptLabel = map[string]string{
+	model.VerifyAttemptInitial:    "",
+	model.VerifyAttemptCorrection: " (after correction)",
+	model.VerifyAttemptSalvage:    " (partial work from the failed coder)",
 }
 
 // rejectUnverifiedRound discards a round whose edits do not survive the gate:
@@ -1355,6 +1581,11 @@ func (o *Orchestrator) rejectUnverifiedRound(ctx context.Context, rec *model.Rou
 	stashed, serr := o.collector.StashDirty(ctx, fmt.Sprintf("fixpoint: round %d discarded (verification failed)", rec.Round), o.gitExclude...)
 	base := fmt.Errorf("round %d: verification failed after a correction attempt (%s); the round was not committed",
 		rec.Round, strings.Join(failed, ", "))
+	o.journal(model.EvRoundDiscarded, rec.Round, model.JournalRoundDiscarded{
+		Reason:  model.DiscardVerifyFailed,
+		Stashed: stashed,
+		Checks:  failed,
+	})
 	if serr != nil {
 		return fmt.Errorf("%w; and the working tree could not be restored: %w", base, serr)
 	}
@@ -1381,6 +1612,12 @@ func (o *Orchestrator) rejectUnverifiedSalvage(ctx context.Context, rec *model.R
 	base := fmt.Errorf("coder round %d failed (%w) and the partial work it left does not pass verification (%s); it was not committed",
 		rec.Round, runErr, strings.Join(names, ", "))
 	stashed, serr := o.collector.StashDirty(ctx, fmt.Sprintf("fixpoint: unverified partial work from failed round %d", rec.Round), o.gitExclude...)
+	o.journal(model.EvRoundDiscarded, rec.Round, model.JournalRoundDiscarded{
+		Reason:  model.DiscardSalvageFailed,
+		Stashed: stashed,
+		Checks:  names,
+		Error:   runErr.Error(),
+	})
 	if serr != nil {
 		return fmt.Errorf("%w; and the working tree could not be restored: %w", base, serr)
 	}
@@ -1472,5 +1709,9 @@ func (o *Orchestrator) verifyAndCommit(ctx context.Context, rec *model.RoundReco
 	if sha != "" {
 		o.logf("round %d committed: %s", round, sha[:12])
 	}
+	o.journal(model.EvRoundCommitted, rec.Round, model.JournalRoundCommitted{
+		SHA:   sha,
+		Fixed: rec.Fixed,
+	})
 	return nil
 }

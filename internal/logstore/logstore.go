@@ -30,6 +30,11 @@ type Store struct {
 
 	mkdir    sync.Once // Step runs from parallel reviewer goroutines
 	mkdirErr error
+
+	// The journal is append-only and its sequence numbers must be gap-free, so
+	// concurrent appends serialize here rather than relying on O_APPEND ordering.
+	journalMu  sync.Mutex
+	journalSeq int
 }
 
 // New prepares a store for one run by rendering the run-level part of the

@@ -104,33 +104,32 @@ Flags:
 		return 2
 	}
 
-	// Resolve and default without validating yet: the flags below override config
-	// and change what a valid configuration is (e.g. -review-only exempts an
-	// all-once lens list from the recurring-lens rule), so validation must run
-	// against the EFFECTIVE configuration, after the overrides are applied.
-	loaded, err := config.LoadBundle(resolver, name, projectRoot)
+	// Compile the effective configuration in one step: the flags are folded in by
+	// LoadBundle, because an override changes what a valid configuration is (e.g.
+	// -review-only exempts an all-once lens list from the recurring-lens rule) and
+	// validation must therefore see the post-override value.
+	loaded, err := config.LoadBundle(resolver, name, projectRoot, config.Overrides{
+		ReviewOnly:        *reviewOnly,
+		MaxIterations:     *maxIter,
+		AllowUntrustedFix: *allowUntrustedFix,
+		TrustedTarget:     *trustedTarget,
+	})
 	if err != nil {
 		logf("config: %v", err)
 		return 1
 	}
 	cfg := loaded.Config
 	logSource(logf, loaded)
-	overrides{
-		reviewOnly:        *reviewOnly,
-		maxIter:           *maxIter,
-		allowUntrustedFix: *allowUntrustedFix,
-		trustedTarget:     *trustedTarget,
-	}.apply(cfg)
 	if !allowProjectSuppliedExec(loaded, logf) {
 		return 1
 	}
 
-	if err := cfg.Validate(); err != nil {
-		logf("config: %s: %v", loaded.Source.Config, err)
+	if err := loaded.Validate(); err != nil {
+		logf("config: %v", err)
 		return 1
 	}
 
-	o, err := orchestrator.New(cfg, loaded.Source, logf)
+	o, err := orchestrator.New(loaded, logf)
 	if err != nil {
 		logf("startup validation: %v", err)
 		return 1
@@ -212,6 +211,13 @@ func logSource(logf func(string, ...any), l *config.Loaded) {
 	for _, name := range sortedKeys(l.Source.Prompts) {
 		logf("  prompt %s: %s", name, l.Source.Prompts[name])
 	}
+	// The files above no longer explain the effective run on their own: a flag can
+	// enable fix rounds on a config that does not ask for them. Record the
+	// assertions beside their provenance, so reading a run back answers "why was
+	// this permitted?" and not just "which config was it?".
+	if applied := l.Overrides.Applied(); len(applied) > 0 {
+		logf("  overridden by flags: %s", strings.Join(applied, ", "))
+	}
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -283,37 +289,6 @@ func listPorcelain(r *config.Resolver, stdout, stderr io.Writer) int {
 // sanitizeField flattens a value so it cannot break the tab-separated format.
 func sanitizeField(s string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\t", " ")), " ")
-}
-
-// overrides are the CLI flags that change the effective configuration. They are
-// applied before validation, because they change what a valid configuration is
-// (-review-only exempts an all-once lens list from the recurring-lens rule).
-type overrides struct {
-	reviewOnly        bool
-	maxIter           int
-	allowUntrustedFix bool
-	trustedTarget     bool
-}
-
-func (o overrides) apply(cfg *config.Config) {
-	// The booleans can only force ON. Turning a gate off is the config's job, so a
-	// flag can never silently weaken a run someone configured deliberately.
-	if o.reviewOnly {
-		cfg.Loop.ReviewOnly = true
-	}
-	if o.allowUntrustedFix {
-		cfg.Loop.AllowUntrustedFix = true
-	}
-	if o.trustedTarget {
-		cfg.Loop.TrustedTarget = true
-	}
-	// Any nonzero value applies, including a negative one: an explicit
-	// -max-iterations -1 must reach Validate so its must-not-be-negative rule
-	// rejects the bad input rather than being swallowed as "no flag supplied".
-	// Zero stays "use config", per the flag help.
-	if o.maxIter != 0 {
-		cfg.Loop.MaxIterations = o.maxIter
-	}
 }
 
 // allowProjectSuppliedExec gates bundle files that were resolved from inside the

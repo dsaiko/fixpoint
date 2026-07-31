@@ -80,7 +80,7 @@ func newFixture(t *testing.T, loop config.Loop) *fixture {
 
 func (f *fixture) orchestrator() *Orchestrator {
 	f.t.Helper()
-	o, err := New(f.cfg, config.Source{Config: "test.yaml"}, f.t.Logf)
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, f.t.Logf)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestRunRefusesDirtyTreeAfterPrepare(t *testing.T) {
 func TestNewRejectsLogsDirAtTargetRoot(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
 	f.cfg.Logs.Dir = f.cfg.Target.Path
-	if _, err := New(f.cfg, config.Source{Config: "test.yaml"}, t.Logf); err == nil || !strings.Contains(err.Error(), "logs.dir") {
+	if _, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, t.Logf); err == nil || !strings.Contains(err.Error(), "logs.dir") {
 		t.Fatalf("New() = %v, want logs.dir rejection", err)
 	}
 }
@@ -1234,7 +1234,7 @@ func TestRunInterruptedAfterSuccessfulCoderDoesNotCommit(t *testing.T) {
 			cancel()
 		}
 	}
-	o, err := New(f.cfg, config.Source{Config: "test.yaml"}, logf)
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1615,7 +1615,7 @@ func TestWarnArgModePrompts(t *testing.T) {
 		t.Helper()
 		var lines []string
 		logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
-		o, err := New(f.cfg, config.Source{Config: "test.yaml"}, logf)
+		o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1708,7 +1708,7 @@ func TestNewValidatesCrossRolePlaceholders(t *testing.T) {
 	t.Run("fix-only placeholder in a review prompt", func(t *testing.T) {
 		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
 		f.cfg.Roles.Review.Prompts[0].Prompt = writePrompt(t, "{{.Findings}}")
-		if _, err := New(f.cfg, config.Source{Config: "test.yaml"}, t.Logf); err == nil {
+		if _, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, t.Logf); err == nil {
 			t.Fatal("New() = nil, want render error for fix-only .Findings in a review prompt")
 		}
 	})
@@ -1716,7 +1716,7 @@ func TestNewValidatesCrossRolePlaceholders(t *testing.T) {
 	t.Run("review-only placeholder in the coder prompt", func(t *testing.T) {
 		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
 		f.cfg.Roles.Coder.Prompt = writePrompt(t, "{{.Target}}")
-		if _, err := New(f.cfg, config.Source{Config: "test.yaml"}, t.Logf); err == nil {
+		if _, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, t.Logf); err == nil {
 			t.Fatal("New() = nil, want render error for review-only .Target in the coder prompt")
 		}
 	})
@@ -1726,7 +1726,7 @@ func TestNewValidatesCrossRolePlaceholders(t *testing.T) {
 		shared := writePrompt(t, "{{.Findings}}") // valid for coder, invalid for review
 		f.cfg.Roles.Coder.Prompt = shared
 		f.cfg.Roles.Review.Prompts[0].Prompt = shared
-		if _, err := New(f.cfg, config.Source{Config: "test.yaml"}, t.Logf); err == nil {
+		if _, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, t.Logf); err == nil {
 			t.Fatal("New() = nil, want rejection of a fix-only placeholder in a prompt also used for review")
 		}
 	})
@@ -1736,7 +1736,7 @@ func TestNewValidatesCrossRolePlaceholders(t *testing.T) {
 		shared := writePrompt(t, "Round {{.Round}}\n{{.OutputContract}}")
 		f.cfg.Roles.Coder.Prompt = shared
 		f.cfg.Roles.Review.Prompts[0].Prompt = shared
-		if _, err := New(f.cfg, config.Source{Config: "test.yaml"}, t.Logf); err != nil {
+		if _, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, t.Logf); err != nil {
 			t.Fatalf("New() = %v, want nil for a prompt valid in both roles", err)
 		}
 	})
@@ -2234,6 +2234,11 @@ func (f *fixture) verifyGate(policy config.VerifyPolicy, failWhenPresent string)
 
 // breakBuildOn makes the mock agent's n-th invocation create the marker file that
 // the configured check fails on -- i.e. a coder whose "fix" breaks the build.
+//
+// n stays a parameter to match repairBuildOn and to name WHICH invocation is the
+// coder's; hardcoding today's 2 would hide that coupling to the fixture's order.
+//
+//nolint:unparam // see above
 func (f *fixture) breakBuildOn(n int, path string) {
 	f.t.Helper()
 	// A real edit AND the breakage, which is the realistic shape: the coder does

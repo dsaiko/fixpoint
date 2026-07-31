@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -24,20 +25,101 @@ type Source struct {
 }
 
 // Loaded is a fully resolved configuration plus the provenance of its parts.
+//
+// It is IMMUTABLE after LoadBundle returns. Everything that shapes the effective
+// configuration -- file inheritance, defaults, path anchoring, and the run's CLI
+// overrides -- happens inside LoadBundle, so there is exactly one place where the
+// question "what will this run actually do?" is decided. Nothing outside this
+// package writes to Config afterwards.
+//
+// That ordering is load-bearing rather than stylistic: an override changes what a
+// VALID configuration is (-review-only exempts an all-once lens list from the
+// recurring-lens rule), so validation has to see the post-override value. When
+// overrides were applied by the caller after loading, every future caller had to
+// remember to re-validate in the right order; folding them in makes the wrong
+// order unrepresentable.
 type Loaded struct {
 	Config      *Config
 	Source      Source
 	ProjectRoot string
+	// Overrides records the command-line assertions that were folded into Config,
+	// so a run can report which settings came from flags rather than from the files
+	// listed in Source. Provenance is the point: the config path alone no longer
+	// explains the effective run.
+	Overrides Overrides
 }
 
-// LoadBundle resolves and loads a run's configuration from a bundle name (or a
-// path), anchored at projectRoot. It performs the whole flow: resolve the task
-// config, apply `extends` inheritance, load every referenced agent from
-// agents/<name>.yaml, resolve every prompt to a path, then default and validate.
+// Overrides are the run's command-line assertions. They are applied while the
+// configuration is compiled, not to a Config that already exists -- see Loaded.
 //
-// Validation stays eager and complete here -- an unresolvable prompt or agent
-// must fail before any agent process starts, not mid-run after tokens are spent.
-func LoadBundle(r *Resolver, nameOrPath, projectRoot string) (*Loaded, error) {
+// These are deliberately NOT config keys. The bundle may itself come from the
+// repository under review, and code being reviewed must not be able to declare
+// itself trustworthy; a trust gate is therefore an assertion the operator makes
+// per invocation, which only a flag can express.
+type Overrides struct {
+	ReviewOnly        bool
+	MaxIterations     int
+	AllowUntrustedFix bool
+	TrustedTarget     bool
+}
+
+// apply folds the overrides into the configuration being compiled.
+func (o Overrides) apply(c *Config) {
+	// The booleans can only force ON. Turning a gate off is the config's job, so a
+	// flag can never silently weaken a run someone configured deliberately.
+	if o.ReviewOnly {
+		c.Loop.ReviewOnly = true
+	}
+	if o.AllowUntrustedFix {
+		c.Loop.AllowUntrustedFix = true
+	}
+	if o.TrustedTarget {
+		c.Loop.TrustedTarget = true
+	}
+	// Any nonzero value applies, including a negative one: an explicit
+	// -max-iterations -1 must reach Validate so its must-not-be-negative rule
+	// rejects the bad input rather than being swallowed as "no flag supplied".
+	// Zero stays "use config", per the flag help.
+	if o.MaxIterations != 0 {
+		c.Loop.MaxIterations = o.MaxIterations
+	}
+}
+
+// Applied names the overrides that changed the configuration, for the run log.
+// It reports what was ASSERTED, so a flag whose value the config already set
+// still appears: the operator's assertion is the thing worth recording.
+func (o Overrides) Applied() []string {
+	var out []string
+	if o.ReviewOnly {
+		out = append(out, "review_only=true")
+	}
+	if o.AllowUntrustedFix {
+		out = append(out, "allow_untrusted_fix=true")
+	}
+	if o.TrustedTarget {
+		out = append(out, "trusted_target=true")
+	}
+	if o.MaxIterations != 0 {
+		out = append(out, "max_iterations="+strconv.Itoa(o.MaxIterations))
+	}
+	return out
+}
+
+// LoadBundle compiles a run's configuration from a bundle name (or a path),
+// anchored at projectRoot: resolve the task config, apply `extends` inheritance,
+// load every referenced agent from agents/<name>.yaml, resolve every prompt to a
+// path, apply defaults and path anchoring, and fold in ov. The result is the
+// EFFECTIVE configuration and is immutable -- see Loaded.
+//
+// Resolution stays eager and complete here -- an unresolvable prompt or agent must
+// fail before any agent process starts, not mid-run after tokens are spent.
+//
+// It does not call Validate. The caller runs the project-supplied-exec trust gate
+// (which reads the now-final TrustedTarget) and then Loaded.Validate, so a
+// configuration that is both untrusted and invalid still reports the trust refusal
+// first, and a validation failure is still preceded by the resolved-source listing
+// that usually explains it.
+func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loaded, error) {
 	path, err := r.Config(nameOrPath)
 	if err != nil {
 		return nil, err
@@ -63,7 +145,20 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string) (*Loaded, error) {
 	if err := cfg.resolvePrompts(r, src.Prompts); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot}, nil
+	// Last, so the operator's assertions win over every file in the bundle, and so
+	// Validate (run by the caller) sees the value the run will actually use.
+	ov.apply(cfg)
+	return &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot, Overrides: ov}, nil
+}
+
+// Validate checks the effective configuration, naming the task config the run was
+// built from: with `extends` and a per-file search path, "which file is wrong?" is
+// not answerable from the message alone.
+func (l *Loaded) Validate() error {
+	if err := l.Config.Validate(); err != nil {
+		return fmt.Errorf("%s: %w", l.Source.Config, err)
+	}
+	return nil
 }
 
 // loadWithExtends decodes a task config and, when it names a base with
@@ -252,7 +347,7 @@ func (c *Config) resolvePrompts(r *Resolver, into map[string]string) error {
 
 // anchor makes every relative path in the configuration resolve against the
 // project root rather than the working directory, so a run behaves identically
-// from anywhere inside the project. Without this, `fixpoint full-review` from a
+// from anywhere inside the project. Without this, `fixpoint fix-code` from a
 // subdirectory would review only that subtree and create its artifact directory
 // there.
 func (c *Config) anchor(projectRoot string) {

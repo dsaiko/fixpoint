@@ -222,7 +222,7 @@ func TestLoadBundleExtends(t *testing.T) {
 		"task":     "extends: defaults\nloop:\n  max_iterations: 2\ntarget:\n  exclude: [\"only/**\"]\n" + taskBody,
 	}, []string{"fix", "review-bugs"}, []string{"mock"})
 
-	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root)
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
 			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
 				"task": "target: {mode: directory}\nloop:\n  " + key + ": true\n" + taskBody,
 			}, []string{"fix", "review-bugs"}, []string{"mock"})
-			_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root)
+			_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
 			if err == nil {
 				t.Fatalf("loading a config that sets loop.%s must fail: reviewed code could authorize itself", key)
 			}
@@ -275,7 +275,7 @@ func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
 			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
 				"task": "target: {mode: directory}\nloop:\n  " + key + ": false\n" + taskBody,
 			}, []string{"fix", "review-bugs"}, []string{"mock"})
-			if _, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root); err == nil {
+			if _, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{}); err == nil {
 				t.Fatalf("loop.%s: false must also be refused, so the key never looks supported", key)
 			}
 		})
@@ -285,7 +285,7 @@ func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
 				"base": "target: {mode: directory}\nloop:\n  " + key + ": true\n",
 				"task": "extends: base\n" + taskBody,
 			}, []string{"fix", "review-bugs"}, []string{"mock"})
-			if _, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root); err == nil {
+			if _, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{}); err == nil {
 				t.Fatalf("loop.%s must be refused in an inherited base too, or extends is the way around the rule", key)
 			}
 		})
@@ -315,7 +315,7 @@ func TestLoadBundleRejectsExtendsChain(t *testing.T) {
 		"b": "extends: c\n",
 		"c": "target: {mode: directory}\n",
 	}, []string{"fix", "review-bugs"}, []string{"mock"})
-	_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "a", root)
+	_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "a", root, Overrides{})
 	if err == nil || !strings.Contains(err.Error(), "one level deep") {
 		t.Fatalf("expected a one-level-deep error, got %v", err)
 	}
@@ -330,7 +330,7 @@ func TestLoadBundleAnchorsPathsToProjectRoot(t *testing.T) {
 		"task": "target:\n  mode: directory\n" + taskBody,
 	}, []string{"fix", "review-bugs"}, []string{"mock"})
 
-	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root)
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestLoadBundleResolvesAgentsFromFiles(t *testing.T) {
 		"task": "target: {mode: directory}\n" + taskBody,
 	}, []string{"fix", "review-bugs"}, []string{"mock"})
 
-	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root)
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,6 +368,101 @@ func TestLoadBundleResolvesAgentsFromFiles(t *testing.T) {
 	}
 	if l.Source.Agents["mock"] == "" {
 		t.Error("Source.Agents must record where each agent resolved from")
+	}
+}
+
+// loadTask builds a one-config bundle and compiles it with ov, which is the whole
+// shape of the override tests below: a config the flags then act on.
+func loadTask(t *testing.T, body string, ov Overrides) *Loaded {
+	t.Helper()
+	root := t.TempDir()
+	dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+		"task": "target: {mode: directory}\n" + body + taskBody,
+	}, []string{"fix", "review-bugs"}, []string{"mock"})
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// Overrides are part of compiling the configuration, not something a caller does
+// to the result. This is the property that makes Loaded immutable: if LoadBundle
+// did not apply them, every caller would have to mutate Config afterwards and
+// re-validate in the right order.
+func TestLoadBundleAppliesOverrides(t *testing.T) {
+	l := loadTask(t, "loop:\n  max_iterations: 3\n", Overrides{
+		ReviewOnly:        true,
+		MaxIterations:     7,
+		AllowUntrustedFix: true,
+		TrustedTarget:     true,
+	})
+	if !l.Config.Loop.ReviewOnly {
+		t.Error("ReviewOnly was not applied by LoadBundle")
+	}
+	if !l.Config.Loop.AllowUntrustedFix {
+		t.Error("AllowUntrustedFix was not applied by LoadBundle")
+	}
+	if !l.Config.Loop.TrustedTarget {
+		t.Error("TrustedTarget was not applied by LoadBundle")
+	}
+	if l.Config.Loop.MaxIterations != 7 {
+		t.Errorf("MaxIterations = %d, want the flag's 7 to beat the config's 3", l.Config.Loop.MaxIterations)
+	}
+	if l.Overrides.MaxIterations != 7 {
+		t.Error("Loaded.Overrides must record the assertions, so a run can report what came from a flag")
+	}
+}
+
+// The booleans force ON only. A zero-valued Overrides must never turn off a gate
+// the config set deliberately -- otherwise merely omitting a flag would weaken a
+// configured run, and the flags are assertions the operator adds, not a full
+// description of the run.
+func TestLoadBundleOverridesOnlyForceOn(t *testing.T) {
+	l := loadTask(t, "loop:\n  review_only: true\n  max_iterations: 3\n", Overrides{})
+	if !l.Config.Loop.ReviewOnly {
+		t.Error("an absent -review-only flag turned off the config's review_only")
+	}
+	if l.Config.Loop.MaxIterations != 3 {
+		t.Errorf("MaxIterations = %d, want the config's 3 kept when the flag is 0 (unset)", l.Config.Loop.MaxIterations)
+	}
+}
+
+// A negative -max-iterations must reach Validate and be rejected there, rather than
+// being swallowed as "no flag supplied". Zero is the documented "use config"
+// sentinel, so only zero may be ignored.
+func TestLoadBundleNegativeMaxIterationsReachesValidate(t *testing.T) {
+	l := loadTask(t, "loop:\n  max_iterations: 3\n", Overrides{MaxIterations: -1})
+	if l.Config.Loop.MaxIterations != -1 {
+		t.Fatalf("MaxIterations = %d, want the invalid -1 preserved for Validate to reject", l.Config.Loop.MaxIterations)
+	}
+	err := l.Validate()
+	if err == nil || !strings.Contains(err.Error(), "max_iterations") {
+		t.Fatalf("Validate() = %v, want a max_iterations rejection", err)
+	}
+	// Validate names the task config: with extends and a per-file search path, the
+	// rule that failed does not identify the file to edit.
+	if !strings.Contains(err.Error(), l.Source.Config) {
+		t.Errorf("Validate() error must name the config file %s, got: %v", l.Source.Config, err)
+	}
+}
+
+// Applied is what the run log reports, so it must name every asserted override and
+// stay quiet when none were made.
+func TestOverridesApplied(t *testing.T) {
+	if got := (Overrides{}).Applied(); len(got) != 0 {
+		t.Errorf("Applied() = %v, want empty for a run with no flags", got)
+	}
+	got := strings.Join(Overrides{
+		ReviewOnly:        true,
+		MaxIterations:     -1,
+		AllowUntrustedFix: true,
+		TrustedTarget:     true,
+	}.Applied(), ", ")
+	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "trusted_target=true", "max_iterations=-1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Applied() = %q, missing %q", got, want)
+		}
 	}
 }
 

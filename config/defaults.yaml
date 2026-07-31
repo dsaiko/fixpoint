@@ -85,8 +85,9 @@ logs:
   # be non-empty. It is hidden and tool-owned because fixpoint runs against
   # projects it does not own: a generic name like "logs" would collide with a
   # project's real logs directory and silently drop it from review.
-  # The {timestamp} segment and its ancestors hold the summary; below it is
-  # per-round. Add .fixpoint/ to the project's .gitignore.
+  # The {timestamp} segment and its ancestors hold the summary and the run journal
+  # (journal.jsonl, one JSON state transition per line, flushed as it happens);
+  # below it is per-round. Add .fixpoint/ to the project's .gitignore.
   dir: .fixpoint/{timestamp}/round-{round}
 
   # md | json | raw. Artifacts can contain secrets even after redaction — see

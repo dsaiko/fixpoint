@@ -345,6 +345,7 @@ The main sections of a task config:
     fix-<agent>-fix-<timestamp>.{md,json,raw}
     *.prompt                                          # exact prompt, written at invocation start
   round-2/...
+  journal.jsonl                                       # append-only state transitions, flushed as they happen
   summary-<timestamp>.{md,json}                       # assignments, issues, verdicts, verification, termination
 ```
 
@@ -374,6 +375,52 @@ The exact prompt sent to each agent is always written at invocation start, so
 a slow or killed agent's input is inspectable mid-run. Run directories and
 files are owner-only (0700/0600), and persisted artifacts pass through a
 best-effort credential redactor — but see below.
+
+### The run journal
+
+`journal.jsonl` records each state transition as one JSON object, flushed to disk
+as it happens. The summary is a single write at the *end* of a run, which makes it
+useless for the two questions that matter when a run goes wrong: **what order did
+things happen in**, and **what was true at the moment it died**. A run killed
+mid-round has a journal up to its last transition and a summary that describes a
+run which never finished — or no summary at all.
+
+Every record carries `v` (schema version), `seq` (authoritative ordering — the wall
+clock can repeat within a timestamp interval and can move backwards), `at`, `type`,
+an optional `round`, and a per-`type` `data` payload:
+
+```
+run_started        config, mode, path, strategy, review_only, max_iterations,
+                   and the flag overrides that authorized the run
+verify_baseline    what was already failing before the run touched anything
+round_started      the lens→agent assignment (differs per round under `rotate`)
+review_finished    observations, advisory, reviewer errors
+issues_aggregated  observations → issues, and how many were corroborated
+issues_deferred    the per-round cap biting, naming which issue ids waited
+fix_finished       the coder's self-report: issues handed over, fixed, rejected
+verify_finished    one gate run: attempt (initial|correction|salvage), per-check
+                   results, and which failures actually block under the policy
+round_committed    sha, and whether it was salvaged partial work
+round_discarded    reason (verify_failed | salvage_verify_failed | interrupted |
+                   commit_failed) and whether the work was stashed
+round_clean        the convergence streak, and whether reviewer errors reset it
+run_finished       termination, rounds, error
+```
+
+Two properties are deliberate. **No transition record is written before the
+symlink check** that authorizes artifact writes, because every round after it
+commits; a run refused by a gate therefore has a journal containing only
+`run_finished`, naming the refusal. And **a journal failure never fails the run** —
+it is an audit artifact, and losing it must not discard fixes that already passed
+verification and were committed. You get one warning on stderr and the run
+continues.
+
+It reads well with `jq`:
+
+```sh
+jq -c 'select(.type=="verify_finished") | {round, a:.data.attempt, b:.data.blocking}' \
+  .fixpoint/*/journal.jsonl
+```
 
 ## Security model
 
@@ -435,10 +482,10 @@ internal/agent/          runs an agent CLI as a subprocess, extracts the JSON
 internal/prompt/         renders prompt templates (role placeholders + output contract)
 internal/target/         collects review material per mode; git operations
                          (base pinning, clean-tree checks, round commits)
-internal/model/          shared data shapes: observations, issues, verdicts, summaries
+internal/model/          shared data shapes: observations, issues, verdicts, summaries, journal events
 internal/issue/          groups observations into issues; tracks them across rounds
 internal/verify/         runs the deterministic gate (build / test / static checks)
-internal/logstore/       per-step logs and the run summary
+internal/logstore/       per-step logs, the run journal, and the run summary
 internal/testfixture/    shared test helpers
 config/                  the shipped bundle: task configs, prompts/, agents/
 config/defaults.yaml     the commented base every task config extends

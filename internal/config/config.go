@@ -2,7 +2,6 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -532,40 +531,25 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 // Std converts to the standard library's time.Duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
-// Load reads, defaults, and validates the configuration file. Most callers
-// want this. A caller that must apply CLI overrides to the effective
-// configuration before it is validated (e.g. -review-only, which exempts a run
-// from the recurring-lens rule) uses LoadUnvalidated and calls Validate itself
-// once the overrides are in place.
+// Load reads, defaults, and validates a single configuration file, with no bundle
+// resolution and no `extends`. A run uses LoadBundle instead; this is for the
+// narrow case of checking one file on its own.
+//
+// There is deliberately no unvalidated variant. One existed so the CLI could load,
+// then mutate the result with flag overrides, then validate -- an order every
+// caller had to reproduce correctly, because an override changes what a valid
+// configuration is. Overrides now belong to the compile step (see Overrides), so
+// "loaded but not yet valid" is no longer a state any caller needs to hold.
 func Load(path string) (*Config, error) {
-	cfg, err := LoadUnvalidated(path)
+	cfg, err := decodeFile(path)
 	if err != nil {
 		return nil, err
 	}
+	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return cfg, nil
-}
-
-// LoadUnvalidated reads and defaults the configuration file WITHOUT running
-// Validate. It exists so the CLI can apply flag overrides to the loaded config
-// and then validate the effective result: validating before the overrides land
-// would, for example, reject an all-once lens list that -review-only makes
-// valid. Callers that do not override anything should use Load.
-func LoadUnvalidated(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var cfg Config
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true) // typos in keys are errors, not silent defaults
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	cfg.applyDefaults()
-	return &cfg, nil
 }
 
 func (c *Config) applyDefaults() {
