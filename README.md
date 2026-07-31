@@ -232,6 +232,19 @@ needs it. The win is everything else — your GitHub token is no longer inside t
 code reviewer. `env.inherit_all: true` opts back out entirely for a CLI whose
 requirements you don't know; fixpoint warns at run start when an agent does.
 
+The `verify` commands are filtered too, from the other direction. They are argv the
+*target* can supply, so running them with fixpoint's whole environment would hand a
+`curl $ANTHROPIC_API_KEY` "build" command every credential the agents deliberately
+do not share. They inherit fixpoint's environment **minus** every variable that
+carries an agent credential: the names your agent files declare (`env.pass`,
+`env.set`) plus a built-in list (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`CODEX_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`,
+and the three `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`
+names). That direction is a denylist rather than an allowlist on purpose: what a
+build actually needs is language- and project-specific (`GOFLAGS`, `JAVA_HOME`,
+`CARGO_HOME`, `VIRTUAL_ENV`, ...), and an allowlist would silently break checks by
+dropping what it forgot.
+
 ## Getting started
 
 Requirements:
@@ -402,7 +415,8 @@ verify_finished    one gate run: attempt (initial|correction|salvage), per-check
                    results, and which failures actually block under the policy
 round_committed    sha, and whether it was salvaged partial work
 round_discarded    reason (verify_failed | salvage_verify_failed | interrupted |
-                   commit_failed) and whether the work was stashed
+                   commit_failed | rejected_with_edits) and whether the work was
+                   stashed
 round_clean        the convergence streak, and whether reviewer errors reset it
 run_finished       termination, rounds, error
 ```
@@ -463,6 +477,14 @@ Read this before pointing the tool at code you did not write.
   reviewer-authored text are all persisted; redaction is heuristic, not a
   guarantee. Keep the logs directory out of any sync, backup, or commit (the
   run's own logs dir is always excluded from round commits automatically).
+- **One run owns the repository.** A fix run (and any `pr` run, which checks out a
+  branch) takes an exclusive `flock` on a file in the target's git directory for its
+  whole duration, and a second run on the same checkout is refused at preflight
+  rather than queued. Every mutating decision the loop makes rests on a snapshot of
+  the worktree — it is clean, it verifies, `git add -A` commits what the coder wrote
+  — and two concurrent runs invalidate all three silently, producing commits nobody
+  verified. Run concurrent fixpoints against separate checkouts (or worktrees).
+  Review-only directory runs neither take the lock nor are blocked by one.
 - **`prompt_via: arg` exposes the prompt on the process argument list**,
   readable by other local users via `ps`/`/proc`. Prefer `stdin` on shared
   hosts; fixpoint warns at run start.

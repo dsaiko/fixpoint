@@ -14,6 +14,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
+	"github.com/dsaiko/fixpoint/internal/target"
 	"github.com/dsaiko/fixpoint/internal/testfixture"
 )
 
@@ -636,6 +637,10 @@ func TestRunDoesNotCommitUnverifiedPartialWork(t *testing.T) {
 	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Errorf("working tree left dirty after rejecting the salvage: %q", status)
 	}
+	d := f.discarded(model.DiscardSalvageFailed)
+	if !d.Stashed || len(d.Checks) == 0 || d.Error == "" {
+		t.Errorf("round_discarded = %+v, want the stash, the failing check(s), and the coder error recorded", d)
+	}
 }
 
 // The converse: partial work that DOES verify is still salvaged and the loop
@@ -749,6 +754,9 @@ func TestRunNormalCommitFailsStashSucceeds(t *testing.T) {
 	if list := gitRun(t, f.repo, "stash", "list"); !strings.Contains(list, "failed commit in round 1") {
 		t.Errorf("expected a stash entry for the recovered edits, got %q", list)
 	}
+	if d := f.discarded(model.DiscardCommitFailed); !d.Stashed || d.Error == "" {
+		t.Errorf("round_discarded = %+v, want the failed commit recorded with its stash and cause", d)
+	}
 }
 
 // When a normal round commit fails AND the fallback stash also fails, the tree
@@ -844,6 +852,9 @@ func TestRunAllRejectedWithEditFails(t *testing.T) {
 	}
 	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Errorf("working tree left dirty, so the next run's clean-tree check would refuse to start: %q", status)
+	}
+	if d := f.discarded(model.DiscardRejectedWithEdits); !d.Stashed || !strings.Contains(d.Error, "rejected every finding") {
+		t.Errorf("round_discarded = %+v, want the stash recorded and the contradiction named", d)
 	}
 }
 
@@ -1220,6 +1231,9 @@ func TestRunInterruptedDuringFixDoesNotCommit(t *testing.T) {
 	if list := gitRun(t, f.repo, "stash", "list"); !strings.Contains(list, "interrupted round 1") {
 		t.Errorf("expected a stash entry for the interrupted edits, got %q", list)
 	}
+	if d := f.discarded(model.DiscardInterrupted); !d.Stashed || d.Error == "" {
+		t.Errorf("round_discarded = %+v, want the interruption recorded with its stash and cause", d)
+	}
 }
 
 // A cancellation that lands AFTER the coder returned valid output (runErr ==
@@ -1272,6 +1286,9 @@ func TestRunInterruptedAfterSuccessfulCoderDoesNotCommit(t *testing.T) {
 	}
 	if list := gitRun(t, f.repo, "stash", "list"); !strings.Contains(list, "interrupted round 1") {
 		t.Errorf("expected a stash entry for the interrupted edits, got %q", list)
+	}
+	if d := f.discarded(model.DiscardInterrupted); !d.Stashed || d.Error == "" {
+		t.Errorf("round_discarded = %+v, want the interruption recorded with its stash and cause", d)
 	}
 }
 
@@ -2627,5 +2644,76 @@ func TestRunTerminatesWhenOnlyRejectedIssuesRemain(t *testing.T) {
 	}
 	if got := issueByID(sum.Rounds[1])["i1"].Verdict; got != model.VerdictRejected {
 		t.Errorf("round 2 issue i1 verdict = %q, want the rejection reported", got)
+	}
+}
+
+// The same early all-rejected termination, but with a reviewer that FAILED: the
+// round's review is then incomplete, so the issues that reviewer would have
+// reported were never seen. Reporting the success-shaped all_rejected termination
+// there would tell automation a complete decision was reached over a partial
+// round, so this route needs its own reviewer-error guard -- the older
+// all-rejected-with-reviewer-error test reaches finalizeFix through the coder and
+// cannot protect it.
+func TestRunTerminatesWhenOnlyRejectedIssuesRemainWithReviewerErrorFails(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1})
+	// A second lens pinned to an agent that always fails, so every round carries a
+	// reviewer error alongside the working lens's findings.
+	f.cfg.Agents["bad"] = config.Agent{Command: []string{"false"}, PromptVia: "stdin", Timeout: config.Duration(time.Minute)}
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts,
+		config.ReviewLens{Agent: "bad", Prompt: f.cfg.Roles.Review.Prompts[0].Prompt})
+	rejected := model.ReviewFinding{Category: "design", Severity: "high", File: "main.go", Line: 1, Title: "unexported field should be exported"}
+	fixable := model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 10, Title: "nil map write"}
+	f.respond(1, reviewResponse(t, rejected, fixable))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t,
+		model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"},
+		model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"},
+	))
+	f.respond(3, reviewResponse(t, rejected)) // round 2: only the decided issue is left
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "reviewer(s) failed") {
+		t.Fatalf("Run() err = %v, want aggregated reviewer failure", err)
+	}
+	if sum.Termination != model.TermError {
+		t.Errorf("termination = %q, want error (not %q): a partial round is not a decision", sum.Termination, model.TermAllRejected)
+	}
+	if len(sum.Rounds) != 2 || len(sum.Rounds[1].ReviewErrors) != 1 {
+		t.Errorf("the partial round record must be kept with its reviewer error: %+v", sum.Rounds)
+	}
+	// Still no wasted coder session: the guard fires instead of the termination, and
+	// neither invokes the coder on an empty workload.
+	if p := f.coderPrompt(2); p != "" {
+		t.Errorf("round 2 invoked the coder with no work to do:\n%s", p)
+	}
+}
+
+// Two fixpoint runs on one repository invalidate every snapshot the loop's
+// decisions rest on: both see a clean tree, both launch coders into the same
+// files, and edits one run never verified land in the other's commit. The second
+// run must be refused at preflight -- before the clean check, before any agent is
+// paid for, and before anything is committed.
+func TestRunRefusesWhileAnotherRunHoldsTheRepository(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+
+	release, err := target.New(config.Target{Mode: config.ModeDirectory, Path: f.repo}).LockRepo(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "another fixpoint run") {
+		t.Fatalf("Run() err = %v, want a refusal naming the run that owns the repository", err)
+	}
+	if sum.Termination != model.TermError {
+		t.Errorf("termination = %q, want error", sum.Termination)
+	}
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0: the refusal must precede any agent work", got)
+	}
+	if got := f.commitCount(); got != 1 {
+		t.Errorf("repo has %d commits, want 1 (nothing may be committed)", got)
 	}
 }

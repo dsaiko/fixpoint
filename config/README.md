@@ -109,6 +109,18 @@ should unset them for fixpoint's own process.
 warning. It exists for a CLI whose requirements are unknown, at the cost of
 re-exposing every exported secret to that agent.
 
+**`verify` commands do not receive the agents' credentials.** They are argv the
+target can supply (a bundle inside the target is searched first), so they inherit
+fixpoint's environment *minus* every variable an agent file declares under
+`env.pass` / `env.set` and minus a built-in credential list (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `CODEX_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`,
+`GITHUB_TOKEN`, `GH_TOKEN`, and the `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` trio). Otherwise the gate would be a way around the
+filtering above: a "build" command that curls a key out is not a model's
+misbehavior, it is just argv. This direction is a denylist, because what a build
+needs is project-specific and an allowlist would break checks by dropping what it
+forgot.
+
 **Fix rounds are fail-closed.** The coder edits files with permission checks
 disabled and is not confined to the target, so a prompt-injection payload in any
 reviewed file could steer it. Fixes therefore require `-trusted-target` (or

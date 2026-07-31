@@ -7,7 +7,7 @@ CONFIG  := fix-code
 # installs are required and CI and local runs use identical tool versions.
 GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
 STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
-GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@latest
+GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
 .PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live run review-code clean clean-logs help
 

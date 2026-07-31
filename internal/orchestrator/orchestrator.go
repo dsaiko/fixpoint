@@ -45,6 +45,11 @@ type Orchestrator struct {
 	// verifyBaseline is how the project's checks behaved before any fix round, so
 	// a pre-existing failure is not blamed on this run. Captured once at startup.
 	verifyBaseline verify.Report
+	// verifyEnv is the environment the gate's commands run with: fixpoint's, minus
+	// the agents' credentials. Verify commands are argv the TARGET can supply, so
+	// running them with everything the agents deliberately do not see is the one
+	// place the env filtering could be walked around. Computed once at startup.
+	verifyEnv []string
 	// ledger groups raw observations into issues and carries their state across
 	// rounds, so a problem two agents both reported costs one slot, not two.
 	ledger *issue.Ledger
@@ -166,6 +171,7 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		ledger:       issue.NewLedger(),
 		overrides:    l.Overrides.Applied(),
 		journalWrite: logs.Journal,
+		verifyEnv:    agent.EnvWithoutCredentials(cfg.Agents),
 	}
 	// Exclude the template's literal prefix, not the rendered path: the rendered
 	// path changes every run (and every round), so only the static base is a
@@ -312,24 +318,15 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 			return fmt.Errorf("target.path %s is not a git repository; fix rounds commit each round and require git (use review_only for a report-only run)", o.cfg.Target.Path)
 		}
 	}
-	// The clean check and staging are scoped to target.path ("." pathspec), but a
-	// fix round's commit writes the whole repository index and a PR review runs a
-	// repo-wide diff over a repo-wide checkout. A subdirectory target would then
-	// miss dirt elsewhere in the repo from its target-relative clean check yet
-	// still fold those changes into the round commit (fix) or the reviewed diff
-	// (pr) -- so require the repository root whenever we enforce a clean tree,
-	// including PR review-only runs, not just fix runs.
+	// A run that writes claims the repository: root check, whole-repository lock,
+	// clean tree. Review-only directory runs read and never write, so they skip all
+	// three -- they neither take the lock nor are blocked by one.
 	if requireCleanTree {
-		if atRoot, err := o.collector.AtRepoRoot(ctx); err != nil {
-			return err
-		} else if !atRoot {
-			return fmt.Errorf("target.path %s is a subdirectory of its git repository; fix rounds and PR reviews operate on the whole repository (staging the entire index / diffing the whole checkout), so point target.path at the repository root (or use review_only for a non-pr run)", o.cfg.Target.Path)
-		}
-	}
-	if requireCleanTree {
-		if err := o.ensureCleanTree(ctx, "working tree is dirty; commit or stash your changes first so the review sees only the intended target (and, in a fix run, round commits contain only the coder's fixes)"); err != nil {
+		release, err := o.claimRepo(ctx)
+		if err != nil {
 			return err
 		}
+		defer release()
 	}
 
 	// Then ping (spends a little on each agent), then Prepare (may mutate
@@ -390,6 +387,42 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	}
 	sum.Termination = model.TermMaxIterations
 	return nil
+}
+
+// claimRepo takes the repository for a run that will write to it and returns the
+// function that gives it back. Three preflight steps, in this order because each
+// is cheaper than the next is meaningful without it:
+//
+//   - The repository ROOT is required. The clean check and staging are scoped to
+//     target.path ("." pathspec), but a fix round's commit writes the whole
+//     repository index and a PR review runs a repo-wide diff over a repo-wide
+//     checkout. A subdirectory target would miss dirt elsewhere in the repo from
+//     its target-relative clean check yet still fold those changes into the round
+//     commit (fix) or the reviewed diff (pr).
+//   - The whole repository is LOCKED for the run, before the clean check and held
+//     past the last commit. Every mutating decision the loop makes is derived from
+//     a snapshot of the worktree, and a second concurrent fixpoint invalidates all
+//     of them silently -- see Collector.LockRepo.
+//   - The tree must be CLEAN, so every round commit contains exactly the coder's
+//     changes and nothing of the operator's. PR review needs it even review-only:
+//     gh pr checkout can preserve unrelated tracked edits and untracked files,
+//     which Collect would otherwise fold into the PR diff and misattribute the
+//     resulting findings to the PR.
+func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
+	if atRoot, err := o.collector.AtRepoRoot(ctx); err != nil {
+		return nil, err
+	} else if !atRoot {
+		return nil, fmt.Errorf("target.path %s is a subdirectory of its git repository; fix rounds and PR reviews operate on the whole repository (staging the entire index / diffing the whole checkout), so point target.path at the repository root (or use review_only for a non-pr run)", o.cfg.Target.Path)
+	}
+	release, err := o.collector.LockRepo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.ensureCleanTree(ctx, "working tree is dirty; commit or stash your changes first so the review sees only the intended target (and, in a fix run, round commits contain only the coder's fixes)"); err != nil {
+		release() // never hold the repository past a failed preflight
+		return nil, err
+	}
+	return release, nil
 }
 
 // guardUntrustedGitConfig closes the code-execution path opened by the target's
@@ -1557,7 +1590,7 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 		return
 	}
 	o.logf("verify: capturing baseline (%d command(s))", len(o.cfg.Verify.Commands))
-	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
+	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
 	o.verifyBaseline = rep
 	// The baseline is what makes every later "blocking" judgement meaningful under
 	// no_regressions, so it is recorded rather than only logged: a reader cannot
@@ -1643,7 +1676,7 @@ func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, a
 	if !o.cfg.Verify.Enabled() {
 		return nil, nil
 	}
-	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path)
+	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
 	rec.Verify = rep.Results
 	o.logf("round %d verify%s: %s", rec.Round, verifyAttemptLabel[attempt], rep.Summary())
 	blocking := rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)

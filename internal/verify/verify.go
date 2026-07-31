@@ -101,10 +101,19 @@ func (r Report) Blocking(policy config.VerifyPolicy, baseline Report) []Result {
 // failure; ctx cancellation stops the pass and is reported as such. The context
 // error is the caller's cue to distinguish "the run was interrupted" from "the
 // checks failed", which are very different outcomes for a round.
-func Run(ctx context.Context, cfg config.Verify, dir string) Report {
+//
+// SECURITY: env is the environment every command receives, as exec.Cmd.Env -- the
+// caller passes agent.EnvWithoutCredentials so a verify command cannot read the
+// agents' credentials. These commands are argv the TARGET can supply (a bundle
+// file inside the target shadows the operator's), so they are the one
+// target-controlled execution path in the loop; inheriting fixpoint's whole
+// environment here would defeat the filtering buildEnv applies to agents. A nil
+// env means "inherit fixpoint's environment" (exec's own convention) and is for
+// tests that assert nothing about the environment.
+func Run(ctx context.Context, cfg config.Verify, dir string, env []string) Report {
 	rep := Report{Results: make([]Result, 0, len(cfg.Commands))}
 	for _, c := range cfg.Commands {
-		rep.Results = append(rep.Results, runOne(ctx, c, cfg.Timeout.Std(), dir))
+		rep.Results = append(rep.Results, runOne(ctx, c, cfg.Timeout.Std(), dir, env))
 		if ctx.Err() != nil {
 			break // interrupted: do not start further commands
 		}
@@ -112,7 +121,7 @@ func Run(ctx context.Context, cfg config.Verify, dir string) Report {
 	return rep
 }
 
-func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, dir string) Result {
+func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, dir string, env []string) Result {
 	res := Result{Name: c.Name, Argv: c.Run, Optional: c.Optional}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -120,6 +129,8 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 
 	cmd := exec.CommandContext(cmdCtx, c.Run[0], c.Run[1:]...)
 	cmd.Dir = dir
+	// Filtered environment: fixpoint's, minus the agents' credentials. See Run.
+	cmd.Env = env
 	// Same process-group discipline as agents: a build tool spawns children (a
 	// compiler, a test binary, a watch process), and killing only the leader on
 	// timeout would leave them running and holding the output pipe open.
@@ -133,6 +144,15 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 
 	start := time.Now()
 	err := cmd.Run()
+	// Own the whole subprocess lifecycle, not just the leader, exactly as
+	// agent.Run does. cmd.Cancel (KillProcessGroup) fires only on cancellation, so
+	// a build tool that exits SUCCESSFULLY after backgrounding a child (a watcher,
+	// a test daemon) leaves that child alive in our process group -- free to edit
+	// the repository concurrently with the next check, the clean-tree check, or the
+	// round commit, which is how a verified round turns into a commit nobody
+	// verified. SIGKILL the whole group on every exit path; it is a no-op once the
+	// group is empty, which is the common case.
+	_ = agent.KillProcessGroup(cmd)
 	res.Duration = time.Since(start)
 	// Output can quote anything the build printed, including a secret from the
 	// environment, and it is persisted and fed back to the coder.

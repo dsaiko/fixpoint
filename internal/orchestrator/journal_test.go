@@ -43,6 +43,21 @@ func (f *fixture) journal() []model.JournalEvent {
 	return out
 }
 
+// discarded decodes the run's round_discarded record and asserts its reason. Each
+// abnormal exit leaves a stash the operator did not ask for, and the journal is
+// the only place "which stash is this and why" is answerable -- so every discard
+// site's own behavior test checks its record here, rather than one central test
+// re-staging four different failures.
+func (f *fixture) discarded(reason string) model.JournalRoundDiscarded {
+	f.t.Helper()
+	var d model.JournalRoundDiscarded
+	payload(f.t, f.journal(), model.EvRoundDiscarded, &d)
+	if d.Reason != reason {
+		f.t.Errorf("round_discarded reason = %q, want %q", d.Reason, reason)
+	}
+	return d
+}
+
 // types is the journal's event sequence, which is the thing worth asserting: the
 // summary already reports the final counts, and what it cannot report is the ORDER
 // transitions happened in.
@@ -75,6 +90,22 @@ func payload(t *testing.T, events []model.JournalEvent, typ string, v any) model
 	return model.JournalEvent{}
 }
 
+// convergingLifecycle is the journal sequence of the run both
+// TestRunJournalRecordsTheRoundLifecycle and
+// TestRunSurvivesAJournalThatCannotBeWritten drive: one finding fixed and
+// committed, then a clean round that ends the run. It is shared because the
+// second test's property -- that a broken journal suppresses only the WARNING,
+// never a write -- is exactly "every transition in this sequence was still
+// attempted", and a count alone cannot say that.
+var convergingLifecycle = []string{
+	model.EvRunStarted,
+	model.EvRoundStarted, model.EvReviewFinished, model.EvIssuesAggregated,
+	model.EvFixFinished, model.EvRoundCommitted,
+	model.EvRoundStarted, model.EvReviewFinished, model.EvIssuesAggregated,
+	model.EvRoundClean,
+	model.EvRunFinished,
+}
+
 // A converging run's journal must reconstruct the loop: review, aggregate, fix,
 // commit, then a clean round that ends it. This is the property the summary cannot
 // provide, because the summary is one whole-run write at the end.
@@ -91,14 +122,7 @@ func TestRunJournalRecordsTheRoundLifecycle(t *testing.T) {
 
 	events := f.journal()
 	got := journalTypes(events)
-	want := []string{
-		model.EvRunStarted,
-		model.EvRoundStarted, model.EvReviewFinished, model.EvIssuesAggregated,
-		model.EvFixFinished, model.EvRoundCommitted,
-		model.EvRoundStarted, model.EvReviewFinished, model.EvIssuesAggregated,
-		model.EvRoundClean,
-		model.EvRunFinished,
-	}
+	want := convergingLifecycle
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("journal sequence =\n  %v\nwant\n  %v", got, want)
 	}
@@ -336,9 +360,13 @@ func TestRunSurvivesAJournalThatCannotBeWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var attempts int
-	o.journalWrite = func(string, int, any) error {
-		attempts++
+	// Record what each transition TRIED to write, not just how many tried: an
+	// implementation that gave up after the fifth failure would satisfy a count
+	// assertion while losing every later record, including the ones that say how
+	// the run ended.
+	var attempted []string
+	o.journalWrite = func(typ string, _ int, _ any) error {
+		attempted = append(attempted, typ)
 		return errors.New("no space left on device")
 	}
 
@@ -353,10 +381,12 @@ func TestRunSurvivesAJournalThatCannotBeWritten(t *testing.T) {
 	if got := f.commitCount(); got != before+1 {
 		t.Errorf("commit count = %d, want %d: the verified fix must still be committed", got, before+1)
 	}
-	// Every transition still tries: giving up after the first failure would lose the
-	// records a journal that recovers (a freed disk) could still have held.
-	if attempts < 5 {
-		t.Errorf("journal write attempts = %d, want one per transition (the run kept journaling)", attempts)
+	// Every transition still tries, in order: giving up part-way would lose the
+	// records a journal that recovers (a freed disk) could still have held. The
+	// expected sequence is the one TestRunJournalRecordsTheRoundLifecycle asserts on
+	// a working journal, because this test drives the same run.
+	if strings.Join(attempted, ",") != strings.Join(convergingLifecycle, ",") {
+		t.Errorf("attempted journal writes =\n  %v\nwant one per transition\n  %v", attempted, convergingLifecycle)
 	}
 	warnings := 0
 	for _, l := range lines {

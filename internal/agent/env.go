@@ -50,6 +50,63 @@ func BaselineEnvNames() []string {
 	return out
 }
 
+// knownCredentialEnv are variables that carry a credential and belong only in the
+// process that authenticates with them. It backs EnvWithoutCredentials, which
+// strips them from the subprocesses fixpoint runs that are NOT agents (the verify
+// gate's project-supplied build/test commands).
+//
+// The list is a DENYLIST on purpose. A build command's real requirements are
+// language- and project-specific (GOFLAGS, JAVA_HOME, CARGO_HOME, npm_config_*,
+// VIRTUAL_ENV, ...), so an allowlist like baselineEnv would have to be re-derived
+// per ecosystem and would silently break checks by dropping what it forgot -- the
+// same reasoning that makes fixpoint's scope filtering denylist-only. The
+// agents' own declarations (env.pass / env.set) extend this at run time, so an
+// operator who authenticates an agent with some other variable is covered without
+// this list having to know about it.
+var knownCredentialEnv = []string{
+	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+	"OPENAI_API_KEY", "CODEX_API_KEY",
+	"GOOGLE_API_KEY", "GEMINI_API_KEY",
+	"GITHUB_TOKEN", "GH_TOKEN",
+	"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+}
+
+// EnvWithoutCredentials returns fixpoint's own environment minus every variable
+// that carries an agent credential: the names the configured agents declare
+// (env.pass and env.set) plus knownCredentialEnv.
+//
+// It exists because the verify gate runs argv the TARGET supplies (a bundle file
+// inside the target shadows the operator's), and inheriting fixpoint's whole
+// environment there would hand those commands exactly the secrets buildEnv keeps
+// away from the agents themselves -- a `curl $ANTHROPIC_API_KEY` verify command
+// would exfiltrate every agent credential before a coder edits anything.
+//
+// Unlike buildEnv this never returns nil: an empty result must mean "an empty
+// environment", not "inherit the parent's".
+func EnvWithoutCredentials(agents map[string]config.Agent) []string {
+	deny := make(map[string]bool, len(knownCredentialEnv))
+	for _, name := range knownCredentialEnv {
+		deny[name] = true
+	}
+	for _, a := range agents {
+		for _, name := range a.Env.Pass {
+			deny[name] = true
+		}
+		for name := range a.Env.Set {
+			deny[name] = true
+		}
+	}
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && deny[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // buildEnv assembles the environment for one agent invocation: the baseline, plus
 // the names the agent declared, plus its literal values. Anything else in
 // fixpoint's environment is absent from the process.

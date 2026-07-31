@@ -2,12 +2,15 @@ package verify
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 )
 
@@ -19,7 +22,7 @@ func TestRunRecordsPassAndFail(t *testing.T) {
 	rep := Run(t.Context(), cfg(time.Minute,
 		config.VerifyCommand{Name: "ok", Run: []string{"true"}},
 		config.VerifyCommand{Name: "bad", Run: []string{"false"}},
-	), t.TempDir())
+	), t.TempDir(), nil)
 
 	if len(rep.Results) != 2 {
 		t.Fatalf("got %d results, want 2", len(rep.Results))
@@ -44,7 +47,7 @@ func TestRunRecordsPassAndFail(t *testing.T) {
 func TestRunUnstartableCommandFails(t *testing.T) {
 	rep := Run(t.Context(), cfg(time.Minute,
 		config.VerifyCommand{Name: "ghost", Run: []string{"definitely-not-a-real-binary-xyz"}},
-	), t.TempDir())
+	), t.TempDir(), nil)
 	r := rep.Results[0]
 	if r.Passed {
 		t.Error("an unstartable command must not be reported as passing")
@@ -58,7 +61,7 @@ func TestRunUnstartableCommandFails(t *testing.T) {
 func TestOptionalCommandDoesNotBlock(t *testing.T) {
 	rep := Run(t.Context(), cfg(time.Minute,
 		config.VerifyCommand{Name: "lint", Run: []string{"false"}, Optional: true},
-	), t.TempDir())
+	), t.TempDir(), nil)
 	if !rep.Passed() {
 		t.Error("an optional failure must not make the report fail")
 	}
@@ -75,7 +78,7 @@ func TestRunTimesOutAndKillsTheCommand(t *testing.T) {
 	start := time.Now()
 	rep := Run(t.Context(), cfg(300*time.Millisecond,
 		config.VerifyCommand{Name: "hang", Run: []string{"sleep", "60"}},
-	), t.TempDir())
+	), t.TempDir(), nil)
 	if elapsed := time.Since(start); elapsed > 20*time.Second {
 		t.Fatalf("timeout was not enforced: took %s", elapsed)
 	}
@@ -135,7 +138,7 @@ func TestRunCapturesCombinedOutput(t *testing.T) {
 	}
 	rep := Run(t.Context(), cfg(time.Minute,
 		config.VerifyCommand{Name: "noisy", Run: []string{script}},
-	), dir)
+	), dir, nil)
 	r := rep.Results[0]
 	if r.ExitCode != 7 {
 		t.Errorf("ExitCode = %d, want 7", r.ExitCode)
@@ -158,7 +161,7 @@ func TestRunRedactsSecretsInOutput(t *testing.T) {
 	}
 	rep := Run(t.Context(), cfg(time.Minute,
 		config.VerifyCommand{Name: "leak", Run: []string{script}},
-	), dir)
+	), dir, nil)
 	if strings.Contains(rep.Results[0].Output, secret) {
 		t.Errorf("a credential in build output reached the report unredacted:\n%s", rep.Results[0].Output)
 	}
@@ -187,7 +190,7 @@ func TestRunStopsOnCancellation(t *testing.T) {
 	rep := Run(ctx, cfg(time.Minute,
 		config.VerifyCommand{Name: "one", Run: []string{"true"}},
 		config.VerifyCommand{Name: "two", Run: []string{"true"}},
-	), t.TempDir())
+	), t.TempDir(), nil)
 	if len(rep.Results) > 1 {
 		t.Errorf("got %d results, want the pass to stop after the first on cancellation", len(rep.Results))
 	}
@@ -199,4 +202,129 @@ func names(rs []Result) []string {
 		out = append(out, r.Name)
 	}
 	return out
+}
+
+// The verify gate is the one execution path whose argv the TARGET can supply (a
+// bundle file inside the target shadows the operator's), so it must run with the
+// filtered environment the caller hands it and not with fixpoint's own. Without
+// this, a verify command reads every agent credential straight out of its
+// environment -- before any coder edit -- and the filtering agents get is moot.
+func TestRunUsesTheGivenEnvironment(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "SENTINEL-must-not-be-visible")
+	dir := t.TempDir()
+	script := filepath.Join(dir, "dump.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nenv\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmds := cfg(time.Minute, config.VerifyCommand{Name: "dump", Run: []string{script}})
+
+	rep := Run(t.Context(), cmds, dir, agent.EnvWithoutCredentials(nil))
+	if !rep.Results[0].Passed {
+		t.Fatalf("dump command failed: %+v", rep.Results[0])
+	}
+	// Assert on the variable NAME, not the value: the redactor masks a known
+	// credential's value on its way into the report, which would make a
+	// value-based assertion pass even with the key fully present in the process.
+	if strings.Contains(rep.Results[0].Output, "ANTHROPIC_API_KEY") {
+		t.Errorf("an agent credential reached a verify command:\n%s", rep.Results[0].Output)
+	}
+	// Guard the guard: with the unfiltered environment the variable IS visible, so
+	// the assertion above is really testing the filtering and not a broken dumper.
+	inherited := Run(t.Context(), cmds, dir, os.Environ())
+	if !strings.Contains(inherited.Results[0].Output, "ANTHROPIC_API_KEY") {
+		t.Fatalf("the env dumper prints nothing useful, so the filtering assertion proves nothing:\n%s", inherited.Results[0].Output)
+	}
+}
+
+// A verify command that exits SUCCESSFULLY after backgrounding a child leaves that
+// child running: cmd.Cancel only fires on cancellation. The child is then free to
+// edit the repository while the next check, the clean-tree check, or the round
+// commit runs -- so a round nobody verified gets committed as a verified one.
+// runOne kills the whole process group on every exit path, like agent.Run.
+func TestRunKillsBackgroundedChildrenOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "child-survived")
+	script := filepath.Join(dir, "leader.sh")
+	// The child's pipes are redirected so the leader's exit is not held up by them:
+	// this is the case that is reported as PASSED immediately, where nothing else
+	// would ever reap the child.
+	body := fmt.Sprintf("#!/bin/sh\n( sleep 1; touch '%s' ) >/dev/null 2>&1 &\necho leader done\nexit 0\n", sentinel)
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(t.Context(), cfg(time.Minute,
+		config.VerifyCommand{Name: "leader", Run: []string{script}},
+	), dir, nil)
+	if !rep.Results[0].Passed {
+		t.Fatalf("the leader exits 0 and must be recorded as passing: %+v", rep.Results[0])
+	}
+
+	// Well past the child's own delay: if it were still alive it would have run.
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("a backgrounded child survived a successful verification and mutated the directory afterwards")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+// boundedBuffer's mutex exists for the WaitDelay case: cmd.Run can return while
+// the copy goroutine still drains a pipe a leaked grandchild holds open, so
+// String() overlaps a Write. Every other test in this file drives commands
+// sequentially and would pass with the locking removed; this one overlaps the two
+// and is meaningful only under -race (which `make audit` runs).
+func TestBoundedBufferConcurrentWriteString(t *testing.T) {
+	var b boundedBuffer
+	chunk := []byte(strings.Repeat("x", 4096))
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 2000 {
+			if _, err := b.Write(chunk); err != nil {
+				t.Errorf("Write: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 2000 {
+			_ = b.String()
+		}
+	}()
+	wg.Wait()
+}
+
+// Overflow past maxOutput is dropped, not stored, and the reader is told how much
+// went missing -- silently truncating would make a coder chase a failure whose
+// cause is in the part that vanished.
+func TestBoundedBufferTruncatesAndReportsTheDrop(t *testing.T) {
+	var b boundedBuffer
+	if n, err := b.Write([]byte(strings.Repeat("a", maxOutput))); n != maxOutput || err != nil {
+		t.Fatalf("Write returned (%d, %v), want (%d, nil)", n, err, maxOutput)
+	}
+	// A short write once full, then a longer one: both are accounted for, and Write
+	// must still report every byte consumed or io.Copy treats it as a short write.
+	if n, err := b.Write([]byte("bb")); n != 2 || err != nil {
+		t.Fatalf("Write after full returned (%d, %v), want (2, nil)", n, err)
+	}
+	if n, err := b.Write([]byte(strings.Repeat("c", 1024))); n != 1024 || err != nil {
+		t.Fatalf("Write after full returned (%d, %v), want (1024, nil)", n, err)
+	}
+	body, marker, found := strings.Cut(b.String(), "\n[...")
+	if !found {
+		t.Fatalf("String() carries no truncation marker, so the reader is not told anything went missing")
+	}
+	if body != strings.Repeat("a", maxOutput) {
+		t.Errorf("retained output is %d bytes and not exactly the first %d written; output past the cap must be dropped, which is what stops a runaway suite exhausting memory", len(body), maxOutput)
+	}
+	if !strings.Contains(marker, "dropped") {
+		t.Errorf("the truncation must say output was dropped, got: %q", marker)
+	}
+	// The dropped total is the second and third writes together (2 + 1024 bytes).
+	if !strings.Contains(marker, agent.HumanSize(1026)) {
+		t.Errorf("the dropped-byte count must be reported (want %s), got: %q", agent.HumanSize(1026), marker)
+	}
 }

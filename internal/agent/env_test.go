@@ -145,3 +145,41 @@ func TestBaselineCoversEssentials(t *testing.T) {
 		}
 	}
 }
+
+// The verify gate runs argv the TARGET can supply, so it must not receive the
+// agents' credentials -- otherwise a `curl $ANTHROPIC_API_KEY` verify command
+// walks around the filtering buildEnv applies to the agents themselves. Both
+// sources of "this is a credential" must be honored: the built-in list and
+// whatever the configured agents declared.
+func TestEnvWithoutCredentialsStripsAgentSecrets(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "builtin-should-be-stripped")
+	t.Setenv("GITHUB_TOKEN", "builtin-should-be-stripped")
+	t.Setenv("MY_HOUSE_TOKEN", "declared-should-be-stripped")
+	t.Setenv("SOME_BUILD_FLAG", "must-survive")
+
+	env := EnvWithoutCredentials(map[string]config.Agent{
+		"house": {Env: config.AgentEnv{Pass: []string{"MY_HOUSE_TOKEN"}}},
+	})
+
+	names := map[string]bool{}
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		names[k] = true
+	}
+	for _, gone := range []string{"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "MY_HOUSE_TOKEN"} {
+		if names[gone] {
+			t.Errorf("%s survived; a verify command must not see an agent credential", gone)
+		}
+	}
+	// A denylist, not an allowlist: a build command's real requirements are
+	// project-specific, and dropping what the list forgot would break checks.
+	for _, kept := range []string{"PATH", "SOME_BUILD_FLAG"} {
+		if !names[kept] {
+			t.Errorf("%s was stripped; only credentials may be removed from a verify command's environment", kept)
+		}
+	}
+	// nil means "inherit everything" to exec, so this must never return nil.
+	if EnvWithoutCredentials(nil) == nil {
+		t.Error("EnvWithoutCredentials must never return nil: exec would inherit the full environment")
+	}
+}
