@@ -436,17 +436,23 @@ func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 // run a repo-controlled program with fixpoint's inherited secrets.
 //
 // The gate applies wherever such a command runs against a target-controlled repo:
-// git-diff mode always (its Collect runs `git diff`), and directory fix rounds
-// (their commits run `git add`/`git status`). Directory review-only walks the
-// filesystem and runs no worktree-touching git command, so it has no such path;
-// pr mode's .git/config is the operator's own -- a PR cannot alter it -- so
-// neither is gated. When the operator has asserted no trust we refuse; when trust
-// IS asserted we still WARN, because trusted_target/allow_untrusted_fix is
-// documented as accepting coder prompt-injection risk and an operator must also
-// learn it accepts .git/config-driven code execution (a git-lfs repo they trust,
-// or an enforced external sandbox, is the intended use).
+// git-diff mode always (its Collect runs `git diff`), directory fix rounds (their
+// commits run `git add`/`git status`), and pr mode always -- Prepare's
+// `gh pr checkout` writes the worktree, and git runs a configured smudge/process
+// filter during checkout. A PR cannot edit .git/config, but it does not have to:
+// it supplies the .gitattributes that SELECTS an already-configured filter, the
+// worktree script such a filter may point at, and (for git-lfs) the .lfsconfig
+// that redirects where the filter talks to. Directory review-only walks the
+// filesystem and runs no worktree-touching git command, so it has no such path.
+//
+// When the operator has asserted no trust we refuse; when trust IS asserted we
+// still WARN, because trusted_target/allow_untrusted_fix is documented as
+// accepting coder prompt-injection risk and an operator must also learn it accepts
+// .git/config-driven code execution (a git-lfs repo they trust, or an enforced
+// external sandbox, is the intended use).
 func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context) error {
 	touchesGit := o.cfg.Target.Mode == config.ModeGitDiff ||
+		o.cfg.Target.Mode == config.ModePR ||
 		(!o.cfg.Loop.ReviewOnly && o.cfg.Target.Mode == config.ModeDirectory)
 	if !touchesGit || !o.collector.IsGitRepo(ctx) {
 		return nil
@@ -459,9 +465,9 @@ func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context) error {
 		return nil
 	}
 	if !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
-		return fmt.Errorf("target %s has repo-local git config that would run repo-controlled programs fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status, so this is a code-execution path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or pass -trusted-target if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
+		return fmt.Errorf("target %s has repo-local git config that would run repo-controlled programs fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status/checkout, so this is a code-execution path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or pass -trusted-target if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
 	}
-	o.logf("WARNING: target %s has repo-local git config that runs repo-controlled programs during git diff/add/status (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", "))
+	o.logf("WARNING: target %s has repo-local git config that runs repo-controlled programs during git diff/add/status/checkout (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", "))
 	return nil
 }
 
@@ -1477,7 +1483,7 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 	}
 	rec.CoderError = runErr.Error()
 	rec.CommitSHA = sha
-	o.logf("round %d: coder failed (%v) but had modified the tree; partial work committed as %s -- continuing, next round re-reviews", rec.Round, runErr, sha[:12])
+	o.logf("round %d: coder failed (%v) but had modified the tree; partial work committed as %s -- continuing, next round re-reviews", rec.Round, runErr, shortSHA(sha))
 	// Partial: committed with UNKNOWN verdicts, because the coder died before
 	// reporting them. A reader must be able to tell this commit apart from a normal
 	// round, since its Fixed count is not a claim anyone made.
@@ -1486,6 +1492,17 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 		Partial: true,
 	})
 	return true, nil
+}
+
+// shortSHA abbreviates a commit SHA for a log line without ever slicing past its
+// end: Commit returns git's own output, but an unguarded sha[:12] would panic on
+// a shorter-than-expected value and lose a run (along with the just-committed
+// round it was about to report) over a cosmetic detail.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // applyVerdicts validates the coder's result set against the round's ISSUES --
@@ -1851,7 +1868,7 @@ func (o *Orchestrator) verifyAndCommit(ctx context.Context, rec *model.RoundReco
 	}
 	rec.CommitSHA = sha
 	if sha != "" {
-		o.logf("round %d committed: %s", round, sha[:12])
+		o.logf("round %d committed: %s", round, shortSHA(sha))
 	}
 	o.journal(model.EvRoundCommitted, rec.Round, model.JournalRoundCommitted{
 		SHA:   sha,

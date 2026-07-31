@@ -1418,6 +1418,129 @@ func TestCollectDirectoryGitSkipsDeletedWorktreeFile(t *testing.T) {
 	}
 }
 
+// shimGit shadows `git` on PATH with a wrapper that runs body (shell source, which
+// must exit) whenever sub appears anywhere in the argument list, and forwards every
+// other invocation to the real git. The subcommand is matched anywhere because the
+// collector prefixes every git call with -c hardening flags. `which git` would
+// resolve the shim once PATH is shadowed, so the real binary is pinned up front.
+func shimGit(t *testing.T, sub, body string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = \"" + sub + "\" ]; then\n" + body + "\n  fi\n" +
+		"done\n" +
+		"exec \"" + realGit + "\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// Directory mode streams its listing through gitScanNUL, not c.git, so it has its
+// own error handling -- and a failure there must surface rather than be reported as
+// an empty (or partial) scope, which is exactly the silently-narrowed listing the
+// denylist-only design exists to avoid. The wrapped message names the operation and
+// carries git's stderr, since that is the only clue to what went wrong.
+func TestCollectDirectoryListingErrorSurfaces(t *testing.T) {
+	repo := gitRepo(t)
+	shimGit(t, "ls-files", "    echo 'boom' >&2\n    exit 1")
+
+	_, err := New(config.Target{Mode: "directory", Path: repo}).Collect(t.Context())
+	if err == nil {
+		t.Fatal("Collect() = nil, want the failed git listing to surface")
+	}
+	for _, want := range []string{"list files from git", "boom"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Collect() err = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// An entry longer than maxGitPath is an error, never a truncated path: the caller
+// counts what fn is handed, so accepting a fragment would report a file that does
+// not exist and hide the rest of the listing behind a bogus total. Only the scanner
+// can detect this -- git exits 0 here -- so the scan error must win over the exit
+// status.
+func TestCollectDirectoryOversizedEntryFails(t *testing.T) {
+	repo := gitRepo(t)
+	// 2 MB of NUL-free output: one entry, twice maxGitPath, so the scanner stops.
+	shimGit(t, "ls-files", "    i=0\n    while [ $i -lt 2048 ]; do printf '%1024s' ''; i=$((i+1)); done\n    exit 0")
+
+	_, err := New(config.Target{Mode: "directory", Path: repo}).Collect(t.Context())
+	if err == nil {
+		t.Fatal("Collect() = nil, want an oversized listing entry to fail the collection")
+	}
+	for _, want := range []string{"list files from git", "reading output"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Collect() err = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// gitScanNUL drains stdout and then Waits, so a canceled run must be terminated by
+// the Cancel hook rather than left to finish: listGitFiles is called with the run's
+// context and Ctrl-C has to reach it. Asserted on listGitFiles directly, because
+// listFiles' IsGitRepo probe fails under a canceled context and would silently
+// divert to the filesystem walk.
+func TestListGitFilesCanceledContextReturnsPromptly(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "directory", Path: repo})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.listGitFiles(ctx, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("listGitFiles() = nil on a canceled context, want an error")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("listGitFiles did not return on a canceled context; it hung on the drain-then-Wait sequence")
+	}
+}
+
+// gitScanNUL hand-copies c.git's hardening (the gitSafeConfig -c overrides and the
+// hardened environment) because it runs git itself. core.fsmonitor names a program
+// git spawns while listing files, and a target's own .git/config can set it -- so a
+// directory-mode collect against a crafted checkout would otherwise be code
+// execution with fixpoint's inherited environment, in a mode that never reaches the
+// fix-round trust gate. This is the regression guard for dropping either override
+// from the streaming path.
+func TestCollectDirectoryDoesNotRunFsmonitor(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable to run the fsmonitor program")
+	}
+	repo := gitRepo(t)
+	sentinel := filepath.Join(repo, "fsmonitor-ran")
+	evil := filepath.Join(repo, "evil-fsmonitor.sh")
+	// A v1 fsmonitor program prints the paths it considers dirty; the sentinel is
+	// the side effect core.fsmonitor=false must prevent.
+	if err := os.WriteFile(evil, []byte("#!/bin/sh\ntouch '"+sentinel+"'\nprintf '/\\0'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "config", "core.fsmonitor", evil)
+
+	material, err := New(config.Target{Mode: "directory", Path: repo}).Collect(t.Context())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if !strings.Contains(material, "main.go") {
+		t.Errorf("the listing should still be produced:\n%s", material)
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("the repo-configured fsmonitor program ran; the streaming listing lost gitSafeConfig/gitHardenedEnv")
+	}
+}
+
 // A non-git target has no .gitignore to consult, so scope falls back to the
 // filesystem walk and only target.exclude narrows it.
 func TestCollectDirectoryNonGitFallsBackToWalk(t *testing.T) {

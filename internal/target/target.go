@@ -150,7 +150,7 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		}
 		var sb strings.Builder
 		if c.baseSHA != "" {
-			fmt.Fprintf(&sb, "Diff against pinned base %s:\n\n", c.baseSHA[:12])
+			fmt.Fprintf(&sb, "Diff against pinned base %s:\n\n", shortSHA(c.baseSHA))
 		} else {
 			sb.WriteString("Unstaged working-tree changes:\n\n")
 		}
@@ -170,6 +170,18 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		return truncate(sb.String()), nil
 	}
 	return "", fmt.Errorf("unknown mode %q", c.cfg.Mode)
+}
+
+// shortSHA abbreviates a commit SHA for display without ever slicing past its
+// end. The pinned base comes from git's own output, so it is normally 40 hex
+// characters -- but an unguarded sha[:12] would panic on anything shorter (a
+// truncated read, a git wrapper on PATH), turning a cosmetic detail into a lost
+// run. Mirrors the guard the summary writer applies to round commit SHAs.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // excludes returns the repo-relative paths to keep out of collection (currently

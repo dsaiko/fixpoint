@@ -216,6 +216,39 @@ func TestValidate(t *testing.T) {
 		{"summary_pattern without {ext}", func(c *Config) {
 			c.Logs.SummaryPattern = "summary.md"
 		}, "must contain {ext}"},
+		// env.pass names variables to inherit, so a `FOO=bar` entry passes nothing
+		// and silently starves the agent of the credential it needed. The error must
+		// name the offending VARIABLE and its index -- an earlier version shadowed
+		// them with the agent name, pointing readers at a nonexistent agent.
+		{"invalid env.pass name", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Env = AgentEnv{Pass: []string{"HOME", "FOO=bar"}}
+			c.Agents["rev"] = a
+		}, `env.pass[1] ("FOO=bar")`},
+		{"valid env.pass name accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Env = AgentEnv{Pass: []string{"HOME"}}
+			c.Agents["rev"] = a
+		}, ""},
+		{"invalid env.set name", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Env = AgentEnv{Set: map[string]string{"NOT A NAME": "x"}}
+			c.Agents["rev"] = a
+		}, "env.set"},
+		// A fix run in git-diff mode with no base_ref diffs only unstaged changes,
+		// and fix rounds start from a clean tree -- so that diff is always empty and
+		// every round would review nothing.
+		{"git-diff fix run without base_ref", func(c *Config) {
+			c.Target.Mode = ModeGitDiff
+		}, "target.base_ref"},
+		{"git-diff fix run with base_ref", func(c *Config) {
+			c.Target.Mode = ModeGitDiff
+			c.Target.BaseRef = "main"
+		}, ""},
+		{"git-diff review-only without base_ref", func(c *Config) {
+			c.Target.Mode = ModeGitDiff
+			c.Loop.ReviewOnly = true
+		}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

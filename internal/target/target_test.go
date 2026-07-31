@@ -33,3 +33,20 @@ func TestCompileGlobs(t *testing.T) {
 		}
 	}
 }
+
+// A SHA shorter than the abbreviation is displayed whole, never sliced: the
+// pinned base comes from git's own output, but an unguarded [:12] would turn any
+// short value into a panic that loses the run over a header string.
+func TestShortSHA(t *testing.T) {
+	cases := []struct{ sha, want string }{
+		{"", ""},
+		{"abc", "abc"},
+		{"0123456789ab", "0123456789ab"}, // exactly the abbreviation length
+		{"0123456789abcdef", "0123456789ab"},
+	}
+	for _, tc := range cases {
+		if got := shortSHA(tc.sha); got != tc.want {
+			t.Errorf("shortSHA(%q) = %q, want %q", tc.sha, got, tc.want)
+		}
+	}
+}

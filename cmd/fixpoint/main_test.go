@@ -529,6 +529,80 @@ func TestListPorcelainDropsUnsafeConfigNames(t *testing.T) {
 	}
 }
 
+// A description and a filename are repository-controlled: bundles resolve from
+// <project>/config FIRST, and listing runs before any provenance or trust gate. So
+// merely asking a hostile clone what it offers must not let it drive the terminal
+// -- via OSC 52 (clipboard write), CSI cursor controls (redraw the listing to
+// misattribute a config), BEL, or a bidi override (make text read backwards).
+// Both consumers are covered: `--list` prints to the operator's terminal, and the
+// porcelain description is what zsh and fish display on TAB.
+func TestListEscapesTerminalControlsInProjectMetadata(t *testing.T) {
+	// YAML double-quoted escapes, so the file on disk really holds ESC, BEL, and the
+	// bidi overrides -- not their textual spelling.
+	const hostileDesc = `description: "\x1b]52;c;cGF5bG9hZA==\x07 \x1b[2K\x1b[A \u202Egnidaer \u2066 desc"`
+	const body = hostileDesc + "\nroles:\n  review:\n    prompts: [review-bugs]\n"
+	// Each character that must never reach the terminal, with the visible escape the
+	// output has to carry instead: dropping them silently would hide the payload
+	// from the operator reading the listing.
+	controls := []struct{ raw, escaped string }{
+		{"\x1b", `\x1b`},
+		{"\x07", `\x07`},
+		{"\u202e", `\u202e`},
+		{"\u2066", `\u2066`},
+	}
+	assertEscaped := func(t *testing.T, what, got string) {
+		t.Helper()
+		for _, c := range controls {
+			if strings.Contains(got, c.raw) {
+				t.Errorf("%s carries the raw control %q to the terminal:\n%q", what, c.raw, got)
+			}
+			if !strings.Contains(got, c.escaped) {
+				t.Errorf("%s dropped %s instead of escaping it visibly:\n%q", what, c.escaped, got)
+			}
+		}
+	}
+
+	t.Run("human listing", func(t *testing.T) {
+		dir := t.TempDir()
+		// The FILENAME is repository-controlled too, and the human listing prints it
+		// as both the name and the path (porcelain drops it via bundleNameRE).
+		// Assembled here rather than inline: a "\x1b" literal inside a filepath.Join
+		// call reads to gocritic as a Windows path separator.
+		hostileName := "ev" + "\x1b" + "il.yaml"
+		if err := os.WriteFile(filepath.Join(dir, hostileName), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errOut bytes.Buffer
+		if code := listConfigs(&config.Resolver{Bundles: []string{dir}}, dir, &out, &errOut); code != 0 {
+			t.Fatalf("listConfigs() = %d, want 0; stderr:\n%s", code, errOut.String())
+		}
+		got := out.String()
+		assertEscaped(t, "the human listing", got)
+		if !strings.Contains(got, "desc") {
+			t.Errorf("the printable part of the description must survive:\n%q", got)
+		}
+	})
+
+	t.Run("porcelain listing", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "review-code.yaml"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errOut bytes.Buffer
+		if code := listPorcelain(&config.Resolver{Bundles: []string{dir}}, &out, &errOut); code != 0 {
+			t.Fatalf("listPorcelain() = %d, want 0; stderr:\n%s", code, errOut.String())
+		}
+		got := out.String()
+		assertEscaped(t, "the porcelain description completion displays", got)
+		// One line, three fields: the escaping must not have broken the format.
+		if lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n"); len(lines) != 1 {
+			t.Fatalf("porcelain listing = %q, want exactly one line", got)
+		} else if fields := strings.Split(lines[0], "\t"); len(fields) != 3 {
+			t.Errorf("porcelain line = %q, want three tab-separated fields", lines[0])
+		}
+	})
+}
+
 // planted writes body into <repo>/config/<rel> -- the bundle location the
 // repository under review controls, searched FIRST -- and returns its path.
 func (f *fixture) planted(rel, body string) string {

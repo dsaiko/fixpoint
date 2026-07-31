@@ -858,6 +858,46 @@ func TestRunAllRejectedWithEditFails(t *testing.T) {
 	}
 }
 
+// When the all-rejected round's edits cannot even be stashed, the tree stays
+// dirty -- and the run must SAY so, in the error and in the journal, rather than
+// reporting the tidy "stashed, clean tree restored" outcome. The next run's
+// clean-tree check will refuse to start, so the operator has to be told which
+// edits are sitting there and why. An index.lock fails the stash.
+func TestRunAllRejectedWithEditStashFails(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	// The coder dirties the tree and plants an index.lock, so the reconciling
+	// `git stash` cannot lock the index.
+	lock := filepath.Join(f.repo, ".git", "index.lock")
+	f.writeSide(fmt.Sprintf("echo 'rejected but edited' >> '%s'\n: > '%s'\n", filepath.Join(f.repo, "main.go"), lock))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "by design"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() err = nil, want combined rejected-with-edits + reconcile failure")
+	}
+	for _, want := range []string{"rejected every finding yet modified", "could not be reconciled", "left dirty"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run() err = %v, want it to contain %q", err, want)
+		}
+	}
+	if sum.Termination != model.TermError {
+		t.Errorf("termination = %q, want error", sum.Termination)
+	}
+	if d := f.discarded(model.DiscardRejectedWithEdits); d.Stashed || !strings.Contains(d.Error, "tree left dirty") {
+		t.Errorf("round_discarded = %+v, want stashed=false and the dirty tree named", d)
+	}
+	// Remove the lock so git works again, then confirm the edits were left in place
+	// rather than lost by a botched reconcile.
+	os.Remove(lock)
+	if status := gitRun(t, f.repo, "status", "--porcelain"); !strings.Contains(status, "main.go") {
+		t.Errorf("the unreconcilable edits should remain in the worktree, got status %q", status)
+	}
+	if got := f.commitCount(); got != 1 {
+		t.Errorf("repo has %d commits, want 1 (a rejected round must not commit)", got)
+	}
+}
+
 // Findings over loop.max_findings_per_round are deferred worst-severity-first:
 // the coder sees only the cap'd subset, deferred ones stay open, and an
 // all-rejected verdict on the active subset does not terminate the run.
@@ -1070,6 +1110,52 @@ func TestRunRefusesUntrustedGitDiffConfigFilter(t *testing.T) {
 
 		if _, err := f.orchestrator().Run(t.Context()); err != nil {
 			t.Fatalf("Run() err = %v, want the trust assertion to bypass the config guard", err)
+		}
+	})
+}
+
+// A review-only pr run is gated on the same execution-capable git config. The
+// PR cannot write .git/config, but `gh pr checkout` writes the worktree and git
+// runs a configured smudge/process filter during checkout -- and the PR supplies
+// the .gitattributes that selects it (plus any worktree script it points at). So
+// the guard must refuse before Prepare checks anything out, in the DEFAULT
+// review-only path where no untrusted-fix opt-in is involved.
+func TestRunRefusesUntrustedPRConfigFilter(t *testing.T) {
+	t.Run("untrusted PR target with smudge filter is refused", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false // undo the fixture's trusted default
+		f.cfg.Target.Mode = "pr"
+		f.cfg.Target.PR = 7
+		gitRun(t, f.repo, "config", "filter.evil.smudge", "sh -c 'id'")
+
+		_, err := f.orchestrator().Run(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "repo-controlled programs") {
+			t.Fatalf("Run() err = %v, want refusal citing repo-controlled programs", err)
+		}
+		// Nothing ran: no agent, and no gh pr checkout (which would have failed
+		// against this local repo anyway -- the point is the guard came first).
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (must refuse before checkout)", got)
+		}
+		if branch := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "--abbrev-ref", "HEAD")); branch != "main" && branch != "master" {
+			t.Errorf("HEAD is on %q; the guard must refuse before any checkout", branch)
+		}
+	})
+
+	t.Run("PR target without unsafe config passes the guard", func(t *testing.T) {
+		// The guard must not refuse an ordinary PR review: this run gets past it and
+		// fails later, at the gh pr checkout Prepare runs against a local repo.
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		f.cfg.Target.Mode = "pr"
+		f.cfg.Target.PR = 7
+
+		_, err := f.orchestrator().Run(t.Context())
+		if err == nil {
+			t.Fatal("Run() err = nil, want the checkout of a nonexistent PR to fail")
+		}
+		if strings.Contains(err.Error(), "repo-controlled programs") {
+			t.Errorf("Run() err = %v, want the config guard to allow a repo with no unsafe keys", err)
 		}
 	})
 }
@@ -2344,6 +2430,88 @@ func TestVerifyRetrySucceedsAndCommits(t *testing.T) {
 	}
 	if len(sum.Rounds[0].Verify) == 0 {
 		t.Error("verification results must be recorded on the round for the summary")
+	}
+}
+
+// A SHA shorter than the abbreviation is logged whole rather than sliced: an
+// unguarded [:12] would panic while reporting a commit that just landed, turning a
+// successful round into a lost run.
+func TestShortSHA(t *testing.T) {
+	cases := []struct{ sha, want string }{
+		{"", ""},
+		{"abc", "abc"},
+		{"0123456789ab", "0123456789ab"}, // exactly the abbreviation length
+		{"0123456789abcdef", "0123456789ab"},
+	}
+	for _, tc := range cases {
+		if got := shortSHA(tc.sha); got != tc.want {
+			t.Errorf("shortSHA(%q) = %q, want %q", tc.sha, got, tc.want)
+		}
+	}
+}
+
+// artifact reads one per-step artifact the run wrote, by its rendered filename
+// under round-<n>/. Reading the file from disk is the point: it is both what an
+// operator inspects afterwards and, for a prompt, the only record of what an agent
+// was actually told.
+func (f *fixture) artifact(round int, name string) string {
+	f.t.Helper()
+	glob := filepath.Join(f.cfg.Logs.StaticBase(), "*", fmt.Sprintf("round-%d", round), name)
+	matches, err := filepath.Glob(glob)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		f.t.Fatalf("glob %s matched %d files, want 1", glob, len(matches))
+	}
+	b, err := os.ReadFile(matches[0])
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return string(b)
+}
+
+// The correction attempt is the coder's one chance to repair a round the gate
+// blocked, and this prompt is the only place it learns WHICH check failed and what
+// that check printed. Rendering it wrong (an empty verification block, the round's
+// issues lost, the contract missing) would still produce a plausible-looking run:
+// the coder would be re-invoked, answer something, and the round would be
+// discarded as unverifiable. So assert the prompt's content, not just that a
+// correction happened.
+func TestVerifyCorrectionPromptCarriesFailures(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	// The fixture's coder template omits {{.Verification}}; the correction render is
+	// the only one that fills it, so this test needs a template that uses it.
+	fixPrompt := filepath.Join(t.TempDir(), "fix.md")
+	if err := os.WriteFile(fixPrompt, []byte("Round {{.Round}}\n{{.Findings}}\n{{.Verification}}\n{{.OutputContract}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.Roles.Coder.Prompt = fixPrompt
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+	f.repairBuildOn(3, "broken.txt")
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "corrected"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() = %v, want the corrected round to commit", err)
+	}
+	got := f.artifact(1, "fix-mock-fix-verify-round-1.prompt")
+	for _, want := range []string{
+		"## Verification failed",          // the block's header
+		"### build",                       // which check failed, by its configured name
+		"exit status 1",                   // how it failed
+		"check failed: build is broken",   // and what it printed, so the coder can act
+		"Do not disable, skip, or weaken", // the instruction that keeps a "fix" honest
+		"off by one",                      // the round's issues, still in hand
+		"Round 1",                         // the template's own data
+		"<fix>",                           // the output contract
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("fix-verify prompt is missing %q:\n%s", want, got)
+		}
 	}
 }
 
