@@ -351,7 +351,7 @@ type Loop struct {
 	// a hostile repository's own config would then authorize both executing the
 	// agent definitions it ships and running the write-capable coder, with no
 	// operator involvement. The two gates that consult these fields
-	// (allowProjectSuppliedExec and checkFixTrust) exist precisely to defend
+	// (allowProjectSuppliedPolicy and checkFixTrust) exist precisely to defend
 	// against target-supplied configuration, so their input must come from the
 	// invocation, which the target cannot influence.
 	//
@@ -972,7 +972,7 @@ var verifyPolicies = []VerifyPolicy{VerifyOff, VerifyNoRegressions, VerifyMustPa
 // SECURITY: these commands run code from, and defined by, the target project.
 // They therefore execute only on the fix path, which already requires an explicit
 // trust assertion (see Loop.TrustedTarget), and a bundle resolved from inside the
-// target is itself treated as untrusted input -- see Config.ProjectSuppliedExec.
+// target is itself treated as untrusted input -- see Loaded.ProjectSuppliedPolicy.
 type Verify struct {
 	Policy VerifyPolicy `yaml:"policy"`
 	// Timeout bounds EACH command. A hung test suite must not hang the run.

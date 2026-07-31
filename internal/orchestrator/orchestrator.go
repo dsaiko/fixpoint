@@ -55,6 +55,13 @@ type Orchestrator struct {
 	// journalWarn keeps a broken journal to ONE warning. A full disk would
 	// otherwise emit a line per transition and bury the run's real output.
 	journalWarn sync.Once
+	// journalWrite is how a transition reaches the journal. It is a field holding
+	// o.logs.Journal rather than a direct call, so a test can inject a failing
+	// writer: "a journal failure never fails the run" is a load-bearing property
+	// (its whole point is that losing an audit artifact must not discard fixes that
+	// already passed verification), and a filesystem cannot be relied on to fail on
+	// demand -- a read-only path still succeeds for root, which CI often is.
+	journalWrite func(typ string, round int, data any) error
 }
 
 // openJournal writes the run's first record and reports where the journal lives.
@@ -93,7 +100,7 @@ func (o *Orchestrator) openJournal() {
 // The inverse -- failing the run to protect the audit trail -- would make the
 // observability feature the most likely cause of a lost round.
 func (o *Orchestrator) journal(typ string, round int, data any) {
-	if err := o.logs.Journal(typ, round, data); err != nil {
+	if err := o.journalWrite(typ, round, data); err != nil {
 		o.journalWarn.Do(func() {
 			o.logf("WARNING: run journal unavailable (%v); the run continues without it", err)
 		})
@@ -150,14 +157,15 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		}
 	}
 	o := &Orchestrator{
-		cfg:       cfg,
-		source:    source,
-		collector: target.New(cfg.Target),
-		logs:      logs,
-		templates: templates,
-		logf:      logf,
-		ledger:    issue.NewLedger(),
-		overrides: l.Overrides.Applied(),
+		cfg:          cfg,
+		source:       source,
+		collector:    target.New(cfg.Target),
+		logs:         logs,
+		templates:    templates,
+		logf:         logf,
+		ledger:       issue.NewLedger(),
+		overrides:    l.Overrides.Applied(),
+		journalWrite: logs.Journal,
 	}
 	// Exclude the template's literal prefix, not the rendered path: the rendered
 	// path changes every run (and every round), so only the static base is a
@@ -548,6 +556,22 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 
 	o.deferOverCap(recP)
 
+	// Nothing left to hand over: every issue the reviewers reported this round was
+	// already rejected by the coder in an earlier round (the cap only defers issues
+	// while work remains, so an empty workload means exactly that). Invoking the
+	// coder on an empty list would spend a session asking about nothing, and looping
+	// would just re-report the same decided issues until max_iterations. It is the
+	// same terminal state as a round the coder rejected outright -- reported as
+	// all-rejected, which exits non-zero because nothing changed.
+	if len(activeIssues(recP)) == 0 {
+		if len(recP.ReviewErrors) > 0 {
+			return false, roundReviewErr(recP)
+		}
+		o.logf("round %d: all %d issue(s) were already rejected in an earlier round; nothing left to fix", round, len(recP.Issues))
+		sum.Termination = model.TermAllRejected
+		return true, nil
+	}
+
 	// recP is the round just appended, so prior rounds are everything before it.
 	prior := sum.Rounds[:len(sum.Rounds)-1]
 	salvaged, err := o.fix(ctx, recP, prior)
@@ -581,12 +605,22 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 // survived a round.
 func (o *Orchestrator) deferOverCap(rec *model.RoundRecord) {
 	maxN := o.cfg.Loop.MaxFindingsPerRound
-	if maxN <= 0 || len(rec.Issues) <= maxN {
+	if maxN <= 0 {
 		return
 	}
-	idx := make([]int, len(rec.Issues))
-	for i := range idx {
-		idx[i] = i
+	// Only work counts against the cap. An issue the coder rejected in an earlier
+	// round arrives already carrying that verdict (the ledger re-reports it so it
+	// stays visible, without handing it back), so counting it would let decided
+	// issues displace open ones from the round's limited slots -- and deferring one
+	// would overwrite the rejection with "deferred", losing the decision.
+	var idx []int
+	for i := range rec.Issues {
+		if coderWork(rec.Issues[i]) {
+			idx = append(idx, i)
+		}
+	}
+	if len(idx) <= maxN {
+		return
 	}
 	rank := func(i int) int {
 		it := rec.Issues[i]
@@ -612,7 +646,7 @@ func (o *Orchestrator) deferOverCap(rec *model.RoundRecord) {
 		deferred = append(deferred, rec.Issues[i].ID)
 	}
 	o.logf("round %d: %d issue(s) exceed the per-round cap of %d; %d deferred to later rounds",
-		rec.Round, len(rec.Issues), maxN, len(rec.Issues)-maxN)
+		rec.Round, len(idx), maxN, len(idx)-maxN)
 	// Record WHICH issues waited, not just how many: aging is meant to bound the
 	// wait, and the bug it fixed (a finding reported three times and never once
 	// scheduled) is only visible by tracking an id across rounds.
@@ -641,28 +675,43 @@ func (o *Orchestrator) setIssueVerdict(rec *model.RoundRecord, i int, verdict, d
 	}
 }
 
-// activeIssues returns the issues actually handed to the coder this round
-// (everything the cap did not defer).
+// coderWork reports whether one of the round's issues is work for THIS round's
+// coder. It is asked BEFORE the coder answers, so the only verdicts an issue can
+// already carry are the two that mean "not this round's work":
+//
+//   - deferred by the per-round cap, so it was never handed over;
+//   - rejected in an EARLIER round. The ledger deliberately returns a re-reported
+//     rejected issue carrying that verdict so the summary shows it came up again,
+//     without resubmitting a decision already made. Handing it back would spend a
+//     slot -- and a coder verdict -- on it every round for the rest of the run.
+func coderWork(it model.Issue) bool {
+	return it.Verdict != model.VerdictDeferred && it.Verdict != model.VerdictRejected
+}
+
+// activeIssues returns the issues actually handed to the coder this round: the
+// round's work, minus what the cap deferred and what an earlier round already
+// rejected. The rejected ones stay in the round record for reporting.
 func activeIssues(rec *model.RoundRecord) []model.Issue {
 	out := make([]model.Issue, 0, len(rec.Issues))
 	for _, it := range rec.Issues {
-		if it.Verdict != model.VerdictDeferred {
+		if coderWork(it) {
 			out = append(out, it)
 		}
 	}
 	return out
 }
 
-// activeFindings returns the round's findings that are actually handed to the
-// coder (everything not deferred by the cap).
-func activeFindings(rec *model.RoundRecord) []model.Finding {
-	var out []model.Finding
+// deferredFindings counts the round's observations whose issue the cap deferred.
+// Those never reached the coder, which is why an all-rejected round with deferred
+// work left is not a terminal state.
+func deferredFindings(rec *model.RoundRecord) int {
+	n := 0
 	for _, f := range rec.Findings {
-		if f.Verdict != model.VerdictDeferred {
-			out = append(out, f)
+		if f.Verdict == model.VerdictDeferred {
+			n++
 		}
 	}
-	return out
+	return n
 }
 
 // checkCleanStreak advances (or resets) the consecutive-clean-round streak for
@@ -740,7 +789,7 @@ func (o *Orchestrator) finalizeFix(ctx context.Context, rec *model.RoundRecord, 
 	// Deferred findings never reached the coder, so "everything was rejected"
 	// does not hold for the round as a whole -- keep looping so they get
 	// their turn.
-	if deferred := len(rec.Findings) - len(activeFindings(rec)); deferred > 0 {
+	if deferred := deferredFindings(rec); deferred > 0 {
 		o.logf("round %d: coder rejected all active findings but %d deferred remain; continuing", round, deferred)
 		return false, nil
 	}
@@ -1123,8 +1172,15 @@ func toFindings(in []model.ReviewFinding, asg model.Assignment, lensName string,
 	out := make([]model.Finding, 0, len(in))
 	for _, f := range in {
 		nf := model.Finding{
-			Agent:       asg.Agent,
-			Lens:        lensName,
+			Agent: asg.Agent,
+			Lens:  lensName,
+			// The reviewer's own cross-round declaration: "this is issue i3, reworded".
+			// It has to survive into the observation, because it is the ONLY signal that
+			// identifies a finding whose text and line have both moved -- the ledger's
+			// fingerprint fallback cannot. Dropping it here silently created a second
+			// issue for a re-report, which restarted deferral aging and resubmitted
+			// issues the coder had already rejected.
+			IssueID:     f.Issue,
 			Category:    f.Category,
 			Severity:    f.Severity,
 			File:        f.File,
@@ -1357,12 +1413,12 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 // it, so the summary and the reviewers' history keep speaking in the terms the
 // reviewers used.
 func (o *Orchestrator) applyVerdicts(rec *model.RoundRecord, results []model.FixResult) error {
-	// Deferred issues were never handed to the coder, so they neither expect nor
-	// accept a verdict.
+	// Issues that were never handed to the coder -- deferred by the cap, or rejected
+	// in an earlier round -- neither expect nor accept a verdict.
 	index := map[string]int{}
 	expected := 0
 	for i := range rec.Issues {
-		if rec.Issues[i].Verdict == model.VerdictDeferred {
+		if !coderWork(rec.Issues[i]) {
 			continue
 		}
 		index[rec.Issues[i].ID] = i
@@ -1386,7 +1442,7 @@ func (o *Orchestrator) applyVerdicts(rec *model.RoundRecord, results []model.Fix
 		// their order and the error text is deterministic.
 		var missing []string
 		for _, it := range rec.Issues {
-			if it.Verdict != model.VerdictDeferred && !seen[it.ID] {
+			if coderWork(it) && !seen[it.ID] {
 				missing = append(missing, it.ID)
 			}
 		}
@@ -1634,9 +1690,12 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 	coder := o.cfg.Roles.Coder
 	a := o.cfg.Agents[coder.Agent]
 	d := prompt.FixData{
-		Mode:           o.cfg.Target.Mode,
-		Path:           o.cfg.Target.Path,
-		Round:          rec.Round,
+		Mode:  o.cfg.Target.Mode,
+		Path:  o.cfg.Target.Path,
+		Round: rec.Round,
+		// This runs AFTER the round's verdicts are applied, so activeIssues here is the
+		// work whose edits are in the tree -- the issues the coder reported fixing. The
+		// ones it rejected changed nothing and cannot be why a check now fails.
 		Findings:       prompt.FormatIssues(activeIssues(rec)),
 		Verification:   verify.FormatForCoder(blocking),
 		OutputContract: prompt.FixContract,

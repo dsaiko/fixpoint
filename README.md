@@ -444,6 +444,15 @@ Read this before pointing the tool at code you did not write.
   with no involvement from you. Keeping the assertion in the invocation is also
   what stops it becoming an inherited default that silently applies to the next
   untrusted repository you clone.
+- **A bundle resolved from inside the target needs `-trusted-target` too, even
+  for a review-only run.** `<project>/config` is searched first, so a repository
+  can ship the very files a run is built from: agent commands and verify commands
+  are argv fixpoint executes, and a prompt is the instruction stream handed
+  verbatim to a reviewer that can read anything you can. None of that needs a
+  model's cooperation to exploit. fixpoint therefore lists every bundle file that
+  came from inside the target and refuses until you assert trust — or point
+  `-config` at a bundle outside it. The check is per *file*, not per key, so it
+  cannot go stale as configuration grows new surface.
 - **Reviewers can read anything, even in review-only mode.** Read-only agent
   flags block edits but do not confine reads: a reviewer fed untrusted content
   can be prompt-injected into reading a host secret (`~/.ssh`,

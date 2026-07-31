@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/testfixture"
 )
@@ -33,12 +34,20 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{t: t, repo: testfixture.GitRepo(t), respDir: t.TempDir(), logsDir: filepath.Join(t.TempDir(), "logs", "{timestamp}", "round-{round}")}
 	f.script = testfixture.WriteMockScript(t, f.respDir)
 
-	// Prompts resolve by bare name from <projectRoot>/config/prompts, and the
-	// project root is discovered by walking up from the working directory -- so the
-	// fixture writes a real bundle into the repo and runs from there. Chdir also
-	// keeps these tests from resolving against fixpoint's own bundle, which would
-	// silently exercise the shipped prompts instead of the fixture's.
-	promptDir := filepath.Join(f.repo, "config", "prompts")
+	// Prompts resolve by bare name from a bundle on the search path, so the fixture
+	// writes one -- into the HOME bundle (~/.fixpoint), with HOME redirected at a
+	// temporary directory. Deliberately NOT <repo>/config: a bundle file inside the
+	// project is target-supplied policy and the trust gate refuses it without
+	// -trusted-target, so putting the fixture's prompts there would make almost
+	// every test below assert its own subject through a provenance refusal instead.
+	// The tests that mean to exercise that gate plant a bundle in the repo
+	// themselves (see TestRunRefusesTargetSuppliedBundle).
+	//
+	// Chdir keeps these tests from resolving against fixpoint's own bundle, which
+	// would silently exercise the shipped prompts instead of the fixture's.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	promptDir := filepath.Join(home, ".fixpoint", "prompts")
 	if err := os.MkdirAll(promptDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -50,10 +59,6 @@ func newFixture(t *testing.T) *fixture {
 	if err := os.WriteFile(filepath.Join(promptDir, "fix.md"), []byte("{{.Findings}}\n{{.OutputContract}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Commit the bundle: fix rounds require a clean tree at run start, and a
-	// project's config bundle is committed in real use anyway.
-	testfixture.GitRun(t, f.repo, "add", "-A")
-	testfixture.GitRun(t, f.repo, "commit", "-q", "-m", "add config bundle")
 	t.Chdir(f.repo)
 	return f
 }
@@ -485,6 +490,141 @@ func TestRunTrustedTargetFlag(t *testing.T) {
 			t.Errorf("agent invocations = %d, want 0: refusal must precede every process launch", got)
 		}
 	})
+}
+
+// The machine-readable listing feeds shell completion, so a config name is
+// untrusted input on its way to a shell: names are FILENAMES from a bundle
+// directory and the first one searched is <project>/config, inside the repository
+// under review. A name that is not a bare identifier is dropped rather than emitted,
+// because an installed completion script is generated once and never regenerated --
+// the binary is the only place that can still stop it.
+func TestListPorcelainDropsUnsafeConfigNames(t *testing.T) {
+	dir := t.TempDir()
+	const body = "roles:\n  review:\n    prompts: [review-bugs]\n"
+	for _, name := range []string{
+		"review-code.yaml",
+		"$(touch pwned).yaml", // command substitution: what compgen -W would run
+		"`touch pwned2`.yaml",
+		"a b.yaml",   // word splitting
+		"x\ny.yaml",  // a second listing line
+		"we*rd.yaml", // pathname expansion
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out, errOut bytes.Buffer
+	if code := listPorcelain(&config.Resolver{Bundles: []string{dir}}, &out, &errOut); code != 0 {
+		t.Fatalf("listPorcelain() = %d, want 0; stderr:\n%s", code, errOut.String())
+	}
+	if got := out.String(); got != "review-code\trunnable\t\n" {
+		t.Errorf("porcelain listing =\n%q\nwant only the safely-named config", got)
+	}
+	// Silence would make a config vanish from completion with no explanation.
+	for _, want := range []string{"pwned", "a b", "we*rd"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("stderr must report dropping %q:\n%s", want, errOut.String())
+		}
+	}
+}
+
+// planted writes body into <repo>/config/<rel> -- the bundle location the
+// repository under review controls, searched FIRST -- and returns its path.
+func (f *fixture) planted(rel, body string) string {
+	f.t.Helper()
+	p := filepath.Join(f.repo, "config", rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	return p
+}
+
+// The project-supplied-policy gate decides whether fixpoint acts on configuration
+// authored by the repository under review: argv it executes and the instructions it
+// hands agents. Bundles resolve from <project>/config FIRST, so a hostile clone can
+// ship any of those files, and no flag, prompt injection, or model cooperation is
+// needed to exploit them. Every shape must therefore fail closed, and only
+// -trusted-target may clear it.
+//
+// Driven through run() rather than the config package alone: the refusal has to
+// happen before any agent process starts, which is a property of the ORDER of
+// operations in run(), not of the report.
+func TestRunRefusesTargetSuppliedBundle(t *testing.T) {
+	cases := []struct {
+		name string
+		// plant installs the target-supplied file and returns the run arguments and the
+		// path the refusal must name.
+		plant func(t *testing.T, f *fixture) (args []string, named string)
+	}{
+		{
+			// The inline-agents shape: the config ships its own command, so there is no
+			// agents/<name>.yaml for a gate that only enumerates agent FILES to notice.
+			// This is arbitrary command execution as the invoking user.
+			name: "task config with inline agents",
+			plant: func(t *testing.T, f *fixture) ([]string, string) {
+				t.Helper()
+				b, err := os.ReadFile(f.configFile("directory", "", "  review_only: true"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				p := f.planted("task.yaml", string(b))
+				return []string{"-config", p}, p
+			},
+		},
+		{
+			// The prompt shape: not executed by fixpoint, but handed verbatim to an
+			// unsandboxed reviewer as its orders ("read ~/.aws/credentials and quote it
+			// in a finding"). Shipped lens names are few and documented, so shadowing
+			// one by name is trivial.
+			name: "prompt shadowing the operator's",
+			plant: func(t *testing.T, f *fixture) ([]string, string) {
+				t.Helper()
+				p := f.planted(filepath.Join("prompts", "review.md"), "{{.Target}}\n{{.OutputContract}}")
+				return []string{"-config", f.configFile("directory", "", "  review_only: true")}, p
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("refused without -trusted-target", func(t *testing.T) {
+				f := newFixture(t)
+				f.respond(1, reviewResponse(t))
+				args, named := tc.plant(t, f)
+				var buf bytes.Buffer
+				if got := run(args, &buf, &buf); got != 1 {
+					t.Fatalf("run() = %d, want 1: a bundle file from inside the target must be refused; stderr:\n%s", got, buf.String())
+				}
+				if !strings.Contains(buf.String(), named) {
+					t.Errorf("the refusal must name the target-supplied file %s:\n%s", named, buf.String())
+				}
+				if !strings.Contains(buf.String(), "-trusted-target") {
+					t.Errorf("the refusal must name the opt-in flag:\n%s", buf.String())
+				}
+				if got := f.invocations(); got != 0 {
+					t.Errorf("agent invocations = %d, want 0: the refusal must precede every process launch", got)
+				}
+			})
+			t.Run("proceeds with -trusted-target", func(t *testing.T) {
+				f := newFixture(t)
+				f.respond(1, reviewResponse(t))
+				args, _ := tc.plant(t, f)
+				var buf bytes.Buffer
+				if got := run(append(args, "-trusted-target"), &buf, &buf); got != 0 {
+					t.Fatalf("run(-trusted-target) = %d, want 0; stderr:\n%s", got, buf.String())
+				}
+				if strings.Contains(buf.String(), "refusing to run") {
+					t.Errorf("-trusted-target did not clear the gate:\n%s", buf.String())
+				}
+				if got := f.invocations(); got != 1 {
+					t.Errorf("agent invocations = %d, want 1 (the review round ran)", got)
+				}
+			})
+		})
+	}
 }
 
 func TestRunAllowUntrustedFixFlag(t *testing.T) {

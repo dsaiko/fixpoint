@@ -114,7 +114,7 @@ func (o Overrides) Applied() []string {
 // Resolution stays eager and complete here -- an unresolvable prompt or agent must
 // fail before any agent process starts, not mid-run after tokens are spent.
 //
-// It does not call Validate. The caller runs the project-supplied-exec trust gate
+// It does not call Validate. The caller runs the project-supplied-policy trust gate
 // (which reads the now-final TrustedTarget) and then Loaded.Validate, so a
 // configuration that is both untrusted and invalid still reports the trust refusal
 // first, and a validation failure is still preceded by the resolved-source listing
@@ -364,41 +364,81 @@ func (c *Config) anchor(projectRoot string) {
 	}
 }
 
-// ProjectSuppliedExec reports the bundle files that were resolved from INSIDE the
-// review target and that fixpoint executes: agent commands and verification
-// commands. It returns nil when none were.
+// ProjectSuppliedPolicy reports the bundle files that were resolved from INSIDE
+// the project under review. It returns nil when none were.
 //
 // This closes a hole opened by making bundles shadowable per project. Resolution
-// prefers <project>/config, so a repository can ship its own agents/*.yaml or a
-// verify command -- and those are argv that fixpoint runs. That is direct code
-// execution from a file in the target, with no model and no prompt injection
-// involved, and it would otherwise happen even in a review-only run that promises
-// to change nothing.
+// prefers <project>/config, so a repository can ship its own copy of any file a
+// run is built from -- and every one of them is policy authored by the code being
+// reviewed, not data:
 //
-// The caller gates on this: executing a target's own definitions requires the same
+//   - an agents/<name>.yaml command, or an `agents:` map defined INLINE in the task
+//     config, is argv fixpoint executes (in the preflight ping and once per role);
+//   - a verify command is argv fixpoint executes;
+//   - a prompt is the instruction stream handed verbatim to an agent that can read
+//     any file the invoking user can, and whose findings are printed, persisted,
+//     and echoed into a fix run's commit body;
+//   - the task config chooses all three, plus the target and the trust-relevant
+//     shape of the run.
+//
+// So EVERY resolved file counts, whatever it contains, rather than an enumeration
+// of the dangerous keys. Enumerating is what let inline `agents:` maps through: the
+// list only covered agents loaded from their own file (resolveAgents records those
+// in Source.Agents and skips the lookup entirely for an inline name), so a hostile
+// task config carrying its own commands was invisible to the gate. A content-based
+// list fails OPEN every time config surface grows; this one fails closed.
+//
+// Containment is measured against ProjectRoot -- the directory the bundle search
+// path is anchored to, and so the directory a shadowing copy has to be planted in
+// -- and additionally against target.path. Measuring against target.path ALONE let
+// the config choose the boundary it is judged by: a hostile config declaring
+// `target: {path: ./src}` put every one of its sibling bundle files outside "the
+// target" and straight past the gate.
+//
+// The consequence is deliberate: pointing fixpoint at a project that carries its
+// own bundle requires -trusted-target even for a review-only run. The alternative
+// is deciding, per key, which of the reviewed repository's own policy is harmless.
+//
+// The caller gates on this: acting on a target's own bundle requires the same
 // explicit trust assertion as letting the coder edit it.
-func (l *Loaded) ProjectSuppliedExec() []string {
+func (l *Loaded) ProjectSuppliedPolicy() []string {
 	if l.ProjectRoot == "" {
 		return nil
 	}
-	target := l.Config.Target.Path
-	if target == "" {
-		target = l.ProjectRoot
-	}
 	var out []string
-	for name, path := range l.Source.Agents {
-		if within(path, target) {
-			out = append(out, fmt.Sprintf("agent %s (%s)", name, path))
+	add := func(kind, name, path string) {
+		if path == "" || !l.fromProject(path) {
+			return
 		}
+		if name == "" {
+			out = append(out, kind+" "+path)
+			return
+		}
+		out = append(out, fmt.Sprintf("%s %s (%s)", kind, name, path))
 	}
-	if l.Config.Verify.Enabled() && within(l.Source.Config, target) {
-		out = append(out, "verify commands in "+l.Source.Config)
+	// The config first: it is the file that names all the others, and the one an
+	// inline `agents:` map or a verify command lives in.
+	add("config", "", l.Source.Config)
+	add("extends base", "", l.Source.Extends)
+	for name, path := range l.Source.Agents {
+		add("agent", name, path)
 	}
-	if l.Config.Verify.Enabled() && l.Source.Extends != "" && within(l.Source.Extends, target) {
-		out = append(out, "verify commands in "+l.Source.Extends)
+	for name, path := range l.Source.Prompts {
+		add("prompt", name, path)
 	}
 	sort.Strings(out) // stable message regardless of map iteration order
 	return out
+}
+
+// fromProject reports whether a bundle file lies inside the code the run does not
+// trust: the project the bundle search path is anchored to, or the review target
+// when that points somewhere else. Either is enough -- a file in either tree may
+// have been shipped by the code under review.
+func (l *Loaded) fromProject(path string) bool {
+	if within(path, l.ProjectRoot) {
+		return true
+	}
+	return l.Config.Target.Path != "" && within(path, l.Config.Target.Path)
 }
 
 // within reports whether path lies inside root.

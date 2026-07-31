@@ -93,6 +93,27 @@ func TestZshCompletionOffersDescriptions(t *testing.T) {
 	}
 }
 
+// Config names are FILENAMES from a bundle directory, and the first one searched is
+// <project>/config -- inside the repository under review. `compgen -W` splits its
+// wordlist on IFS and EXPANDS each word, so a candidate reaching -W means a clone
+// shipping config/'$(cmd)'.yaml executes cmd when the operator presses TAB, before
+// any run and so before any trust gate. Only the constant flag list may go through
+// -W; names must be read into COMPREPLY.
+func TestBashCompletionNeverExpandsConfigNames(t *testing.T) {
+	var out, errOut bytes.Buffer
+	writeCompletion([]string{"bash"}, &out, &errOut)
+	script := code(out.String())
+	if strings.Contains(script, `compgen -W "$`) {
+		t.Errorf("bash script passes a variable wordlist to compgen -W, which expands it:\n%s", script)
+	}
+	if strings.Contains(script, "compgen -W \"$(") {
+		t.Errorf("bash script passes command output straight to compgen -W:\n%s", script)
+	}
+	if !strings.Contains(script, "while IFS= read -r") {
+		t.Errorf("bash script must read candidate names with `read -r` rather than expanding them:\n%s", script)
+	}
+}
+
 // code strips comment lines from a shell script, so an assertion about what the
 // script DOES is not satisfied (or broken) by a comment about what it avoids.
 func code(script string) string {

@@ -2,9 +2,12 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/dsaiko/fixpoint/internal/config"
@@ -303,5 +306,68 @@ func TestRunRefusedByTrustGateJournalsOnlyTheRefusal(t *testing.T) {
 	}
 	if !strings.Contains(fin.Error, "trusted-target") {
 		t.Errorf("run_finished must name the refusal, got %q", fin.Error)
+	}
+}
+
+// A journal write failure must NEVER fail the run. The journal is an audit
+// artifact, and the alternative -- failing the run to protect it -- would make the
+// observability feature the most likely cause of a lost round, discarding fixes that
+// already passed verification and were committed. The warning is emitted once, so a
+// full disk cannot bury the run's real output under a line per transition.
+//
+// The failure is injected through o.journalWrite rather than by breaking the
+// filesystem: a read-only path still succeeds for root, which CI often is, so a
+// filesystem-based version of this test would silently assert nothing.
+func TestRunSurvivesAJournalThatCannotBeWritten(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean -> converge
+
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	o.journalWrite = func(string, int, any) error {
+		attempts++
+		return errors.New("no space left on device")
+	}
+
+	before := f.commitCount()
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want a broken journal to be survivable", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want converged", sum.Termination)
+	}
+	if got := f.commitCount(); got != before+1 {
+		t.Errorf("commit count = %d, want %d: the verified fix must still be committed", got, before+1)
+	}
+	// Every transition still tries: giving up after the first failure would lose the
+	// records a journal that recovers (a freed disk) could still have held.
+	if attempts < 5 {
+		t.Errorf("journal write attempts = %d, want one per transition (the run kept journaling)", attempts)
+	}
+	warnings := 0
+	for _, l := range lines {
+		if strings.Contains(l, "journal unavailable") {
+			warnings++
+			if !strings.Contains(l, "no space left on device") || !strings.Contains(l, "continues") {
+				t.Errorf("the warning must carry the cause and say the run continues: %q", l)
+			}
+		}
+	}
+	if warnings != 1 {
+		t.Errorf("journal warnings = %d, want exactly 1 for the whole run", warnings)
 	}
 }

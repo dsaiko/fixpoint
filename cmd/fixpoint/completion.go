@@ -39,9 +39,11 @@ const bashCompletion = `# fixpoint completion for bash. Install with:
 #   fixpoint completion bash > /etc/bash_completion.d/fixpoint
 # or append to ~/.bashrc:
 #   source <(fixpoint completion bash)
-# Word splitting on compgen output is intentional and is how COMPREPLY is built.
-# ` + "`mapfile`" + ` would read better but is bash 4+, and macOS still ships bash 3.2 -- this
-# form works from 3.2 through 5.x.
+# The flag list is a constant baked into this script, so word splitting on
+# ` + "`compgen -W`" + ` output is intentional there and is how COMPREPLY is built.
+# Config names are NOT passed through -W: see the comment on the read loop below.
+# ` + "`mapfile`" + ` would read better than that loop but is bash 4+, and macOS still ships
+# bash 3.2 -- this form works from 3.2 through 5.x.
 _fixpoint() {
     local cur=${COMP_WORDS[COMP_CWORD]}
     if [[ $cur == -* ]]; then
@@ -50,9 +52,19 @@ _fixpoint() {
     fi
     # Only runnable configs: a base config exists to be inherited via ` + "`extends`" + `,
     # and offering it would invite a run that fails validation.
-    local names
-    names=$(fixpoint --list --porcelain 2>/dev/null | awk -F'\t' '$2 == "runnable" { print $1 }')
-    COMPREPLY=( $(compgen -W "$names" -- "$cur") )
+    #
+    # Read into COMPREPLY and prefix-filter here rather than calling
+    # ` + "`compgen -W \"$names\"`" + `: -W splits its wordlist on IFS and EXPANDS every word,
+    # and these candidates are FILENAMES from a bundle directory -- the first one
+    # searched is <project>/config, inside the repository under review. A clone
+    # shipping config/'$(cmd)'.yaml would otherwise run cmd on TAB, before any
+    # fixpoint run and so before any trust gate.
+    local line
+    COMPREPLY=()
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        [[ $line == "$cur"* ]] && COMPREPLY+=( "$line" )
+    done < <(fixpoint --list --porcelain 2>/dev/null | awk -F'\t' '$2 == "runnable" { print $1 }')
 }
 complete -F _fixpoint fixpoint
 `

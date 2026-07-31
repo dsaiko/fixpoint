@@ -2395,3 +2395,189 @@ func TestCorroboratedReportsCostOneCapSlot(t *testing.T) {
 		t.Errorf("Agents() = %v, want the corroboration recorded", agents)
 	}
 }
+
+// coderPrompt returns the coder prompt the run wrote for a round, or "" when the
+// coder was never invoked in it. The prompt file is the only artifact that shows
+// what was actually HANDED to the coder, as opposed to what the round recorded.
+func (f *fixture) coderPrompt(round int) string {
+	f.t.Helper()
+	prompts, err := filepath.Glob(filepath.Join(f.cfg.Logs.StaticBase(), "*", fmt.Sprintf("round-%d", round), "fix-*.prompt"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if len(prompts) == 0 {
+		return ""
+	}
+	if len(prompts) > 1 {
+		f.t.Fatalf("round %d wrote %d coder prompts, want one: %v", round, len(prompts), prompts)
+	}
+	b, err := os.ReadFile(prompts[0])
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return string(b)
+}
+
+// issueByID indexes a round's issues, so an assertion can name the issue it means
+// rather than depending on ordering.
+func issueByID(rec model.RoundRecord) map[string]model.Issue {
+	out := map[string]model.Issue{}
+	for _, it := range rec.Issues {
+		out[it.ID] = it
+	}
+	return out
+}
+
+// A reviewer's own cross-round issue reference is the only signal that identifies a
+// finding whose wording AND line have both moved -- the ledger's fingerprint cannot.
+// It must therefore survive the review output into the observation and reach the
+// ledger. When it was dropped, a reworded re-report became a second issue: the fix
+// that had already been attempted looked new, deferral aging restarted, and a coder
+// answering about the id it was shown failed the round with "unknown issue id".
+func TestRunHonorsReviewerDeclaredIssueID(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "bugs", Severity: "high", File: "main.go", Line: 1, Title: "off by one in the loop bound",
+	}))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	// Round 2: the same defect, still there after the fix, but reported by a
+	// different lens in different words at a different line. Nothing lexical or
+	// positional links it to i1 -- only the reviewer's declaration does.
+	f.respond(3, reviewResponse(t, model.ReviewFinding{
+		Issue: "i1", Category: "bugs", Severity: "high", File: "other.go", Line: 42,
+		Title: "the loop still walks one element past the end",
+	}))
+	f.editRepoOn(4)
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "really patched"}))
+	f.respond(5, reviewResponse(t)) // round 3: clean -> converge
+
+	o := f.orchestrator()
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want converged", sum.Termination)
+	}
+	if len(sum.Rounds) < 2 {
+		t.Fatalf("rounds = %d, want at least 2", len(sum.Rounds))
+	}
+	r2 := sum.Rounds[1]
+	if len(r2.Issues) != 1 || r2.Issues[0].ID != "i1" {
+		t.Fatalf("round 2 issues = %+v, want the declared i1 rather than a new issue", r2.Issues)
+	}
+	if len(r2.Findings) != 1 || r2.Findings[0].IssueID != "i1" {
+		t.Errorf("round 2 observation was not grouped under i1: %+v", r2.Findings)
+	}
+	if got := len(o.ledger.Issues()); got != 1 {
+		t.Errorf("ledger holds %d issues, want 1: the reword must not create a second identity", got)
+	}
+	if got := o.ledger.Issues()[0].FirstRound; got != 1 {
+		t.Errorf("issue first seen in round %d, want 1: cross-round identity was lost", got)
+	}
+}
+
+// A previously rejected issue is re-reported by reviewers who have not been
+// convinced, and the ledger deliberately returns it carrying that verdict so the
+// summary shows it came up again. It must NOT be handed back to the coder: the
+// decision is made, and resubmitting it would spend a coder verdict -- and one of
+// the round's limited issue slots -- on it in every remaining round.
+func TestRunDoesNotResubmitRejectedIssues(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1, MaxFindingsPerRound: 2})
+	rejected := model.ReviewFinding{Category: "design", Severity: "high", File: "main.go", Line: 1, Title: "unexported field should be exported"}
+	fixable := model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 10, Title: "nil map write"}
+	// Round 1: two issues, both within the cap. The coder rejects i1 and fixes i2,
+	// so the round commits and the loop continues.
+	f.respond(1, reviewResponse(t, rejected, fixable))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t,
+		model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"},
+		model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"},
+	))
+	// Round 2: the rejected issue comes back unchanged, plus two genuinely new ones.
+	// With a cap of 2 the new pair must BOTH be active: the decided issue is not
+	// work, so it cannot displace one of them.
+	f.respond(3, reviewResponse(t, rejected,
+		model.ReviewFinding{Category: "tests", Severity: "medium", File: "main.go", Line: 20, Title: "no coverage for the error path"},
+		model.ReviewFinding{Category: "docs", Severity: "low", File: "main.go", Line: 30, Title: "stale comment on the exported helper"},
+	))
+	f.editRepoOn(4)
+	f.respond(4, fixResponse(t,
+		model.FixResult{ID: "i3", Verdict: "fixed", Detail: "added a case"},
+		model.FixResult{ID: "i4", Verdict: "fixed", Detail: "rewrote the comment"},
+	))
+	f.respond(5, reviewResponse(t)) // round 3: clean -> converge
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want converged", sum.Termination)
+	}
+	if len(sum.Rounds) != 3 {
+		t.Fatalf("rounds = %d, want 3", len(sum.Rounds))
+	}
+	r2 := issueByID(sum.Rounds[1])
+	if got := r2["i1"].Verdict; got != model.VerdictRejected {
+		t.Errorf("round 2 issue i1 verdict = %q, want it preserved as rejected", got)
+	}
+	if !strings.Contains(r2["i1"].VerdictDetail, "previously rejected") {
+		t.Errorf("round 2 issue i1 detail = %q, want it to say the rejection is carried over", r2["i1"].VerdictDetail)
+	}
+	// The cap of 2 was spent on the two new issues, not on the decided one.
+	for _, id := range []string{"i3", "i4"} {
+		if got := r2[id].Verdict; got != model.VerdictFixed {
+			t.Errorf("round 2 issue %s verdict = %q, want fixed: a rejected issue must not consume a cap slot", id, got)
+		}
+	}
+	prompt := f.coderPrompt(2)
+	if prompt == "" {
+		t.Fatal("round 2 wrote no coder prompt")
+	}
+	if strings.Contains(prompt, "[i1]") {
+		t.Errorf("the rejected issue was handed back to the coder:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[i3]") || !strings.Contains(prompt, "[i4]") {
+		t.Errorf("round 2 coder prompt is missing the new issues:\n%s", prompt)
+	}
+}
+
+// A round in which every reported issue was already rejected has no work in it.
+// The coder must not be invoked on an empty list (a wasted session), and the loop
+// must not keep re-reviewing the same decided issues until max_iterations: it is the
+// same terminal state as a round the coder rejected outright, which exits non-zero
+// because nothing changed.
+func TestRunTerminatesWhenOnlyRejectedIssuesRemain(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1})
+	rejected := model.ReviewFinding{Category: "design", Severity: "high", File: "main.go", Line: 1, Title: "unexported field should be exported"}
+	fixable := model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 10, Title: "nil map write"}
+	f.respond(1, reviewResponse(t, rejected, fixable))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t,
+		model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"},
+		model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"},
+	))
+	f.respond(3, reviewResponse(t, rejected)) // round 2: only the decided issue is left
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if sum.Termination != model.TermAllRejected {
+		t.Fatalf("termination = %q, want %q", sum.Termination, model.TermAllRejected)
+	}
+	if len(sum.Rounds) != 2 {
+		t.Fatalf("rounds = %d, want 2", len(sum.Rounds))
+	}
+	if got := f.invocations(); got != 3 {
+		t.Errorf("agent invocations = %d, want 3 (two reviews and one fix; round 2 must not invoke the coder)", got)
+	}
+	if p := f.coderPrompt(2); p != "" {
+		t.Errorf("round 2 invoked the coder with no work to do:\n%s", p)
+	}
+	if got := issueByID(sum.Rounds[1])["i1"].Verdict; got != model.VerdictRejected {
+		t.Errorf("round 2 issue i1 verdict = %q, want the rejection reported", got)
+	}
+}
