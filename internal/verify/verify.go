@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -198,16 +199,25 @@ func (r Report) Summary() string {
 }
 
 // boundedBuffer accumulates at most maxOutput bytes and notes the truncation, so
-// a command producing gigabytes of output cannot exhaust memory. It is not safe
-// for concurrent use, which is why stdout and stderr share one instance: exec
-// serializes writes to a single writer.
+// a command producing gigabytes of output cannot exhaust memory.
+//
+// stdout and stderr share one instance, and exec dedups a shared writer to a
+// single copy goroutine, so Write never races Write. The mutex guards a
+// different overlap: cmd.WaitDelay lets Run return while that copy goroutine is
+// still draining a pipe a leaked grandchild holds open, so the String() below
+// can run concurrently with a Write. strings.Builder is not safe for that --
+// it can produce garbled output or panic outright -- which is the same reason
+// agent.BoundedBuffer locks.
 type boundedBuffer struct {
+	mu       sync.Mutex
 	b        strings.Builder
 	dropped  bool
 	overflow int
 }
 
 func (w *boundedBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if room := maxOutput - w.b.Len(); room > 0 {
 		if len(p) <= room {
 			w.b.Write(p)
@@ -224,6 +234,8 @@ func (w *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func (w *boundedBuffer) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if !w.dropped {
 		return w.b.String()
 	}

@@ -518,6 +518,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	// consumed two slots against the per-round cap and so REDUCED how many
 	// distinct problems a round could fix.
 	recP.Issues = o.ledger.Absorb(round, recP.Findings)
+	mirrorCarriedVerdicts(recP)
 	if dup := len(recP.Findings) - len(recP.Issues); dup > 0 {
 		o.logf("round %d: %d observation(s) grouped into %d issue(s) (%d corroborating report(s))",
 			round, len(recP.Findings), len(recP.Issues), dup)
@@ -658,6 +659,28 @@ func (o *Orchestrator) deferOverCap(rec *model.RoundRecord) {
 	})
 }
 
+// mirrorCarriedVerdicts copies a verdict an issue ALREADY carries out of Absorb
+// onto this round's observations of it. Only a previously rejected issue arrives
+// that way, and setIssueVerdict never reaches it (the cap and the coder both skip
+// non-work issues), so its observations would keep an empty verdict and
+// FormatHistory would render them UNRESOLVED. The history preamble tells
+// reviewers to re-report anything UNRESOLVED, so the run would solicit the
+// re-report of a decided issue every round and the summary would show it as
+// unresolved in every round after the one that rejected it.
+func mirrorCarriedVerdicts(rec *model.RoundRecord) {
+	for _, it := range rec.Issues {
+		if it.Verdict == "" {
+			continue
+		}
+		for j := range rec.Findings {
+			if rec.Findings[j].IssueID == it.ID {
+				rec.Findings[j].Verdict = it.Verdict
+				rec.Findings[j].VerdictDetail = it.VerdictDetail
+			}
+		}
+	}
+}
+
 // setIssueVerdict records a verdict on one of the round's issues, in the ledger,
 // and on every observation that reported it -- so history and the run summary keep
 // speaking in the terms reviewers used while the coder works from issues.
@@ -772,7 +795,7 @@ func (o *Orchestrator) finalizeFix(ctx context.Context, rec *model.RoundRecord, 
 		return false, fmt.Errorf("round %d: coder reported %d fix(es) but left the working tree unchanged", round, rec.Fixed)
 	}
 	if rec.Fixed == 0 && !clean {
-		return false, fmt.Errorf("round %d: coder rejected every finding yet modified the working tree; refusing to leave the changes uncommitted", round)
+		return false, o.reconcileRejectedEdits(ctx, round)
 	}
 
 	if rec.Fixed > 0 {
@@ -1189,6 +1212,7 @@ func toFindings(in []model.ReviewFinding, asg model.Assignment, lensName string,
 			Description: f.Description,
 			Suggestion:  f.Suggestion,
 			Advisory:    asg.Advisory,
+			Round:       round,
 		}
 		if seq != nil {
 			*seq++
@@ -1331,6 +1355,34 @@ func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, com
 		o.logf("round %d: commit failed (%v); edits stashed (recover with `git stash`), clean tree restored", round, commitErr)
 	}
 	return commitErr
+}
+
+// reconcileRejectedEdits handles a round whose coder rejected every issue yet
+// left edits in the working tree. No verdict claims those edits, so there is
+// nothing to commit -- but returning with them still in the tree would violate
+// the clean-tree invariant the next run's ensureCleanTree enforces, and block
+// that run until an operator cleans up by hand. So they are stashed through the
+// same path every other abnormal exit uses, and stay recoverable.
+func (o *Orchestrator) reconcileRejectedEdits(ctx context.Context, round int) error {
+	base := fmt.Errorf("round %d: coder rejected every finding yet modified the working tree; refusing to commit edits no verdict accounts for", round)
+	stashMsg := fmt.Sprintf("fixpoint: round %d discarded (rejected verdicts with edits)", round)
+	stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...)
+	ev := model.JournalRoundDiscarded{
+		Reason:  model.DiscardRejectedWithEdits,
+		Stashed: stashed,
+		Error:   base.Error(),
+	}
+	if serr != nil {
+		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", base, serr)
+		o.journal(model.EvRoundDiscarded, round, ev)
+		return fmt.Errorf("%w; and the modified working tree could not be reconciled (it is left dirty): %w", base, serr)
+	}
+	o.journal(model.EvRoundDiscarded, round, ev)
+	if stashed {
+		o.logf("round %d: edits left by an all-rejected round were stashed; clean tree restored", round)
+		return fmt.Errorf("%w. The edits were stashed -- inspect or recover them with `git stash pop`", base)
+	}
+	return base
 }
 
 // salvagePartialFix handles a coder failure (timeout, session limit,

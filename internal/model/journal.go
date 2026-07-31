@@ -69,6 +69,10 @@ const (
 	DiscardSalvageFailed = "salvage_verify_failed"
 	DiscardInterrupted   = "interrupted"
 	DiscardCommitFailed  = "commit_failed"
+	// DiscardRejectedWithEdits is the round where the coder rejected every issue
+	// yet edited files: no verdict claims the edits, so they are stashed instead
+	// of committed.
+	DiscardRejectedWithEdits = "rejected_with_edits"
 )
 
 // JournalRunStarted records what the run was configured to do. It repeats values

@@ -124,6 +124,34 @@ func TestAbsorbHonorsReviewerDeclaredIssueAcrossRounds(t *testing.T) {
 	}
 }
 
+// Corroboration is a claim about ONE round. Under strategy: rotate a lens is
+// deliberately reassigned each round, so an issue that survives a round is seen by
+// a different agent next time. If the round copy carried the whole accumulated
+// history, the coder prompt would announce "reported independently by 2 agents --
+// corroborated" for a problem exactly one agent saw per round, and the journal
+// would pair a per-round observation count with a cumulative corroborated count
+// (3 observations, 3 issues, 3 corroborated -- impossible within a round).
+func TestForRoundScopesObservationsToTheRound(t *testing.T) {
+	l := NewLedger()
+	l.Absorb(1, []model.Finding{obs("codex", "review-bugs", "bug", "high", "x.go", 10, "the same defect")})
+	r2 := l.Absorb(2, []model.Finding{obs("claude", "review-bugs", "bug", "high", "x.go", 10, "the same defect")})
+
+	if len(r2) != 1 {
+		t.Fatalf("round 2: got %d issues, want the round-1 issue re-reported", len(r2))
+	}
+	if got := r2[0].Observations; len(got) != 1 || got[0].Agent != "claude" {
+		t.Errorf("round 2 observations = %+v, want only this round's report by claude", got)
+	}
+	if agents := r2[0].Agents(); len(agents) != 1 {
+		t.Errorf("Agents() = %v, want 1: one agent per round is not corroboration", agents)
+	}
+	// The ledger still keeps the full history -- that is what the summary and the
+	// aging heuristics read.
+	if got := l.Issues()[0].Observations; len(got) != 2 {
+		t.Errorf("ledger observations = %d, want both rounds retained", len(got))
+	}
+}
+
 // A declared id that does not exist is a model mistake. It must not be trusted as
 // an identity, but it must not lose the observation either.
 func TestAbsorbIgnoresUnknownDeclaredIssueID(t *testing.T) {

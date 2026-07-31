@@ -25,6 +25,13 @@ type Finding struct {
 	Description string `json:"description,omitempty"`
 	Suggestion  string `json:"suggestion,omitempty"`
 	Advisory    bool   `json:"advisory,omitempty"`
+	// Round is the review round this observation was made in. An issue keeps
+	// every observation it ever collected, so "which agents reported this" is
+	// only a corroboration claim when it is scoped to one round -- under
+	// strategy: rotate a lens is deliberately reassigned each round, and without
+	// the scope a single agent re-reporting a surviving issue looks like two
+	// agents agreeing.
+	Round int `json:"round,omitempty"`
 	// IssueID is the issue this observation was grouped under. Several
 	// observations from different agents and lenses can share one.
 	IssueID string `json:"issue_id,omitempty"`

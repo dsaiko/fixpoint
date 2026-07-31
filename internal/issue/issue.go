@@ -73,13 +73,25 @@ func (l *Ledger) Absorb(round int, observations []model.Finding) []model.Issue {
 	}
 	out := make([]model.Issue, 0, len(touched))
 	for _, idx := range sortedKeys(touched) {
-		out = append(out, l.forRound(idx))
+		out = append(out, l.forRound(idx, round))
 	}
 	return out
 }
 
 // forRound returns the per-round copy of an issue, with this round's verdict state
-// reset so a round never inherits the previous round's verdict.
+// reset so a round never inherits the previous round's verdict, and with its
+// observations narrowed to the ones made THIS round.
+//
+// The ledger keeps every observation for the life of the run, but the round copy
+// must not: Issue.Agents() feeds the "reported independently by N agents --
+// corroborated" claim in the coder prompt, and under strategy: rotate a lens is
+// deliberately reassigned each round, so an issue that survives one round would
+// otherwise be presented as corroborated on the strength of one agent seeing it
+// per round. It also kept the per-round observation count (len(rec.Findings)) and
+// the corroborated count in the same records while counting different sets, which
+// could report 3 corroborated issues out of 3 observations. Narrowing here fixes
+// both, and stops the accumulated slice from being re-copied into every
+// RoundRecord (and so into the summary and the coder prompt) as rounds go by.
 //
 // A re-report means different things depending on how the issue was closed:
 //
@@ -92,8 +104,9 @@ func (l *Ledger) Absorb(round int, observations []model.Finding) []model.Issue {
 //     is evidence the fix did not work, so the issue REOPENS. Treating it as closed
 //     would let a failed fix end the run as converged.
 //   - DEFERRED or open: simply still open.
-func (l *Ledger) forRound(idx int) model.Issue {
+func (l *Ledger) forRound(idx, round int) model.Issue {
 	it := l.issues[idx]
+	it.Observations = observationsIn(it.Observations, round)
 	if it.Status == model.VerdictRejected {
 		it.Verdict = model.VerdictRejected
 		it.VerdictDetail = "previously rejected; not re-submitted to the coder (" + it.VerdictDetail + ")"
@@ -107,6 +120,18 @@ func (l *Ledger) forRound(idx int) model.Issue {
 	it.Verdict = ""
 	it.VerdictDetail = ""
 	return it
+}
+
+// observationsIn returns the observations made in one round, as a fresh slice so
+// the round copy never aliases (or appends into) the ledger's own history.
+func observationsIn(obs []model.Finding, round int) []model.Finding {
+	out := make([]model.Finding, 0, len(obs))
+	for _, o := range obs {
+		if o.Round == round {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // match finds an existing issue for an observation, or -1.
@@ -207,6 +232,10 @@ func (l *Ledger) create(round int, obs model.Finding) int {
 func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 	it := &l.issues[idx]
 	obs.IssueID = it.ID
+	// Stamp the round on the observation itself: the ledger keeps observations for
+	// the whole run, and forRound needs to tell this round's reports from earlier
+	// ones to scope the corroboration claim.
+	obs.Round = round
 	it.Observations = append(it.Observations, *obs)
 	it.LastRound = round
 	if model.WorseSeverity(obs.Severity, it.Severity) {

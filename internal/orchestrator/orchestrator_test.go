@@ -818,7 +818,10 @@ func TestRunFixedVerdictWithNoEditFails(t *testing.T) {
 
 // An all-rejected verdict sitting on a dirty tree is a hard error: rejecting
 // every finding yet editing the repo is contradictory, and the changes must not
-// be left uncommitted under a "success" termination.
+// be left uncommitted under a "success" termination. The edits are stashed like
+// every other abnormal exit's, because leaving them in the tree would violate the
+// clean-tree invariant and block the next run -- while the error text claims they
+// were not left uncommitted.
 func TestRunAllRejectedWithEditFails(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("bug")))
@@ -832,6 +835,15 @@ func TestRunAllRejectedWithEditFails(t *testing.T) {
 	}
 	if sum.Termination != model.TermError {
 		t.Errorf("termination = %q, want error", sum.Termination)
+	}
+	if got := f.commitCount(); got != 1 {
+		t.Errorf("repo has %d commits, want 1 (a rejected round must not commit)", got)
+	}
+	if stashes := gitRun(t, f.repo, "stash", "list"); !strings.Contains(stashes, "rejected verdicts with edits") {
+		t.Errorf("the rejected round's edits must be stashed for recovery, got stash list: %q", stashes)
+	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("working tree left dirty, so the next run's clean-tree check would refuse to start: %q", status)
 	}
 }
 
@@ -2542,6 +2554,42 @@ func TestRunDoesNotResubmitRejectedIssues(t *testing.T) {
 	if !strings.Contains(prompt, "[i3]") || !strings.Contains(prompt, "[i4]") {
 		t.Errorf("round 2 coder prompt is missing the new issues:\n%s", prompt)
 	}
+	// The carried verdict must reach the round's OBSERVATIONS too, not just the
+	// issue: history is rendered from findings, and one with an empty verdict prints
+	// as UNRESOLVED -- which the history preamble tells reviewers to report again.
+	// The run would then solicit a re-report of a decided issue every round.
+	for _, f := range sum.Rounds[1].Findings {
+		if f.IssueID != "i1" {
+			continue
+		}
+		if f.Verdict != model.VerdictRejected {
+			t.Errorf("round 2 observation of i1 has verdict %q, want it mirrored as rejected (it renders as %s in history)",
+				f.Verdict, strings.ToUpper(f.VerdictOrDefault()))
+		}
+	}
+	// "— UNRESOLVED:" is the rendered per-finding form; the word alone also appears
+	// in the section preamble, which is not what this is about.
+	if h := f.reviewPrompt(3); strings.Contains(h, "— UNRESOLVED") {
+		t.Errorf("round 3 reviewer history shows a decided issue as UNRESOLVED, which asks for it to be re-reported:\n%s", h)
+	}
+}
+
+// reviewPrompt returns a reviewer prompt the run wrote for a round -- the artifact
+// that shows the history reviewers were actually shown.
+func (f *fixture) reviewPrompt(round int) string {
+	f.t.Helper()
+	prompts, err := filepath.Glob(filepath.Join(f.cfg.Logs.StaticBase(), "*", fmt.Sprintf("round-%d", round), "review-*.prompt"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if len(prompts) == 0 {
+		return ""
+	}
+	b, err := os.ReadFile(prompts[0])
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return string(b)
 }
 
 // A round in which every reported issue was already rejected has no work in it.

@@ -81,7 +81,7 @@ What gets reviewed is controlled by `target.mode`:
 | Mode | What is reviewed |
 |---|---|
 | `directory` | Every file under `target.path` except what `.gitignore` and the `exclude` globs remove. Scope is denylist-only — there is no allowlist option, since one has to be re-derived per language and silently hides whatever it forgets. |
-| `git-diff` | Changes relative to `target.base_ref`. The base is resolved to a concrete commit once at run start, so per-round fix commits extend the reviewed diff instead of shrinking it. Empty `base_ref` reviews unstaged working changes. |
+| `git-diff` | Changes relative to `target.base_ref`. The base is resolved to a concrete commit once at run start, so per-round fix commits extend the reviewed diff instead of shrinking it. Empty `base_ref` reviews unstaged working changes, so it is review-only: a fix run needs a base ref (it starts from a clean tree, which makes the unstaged diff empty) and is rejected at validation without one. |
 | `pr` | A GitHub pull request. The PR branch is checked out locally (`gh pr checkout`) and reviewed against its base, so fixes land in the working tree and later rounds review them too. Pushing fixes back is manual. |
 
 Fix rounds require `target.path` to be a git repository with a clean working

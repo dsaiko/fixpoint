@@ -2,6 +2,7 @@ package target
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,6 +170,60 @@ func TestCollectDirectory(t *testing.T) {
 		if strings.Contains(material, notWant) {
 			t.Errorf("Collect() should not list %q:\n%s", notWant, material)
 		}
+	}
+}
+
+// A repository whose ls-files output exceeds maxRunOutput must still be counted
+// exactly. Reading the listing through Collector.run capped stdout at 4 MB and
+// appended a truncation marker, so every path past the cap vanished from scope
+// with no diagnostic and the marker became a final pseudo-path -- leaving the
+// header confidently reporting a total that undercounts the tree, which is the
+// silent narrowing the denylist-only design exists to prevent.
+func TestCollectDirectoryCountsPastTheRunOutputCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a repository with several MB of path text")
+	}
+	repo := gitRepo(t)
+	// Long names so the cap is passed with as few files as possible: the point is
+	// the total SIZE of the path list, not the file count.
+	dirName := strings.Repeat("d", 180)
+	base := strings.Repeat("f", 180)
+	const dirs, perDir = 120, 120
+	for d := range dirs {
+		sub := filepath.Join(repo, fmt.Sprintf("%s%03d", dirName, d))
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for f := range perDir {
+			// Untracked but not ignored, so --others --exclude-standard lists them
+			// without the cost of staging every one.
+			if err := os.WriteFile(filepath.Join(sub, fmt.Sprintf("%s%03d.go", base, f)), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// main.go from gitRepo is tracked and in scope too.
+	want := dirs*perDir + 1
+	if bytes := dirs * perDir * (len(dirName) + len(base) + 12); bytes <= maxRunOutput {
+		t.Fatalf("the generated listing is only ~%d bytes, which does not exceed the %d-byte cap this guards", bytes, maxRunOutput)
+	}
+
+	c := New(config.Target{Mode: "directory", Path: repo})
+	count, listing, err := c.listFiles(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Errorf("count = %d, want %d: paths past the output cap were dropped from scope", count, want)
+	}
+	// The RENDERED listing is still capped -- that is the prompt budget, and it is
+	// the one thing that may be cut. It must not carry a run-level truncation
+	// marker into the material either.
+	if len(listing) > maxMaterial+1024 {
+		t.Errorf("rendered listing is %d bytes, want it bounded near %d", len(listing), maxMaterial)
+	}
+	if strings.Contains(listing, "output truncated") {
+		t.Errorf("the run-level truncation marker leaked into the listing as a path:\n%s", listing[max(0, len(listing)-500):])
 	}
 }
 

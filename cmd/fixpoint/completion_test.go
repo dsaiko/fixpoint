@@ -2,6 +2,11 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -99,18 +104,126 @@ func TestZshCompletionOffersDescriptions(t *testing.T) {
 // shipping config/'$(cmd)'.yaml executes cmd when the operator presses TAB, before
 // any run and so before any trust gate. Only the constant flag list may go through
 // -W; names must be read into COMPREPLY.
+//
+// This RUNS the generated script against a fixpoint that emits hostile candidate
+// names, because the property is about what the script does, not how it is
+// spelled: an unquoted wordlist variable, an eval, or an unquoted expansion while
+// appending to COMPREPLY all restore command execution on TAB while leaving any
+// source-text assertion green.
 func TestBashCompletionNeverExpandsConfigNames(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash not available: %v", err)
+	}
+
 	var out, errOut bytes.Buffer
-	writeCompletion([]string{"bash"}, &out, &errOut)
+	if code := writeCompletion([]string{"bash"}, &out, &errOut); code != 0 {
+		t.Fatalf("writeCompletion(bash) = %d, stderr: %s", code, errOut.String())
+	}
+
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "fixpoint.bash")
+	if err := os.WriteFile(scriptPath, out.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The sentinel is created ONLY by executing a candidate name. Its absence
+	// afterwards is the security property: no candidate ran as a command.
+	sentinel := filepath.Join(dir, "pwned")
+	// A separate working directory holding one file, so a candidate glob that got
+	// expanded shows up as this filename instead of staying literal.
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "glob-bait.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every hostile name a bundle directory could really carry: command
+	// substitution in both spellings, a glob, and embedded whitespace. Plus a
+	// benign name to prove completion still works, and a base config to prove the
+	// runnable filter still holds.
+	hostile := []string{
+		`$(touch ` + sentinel + `)`,
+		"`touch " + sentinel + "`",
+		"*",
+		"two words",
+		"safe-name",
+	}
+	fake := filepath.Join(dir, "bin", "fixpoint")
+	if err := os.Mkdir(filepath.Dir(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var lister strings.Builder
+	lister.WriteString("#!/bin/sh\n")
+	for _, name := range hostile {
+		// Single-quoted in the emitting script so the fake lists these names
+		// verbatim; ' cannot appear in them, so the quoting is unambiguous.
+		fmt.Fprintf(&lister, "printf '%%s\\t%%s\\t%%s\\n' '%s' runnable 'a description'\n", name)
+	}
+	lister.WriteString("printf '%s\\t%s\\t%s\\n' 'base-only' base 'not runnable'\n")
+	if err := os.WriteFile(fake, []byte(lister.String()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// complete() the empty word: every runnable candidate is offered. One
+	// COMPREPLY element per line, bracketed so embedded whitespace is visible as
+	// one element rather than two.
+	driver := `set -u
+source "$1"
+COMP_WORDS=(fixpoint "$2")
+COMP_CWORD=1
+_fixpoint
+for r in ${COMPREPLY[@]+"${COMPREPLY[@]}"}; do printf '[%s]\n' "$r"; done
+`
+	run := func(cur string) []string {
+		t.Helper()
+		cmd := exec.Command(bash, "-c", driver, "bash", scriptPath, cur)
+		cmd.Dir = work
+		cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
+		got, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("running the generated completion (cur=%q) failed: %v\n%s", cur, err, got)
+		}
+		var reply []string
+		for _, line := range strings.Split(strings.TrimSpace(string(got)), "\n") {
+			if line != "" {
+				reply = append(reply, strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+			}
+		}
+		return reply
+	}
+
+	all := run("")
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatalf("pressing TAB executed a config name: the sentinel %s was created", sentinel)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	want := append([]string(nil), hostile...)
+	if !reflect.DeepEqual(all, want) {
+		t.Errorf("COMPREPLY = %q, want the candidate names literally and unsplit: %q", all, want)
+	}
+
+	// Prefix filtering still works, and still filters on the literal name.
+	if got := run("safe"); !reflect.DeepEqual(got, []string{"safe-name"}) {
+		t.Errorf("COMPREPLY for prefix \"safe\" = %q, want [safe-name]", got)
+	}
+	// A base config is never offered: running one fails validation.
+	for _, r := range all {
+		if r == "base-only" {
+			t.Error("a base (non-runnable) config was offered as a completion")
+		}
+	}
+
+	// Source-level backstop for the two spellings that caused this: they would
+	// also fail above, but naming them keeps the reason visible at the call site.
 	script := code(out.String())
 	if strings.Contains(script, `compgen -W "$`) {
 		t.Errorf("bash script passes a variable wordlist to compgen -W, which expands it:\n%s", script)
 	}
 	if strings.Contains(script, "compgen -W \"$(") {
 		t.Errorf("bash script passes command output straight to compgen -W:\n%s", script)
-	}
-	if !strings.Contains(script, "while IFS= read -r") {
-		t.Errorf("bash script must read candidate names with `read -r` rather than expanding them:\n%s", script)
 	}
 }
 

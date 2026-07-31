@@ -4,9 +4,12 @@
 package target
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -218,34 +221,112 @@ func (c *Collector) listFiles(ctx context.Context) (int, string, error) {
 // Paths come out relative to the process working directory, which c.git sets to
 // target.path, so they are directly comparable to the walk's relative paths even
 // when target.path is a subdirectory of the repository.
+//
+// The listing is STREAMED rather than read through c.git: that path caps stdout
+// at maxRunOutput, which is right for output that only ever lands in an error
+// message and wrong for output that is parsed. A repository whose path list
+// exceeds the cap would lose its tail silently, the truncation marker would
+// arrive as one final pseudo-path that Lstat rejects and skips, and the header
+// would confidently report a total that undercounts the tree -- the exact
+// silently-narrowed scope listFiles' denylist-only design exists to avoid.
 func (c *Collector) listGitFiles(ctx context.Context, excludes []*regexp.Regexp) (int, string, error) {
-	// -z separates paths with NUL, so a filename containing a newline (or one git
-	// would otherwise render quoted and escaped) survives intact.
-	out, err := c.git(ctx, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return 0, "", fmt.Errorf("list files from git: %w", err)
-	}
 	count := 0
 	var sb strings.Builder
-	for _, rel := range strings.Split(out, "\x00") {
+	// -z separates paths with NUL, so a filename containing a newline (or one git
+	// would otherwise render quoted and escaped) survives intact.
+	err := c.gitScanNUL(ctx, func(rel string) {
 		if rel == "" {
-			continue
+			return
 		}
 		rel = filepath.ToSlash(rel)
 		if c.skipFile(rel, excludes) {
-			continue
+			return
 		}
 		// --cached reports index entries, which outlive a file deleted from the
 		// worktree. Listing a path an agent cannot open is worse than omitting it.
 		if _, err := os.Lstat(filepath.Join(c.cfg.Path, rel)); err != nil {
-			continue
+			return
 		}
+		// Keep counting every match (the header reports the true total) but stop
+		// growing the rendered listing once it reaches the cap.
 		count++
 		if sb.Len() < maxMaterial {
 			sb.WriteString(rel + "\n")
 		}
+	}, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return 0, "", fmt.Errorf("list files from git: %w", err)
 	}
 	return count, sb.String(), nil
+}
+
+// maxGitPath bounds a single NUL-delimited entry gitScanNUL will accept. Well
+// past any real path length; an entry longer than this is surfaced as an error
+// rather than silently truncated, so a caller counting entries never counts a
+// fragment as a path.
+const maxGitPath = 1 << 20
+
+// gitScanNUL runs a git command whose stdout is a NUL-delimited list and calls
+// fn once per entry as it arrives, so the caller can count an unbounded listing
+// without holding it in memory and without the diagnostic output cap c.run
+// applies. Everything else -- the safe-config overrides, the hardened
+// environment, the operation timeout, the process-group kill, the WaitDelay --
+// matches c.run, since the reason each of those exists does not change with how
+// stdout is consumed. stderr is still buffered, for the error message.
+func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...string) error {
+	ctx, cancel := context.WithTimeout(ctx, gitOpTimeout)
+	defer cancel()
+	full := append(append([]string{}, gitSafeConfig...), args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Dir = c.cfg.Path
+	cmd.Env = gitHardenedEnv()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return agent.KillProcessGroup(cmd) }
+	cmd.WaitDelay = 2 * time.Second
+	errBuf := agent.NewBoundedBuffer(maxRunOutput, agent.TruncationMarker(maxRunOutput))
+	cmd.Stderr = errBuf
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	desc := "git " + strings.Join(args, " ")
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("%s: %w", desc, err)
+	}
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64<<10), maxGitPath)
+	sc.Split(scanNUL)
+	for sc.Scan() {
+		fn(sc.Text())
+	}
+	scanErr := sc.Err()
+	// Drain anything left before Wait: a scan that stopped early would otherwise
+	// leave git blocked on a full pipe until the WaitDelay kill.
+	_, _ = io.Copy(io.Discard, stdout)
+	werr := cmd.Wait()
+	// A scan failure comes first: it means the listing was not read in full, which
+	// git's own exit status cannot tell us.
+	if scanErr != nil {
+		return fmt.Errorf("%s: reading output: %w", desc, scanErr)
+	}
+	if werr != nil {
+		return fmt.Errorf("%s: %w: %s", desc, werr, strings.TrimSpace(errBuf.String()))
+	}
+	return nil
+}
+
+// scanNUL is a bufio.SplitFunc for git's -z output: entries separated by NUL.
+// git terminates every entry, so a trailing fragment at EOF means the output was
+// cut short; it is still emitted rather than dropped, and the short read shows up
+// as a nonzero git exit.
+func scanNUL(data []byte, atEOF bool) (int, []byte, error) {
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 // skipFile reports whether a target-relative file path is out of scope: inside

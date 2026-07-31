@@ -606,6 +606,14 @@ func (c *Config) Validate() error {
 	if c.Target.Mode == ModePR && c.Target.PR <= 0 {
 		return errors.New("target.pr: PR number required for mode pr")
 	}
+	// An empty base_ref means "review the unstaged working changes", which a fix
+	// run can never see: it requires a clean working tree at start and commits
+	// each round's edits, so the unstaged diff is empty by construction in round 1
+	// and in every round after it. Reviewers would receive no material, report no
+	// findings, and the run would exit 0 as "converged" having reviewed nothing.
+	if c.Target.Mode == ModeGitDiff && !c.Loop.ReviewOnly && c.Target.BaseRef == "" {
+		return errors.New("target.base_ref: a fix run in mode git-diff needs a base ref -- an empty base_ref reviews only unstaged working changes, and fix rounds require a clean working tree at start, so that diff is always empty; set target.base_ref, or use loop.review_only")
+	}
 	if c.Loop.MaxFindingsPerRound < 0 {
 		return fmt.Errorf("loop.max_findings_per_round: must not be negative, got %d", c.Loop.MaxFindingsPerRound)
 	}
@@ -702,9 +710,12 @@ func (c *Config) Validate() error {
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("agents.%s: binary %q not found on PATH", name, argv[0])
 		}
-		for i, name := range a.Env.Pass {
-			if err := validEnvName(name); err != nil {
-				return fmt.Errorf("agents.%s: env.pass[%d]: %w", name, i, err)
+		// envName, not name: shadowing the agent name here put the offending
+		// VARIABLE in the agents.<name> position, pointing at an agent that does
+		// not exist and hiding which file to fix.
+		for i, envName := range a.Env.Pass {
+			if err := validEnvName(envName); err != nil {
+				return fmt.Errorf("agents.%s: env.pass[%d] (%q): %w", name, i, envName, err)
 			}
 		}
 		for k := range a.Env.Set {
