@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"text/template"
+	"unicode/utf8"
 
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -308,16 +309,26 @@ func FormatStale(files []string) string {
 	return sb.String()
 }
 
-// clip shortens s to at most max characters, breaking on the last word boundary
+// clip shortens s to at most limit characters, breaking on the last word boundary
 // before the limit and marking the cut so the reader knows text is missing rather
-// than believing a sentence simply ended there.
+// than believing a sentence simply ended there. The limit counts runes, not bytes:
+// a detail is free-form prose from an agent and may hold any UTF-8, and cutting
+// mid-character would put invalid bytes into every prompt that carries history.
 func clip(s string, limit int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= limit {
+	if utf8.RuneCountInString(s) <= limit {
 		return s
 	}
-	cut := s[:limit]
-	if i := strings.LastIndexAny(cut, " \t\n"); i > limit/2 {
+	cut := s
+	n := 0
+	for i := range s {
+		if n == limit {
+			cut = s[:i]
+			break
+		}
+		n++
+	}
+	if i := strings.LastIndexAny(cut, " \t\n"); i > len(cut)/2 {
 		cut = cut[:i]
 	}
 	return strings.TrimRight(cut, " \t\n.,;:") + " […]"

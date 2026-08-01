@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"text/template"
+	"unicode/utf8"
 
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -242,6 +243,27 @@ func TestFormatHistoryClipsLongVerdictDetails(t *testing.T) {
 	// A detail that fits is untouched, mark and all.
 	if !strings.HasSuffix(got, "FIXED: short one") {
 		t.Errorf("a short detail must pass through verbatim:\n%s", got)
+	}
+}
+
+// A verdict detail is free-form prose from an agent, so it can hold any UTF-8 --
+// non-ASCII quotes, arrows, other scripts. Clipping it at a byte offset would leave
+// half a character at the end, and that broken byte then rides in every history block
+// of every later round, where an agent CLI may reject the prompt outright.
+func TestFormatHistoryClipsOnCharacterBoundaries(t *testing.T) {
+	// No spaces, so the word-boundary fallback cannot hide the cut, and the leading
+	// ASCII byte puts the 3-byte arrows out of phase with the byte limit.
+	got := FormatHistory([]model.RoundRecord{{
+		Round: 1, Rejected: 1,
+		Findings: []model.Finding{
+			{ID: "i1", File: "a.go", Title: "t", Verdict: "rejected", VerdictDetail: "x" + strings.Repeat("→", 300)},
+		},
+	}})
+	if !utf8.ValidString(got) {
+		t.Errorf("clipping split a character: history is not valid UTF-8:\n%q", got)
+	}
+	if !strings.Contains(got, "[…]") {
+		t.Errorf("a clipped detail must be marked as cut:\n%s", got)
 	}
 }
 
