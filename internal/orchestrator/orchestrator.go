@@ -461,6 +461,11 @@ func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary)
 	sum.Rounds = append(sum.Rounds, rec)
 	recP := &sum.Rounds[len(sum.Rounds)-1]
 	recP.Issues = o.ledger.Absorb(round, recP.Findings)
+	// Same reason as in runRound: an issue that arrives already rejected is never
+	// touched by setIssueVerdict, so without this its observations keep an empty
+	// verdict and the summary renders them UNRESOLVED while the issues block right
+	// below says REJECTED.
+	mirrorCarriedVerdicts(recP)
 	o.journal(model.EvReviewFinished, round, model.JournalReviewFinished{
 		Observations: len(recP.Findings),
 		Advisory:     len(recP.Advisory),
@@ -492,6 +497,16 @@ func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary)
 	// remainder, so anything deferred is reported for a human -- which is the same
 	// deal the cap has always offered, minus the promise of a next round.
 	o.deferOverCap(recP)
+	// Same guard as runRound: everything the closing reviewers reported was already
+	// decided in an earlier round, so there is no work to hand over. Invoking the
+	// coder on an empty list would spend a session asking about nothing -- and here
+	// it is worse than a wasted session: with allowSalvage=false, any verdict it
+	// volunteers for an id it was not given fails applyVerdicts, which would rewrite
+	// a run whose loop genuinely converged into an error.
+	if len(activeIssues(recP)) == 0 {
+		o.logf("final round: all %d issue(s) were already decided in an earlier round; nothing left to fix", len(recP.Issues))
+		return nil
+	}
 	// allowSalvage=false: a failed coder's partial edits must not be committed here.
 	// Salvage is a promise that the next round re-reviews the commit, and there is
 	// no next round -- see discardFailedFix.
@@ -499,7 +514,23 @@ func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary)
 		return err
 	}
 	o.logf("final round: coder fixed %d, rejected %d", recP.Fixed, recP.Rejected)
+	// Whether to commit is decided from the TREE, not from the Fixed count, exactly
+	// as finalizeFix decides it for a loop round. The closing round runs the same
+	// write-capable coder, so it can just as well reject everything after having
+	// edited files -- and returning then would leave edits no verdict accounts for
+	// in the worktree, under a run reported as successful, and refuse the next run
+	// at preflight with a dirty tree the operator never made.
+	clean, err := o.collector.GitClean(ctx, o.gitExclude...)
+	if err != nil {
+		return err
+	}
+	if recP.Fixed > 0 && clean {
+		return fmt.Errorf("round %d: coder reported %d fix(es) but left the working tree unchanged", round, recP.Fixed)
+	}
 	if recP.Fixed == 0 {
+		if !clean {
+			return o.reconcileRejectedEdits(ctx, round)
+		}
 		return nil // nothing to commit; the gate and commit below would no-op
 	}
 	// Same gate and same commit as any other round: a closing round must not be the
@@ -1947,6 +1978,10 @@ func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, a
 	rec.Verify = rep.Results
 	o.logf("round %d verify%s: %s", rec.Round, verifyAttemptLabel[attempt], rep.Summary())
 	blocking := rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)
+	// Recorded next to the results they were derived from: the baseline is not part
+	// of the summary, so nothing downstream could otherwise tell a round the gate
+	// cleared from one it stopped.
+	rec.VerifyBlocking = blockingNames(blocking)
 	// Journal before the cancellation check: the gate DID run and its verdict is the
 	// one fact in the loop no model produced, so an interruption immediately after
 	// must not be the reason it goes unrecorded.

@@ -161,9 +161,15 @@ type RoundRecord struct {
 	// VerifyRetried records that the coder was given a correction attempt. Kept on
 	// the round record so the summary can show what actually passed -- the one
 	// non-model signal in the loop deserves to be persisted, not just logged.
-	Verify        []VerifyResult `json:"verify,omitempty"`
-	VerifyRetried bool           `json:"verify_retried,omitempty"`
-	Steps         []StepStat     `json:"steps,omitempty"` // per-invocation I/O figures
+	Verify []VerifyResult `json:"verify,omitempty"`
+	// VerifyBlocking names the checks that actually blocked the round under the
+	// active policy, which is narrower than "the checks that failed": under
+	// no_regressions a check already red in the pre-run baseline fails without
+	// blocking. Persisted because Verify alone cannot answer "did the gate clear
+	// this round" after the fact -- the baseline it was judged against is gone.
+	VerifyBlocking []string   `json:"verify_blocking,omitempty"`
+	VerifyRetried  bool       `json:"verify_retried,omitempty"`
+	Steps          []StepStat `json:"steps,omitempty"` // per-invocation I/O figures
 	// Final marks the closing round that `final: true` lenses run in, after the loop
 	// has stopped. It is not part of the convergence story -- it happens once the
 	// run's outcome is already decided -- so a reader must be able to tell it apart.

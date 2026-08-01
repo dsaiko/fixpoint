@@ -3156,6 +3156,77 @@ func TestFinalRoundDoesNotSalvageAFailedCoder(t *testing.T) {
 	}
 }
 
+// The closing round's coder is the same write-capable agent as any other round's,
+// so it can reject everything after having edited files. Those edits are accounted
+// for by no verdict: leaving them would report a successful run over a dirty tree
+// and refuse the next run at preflight for dirt the operator never made.
+func TestFinalRoundStashesEditsLeftByAnAllRejectedCoder(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t)) // round 1: clean -> converged
+	f.respond(2, reviewResponse(t, model.ReviewFinding{
+		Category: "tests", Severity: "medium", File: "helper.go", Line: 42, Title: "no test here",
+	}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "not worth it"}))
+
+	before := f.commitCount()
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() succeeded although the closing round left edits no verdict accounts for")
+	}
+	if got := f.commitCount(); got != before {
+		t.Errorf("repo has %d commits, want %d: edits under an all-rejected verdict must not be committed", got, before)
+	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("working tree left dirty after the closing round: %q", status)
+	}
+	if stashes := gitRun(t, f.repo, "stash", "list"); !strings.Contains(stashes, "rejected verdicts with edits") {
+		t.Errorf("the closing round's edits must be stashed for recovery, got stash list: %q", stashes)
+	}
+	if d := f.discarded(model.DiscardRejectedWithEdits); !d.Stashed {
+		t.Errorf("round_discarded = %+v, want the stash recorded", d)
+	}
+	if sum.Termination != model.TermError || sum.Error == "" {
+		t.Errorf("termination = %q, error = %q; want the failure recorded", sum.Termination, sum.Error)
+	}
+}
+
+// A closing round whose findings were all decided in earlier rounds has nothing to
+// hand over. Invoking the coder on an empty list would spend a session asking about
+// nothing, and a stray verdict for an id it was never given would fail the round --
+// turning a run that genuinely reached its terminal state into an error.
+func TestFinalRoundSkipsTheCoderWhenEveryIssueWasAlreadyDecided(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "works as intended"}))
+	// The closing reviewer re-reports the same problem, which the ledger recognizes
+	// as the issue round 1 already rejected.
+	f.respond(3, reviewResponse(t, aFinding("off by one")))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Termination != model.TermAllRejected {
+		t.Errorf("termination = %q, want the loop's all-rejected preserved", sum.Termination)
+	}
+	if got := f.invocations(); got != 3 {
+		t.Errorf("mock was invoked %d times, want 3: the closing coder must not run with no work", got)
+	}
+	last := sum.Rounds[len(sum.Rounds)-1]
+	if !last.Final || last.Fixed != 0 {
+		t.Fatalf("last round = %+v, want an unmodified closing round", last)
+	}
+	// The verdict the issue carried must be mirrored onto this round's observations,
+	// or the summary's findings block says UNRESOLVED where its issues block says
+	// REJECTED, about the same problem.
+	if len(last.Findings) != 1 || last.Findings[0].Verdict != model.VerdictRejected {
+		t.Errorf("closing round findings = %+v, want the carried rejected verdict mirrored", last.Findings)
+	}
+}
+
 // In a review-only run there is no closing round -- no coder to hand findings to --
 // so a final lens runs in the single round instead. Without that, a review-only
 // config would silently drop the lens and stop previewing its fix sibling.

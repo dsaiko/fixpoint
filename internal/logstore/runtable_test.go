@@ -166,6 +166,27 @@ func TestRunTableSaysTheCoderNeverRanInAReviewOnlyRun(t *testing.T) {
 	}
 }
 
+// Under no_regressions a check that was already red before the run fails without
+// blocking, and the orchestrator commits the round. Counting failures instead of
+// blockers would report "passed in 0/N round(s)" for a run whose gate cleared every
+// round -- on exactly the already-red repository the policy exists to support.
+func TestRunTableCountsRoundsTheGateClearedNotChecksThatFailed(t *testing.T) {
+	sum := twoAgentRun()
+	// A pre-existing failure: reported as failed, but nothing blocked the round.
+	sum.Rounds[0].Verify = []model.VerifyResult{
+		{Name: "test", Passed: false},
+		{Name: "lint", Passed: true},
+	}
+	if got := RenderRunTable(sum); !strings.Contains(got, "passed in 1/1 round(s)") {
+		t.Errorf("a round nothing blocked must count as passed:\n%s", got)
+	}
+
+	sum.Rounds[0].VerifyBlocking = []string{"test"}
+	if got := RenderRunTable(sum); !strings.Contains(got, "passed in 0/1 round(s)") {
+		t.Errorf("a round the gate blocked must not count as passed:\n%s", got)
+	}
+}
+
 // The table is printed to a terminal and embedded in the summary, so no row may
 // carry invisible trailing padding.
 func TestRunTableHasNoTrailingWhitespace(t *testing.T) {

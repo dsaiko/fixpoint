@@ -205,20 +205,18 @@ func (st *runStats) absorbCosts(r model.RoundRecord, get getFn) {
 	}
 }
 
-// absorbVerify counts the rounds the deterministic gate cleared. An optional check
-// failing does not block, so it does not count against the round.
+// absorbVerify counts the rounds the deterministic gate cleared. What counts is
+// what BLOCKED under the active policy, not what failed: an optional check never
+// blocks, and under no_regressions neither does a check that was already red in
+// the pre-run baseline. Counting failures instead would report "passed in 0/N
+// rounds" for a run that committed every round, on exactly the already-red
+// repository no_regressions exists to support.
 func (st *runStats) absorbVerify(r model.RoundRecord) {
 	if len(r.Verify) == 0 {
 		return
 	}
 	st.verifyRounds++
-	blocked := false
-	for _, v := range r.Verify {
-		if !v.Optional && !v.Passed {
-			blocked = true
-		}
-	}
-	if !blocked {
+	if len(r.VerifyBlocking) == 0 {
 		st.verifyPassed++
 	}
 	if len(st.verifyNames) == 0 {
