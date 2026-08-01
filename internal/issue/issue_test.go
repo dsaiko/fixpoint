@@ -382,6 +382,21 @@ func TestAbsorbMergesTitlesThatDifferOnlyByInflection(t *testing.T) {
 	}
 }
 
+// The other side of that fold. Words that merely open alike are not one word:
+// severity and several agree on five letters and mean nothing to do with each
+// other, so a title pair carried across the bar by that coincidence alone is two
+// defects merged into one issue -- and one verdict then buries the other.
+func TestAbsorbKeepsTitlesThatOnlyOpenAlikeApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "low", "main.go", 42, "severity ignored"),
+		obs("b", "y", "tests", "low", "main.go", 42, "several ignored"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: severity and several are not the same word", len(got))
+	}
+}
+
 // ...but the line alone is not identity. One statement holds two defects often
 // enough that this is the ordinary case: the nil deref and the unchecked error it
 // came from, cited at the same line by two lenses. Merging them gives the coder one

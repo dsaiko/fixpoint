@@ -242,17 +242,39 @@ func titlesAgree(a, b string) bool {
 // allocated/allocation and deref/dereferenced together.
 func hasInflection(set map[string]bool, w string) bool {
 	for other := range set {
-		if commonPrefixLen(w, other) >= stemPrefix {
+		if sameStem(w, other) {
 			return true
 		}
 	}
 	return false
 }
 
-// stemPrefix is the shortest shared opening that is evidence of one word rather
-// than coincidence: it folds config/configuration together while leaving
-// severity/several (four) apart.
-const stemPrefix = 5
+// sameStem reports whether two words are one word in two forms.
+//
+// Two words that BOTH continue past their shared opening have diverged, and a
+// short agreement is then coincidence rather than evidence: severity and several
+// share five letters and are unrelated words. Such a pair has to reach
+// stemPrefix, which still folds allocated/allocation.
+//
+// A word that IS the whole shared opening is the other case -- the longer word
+// is the shorter one plus a suffix, as in deref/dereferenced and
+// config/configuration -- and nothing has diverged, so stemRoot is enough.
+func sameStem(a, b string) bool {
+	n := commonPrefixLen(a, b)
+	if n == len(a) || n == len(b) {
+		return n >= stemRoot
+	}
+	return n >= stemPrefix
+}
+
+const (
+	// stemRoot is the shortest word that carries enough meaning to be a stem of
+	// its own rather than a syllable two words happen to open with.
+	stemRoot = 5
+	// stemPrefix is the shortest shared opening that is evidence of one word
+	// when the two words then disagree.
+	stemPrefix = 6
+)
 
 // commonPrefixLen counts the leading bytes two words share. Tokens are lowercase
 // ASCII letters and digits by construction -- notAlphanumeric drops everything
