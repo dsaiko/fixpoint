@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -338,45 +339,72 @@ func TestNotifySignalsSecondSignalForceQuits(t *testing.T) {
 // "first or second interrupt?" by reading that context would see a canceled one and
 // force-quit -- turning a successful run into exit 1 for a signal the operator sent
 // once, or never (SIGTERM can arrive during ordinary shutdown).
-func TestNotifySignalsStopIgnoresQueuedSignal(t *testing.T) {
+//
+// This drives watchSignals directly rather than sending real signals: the window
+// only exists while the watch is pinned mid-handler with teardown already begun,
+// and close(done) lives inside notifySignals' stop func, so from the outside the
+// two can only be raced -- a test that loses the race asserts nothing and still
+// passes.
+func TestWatchSignalsTeardownIgnoresQueuedSignal(t *testing.T) {
 	quit := make(chan struct{}, 1)
 	orig := forceQuit
 	forceQuit = func() { quit <- struct{}{} }
 	t.Cleanup(func() { forceQuit = orig })
 
-	// Pin the handler inside the first signal so the second one stays queued in the
-	// buffered channel until stop() has run -- the window the race lives in.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ch := make(chan os.Signal, 2)
+	done := make(chan struct{})
+
+	// Pin the watch inside the first signal's log call so the second one has to wait
+	// in the buffered channel -- the window the race lives in.
+	entered := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	ctx, stop := notifySignals(func(string, ...any) {
-		once.Do(func() { <-release })
-	})
-
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
-		stop()
+		watchSignals(ch, done, func(string, ...any) {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+		}, cancel)
 	}()
+
+	ch <- syscall.SIGTERM
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never took the first signal; nothing can queue behind an unpinned handler")
+	}
+
+	// Queue the second signal and begin teardown while the watch is still parked, so
+	// when it wakes both arms of its select are ready -- the tie teardown must win.
+	ch <- syscall.SIGTERM
+	close(done)
 	close(release)
 
 	select {
 	case <-stopped:
 	case <-time.After(10 * time.Second):
-		t.Fatal("stop() never returned; teardown must not deadlock on the signal goroutine")
+		t.Fatal("watchSignals never returned; teardown must not deadlock on a queued signal")
 	}
 	select {
 	case <-quit:
 		t.Fatal("a signal queued at teardown force-quit the process; a completed run would exit 1")
 	default:
 	}
-	// stop() may only cancel once the goroutine can no longer touch the context.
+	if ctx.Err() == nil {
+		t.Error("the first interrupt should have canceled the run context")
+	}
+}
+
+// The wiring around watchSignals: stop() must return rather than deadlock on its
+// join with the watch goroutine, and must cancel the context it handed out.
+func TestNotifySignalsStopCancels(t *testing.T) {
+	ctx, stop := notifySignals(func(string, ...any) {})
+	stop()
 	if ctx.Err() == nil {
 		t.Error("stop() should cancel the returned context")
 	}

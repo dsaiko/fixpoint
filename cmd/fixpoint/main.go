@@ -239,38 +239,7 @@ func notifySignals(logf func(string, ...any)) (context.Context, func()) {
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
-		// Count the interrupts here rather than reading them back off ctx.Err(): the
-		// stop func cancels that same context, so a canceled ctx cannot tell "the
-		// operator asked twice" apart from "the run finished and tore the handler
-		// down", and mistaking the latter for a second interrupt would force-quit a
-		// successful run with exit 1.
-		handled := 0
-		for {
-			select {
-			case <-done:
-				return
-			case <-ch:
-				// Teardown wins a tie. When a signal lands just as the run returns both
-				// channels are ready and select picks at random; the run is already over,
-				// so acting on that signal would either announce a pause that never
-				// happens or quit on what is really the first interrupt.
-				select {
-				case <-done:
-					return
-				default:
-				}
-				handled++
-				if handled == 1 {
-					// Name what the pause is: the run does not stop the instant the signal
-					// lands, it stops the current step and then reconciles the tree.
-					logf("interrupted: stopping after the current step, then stashing any edits so the tree is left clean -- interrupt again to quit immediately")
-					cancel()
-					continue
-				}
-				logf("interrupted again: quitting now; the working tree may be left dirty (check `git status` and `git stash list`)")
-				forceQuit()
-			}
-		}
+		watchSignals(ch, done, logf, cancel)
 	}()
 	return ctx, func() {
 		// The order is the whole point: stop delivery, release the goroutine, and wait
@@ -282,6 +251,47 @@ func notifySignals(logf func(string, ...any)) (context.Context, func()) {
 		close(done)
 		<-stopped
 		cancel()
+	}
+}
+
+// watchSignals runs the interrupt state machine until done is closed: the first
+// signal announces the pause and cancels the run, a second quits outright, and a
+// signal still queued when teardown starts is discarded. It is a separate
+// function so a test can own both channels and pin the exact interleaving the
+// tie-break below exists for -- driving it through real process signals can only
+// hope to land in that window, and silently passes when it misses.
+func watchSignals(ch <-chan os.Signal, done <-chan struct{}, logf func(string, ...any), cancel context.CancelFunc) {
+	// Count the interrupts here rather than reading them back off ctx.Err(): the
+	// stop func cancels that same context, so a canceled ctx cannot tell "the
+	// operator asked twice" apart from "the run finished and tore the handler
+	// down", and mistaking the latter for a second interrupt would force-quit a
+	// successful run with exit 1.
+	handled := 0
+	for {
+		select {
+		case <-done:
+			return
+		case <-ch:
+			// Teardown wins a tie. When a signal lands just as the run returns both
+			// channels are ready and select picks at random; the run is already over,
+			// so acting on that signal would either announce a pause that never
+			// happens or quit on what is really the first interrupt.
+			select {
+			case <-done:
+				return
+			default:
+			}
+			handled++
+			if handled == 1 {
+				// Name what the pause is: the run does not stop the instant the signal
+				// lands, it stops the current step and then reconciles the tree.
+				logf("interrupted: stopping after the current step, then stashing any edits so the tree is left clean -- interrupt again to quit immediately")
+				cancel()
+				continue
+			}
+			logf("interrupted again: quitting now; the working tree may be left dirty (check `git status` and `git stash list`)")
+			forceQuit()
+		}
 	}
 }
 
