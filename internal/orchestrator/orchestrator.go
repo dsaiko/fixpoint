@@ -501,7 +501,7 @@ func (o *Orchestrator) finishRun(ctx context.Context, sum *model.RunSummary, run
 		return err
 	}
 	if ctx.Err() != nil {
-		return nil
+		return nil //nolint:nilerr // interruption is a normal termination, not a run failure
 	}
 	return o.squashRun(ctx, sum, runBase)
 }
@@ -691,7 +691,18 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 	// A correction attempt can revert the edits entirely, leaving a clean tree after
 	// verification passed. The verdict is already recorded, so put the issue back
 	// rather than let the summary claim a fix no commit contains.
-	if clean, cerr := o.collector.GitClean(ctx, o.gitExclude...); cerr == nil && clean {
+	//
+	// A failed check is not a clean tree: it means fixpoint does not KNOW whether the
+	// correction reverted the fix, and committing on that ignorance is exactly what
+	// this check exists to prevent. Surface it -- the caller withdraws the verdict.
+	clean, cerr := o.collector.GitClean(ctx, o.gitExclude...)
+	if cerr != nil {
+		if ctx.Err() != nil {
+			return false, o.reconcileInterrupt(rec.Round, cerr) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+		}
+		return false, cerr
+	}
+	if clean {
 		o.reopenFixedIssue(rec, it.ID)
 		o.logf("round %d: %s left nothing to commit -- the verification correction reverted it; the finding is reopened", rec.Round, it.ID)
 		return false, nil
