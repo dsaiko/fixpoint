@@ -210,6 +210,41 @@ func TestRunSucceedsWhenDetachedDescendantHoldsOutputPipe(t *testing.T) {
 	}
 }
 
+// The deadline can expire AFTER the leader has exited 0, while Run is still
+// tearing down: a detached descendant on the output pipe holds the drain for the
+// full grace, and a timeout shorter than that fires in the middle of it. The
+// leader succeeded and its whole reply is captured, so the invocation is a
+// success -- reclassifying it as a timeout would discard a complete review or
+// fix, the same damage the drain-timeout handling exists to prevent.
+func TestRunKeepsSuccessWhenDeadlineExpiresDuringTeardown(t *testing.T) {
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("perl unavailable to spawn a detached pipe-holder")
+	}
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
+	// The leader replies and exits well inside the timeout; the drain that follows
+	// runs past it, because the escaped holder keeps a write end open.
+	a := config.Agent{
+		Command: []string{script(t, "perl -e 'setpgrp(0,0); open(F,\">\",$ARGV[0]) or die; print F $$; close F; sleep 60' "+
+			pidFile+" &\nn=0\nwhile [ ! -s '"+pidFile+"' ] && [ $n -lt 5 ]; do sleep 1; n=$((n+1)); done\necho '<fix>ok</fix>'\nexit 0")},
+		PromptVia: "stdin",
+		Timeout:   config.Duration(2 * time.Second),
+	}
+	done := make(chan Result, 1)
+	go func() { done <- Run(t.Context(), a, "", t.TempDir()) }()
+	select {
+	case res := <-done:
+		if res.Err != nil {
+			t.Fatalf("Run() err = %v, want success: the leader exited 0 before the deadline, which expired during the drain", res.Err)
+		}
+		if !strings.Contains(res.Stdout, "<fix>ok</fix>") {
+			t.Errorf("stdout = %q, want the leader's reply preserved", res.Stdout)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run hung with a detached descendant on the output pipe past the deadline")
+	}
+}
+
 // The process group must be killed on the LEADER's exit, not once the output
 // pipes have drained. A child that inherited the pipe keeps it open, so draining
 // first would leave the child running for the whole drain -- long enough to edit

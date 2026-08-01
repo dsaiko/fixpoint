@@ -233,7 +233,13 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	// failure, which discards a complete review or fix -- resetting the clean
 	// streak, or committing the coder's edits as an unverified partial round.
 	leakedPipe, err := Supervise(ctx, cmd, stdout, stderr)
-	if ctx.Err() == context.DeadlineExceeded {
+	// Reclassify a FAILURE as a timeout, never a success. Supervise returns only
+	// after cmd.Wait, the process-group kill and drainAll -- and drainAll can burn
+	// pipeDrainGrace when a descendant escaped the group -- so the deadline can
+	// expire in the window after a leader exited 0 with its whole reply captured.
+	// Overwriting a nil err there would discard a complete review or fix for a run
+	// that actually succeeded, exactly what SucceededDespiteLeakedPipe prevents.
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
 		err = fmt.Errorf("timed out after %s", a.Timeout.Std())
 	}
 	raw := stdout.String()
