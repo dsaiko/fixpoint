@@ -414,16 +414,25 @@ func TestExcludeDirWithPathspecMetacharacters(t *testing.T) {
 func TestCollectUntrackedListingErrorSurfaces(t *testing.T) {
 	repo := gitRepo(t)
 	binDir := t.TempDir()
-	// Shim `git`: forward everything to the real git except `ls-files`, which
-	// fails. `which git` resolves the real binary once PATH is shadowed, so pin
-	// it up front. The subcommand is matched anywhere in the argument list, since
-	// the collector prefixes every git call with -c hardening flags.
+	// Shim `git`: forward everything to the real git except the UNTRACKED listing,
+	// which fails. `which git` resolves the real binary once PATH is shadowed, so
+	// pin it up front. The flags are matched anywhere in the argument list, since
+	// the collector prefixes every git call with -c hardening flags. Only
+	// `--others` without `--cached` is failed, so this hits the untracked listing
+	// and not the symlink-destination scan, which enumerates both sets -- otherwise
+	// the collection would fail earlier, for a different reason, and this test would
+	// pass without ever reaching the branch it exists to cover.
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Skipf("git not found: %v", err)
 	}
 	shim := "#!/bin/sh\n" +
-		`for a in "$@"; do if [ "$a" = "ls-files" ]; then echo "boom" >&2; exit 1; fi; done` + "\n" +
+		`cached=; others=` + "\n" +
+		`for a in "$@"; do` + "\n" +
+		`  if [ "$a" = "--cached" ]; then cached=1; fi` + "\n" +
+		`  if [ "$a" = "--others" ]; then others=1; fi` + "\n" +
+		`done` + "\n" +
+		`if [ -n "$others" ] && [ -z "$cached" ]; then echo "boom" >&2; exit 1; fi` + "\n" +
 		`exec "` + realGit + `" "$@"` + "\n"
 	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(shim), 0o700); err != nil {
 		t.Fatal(err)
@@ -1815,6 +1824,51 @@ func TestCollectGitDiffAppliesExcludes(t *testing.T) {
 	for _, want := range []string{"// reviewed", "sub/ok.txt"} {
 		if !strings.Contains(material, want) {
 			t.Errorf("Collect() missing %q:\n%s", want, material)
+		}
+	}
+}
+
+// The git modes filter material by pathname only, and the name of a symlink says
+// nothing about what opening it yields -- so without a destination check a pull
+// request (the mode written for UNTRUSTED authors) can advertise an alias to a
+// host secret in every reviewer prompt: the diff renders the committed link and
+// the untracked listing introduces it as a path to "read directly", while
+// reviewers run unsandboxed and are told to read the repository for context.
+func TestCollectGitDiffSkipsSymlinksLeavingTheTarget(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: "HEAD"})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// TRACKED and inside the diff range, the case a PR produces: the aliases are
+	// committed, so nothing but the destination check keeps them out.
+	want, unwanted := symlinkTree(t, repo)
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "aliases")
+	// And one untracked alias, which reaches the material through the "read them
+	// directly" listing rather than the diff.
+	outside := t.TempDir()
+	writeFile(t, outside, "token", "SECRET=leaked\n")
+	if err := os.Symlink(filepath.Join(outside, "token"), filepath.Join(repo, "untracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	unwanted = append(unwanted, "untracked.txt")
+	writeFile(t, repo, "sub/ok.txt", "fine\n")
+
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range unwanted {
+		if strings.Contains(material, name) {
+			t.Errorf("collected material names out-of-scope symlink %q:\n%s", name, material)
+		}
+	}
+	// ...while the in-scope alias and ordinary files still arrive: the exclusion
+	// must not silently narrow the review.
+	for _, name := range append(want, "sub/ok.txt") {
+		if !strings.Contains(material, name) {
+			t.Errorf("collected material dropped in-scope %q:\n%s", name, material)
 		}
 	}
 }

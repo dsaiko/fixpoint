@@ -127,18 +127,23 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		// credentials -- before any agent sandboxing, even in a review-only run.
 		// gitSafeConfig cannot cover these (there is no single -c that disables a
 		// gitattributes-driven textconv), so they are neutralized per command here.
+		// Keep the run's own logs out of the diff too, not just the untracked
+		// listing: a tracked file under the logs dir (a committed .prompt from an
+		// earlier run) would otherwise show its full modified content here and be
+		// fed back as review material. The same pathspec also drops target.exclude,
+		// the mandatory credential patterns -- whose content the diff would
+		// otherwise embed verbatim -- and the symlinks whose destination leaves the
+		// target; see collectPathspec.
+		specs, err := c.collectPathspec(ctx)
+		if err != nil {
+			return "", err
+		}
 		args := []string{"diff", "--no-ext-diff", "--no-textconv"}
 		if c.baseSHA != "" {
 			args = append(args, c.baseSHA)
 		}
-		// Keep the run's own logs out of the diff too, not just the untracked
-		// listing: a tracked file under the logs dir (a committed .prompt from an
-		// earlier run) would otherwise show its full modified content here and be
-		// fed back as review material. The same pathspec also drops target.exclude
-		// and the mandatory credential patterns, whose content the diff would
-		// otherwise embed verbatim -- see collectPathspec.
 		args = append(args, "--")
-		args = append(args, c.collectPathspec()...)
+		args = append(args, specs...)
 		diff, err := c.git(ctx, args...)
 		if err != nil {
 			return "", err
@@ -147,7 +152,7 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		// swallowed: silently treating it as "no untracked files" would drop
 		// them from review without reporting the collection was incomplete.
 		lsArgs := []string{"ls-files", "--others", "--exclude-standard", "--"}
-		lsArgs = append(lsArgs, c.collectPathspec()...)
+		lsArgs = append(lsArgs, specs...)
 		untracked, err := c.git(ctx, lsArgs...)
 		if err != nil {
 			return "", fmt.Errorf("list untracked files: %w", err)
@@ -1330,8 +1335,9 @@ func pathspec(exclude []string) []string {
 	return specs
 }
 
-// collectPathspec is pathspec plus the target.exclude globs and the mandatory
-// credential patterns, for the git commands that COLLECT review material.
+// collectPathspec is pathspec plus the target.exclude globs, the mandatory
+// credential patterns, and every symlink whose DESTINATION is out of scope, for
+// the git commands that COLLECT review material.
 //
 // listFiles applies EffectiveExcludes to directory mode; without this the git
 // modes applied neither it nor target.exclude, and they are where it matters
@@ -1342,14 +1348,91 @@ func pathspec(exclude []string) []string {
 // agent.RedactSecrets is shape-based and best-effort. The `glob` magic gives git
 // the same `**/` semantics compileGlobs gives the directory walk.
 //
+// Every spec above is name-based, and the name of a symlink says nothing about
+// what it opens, so symlinkExcludes adds the resolved-destination check on top --
+// the one directory mode already applies in listGitFiles and walkFiles.
+//
 // The positive "." spec comes from pathspec: collection is scoped to target.path,
 // the same scope the clean check and the round commit use.
-func (c *Collector) collectPathspec() []string {
+func (c *Collector) collectPathspec(ctx context.Context) ([]string, error) {
 	specs := pathspec(c.excludes())
 	for _, g := range c.cfg.EffectiveExcludes() {
 		specs = append(specs, ":(exclude,glob)"+g)
 	}
-	return specs
+	scope, err := c.fileScope()
+	if err != nil {
+		return nil, err
+	}
+	aliases, err := c.symlinkExcludes(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return append(specs, aliases...), nil
+}
+
+// maxSymlinkExcludes bounds how many out-of-scope aliases collectPathspec will
+// name. Each one becomes an argv entry on the diff and ls-files commands, and a
+// repository can commit an unbounded number of them; past this many the
+// collection is refused outright, rather than left to fail with an opaque
+// "argument list too long" from exec -- or, worse, silently retried without the
+// exclusions that keep the aliases out.
+const maxSymlinkExcludes = 4096
+
+// symlinkExcludes returns :(exclude,literal) pathspecs for every symlink in the
+// collected scope that resolves somewhere a reviewer must not be pointed at (see
+// symlinkOutOfScope).
+//
+// Without it the git modes filter by NAME alone, and no name-based pattern can
+// see through an alias: a pull request that adds a tracked
+// `docs/context.txt -> ~/.ssh/id_rsa` matches no mandatory credential pattern, so
+// `git diff` renders it into the material handed to every reviewer and the
+// untracked listing introduces it as a path to "read directly". Reviewers run
+// unsandboxed and are told to read the repository for context, so the key ends up
+// in a finding, in the .prompt/.md/.json artifacts, and -- in a fix run -- in the
+// commit body, where redaction is shape-based and best-effort. pr mode is the mode
+// built for untrusted authors, which is exactly why the check cannot be
+// directory-mode-only.
+//
+// Lstat, not the index mode bits, decides what is a symlink: the worktree is what
+// a reviewer would open, and it is what git itself diffs. An entry that cannot be
+// stat'ed at all is left alone -- git cannot read it either, so there is no
+// content for the collection to embed.
+func (c *Collector) symlinkExcludes(ctx context.Context, scope fileScope) ([]string, error) {
+	var specs []string
+	overflow := 0
+	// --cached covers the tracked aliases a PR commits, --others the untracked ones
+	// the listing would advertise; -z keeps a path containing a newline intact.
+	err := c.gitScanNUL(ctx, func(rel string) {
+		if rel == "" {
+			return
+		}
+		rel = filepath.ToSlash(rel)
+		// Already dropped by name, so a second spec for it would only crowd argv.
+		if c.skipFile(rel, scope.excludes) {
+			return
+		}
+		fi, err := os.Lstat(filepath.Join(c.cfg.Path, rel))
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			return
+		}
+		if !c.symlinkOutOfScope(rel, scope) {
+			return
+		}
+		if len(specs) >= maxSymlinkExcludes {
+			overflow++
+			return
+		}
+		specs = append(specs, ":(exclude,literal)"+rel)
+	}, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("list symlinks in scope: %w", err)
+	}
+	if overflow > 0 {
+		return nil, fmt.Errorf(
+			"refusing to collect: %d symlinks under %s resolve outside it, %d more than the %d that can be excluded from the diff; narrow the review with target.exclude",
+			len(specs)+overflow, c.cfg.Path, overflow, maxSymlinkExcludes)
+	}
+	return specs, nil
 }
 
 // restoreProtectedPath reproduces one excluded path's pre-stash index and
