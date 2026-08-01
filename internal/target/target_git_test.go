@@ -2,12 +2,14 @@ package target
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -2410,13 +2412,21 @@ func TestListGitFilesDetachedChildHoldingStdoutIsBounded(t *testing.T) {
 		t.Skip("setsid unavailable to detach the child from the process group")
 	}
 	repo := gitRepo(t)
+	pidFile := filepath.Join(t.TempDir(), "detached.pid")
+	// The child outlives this test by design, so reap it rather than leave a sleeper
+	// behind on every run (and every -count=N iteration).
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
 	// setsid puts the child in a session -- and so a process group -- of its own, so
 	// the SIGKILL sent to git's group misses it and it keeps the inherited stdout.
-	// Its stderr goes to /dev/null: holding that too would measure the stderr drain
-	// grace instead of the stdout stall under test. The leader lingers a second
-	// before exiting so the kill that follows its exit cannot land while setsid is
-	// still forking, which would catch the child while it is still in the group.
-	shimGit(t, "ls-files", "    printf 'main.go\\0'\n    setsid sleep 20 2>/dev/null &\n    sleep 1\n    exit 0")
+	// It publishes its PID so the cleanup above can find it, and execs the sleep so
+	// that PID is the process actually holding the pipe. Its stderr goes to
+	// /dev/null: holding that too would measure the stderr drain grace instead of
+	// the stdout stall under test. The leader lingers a second before exiting so the
+	// kill that follows its exit cannot land while setsid is still forking, which
+	// would catch the child while it is still in the group.
+	shimGit(t, "ls-files", "    printf 'main.go\\0'\n"+
+		"    setsid sh -c 'echo $$ > "+pidFile+"; exec sleep 20' 2>/dev/null &\n"+
+		"    sleep 1\n    exit 0")
 
 	c := New(config.Target{Mode: "directory", Path: repo})
 	scope, err := c.fileScope()
@@ -2437,11 +2447,45 @@ func TestListGitFilesDetachedChildHoldingStdoutIsBounded(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("listGitFiles() = nil, want the expired deadline to surface as an error")
+		// The identity, not merely the presence: the deadline is WHY the listing
+		// ended, and an operator reading this error has to be told that rather than
+		// the mechanism (the read end closed under the blocked scan) used to end it.
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("listGitFiles() err = %v, want it to wrap context.DeadlineExceeded", err)
+		}
+		if strings.Contains(err.Error(), os.ErrClosed.Error()) {
+			t.Errorf("the error reports the mechanism instead of the cause: %v", err)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("listGitFiles hung on a detached descendant holding stdout; the scan has no deadline escape")
+	}
+}
+
+// gitScanNUL's scan runs on its own goroutine and calls fn, which writes the
+// caller's state (listGitFiles' count and builder). On the cancellation path it
+// must JOIN that goroutine rather than abandon it: a caller that returned while fn
+// was mid-call would be racing a goroutine still filling state it owns. fn here
+// outlives the deadline, so the join is the only thing that can make the scan
+// quiet by the time gitScanNUL returns.
+func TestGitScanNULJoinsScanGoroutineOnCancel(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "directory", Path: repo})
+	// Deliberately far shorter than fn's own work, so the deadline fires while fn is
+	// still running and the ctx.Done arm of the select is the one taken.
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+
+	var inFlight atomic.Int32
+	err := c.gitScanNUL(ctx, func(string) {
+		inFlight.Add(1)
+		defer inFlight.Add(-1)
+		time.Sleep(1500 * time.Millisecond)
+	}, "ls-files", "--cached", "-z")
+	if n := inFlight.Load(); n != 0 {
+		t.Errorf("gitScanNUL returned with %d fn call(s) still in flight; the scan goroutine was not joined", n)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("gitScanNUL() err = %v, want it to wrap context.DeadlineExceeded", err)
 	}
 }
 
