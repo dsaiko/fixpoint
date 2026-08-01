@@ -679,6 +679,17 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 	return out
 }
 
+// flattenField collapses agent-authored text onto a single line before it lands
+// in a commit message. `git commit -m` takes its arguments literally, so a value
+// carrying newlines forges extra message lines -- and a line shaped like
+// `Signed-off-by: Someone <s@org>` or `Fixes: #12` becomes a real git trailer,
+// attributing the commit to people who never made it or auto-closing an issue on
+// push. RedactSecrets does not stop that: a trailer carries no credential
+// keyword. Reviewer-authored category/title/file and coder-authored verdict
+// detail are all reachable by a prompt injection on a run over untrusted
+// content, and the trust gate authorizes file edits, not commit metadata.
+func flattenField(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
 // a round commit -- nothing lands unverified -- with the granularity moved down to
 // the fix, so a failing check names the change that caused it.
@@ -708,20 +719,18 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 		return false, nil
 	}
 	// The subject embeds the reviewer-authored title, so it gets the same two
-	// treatments the body does. Flattening first: `git commit -m` takes the
-	// argument literally, so a title carrying newlines would forge extra lines
-	// -- trailers like Signed-off-by: among them -- into the message.
+	// treatments the body does: flattenField first (see there), then redaction.
 	header := strings.NewReplacer(
 		"{round}", strconv.Itoa(rec.Round),
 		"{fixed}", "1",
 		"{rejected}", "0",
 		"{issue}", it.ID,
-		"{title}", strings.Join(strings.Fields(it.Title), " "),
+		"{title}", flattenField(it.Title),
 	).Replace(o.fixCommitMessage())
 	var body strings.Builder
-	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, it.Category, it.Severity, it.Loc())
-	if it.VerdictDetail != "" {
-		body.WriteString("\n" + it.VerdictDetail + "\n")
+	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, flattenField(it.Category), it.Severity, flattenField(it.Loc()))
+	if d := flattenField(it.VerdictDetail); d != "" {
+		body.WriteString("\n" + d + "\n")
 	}
 	// Redact the subject as well as the body: it is agent-authored text bound for
 	// a pushed commit, exactly what squashTo redacts for the same reason.
@@ -2479,9 +2488,11 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 	}
 	header := fmt.Sprintf("fixpoint: round %d (partial, coder failed)", rec.Round)
 	var body strings.Builder
-	fmt.Fprintf(&body, "Coder failed before reporting verdicts: %v\n\nIssues it was working on:\n", runErr)
+	// runErr can quote the coder's own malformed output, so it is flattened like
+	// the finding text below it.
+	fmt.Fprintf(&body, "Coder failed before reporting verdicts: %s\n\nIssues it was working on:\n", flattenField(fmt.Sprint(runErr)))
 	for _, it := range active {
-		fmt.Fprintf(&body, "- [%s] (%s, %s) %s\n", it.ID, it.Category, it.Severity, it.Title)
+		fmt.Fprintf(&body, "- [%s] (%s, %s) %s\n", it.ID, flattenField(it.Category), it.Severity, flattenField(it.Title))
 	}
 	// Redact reviewer-authored finding text before it lands in the pushed
 	// commit message, mirroring the normal round commit and the logstore.
@@ -2616,11 +2627,14 @@ func (o *Orchestrator) applyVerdicts(rec *model.RoundRecord, results []model.Fix
 // writeVerdictSection writes a "<title>:" header followed by one line per
 // finding carrying the given verdict, so the fixed and rejected sections of a
 // commit body share a single formatting site.
+//
+// One line per finding is the format, so every agent-authored field is flattened
+// -- which is also what keeps an injected newline from forging a trailer.
 func writeVerdictSection(b *strings.Builder, title string, findings []model.Finding, verdict string) {
 	b.WriteString(title + ":\n")
 	for _, f := range findings {
 		if f.Verdict == verdict {
-			fmt.Fprintf(b, "- [%s] %s — %s\n", f.Category, f.Title, f.VerdictDetail)
+			fmt.Fprintf(b, "- [%s] %s — %s\n", flattenField(f.Category), flattenField(f.Title), flattenField(f.VerdictDetail))
 		}
 	}
 }
