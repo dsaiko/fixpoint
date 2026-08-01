@@ -1303,17 +1303,18 @@ func (c *Collector) commitStaged(ctx context.Context, header, body string) (stri
 	// already disables them via core.hooksPath, so this is belt-and-suspenders):
 	// an attacker-supplied .git/hooks must never run during a round commit.
 	if out, err := c.git(ctx, "commit", "--no-verify", "-m", header, "-m", body); err != nil {
-		// `git commit` itself runs on the cancellable ctx: if ctx is canceled
-		// mid-commit, KillProcessGroup SIGKILLs git, and a kill that lands AFTER git
-		// has updated the ref but before it exits cleanly makes cmd.Run report
-		// "signal: killed" even though the commit landed. Recover the SHA rather
-		// than returning a bare commit error -- which would drop a landed commit and
-		// let the run summary claim an interruption with no commit while the commit
-		// sits in history and the tree looks clean to interruption reconciliation.
-		if ctx.Err() != nil {
-			if sha := c.committedSHA(before); sha != "" { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: ctx is canceled but a landed commit must still be recorded
-				return sha, nil
-			}
+		// A kill landing AFTER git has updated the ref but before it exits cleanly
+		// makes cmd.Run report "signal: killed" even though the commit landed. That
+		// kill can come from ctx cancellation (KillProcessGroup SIGKILLs git) or from
+		// c.git's OWN gitOpTimeout, which fires while the caller's ctx is still live
+		// and so cannot be detected from ctx.Err() -- a slow signer or a large index
+		// is enough. Re-read HEAD on a fresh context on ANY failure and accept the
+		// commit only if HEAD advanced, rather than returning a bare commit error --
+		// which would drop a landed commit and let the run summary claim no commit
+		// while the commit sits in history and the tree looks clean to interruption
+		// reconciliation. A genuinely failed commit leaves HEAD put and still errors.
+		if sha := c.committedSHA(before); sha != "" { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: this one may be canceled or timed out, but a landed commit must still be recorded
+			return sha, nil
 		}
 		return "", fmt.Errorf("git commit: %w: %s", err, out)
 	}

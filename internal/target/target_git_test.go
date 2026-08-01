@@ -856,6 +856,83 @@ func TestCommitRecoversLandedCommitWhenRevParseFailsWithLiveContext(t *testing.T
 	}
 }
 
+// The `git commit` command itself has the same live-context exposure: c.git's own
+// gitOpTimeout can kill it after the ref update but before it exits (a large
+// index, a slow gpg signer), with the caller's ctx never canceled. A recovery
+// gated on ctx.Err() would report the landed commit as "git commit: ..." and the
+// orchestrator would withdraw the fix while the commit sits in history. The shim
+// runs the real commit and then fails, standing in for that kill.
+func TestCommitRecoversLandedCommitWhenCommitFailsWithLiveContext(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh not found: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	repo := gitRepo(t)
+	binDir := t.TempDir()
+	shim := "#!/bin/sh\n" +
+		`is_commit=0; for a in "$@"; do if [ "$a" = "commit" ]; then is_commit=1; fi; done` + "\n" +
+		`if [ "$is_commit" = 1 ]; then "` + realGit + `" "$@" || exit $?; exit 1; fi` + "\n" +
+		`exec "` + realGit + `" "$@"` + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(shim), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFile(t, repo, "fixed.go", "package main\n")
+
+	c := New(config.Target{Path: repo})
+	sha, err := c.Commit(t.Context(), "fixpoint: round 1", "body")
+	if err != nil {
+		t.Fatalf("Commit() = %v, want the landed commit recovered", err)
+	}
+	head := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	if sha == "" || sha != head {
+		t.Fatalf("Commit() SHA = %q, want landed HEAD %q", sha, head)
+	}
+	if out := git(t, repo, "status", "--porcelain"); strings.TrimSpace(out) != "" {
+		t.Errorf("tree not clean after recovered commit: %q", out)
+	}
+}
+
+// The counterpart: a commit that fails WITHOUT moving the ref must still surface
+// its error, so dropping the ctx.Err() gate above cannot turn a genuine failure
+// into a phantom SHA. The shim fails the commit before the real git ever runs.
+func TestCommitFailsWhenCommitFailsWithoutMovingRef(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh not found: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	repo := gitRepo(t)
+	binDir := t.TempDir()
+	shim := "#!/bin/sh\n" +
+		`is_commit=0; for a in "$@"; do if [ "$a" = "commit" ]; then is_commit=1; fi; done` + "\n" +
+		`if [ "$is_commit" = 1 ]; then echo "commit refused" >&2; exit 1; fi` + "\n" +
+		`exec "` + realGit + `" "$@"` + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(shim), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	head := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	writeFile(t, repo, "fixed.go", "package main\n")
+
+	c := New(config.Target{Path: repo})
+	sha, err := c.Commit(t.Context(), "fixpoint: round 1", "body")
+	if err == nil {
+		t.Fatalf("Commit() = %q, nil; want an error when the commit never landed", sha)
+	}
+	if sha != "" {
+		t.Errorf("Commit() SHA = %q, want empty on a failed commit", sha)
+	}
+	if now := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD")); now != head {
+		t.Errorf("HEAD moved to %q, want it left at %q", now, head)
+	}
+}
+
 // SquashSince's closing `reset --soft` has the same exposure: the ref update can
 // land and the command still be cut short -- by gitOpTimeout, with the caller's
 // context live. The squash must be reported with its SHA, not lost. The shim runs
