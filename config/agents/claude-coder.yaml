@@ -32,6 +32,15 @@ usage:
 prompt_via: stdin
 timeout: 30m # fixing rounds run longer than a single review pass
 can_edit: true
+# No `--setting-sources user` here, unlike every reviewer -- deliberately. That
+# flag exists on the reviewers because they run against material nobody vouched
+# for, and a hook in the target's .claude/settings.json would be execution they
+# never asked for. A fix round is the opposite case: it is refused outright
+# unless the operator passes -trusted-target (or -allow-untrusted-fix in pr
+# mode) on that very invocation, and this command already auto-approves every
+# tool request above, so target-supplied settings are not an escalation over
+# what was authorized. In exchange the coder keeps the target's own CLAUDE.md
+# and project conventions, which is most of what makes its edits fit in.
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,
 # HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's

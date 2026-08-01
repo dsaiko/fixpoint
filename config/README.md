@@ -149,6 +149,18 @@ untrusted content can be prompt-injected into reading a host secret
 That path has no trust gate. Point reviewers at untrusted content only on a host
 without sensitive files, or run fixpoint inside a container or VM.
 
+**Reviewers do not load the target's agent settings.** Every shipped
+`claude`-backed reviewer passes `--setting-sources user`, so settings come from
+`~/.claude` and never from the `.claude/settings.json` sitting in the code under
+review. Without it a target could ship a `SessionStart` hook — a shell command the
+CLI runs with your permissions before the model takes a turn, which no read-only
+flag applies to — and turn a review pass into arbitrary execution with the
+reviewer's own credential in reach. The same flag keeps the target's MCP servers,
+skills and `CLAUDE.md` out of the session, since those are instructions written by
+the material being reviewed. `claude-coder` deliberately omits it: fix rounds
+already require `-trusted-target` and already run with permission checks off.
+Reviewer commands you write yourself get no such treatment automatically.
+
 **The environment is the other read surface**, and it is filtered rather than
 inherited — see "The agent environment is filtered" below. What an agent can still
 quote into a finding is its own declared credentials (an agent given

@@ -28,6 +28,7 @@ command:
   - --model {{model}}
   - --output-format json # machine-readable envelope: carries usage + cost
   - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
 # modelUsage is keyed by model id and aggregates the WHOLE session; the top-level
 # `usage` object is only the final turn. OpenRouter honours prompt caching, so the
 # cache_* paths carry real numbers here rather than the zeros the ollama agents
