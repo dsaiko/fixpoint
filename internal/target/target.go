@@ -179,10 +179,16 @@ func (c *Collector) Scope(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		// The same pathspec Collect builds, symlink aliases and all -- an estimate
+		// that skipped them would not describe the material the run reviews.
+		specs, err := c.collectPathspec(ctx)
+		if err != nil {
+			return "", err
+		}
 		// --no-ext-diff / --no-textconv for the same reason Collect passes them: a
 		// repo-controlled diff driver must not be executed by a validation step.
 		args := []string{"diff", "--shortstat", "--no-ext-diff", "--no-textconv", base, "--"}
-		args = append(args, c.collectPathspec()...)
+		args = append(args, specs...)
 		stat, err := c.git(ctx, args...)
 		if err != nil {
 			return "", fmt.Errorf("measure diff against %s: %w: %s", shortSHA(base), err, stat)
@@ -194,7 +200,7 @@ func (c *Collector) Scope(ctx context.Context) (string, error) {
 		// Untracked files are part of the material too (Collect lists them), so an
 		// estimate that counted only the diff would understate a branch of new files.
 		lsArgs := []string{"ls-files", "--others", "--exclude-standard", "--"}
-		lsArgs = append(lsArgs, c.collectPathspec()...)
+		lsArgs = append(lsArgs, specs...)
 		if untracked, err := c.git(ctx, lsArgs...); err == nil {
 			if n := len(strings.Fields(strings.TrimSpace(untracked))); n > 0 {
 				out += fmt.Sprintf(", plus %d untracked file(s)", n)
