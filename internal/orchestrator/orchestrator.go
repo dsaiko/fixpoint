@@ -512,7 +512,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		fixedBefore := rec.Fixed
 		salvaged, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it})
 		if err != nil {
-			return false, committed, err
+			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
 		if salvaged {
 			// The coder died and its partial work was committed as a salvage round;
@@ -525,7 +525,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		// immediately before touching the tree and route the cancellation through the
 		// same stash-and-interrupt reconciliation, on a fresh context.
 		if ctx.Err() != nil {
-			return false, committed, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+			return false, committed, o.withdrawUncommittedFix(rec, it.ID, o.reconcileInterrupt(rec.Round, ctx.Err())) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
 		}
 		// Reconcile the verdict against the TREE before trusting it. The coder's
 		// report is a model's claim about its work, and one issue per session makes
@@ -534,9 +534,9 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		clean, err := o.collector.GitClean(ctx, o.gitExclude...)
 		if err != nil {
 			if ctx.Err() != nil {
-				return false, committed, o.reconcileInterrupt(rec.Round, err) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+				return false, committed, o.withdrawUncommittedFix(rec, it.ID, o.reconcileInterrupt(rec.Round, err)) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
 			}
-			return false, committed, err
+			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
 		if rec.Fixed == fixedBefore {
 			// Rejected. A session that rejected its one issue should have changed
@@ -547,11 +547,12 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 			continue
 		}
 		if clean {
-			return false, committed, fmt.Errorf("round %d: coder reported a fix for %s but left the working tree unchanged", rec.Round, it.ID)
+			return false, committed, o.withdrawUncommittedFix(rec, it.ID,
+				fmt.Errorf("round %d: coder reported a fix for %s but left the working tree unchanged", rec.Round, it.ID))
 		}
 		did, err := o.verifyAndCommitFix(ctx, rec, it)
 		if err != nil {
-			return false, committed, err
+			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
 		if did {
 			committed++
@@ -1260,8 +1261,9 @@ func (o *Orchestrator) setIssueVerdict(rec *model.RoundRecord, i int, verdict, d
 }
 
 // reopenFixedIssue withdraws ONE fixed verdict and reports whether it found one to
-// withdraw, for the one case where a recorded fix did not land: the verification
-// correction reverted the edits, so there is nothing to commit. The verdict is
+// withdraw, for the cases where a recorded fix did not land: the verification
+// correction reverted the edits so there is nothing to commit, or the edits were
+// discarded before a commit could be made (see withdrawUncommittedFix). The verdict is
 // cleared everywhere setIssueVerdict wrote it -- the round's issue, the ledger, and
 // every observation that reported it -- and rec.Fixed is decremented, so the
 // summary, the commit-less fix, and the history the next reviewers read agree that
@@ -1297,6 +1299,34 @@ func (o *Orchestrator) reopenFixedIssue(rec *model.RoundRecord, id string) bool 
 		return true
 	}
 	return false
+}
+
+// withdrawUncommittedFix rolls back the fixed verdict of the issue a fix session
+// was working on when that session ends without a commit, and passes cause back
+// through so callers can return it in one expression.
+//
+// Every abnormal exit between the coder's report and the commit -- the gate
+// blocking after a correction attempt, a failed commit, an interruption, a coder
+// that reported a fix it never made -- discards the edits (they are stashed, not
+// committed). The verdict, the ledger status, the mirrored observation verdicts and
+// rec.Fixed were all applied when the coder reported, so leaving them standing
+// makes the run summary and the scoreboard claim a fix that no commit contains,
+// and the summary is written on the error path too. The issue is still open, so it
+// is recorded as open.
+//
+// It is called from runFixSessions, the loop that owns the issue, because that is
+// the only place that knows WHICH issue the discarded edits belonged to: the discard paths
+// themselves are shared with round-level exits (a failed reviewer, a salvage) that
+// have no single issue to withdraw. Only the current issue is touched -- earlier
+// fixes in the round are already committed (see reopenFixedIssue).
+//
+// A no-op when there is no fixed verdict to withdraw: a rejected issue keeps its
+// rejection, since a rejection is a judgement rather than an edit.
+func (o *Orchestrator) withdrawUncommittedFix(rec *model.RoundRecord, id string, cause error) error {
+	if o.reopenFixedIssue(rec, id) {
+		o.logf("round %d: %s was reported fixed but its edits were not committed; the finding is reopened", rec.Round, id)
+	}
+	return cause
 }
 
 // coderWork reports whether one of the round's issues is work for THIS round's

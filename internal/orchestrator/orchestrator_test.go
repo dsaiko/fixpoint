@@ -2464,6 +2464,45 @@ func TestVerifyFailureDiscardsRound(t *testing.T) {
 	}
 }
 
+// The verdicts of a round the gate discarded must go with it. The coder reports
+// "fixed" before the gate runs, so a round that never commits still leaves that
+// verdict, its ledger status, its mirrored observations and the Fixed counter
+// standing -- and the summary is written on the error path too, so the durable
+// record and the scoreboard would both claim a fix that no commit contains while
+// the defect sits untouched in the stash.
+func TestVerifyFailureWithdrawsTheDiscardedFixVerdict(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+	// The correction does not remove the breakage, so the round is discarded.
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "still done"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() = nil, want an error: a round failing verification must not be reported as success")
+	}
+	if len(sum.Rounds) == 0 {
+		t.Fatal("the summary must carry the failed round")
+	}
+	r1 := sum.Rounds[0]
+	if r1.Fixed != 0 {
+		t.Errorf("round 1 fixed = %d, want 0: the discarded fix is in the stash, not in a commit", r1.Fixed)
+	}
+	for _, it := range r1.Issues {
+		if it.Verdict == model.VerdictFixed || it.StatusOrDefault() != model.StatusOpen {
+			t.Errorf("issue %s = %q/%q, want it reopened", it.ID, it.Verdict, it.StatusOrDefault())
+		}
+	}
+	for _, fnd := range r1.Findings {
+		if fnd.Verdict == model.VerdictFixed {
+			t.Errorf("observation %s still claims FIXED for a fix that was discarded", fnd.ID)
+		}
+	}
+}
+
 // The coder gets exactly one correction attempt, and a round that passes after it
 // commits normally -- so a transient breakage does not throw away the round.
 func TestVerifyRetrySucceedsAndCommits(t *testing.T) {
