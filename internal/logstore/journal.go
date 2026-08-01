@@ -32,10 +32,14 @@ func (s *Store) Journal(typ string, round int, data any) error {
 	}
 	s.journalMu.Lock()
 	defer s.journalMu.Unlock()
-	s.journalSeq++
+	// Claim the number only once marshaling has succeeded. An unserializable Data
+	// payload writes no record, so consuming the number first would leave a gap in
+	// the ordering key callers are told is gap-free. A failed append is different:
+	// the record may have partially landed, so that number stays spent.
+	seq := s.journalSeq + 1
 	b, err := json.Marshal(model.JournalEvent{
 		V:     model.JournalVersion,
-		Seq:   s.journalSeq,
+		Seq:   seq,
 		At:    time.Now(),
 		Type:  typ,
 		Round: round,
@@ -44,6 +48,7 @@ func (s *Store) Journal(typ string, round int, data any) error {
 	if err != nil {
 		return err
 	}
+	s.journalSeq = seq
 	// Redact like every other artifact: payloads carry agent-authored text (reviewer
 	// error messages, coder failures), and a prompt-injected agent can smuggle a
 	// credential into one. Masking a JSON string value keeps the record well-formed,

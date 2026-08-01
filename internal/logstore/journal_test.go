@@ -120,6 +120,26 @@ func TestJournalConcurrentAppendsStayIntact(t *testing.T) {
 	}
 }
 
+// A payload encoding/json cannot serialize writes no record, so it must not spend a
+// sequence number either: the next event has to be Seq 1, or the ordering key callers
+// are told is gap-free would start with a hole nothing explains.
+func TestJournalFailedMarshalKeepsSequence(t *testing.T) {
+	s, dir := newStore(t, "md")
+	if err := s.Journal(model.EvFixFinished, 1, func() {}); err == nil {
+		t.Fatal("Journal accepted an unserializable payload, want an error")
+	}
+	if err := s.Journal(model.EvFixFinished, 1, model.JournalFixFinished{Agent: "mock"}); err != nil {
+		t.Fatal(err)
+	}
+	events := readJournal(t, dir)
+	if len(events) != 1 {
+		t.Fatalf("got %d records, want 1", len(events))
+	}
+	if events[0].Seq != 1 {
+		t.Errorf("Seq = %d, want 1 (a failed marshal must not consume a number)", events[0].Seq)
+	}
+}
+
 // Payloads carry agent-authored text, and a prompt-injected agent can smuggle a
 // credential into a reviewer error or a coder failure message. The journal is a
 // durable artifact, so it must mask like every other one -- and stay parseable
