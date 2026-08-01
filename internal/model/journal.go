@@ -48,6 +48,12 @@ const (
 	EvVerifyFinished   = "verify_finished"
 	EvRoundCommitted   = "round_committed"
 	EvRoundDiscarded   = "round_discarded"
+	// EvSessionDiscarded is EvRoundDiscarded at session scope: one coder session's
+	// edits were stashed and the round carried on. Its own type rather than a flag
+	// on round_discarded, because every round_discarded marks the run's abnormal
+	// exit -- a reader (and one day a resume) must be able to tell "the run died
+	// here" from "one session's edits were set aside and work continued".
+	EvSessionDiscarded = "session_discarded"
 	EvRoundClean       = "round_clean"
 	EvRunFinished      = "run_finished"
 )
@@ -74,9 +80,12 @@ const (
 	// wedged git): distinct from salvage_verify_failed, because the work was good
 	// and the reason it was not kept has nothing to do with the coder.
 	DiscardSalvageCommitFailed = "salvage_commit_failed"
-	// DiscardRejectedWithEdits is the round where the coder rejected every issue
+	// DiscardRejectedWithEdits is the session whose coder rejected its one issue
 	// yet edited files: no verdict claims the edits, so they are stashed instead
-	// of committed.
+	// of committed. Session-scoped (session_discarded), and alone among these NOT
+	// an exit: rejecting well often means editing -- the probe test that disproves
+	// a finding's premise -- so the round carries on with its remaining issues,
+	// and only the stash itself failing stops the run.
 	DiscardRejectedWithEdits = "rejected_with_edits"
 	// DiscardFinalCoderFailed is the CLOSING round whose coder failed after editing.
 	// A normal round salvages such work because the next round re-reviews it; the
@@ -188,11 +197,15 @@ type JournalRoundCommitted struct {
 	Fixed   int    `json:"fixed"`
 }
 
-// JournalRoundDiscarded records work that was NOT committed and the tree restored.
-// Stashed says whether it is recoverable with `git stash pop` or was never there
-// to begin with.
-type JournalRoundDiscarded struct {
-	Reason  string   `json:"reason"`
+// JournalDiscarded records work that was NOT committed and the tree restored.
+// It is the payload of both round_discarded (the run's abnormal exit) and
+// session_discarded (one session's edits set aside, the round continuing).
+// Stashed says whether the work is recoverable with `git stash pop` or was never
+// there to begin with.
+type JournalDiscarded struct {
+	Reason string `json:"reason"`
+	// Issue is set on session_discarded: the issue whose session left the edits.
+	Issue   string   `json:"issue,omitempty"`
 	Stashed bool     `json:"stashed"`
 	Checks  []string `json:"checks,omitempty"` // the blocking checks, when that is the reason
 	Error   string   `json:"error,omitempty"`

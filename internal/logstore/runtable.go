@@ -411,6 +411,18 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 		}
 		out = append(out, [2]string{"commits", line})
 	}
+	// Sessions that rejected their issue but edited the tree left a stash each; a
+	// stash the table never mentions is one the operator discovers as a preflight
+	// surprise two runs later.
+	var stashed []string
+	for _, r := range sum.Rounds {
+		stashed = append(stashed, r.StashedRejects...)
+	}
+	if len(stashed) > 0 {
+		out = append(out, [2]string{"stashed", fmt.Sprintf(
+			"%d rejected session(s) left edits: %s · recover with `git stash pop`",
+			len(stashed), strings.Join(stashed, " "))})
+	}
 	exit := fmt.Sprintf("%s (exit %d)", sum.Termination, model.ExitCode(sum.Termination))
 	if sum.Error != "" {
 		exit += " · " + firstLine(sum.Error)

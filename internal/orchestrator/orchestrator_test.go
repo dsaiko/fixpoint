@@ -843,46 +843,97 @@ func TestRunFixedVerdictWithNoEditFails(t *testing.T) {
 	}
 }
 
-// An all-rejected verdict sitting on a dirty tree is a hard error: rejecting
-// every finding yet editing the repo is contradictory, and the changes must not
-// be left uncommitted under a "success" termination. The edits are stashed like
-// every other abnormal exit's, because leaving them in the tree would violate the
-// clean-tree invariant and block the next run -- while the error text claims they
-// were not left uncommitted.
-func TestRunAllRejectedWithEditFails(t *testing.T) {
+// A rejected verdict sitting on a dirty tree is not a contradiction to end the
+// run over: rejecting well often means editing -- the probe test that disproves a
+// finding's premise. The edits belong to no verdict, so they must not be
+// committed; they are stashed (recoverable, named by issue), the round carries
+// on, and with nothing else to fix the run ends as an ordinary all-rejected
+// round rather than an error.
+func TestRunRejectedWithEditsStashesAndContinues(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("bug")))
-	// Verdict "rejected" for every finding, yet the coder dirties the tree.
+	// Verdict "rejected", yet the coder dirties the tree.
 	f.editRepoOn(2)
 	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "by design"}))
 
 	sum, err := f.orchestrator().Run(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "rejected every finding yet modified") {
-		t.Fatalf("Run() err = %v, want rejected-yet-modified error", err)
+	if err != nil {
+		t.Fatalf("Run() err = %v, want nil (a rejected session's edits are stashed, not fatal)", err)
 	}
-	if sum.Termination != model.TermError {
-		t.Errorf("termination = %q, want error", sum.Termination)
+	if sum.Termination != model.TermAllRejected {
+		t.Errorf("termination = %q, want all-rejected", sum.Termination)
 	}
 	if got := f.commitCount(); got != 1 {
-		t.Errorf("repo has %d commits, want 1 (a rejected round must not commit)", got)
+		t.Errorf("repo has %d commits, want 1 (a rejected session must not commit)", got)
 	}
-	if stashes := gitRun(t, f.repo, "stash", "list"); !strings.Contains(stashes, "rejected verdicts with edits") {
-		t.Errorf("the rejected round's edits must be stashed for recovery, got stash list: %q", stashes)
+	if stashes := gitRun(t, f.repo, "stash", "list"); !strings.Contains(stashes, "rejected i1") {
+		t.Errorf("the rejected session's edits must be stashed for recovery, named by issue, got stash list: %q", stashes)
 	}
 	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Errorf("working tree left dirty, so the next run's clean-tree check would refuse to start: %q", status)
 	}
-	if d := f.discarded(model.DiscardRejectedWithEdits); !d.Stashed || !strings.Contains(d.Error, "rejected every finding") {
-		t.Errorf("round_discarded = %+v, want the stash recorded and the contradiction named", d)
+	if d := f.sessionDiscarded(model.DiscardRejectedWithEdits); !d.Stashed || d.Issue != "i1" {
+		t.Errorf("session_discarded = %+v, want the stash recorded and the issue named", d)
+	}
+	if got := sum.Rounds[0].StashedRejects; len(got) != 1 || got[0] != "i1" {
+		t.Errorf("StashedRejects = %v, want [i1] so the summary can surface the stash", got)
 	}
 }
 
-// When the all-rejected round's edits cannot even be stashed, the tree stays
-// dirty -- and the run must SAY so, in the error and in the journal, rather than
-// reporting the tidy "stashed, clean tree restored" outcome. The next run's
-// clean-tree check will refuse to start, so the operator has to be told which
-// edits are sitting there and why. An index.lock fails the stash.
-func TestRunAllRejectedWithEditStashFails(t *testing.T) {
+// A session that rejects its issue but edits the tree must not cost the round its
+// remaining issues: the edits are stashed, the next session runs, and its fix
+// lands. This is the shape of the guard's first real trip -- the coder disproved
+// a finding with a probe test, and the old round-fatal response ended the run
+// with the rest of the round's queue unheard.
+func TestRunRejectedSessionEditsDoNotEndTheRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t,
+		aFinding("bug one"),
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "other.go", Line: 7, Title: "bug two"}))
+	// The session for i1 rejects yet edits; the session for i2 fixes.
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "premise false"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "done"}))
+	// Round 2 reviews clean over the committed fix.
+	f.respond(4, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want nil", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Errorf("termination = %q, want converged (the fix landed and round 2 was clean)", sum.Termination)
+	}
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + the i2 fix)", got)
+	}
+	rec := sum.Rounds[0]
+	if rec.Fixed != 1 || rec.Rejected != 1 {
+		t.Errorf("round 1 fixed/rejected = %d/%d, want 1/1", rec.Fixed, rec.Rejected)
+	}
+	if len(rec.StashedRejects) != 1 || rec.StashedRejects[0] != "i1" {
+		t.Errorf("StashedRejects = %v, want [i1]", rec.StashedRejects)
+	}
+	// The stash holds ONLY the rejected session's edits; the fix that followed was
+	// committed, not swept into it.
+	if stash := gitRun(t, f.repo, "stash", "show", "-p", "stash@{0}"); !strings.Contains(stash, "fix 2") || strings.Contains(stash, "fix 3") {
+		t.Errorf("stash must hold the rejected session's edits and nothing later, got:\n%s", stash)
+	}
+	if head := gitRun(t, f.repo, "show", "HEAD"); !strings.Contains(head, "fix 3") {
+		t.Errorf("HEAD must carry the i2 fix, got:\n%s", head)
+	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("working tree left dirty: %q", status)
+	}
+}
+
+// When the rejected session's edits cannot even be stashed, the tree stays
+// dirty -- and the run must stop and SAY so, in the error and in the journal,
+// rather than carrying on: the next session's verdict reconciliation would blame
+// this session's edits on its own coder, and the next run's clean-tree check will
+// refuse to start. An index.lock fails the stash.
+func TestRunRejectedWithEditStashFails(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	// The coder dirties the tree and plants an index.lock, so the reconciling
@@ -895,7 +946,7 @@ func TestRunAllRejectedWithEditStashFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("Run() err = nil, want combined rejected-with-edits + reconcile failure")
 	}
-	for _, want := range []string{"rejected every finding yet modified", "could not be reconciled", "left dirty"} {
+	for _, want := range []string{"rejected i1 yet modified", "could not be reconciled", "left dirty"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("Run() err = %v, want it to contain %q", err, want)
 		}
@@ -903,8 +954,8 @@ func TestRunAllRejectedWithEditStashFails(t *testing.T) {
 	if sum.Termination != model.TermError {
 		t.Errorf("termination = %q, want error", sum.Termination)
 	}
-	if d := f.discarded(model.DiscardRejectedWithEdits); d.Stashed || !strings.Contains(d.Error, "tree left dirty") {
-		t.Errorf("round_discarded = %+v, want stashed=false and the dirty tree named", d)
+	if d := f.sessionDiscarded(model.DiscardRejectedWithEdits); d.Stashed || !strings.Contains(d.Error, "tree left dirty") {
+		t.Errorf("session_discarded = %+v, want stashed=false and the dirty tree named", d)
 	}
 	// Remove the lock so git works again, then confirm the edits were left in place
 	// rather than lost by a botched reconcile.
@@ -3498,10 +3549,12 @@ func TestFinalRoundFailedCoderStashFails(t *testing.T) {
 }
 
 // The closing round's coder is the same write-capable agent as any other round's,
-// so it can reject everything after having edited files. Those edits are accounted
-// for by no verdict: leaving them would report a successful run over a dirty tree
-// and refuse the next run at preflight for dirt the operator never made.
-func TestFinalRoundStashesEditsLeftByAnAllRejectedCoder(t *testing.T) {
+// so it can reject its issue after having edited files -- often the probe work
+// that disproved it. Those edits are accounted for by no verdict, so they must not
+// be committed; but a session that did its job must not turn a converged run into
+// an error either. The edits are stashed, the tree comes back clean, and the
+// loop's own termination stands.
+func TestFinalRoundStashesEditsLeftByARejectingCoder(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.finalLens()
 	f.respond(1, reviewResponse(t)) // round 1: clean -> converged
@@ -3513,23 +3566,27 @@ func TestFinalRoundStashesEditsLeftByAnAllRejectedCoder(t *testing.T) {
 
 	before := f.commitCount()
 	sum, err := f.orchestrator().Run(t.Context())
-	if err == nil {
-		t.Fatal("Run() succeeded although the closing round left edits no verdict accounts for")
+	if err != nil {
+		t.Fatalf("Run() err = %v, want nil (a rejected session's edits are stashed, not fatal)", err)
 	}
 	if got := f.commitCount(); got != before {
-		t.Errorf("repo has %d commits, want %d: edits under an all-rejected verdict must not be committed", got, before)
+		t.Errorf("repo has %d commits, want %d: edits under a rejected verdict must not be committed", got, before)
 	}
 	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Errorf("working tree left dirty after the closing round: %q", status)
 	}
-	if stashes := gitRun(t, f.repo, "stash", "list"); !strings.Contains(stashes, "rejected verdicts with edits") {
+	if stashes := gitRun(t, f.repo, "stash", "list"); !strings.Contains(stashes, "rejected i1") {
 		t.Errorf("the closing round's edits must be stashed for recovery, got stash list: %q", stashes)
 	}
-	if d := f.discarded(model.DiscardRejectedWithEdits); !d.Stashed {
-		t.Errorf("round_discarded = %+v, want the stash recorded", d)
+	if d := f.sessionDiscarded(model.DiscardRejectedWithEdits); !d.Stashed || d.Issue != "i1" {
+		t.Errorf("session_discarded = %+v, want the stash recorded and the issue named", d)
 	}
-	if sum.Termination != model.TermError || sum.Error == "" {
-		t.Errorf("termination = %q, error = %q; want the failure recorded", sum.Termination, sum.Error)
+	if sum.Termination != model.TermConverged {
+		t.Errorf("termination = %q, want converged: the loop's outcome stands", sum.Termination)
+	}
+	final := sum.Rounds[len(sum.Rounds)-1]
+	if len(final.StashedRejects) != 1 || final.StashedRejects[0] != "i1" {
+		t.Errorf("closing round StashedRejects = %v, want [i1]", final.StashedRejects)
 	}
 }
 

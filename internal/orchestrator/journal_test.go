@@ -48,12 +48,24 @@ func (f *fixture) journal() []model.JournalEvent {
 // the only place "which stash is this and why" is answerable -- so every discard
 // site's own behavior test checks its record here, rather than one central test
 // re-staging four different failures.
-func (f *fixture) discarded(reason string) model.JournalRoundDiscarded {
+func (f *fixture) discarded(reason string) model.JournalDiscarded {
 	f.t.Helper()
-	var d model.JournalRoundDiscarded
+	var d model.JournalDiscarded
 	payload(f.t, f.journal(), model.EvRoundDiscarded, &d)
 	if d.Reason != reason {
 		f.t.Errorf("round_discarded reason = %q, want %q", d.Reason, reason)
+	}
+	return d
+}
+
+// sessionDiscarded is discarded at session scope: the record of one coder
+// session's edits being set aside while the round carried on.
+func (f *fixture) sessionDiscarded(reason string) model.JournalDiscarded {
+	f.t.Helper()
+	var d model.JournalDiscarded
+	payload(f.t, f.journal(), model.EvSessionDiscarded, &d)
+	if d.Reason != reason {
+		f.t.Errorf("session_discarded reason = %q, want %q", d.Reason, reason)
 	}
 	return d
 }
@@ -219,7 +231,7 @@ func TestRunJournalRecordsDiscardedRound(t *testing.T) {
 	}
 	events := f.journal()
 
-	var d model.JournalRoundDiscarded
+	var d model.JournalDiscarded
 	payload(t, events, model.EvRoundDiscarded, &d)
 	if d.Reason != model.DiscardVerifyFailed {
 		t.Errorf("discard reason = %q, want %q", d.Reason, model.DiscardVerifyFailed)

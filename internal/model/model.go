@@ -153,6 +153,11 @@ type RoundRecord struct {
 	ReviewErrors []string  `json:"review_errors,omitempty"`
 	Fixed        int       `json:"fixed"`
 	Rejected     int       `json:"rejected"`
+	// StashedRejects names the issues whose coder session rejected the finding yet
+	// left edits in the tree -- typically the probe work that disproved it. The
+	// edits belong to no verdict, so each session's were stashed and the round
+	// carried on; recorded here so the summary can say where that work went.
+	StashedRejects []string `json:"stashed_rejects,omitempty"`
 	// CommitSHA is the commit the round RESULTS in: the last of its per-fix commits,
 	// or the squash that replaced them. Commits holds every commit the round made,
 	// which is what the scoreboard counts -- under commit_policy: per_fix a round of
