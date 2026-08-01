@@ -150,6 +150,67 @@ func (c *Collector) Prepare(ctx context.Context) error {
 	return nil
 }
 
+// Scope reports, in one line, how much a run would review -- for --check, before
+// any agent is invoked and any money is spent.
+//
+// It exists because the base of a git-diff run is silent when it is wrong. A
+// base_ref that resolves to the wrong commit produces a perfectly valid run over
+// the wrong material, and until this existed the first sign of it was a round's
+// worth of findings about code you did not touch. The merge-base trap is exactly
+// that shape: `origin/main` and `origin/main...` both resolve, and only the diff
+// tells you which one you meant.
+//
+// It deliberately does NOT call Prepare: in pr mode Prepare runs `gh pr checkout`,
+// and a validation flag must not switch the operator's branch. That mode is
+// therefore reported as unknown rather than checked out to find out.
+//
+// The pathspec is the same one Collect uses, so the numbers describe what would
+// actually be reviewed rather than what git would print unfiltered -- an excluded
+// vendor tree must not inflate the estimate it is excluded from.
+func (c *Collector) Scope(ctx context.Context) (string, error) {
+	switch c.cfg.Mode {
+	case config.ModePR:
+		return fmt.Sprintf("pr #%d -- scope is known only after `gh pr checkout`, which --check does not run", c.cfg.PR), nil
+	case config.ModeGitDiff:
+		if c.cfg.BaseRef == "" {
+			return "unstaged working-tree changes (no base_ref; review-only)", nil
+		}
+		base, err := c.resolveBase(ctx, c.cfg.BaseRef)
+		if err != nil {
+			return "", err
+		}
+		// --no-ext-diff / --no-textconv for the same reason Collect passes them: a
+		// repo-controlled diff driver must not be executed by a validation step.
+		args := []string{"diff", "--shortstat", "--no-ext-diff", "--no-textconv", base, "--"}
+		args = append(args, c.collectPathspec()...)
+		stat, err := c.git(ctx, args...)
+		if err != nil {
+			return "", fmt.Errorf("measure diff against %s: %w: %s", shortSHA(base), err, stat)
+		}
+		if stat = strings.TrimSpace(stat); stat == "" {
+			stat = "no changes"
+		}
+		out := fmt.Sprintf("base_ref %q -> %s; %s", c.cfg.BaseRef, shortSHA(base), stat)
+		// Untracked files are part of the material too (Collect lists them), so an
+		// estimate that counted only the diff would understate a branch of new files.
+		lsArgs := []string{"ls-files", "--others", "--exclude-standard", "--"}
+		lsArgs = append(lsArgs, c.collectPathspec()...)
+		if untracked, err := c.git(ctx, lsArgs...); err == nil {
+			if n := len(strings.Fields(strings.TrimSpace(untracked))); n > 0 {
+				out += fmt.Sprintf(", plus %d untracked file(s)", n)
+			}
+		}
+		return out, nil
+	case config.ModeDirectory:
+		count, _, err := c.listFiles(ctx)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%d file(s) in scope", count), nil
+	}
+	return "", fmt.Errorf("unknown mode %q", c.cfg.Mode)
+}
+
 // Collect returns the material for one round.
 func (c *Collector) Collect(ctx context.Context) (string, error) {
 	switch c.cfg.Mode {

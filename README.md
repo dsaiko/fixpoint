@@ -89,6 +89,48 @@ What gets reviewed is controlled by `target.mode`:
 Fix rounds require `target.path` to be a git repository with a clean working
 tree at run start (in every mode); `review_only` runs anywhere.
 
+### Choosing a base in git-diff mode
+
+`base_ref` is handed straight to git, so anything git resolves works — in the
+config, or per run with `-base-ref`:
+
+| `base_ref` | What gets reviewed |
+|---|---|
+| `@{upstream}...` | This branch against the branch it tracks. The `fix-branch` default. |
+| `origin/HEAD...` | This branch against the remote's default branch — no upstream needed and no branch name hard-coded, so it is the best generic choice. Needs the local ref, which `git remote set-head origin -a` creates. |
+| `origin/develop...` | An explicitly named trunk. |
+| `@{push}...` | Triangular workflows, where you push somewhere other than you fetch from. |
+| `HEAD~3` | The last three commits. |
+| `v1.4.0` | Everything since a release tag. |
+| `ORIG_HEAD` | Whatever the last rebase, merge, or reset moved past. |
+| `HEAD@{yesterday}` | What you have done since yesterday. Read from the reflog, so it is per-clone and approximate. |
+
+**When the `...` matters.** Only when the base can hold commits your HEAD does
+not. For a **branch name it is essential** — without it you diff against that
+branch's tip, and every commit it has that you lack shows up *reversed*, so the
+panel spends a round reviewing someone else's work as deletions you made. With
+two machines pushing to one repository that is hours, not months. For anything
+already behind you — `HEAD~3`, a merged tag, a SHA on your own history —
+`merge-base(X, HEAD)` is just `X`, so the dots are a harmless no-op.
+
+Short version: **a branch name takes the dots; anything already in your history
+does not.**
+
+Getting this wrong is silent — both spellings resolve, and only the diff says
+which one you meant — so `--check` prints the commit the base resolved to and
+the size of the diff it selects, before any agent runs:
+
+```
+$ fixpoint fix-branch --check --trusted-target
+scope: base_ref "@{upstream}..." -> d122ea0dd503; 9 files changed, 313 insertions(+), 12 deletions(-)
+configuration OK: 5 review lens(es), coder claude-coder, strategy rotate
+```
+
+A base that resolves to nothing fails there rather than after the first round
+has been paid for. `--check` reports scope in `directory` mode too (`77 file(s)
+in scope`); in `pr` mode it cannot, because finding out would mean running
+`gh pr checkout` and switching your branch.
+
 `target.exclude` and the credential patterns fixpoint enforces on top of it apply
 in **every** mode: in `git-diff` and `pr` they become git exclude pathspecs, so an
 excluded file never contributes its diff or its name to the collected material.
@@ -441,7 +483,7 @@ Or directly:
 | `-base-ref ref` | Override `target.base_ref` in git-diff mode; a trailing `...` means the merge base with HEAD. For `fix-branch` on a branch with no upstream: `-base-ref 'origin/main...'`. |
 | `-trusted-target` | Assert a directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without it). |
 | `-allow-untrusted-fix` | Permit fix rounds in `pr` mode (PR content is untrusted; see Security). |
-| `-check` | Validate the configuration and exit. |
+| `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](#choosing-a-base-in-git-diff-mode). |
 | `-check-live` | Validate, ping every agent, and exit. |
 
 Exit codes: `0` converged or review-only completed, `2` hit `max_iterations`

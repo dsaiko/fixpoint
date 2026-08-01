@@ -1722,6 +1722,14 @@ func pingTimeoutFor(a config.Agent) config.Duration {
 	return a.Timeout
 }
 
+// Scope reports how much material a run would review, for --check. It goes
+// through the orchestrator's own collector rather than a fresh one so the
+// estimate honors the same exclusions the run will apply -- including the logs
+// directory, which only the orchestrator knows the location of.
+func (o *Orchestrator) Scope(ctx context.Context) (string, error) {
+	return o.collector.Scope(ctx)
+}
+
 // Ping invokes every distinct agent this run will use with a trivial prompt,
 // in parallel, and returns an error naming every agent that failed. Success is
 // a zero exit with non-empty stdout (models decorate output; content is not

@@ -128,14 +128,25 @@ Flags:
 		logf("startup validation: %v", err)
 		return 1
 	}
+	ctx, stop := installSignals(logf)
+	defer stop()
+
 	if *check {
+		// The scope line is the point of running --check against a real target: a
+		// base_ref that resolves to the wrong commit is a VALID configuration, so
+		// validation alone cannot catch it and the run's first round would spend real
+		// money reviewing the wrong diff. A base that does not resolve at all fails
+		// here rather than at round 1.
+		scope, err := o.Scope(ctx)
+		if err != nil {
+			logf("target: %v", err)
+			return 1
+		}
+		logf("scope: %s", scope)
 		logf("configuration OK: %d review lens(es), coder %s, strategy %s",
 			len(cfg.Roles.Review.Prompts), cfg.Roles.Coder.Agent, cfg.Roles.Review.Strategy)
 		return 0
 	}
-
-	ctx, stop := installSignals(logf)
-	defer stop()
 
 	if *checkLive {
 		logf("static validation OK; pinging agents...")

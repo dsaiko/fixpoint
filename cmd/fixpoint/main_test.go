@@ -158,6 +158,50 @@ func TestRunCheck(t *testing.T) {
 	if !strings.Contains(buf.String(), "configuration OK") {
 		t.Errorf("stderr missing confirmation:\n%s", buf.String())
 	}
+	// The scope line is why --check is worth running against a real target: it
+	// answers "how much am I about to pay to review" before any agent is invoked.
+	if !strings.Contains(buf.String(), "scope:") || !strings.Contains(buf.String(), "file(s) in scope") {
+		t.Errorf("stderr missing the scope estimate:\n%s", buf.String())
+	}
+}
+
+// A base_ref that resolves to the WRONG commit is a valid configuration, so
+// validation alone cannot catch it -- the run would simply review the wrong diff
+// and bill for it. --check therefore prints the commit the base resolved to and
+// the size of the diff it selects, and fails outright when it resolves to nothing.
+func TestRunCheckReportsGitDiffScope(t *testing.T) {
+	f := newFixture(t)
+	// GitRepo commits once; HEAD~1 needs a second commit to point at.
+	if err := os.WriteFile(filepath.Join(f.repo, "second.go"), []byte("package main\n\nfunc second() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testfixture.GitRun(t, f.repo, "add", "-A")
+	testfixture.GitRun(t, f.repo, "commit", "-qm", "second")
+	cfg := f.configFile("git-diff", "  base_ref: HEAD~1\n", "")
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", cfg, "-check", "-trusted-target"}, &buf, &buf); got != 0 {
+		t.Fatalf("run(-check) = %d, want 0; stderr:\n%s", got, buf.String())
+	}
+	for _, want := range []string{"scope:", `base_ref "HEAD~1"`, "changed", "insertions(+)"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("stderr missing %q:\n%s", want, buf.String())
+		}
+	}
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0 (-check must not run agents)", got)
+	}
+
+	// An unresolvable base fails here rather than at round 1, after the first
+	// review has already been paid for.
+	buf.Reset()
+	bad := f.configFile("git-diff", "  base_ref: no-such-ref...\n", "")
+	if got := run([]string{"-config", bad, "-check", "-trusted-target"}, &buf, &buf); got != 1 {
+		t.Fatalf("run(-check) = %d, want 1 for an unresolvable base; stderr:\n%s", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), "merge base") {
+		t.Errorf("stderr does not name the merge-base failure:\n%s", buf.String())
+	}
 }
 
 func TestRunCheckLive(t *testing.T) {
