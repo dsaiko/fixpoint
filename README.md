@@ -148,7 +148,7 @@ Per-lens modifiers:
   test code. Asked once, at the end, by the whole panel, the question is answered
   about code that has stopped changing and nothing follows it to starve.
 
-  The closing round **repeats until it has nothing left to fix**, because
+  **Actionable final lenses repeat until nothing is left to fix**, because
   `max_findings_per_round` caps one *coder session* (17 issues blew the coder's 30m
   timeout; ~8 fit) and is not a budget for the phase. Inside the loop that
   distinction doesn't matter — the next round picks up whatever was deferred. Here
@@ -160,6 +160,11 @@ Per-lens modifiers:
   what makes the phase stop on its own. `loop.max_iterations` bounds it as a last
   resort, and if it runs out with issues still open the run says so loudly rather
   than dropping them silently.
+
+  **Advisory final lenses run exactly once, after that** — they're reports, and a
+  report should describe the code that actually shipped, which isn't known until the
+  fixing stops. They never share a round with the fix passes, so a three-pass
+  closing round still produces one design report, not three.
 
   It runs after **every** normal termination — converged, all-rejected, and
   max-iterations alike — since the loop is done editing in all three, but not after

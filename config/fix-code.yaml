@@ -52,10 +52,11 @@ roles:
       # advisory + final + PINNED, which is the right shape for a report:
       #   - final, not recurring -- an advisory report nobody acts on mid-run is
       #     paid for per round and read never. One report, on the code that actually
-      #     shipped. (This also replaces `once: true`, whose report described the
-      #     architecture as it was BEFORE the run; the last run added ~3000 lines,
-      #     so by the end it described code that no longer existed. Same one
-      #     session, more relevant subject.)
+      #     shipped: the advisory half of the closing round runs ONCE, after the fix
+      #     passes above have stopped changing things. (This also replaces `once:
+      #     true`, whose report described the architecture as it was BEFORE the run;
+      #     the last run added ~3000 lines, so by the end it described code that no
+      #     longer existed. Same one session, more relevant subject.)
       #   - pinned, not fanned out -- an unpinned final lens runs on every agent,
       #     which for a human-read report means four overlapping documents to read
       #     and corroboration that buys nothing, since nothing gets scheduled.

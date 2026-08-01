@@ -469,3 +469,85 @@ func TestFinalLensPinnedRunsOnOneAgentOnly(t *testing.T) {
 		t.Errorf("closing assignments = %+v, want only the pinned mock3 despite a 3-agent pool", asgs)
 	}
 }
+
+// A mixed closing panel is what the shipped fix-code uses: review-tests actionable
+// and unpinned, maintainability/design advisory and pinned. The actionable half
+// drives the repeat; the advisory half is a REPORT and must run exactly once, last,
+// over the tree as it finally stands. Running it per pass would emit one report per
+// pass -- the per-round waste `final` exists to remove, back inside the closing round.
+func TestFinalPhaseRunsAdvisoryReportOnceAfterTheFixPasses(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	prompt := f.cfg.Roles.Review.Prompts[0].Prompt
+	for _, n := range []string{"mock2", "mock3"} {
+		f.cfg.Agents[n] = f.cfg.Agents["mock"]
+	}
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts,
+		config.ReviewLens{Agent: "mock2", Prompt: prompt, Final: true},                 // actionable
+		config.ReviewLens{Agent: "mock3", Prompt: prompt, Final: true, Advisory: true}, // the report
+	)
+	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged
+
+	gapA := model.ReviewFinding{Category: "tests", Severity: "high", File: "a.go", Line: 10, Title: "a has no test"}
+	gapB := model.ReviewFinding{Category: "tests", Severity: "low", File: "b.go", Line: 20, Title: "b has no test"}
+	// Two fix passes, forced by a cap of one.
+	f.respond(2, reviewResponse(t, gapA, gapB))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "test for a"}))
+	f.respond(4, reviewResponse(t, gapB))
+	f.editRepoOn(5)
+	f.respond(5, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "test for b"}))
+	f.respond(6, reviewResponse(t)) // fix pass 3: clean -> fix passes end
+	// Invocation 7 is the report. If the advisory lens had run on every pass it would
+	// have consumed earlier slots and thrown the whole sequence out.
+	f.respond(7, reviewResponse(t, model.ReviewFinding{
+		Category: "maintainability", Severity: "low", File: "c.go", Line: 5, Title: "smelly helper",
+	}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Count how many closing rounds each half appeared in.
+	fixPasses, reportPasses := 0, 0
+	for _, r := range sum.Rounds {
+		if !r.Final {
+			continue
+		}
+		for _, a := range r.Assignments {
+			switch a.Agent {
+			case "mock2":
+				fixPasses++
+			case "mock3":
+				reportPasses++
+			}
+		}
+	}
+	if reportPasses != 1 {
+		t.Errorf("the advisory lens ran in %d closing round(s), want exactly 1: a report per pass is the waste `final` removes", reportPasses)
+	}
+	if fixPasses < 2 {
+		t.Errorf("actionable closing passes = %d, want at least 2 under a cap of 1", fixPasses)
+	}
+	// The two halves must never share a round: the report is taken after the fixing
+	// has stopped, so it describes the code that actually shipped.
+	for _, r := range sum.Rounds {
+		var sawFix, sawReport bool
+		for _, a := range r.Assignments {
+			sawFix = sawFix || a.Agent == "mock2"
+			sawReport = sawReport || a.Agent == "mock3"
+		}
+		if sawFix && sawReport {
+			t.Errorf("round %d mixed the fix pass and the report; the report must come after the fixing stops", r.Round)
+		}
+	}
+	// The report is the LAST round, and it committed nothing.
+	last := sum.Rounds[len(sum.Rounds)-1]
+	if len(last.Assignments) != 1 || last.Assignments[0].Agent != "mock3" {
+		t.Errorf("last round = %+v, want the advisory report", last.Assignments)
+	}
+	if len(last.Advisory) != 1 || len(last.Findings) != 0 || last.CommitSHA != "" {
+		t.Errorf("report round advisory=%d findings=%d sha=%q, want 1/0/empty",
+			len(last.Advisory), len(last.Findings), last.CommitSHA)
+	}
+}

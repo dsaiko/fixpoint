@@ -422,24 +422,31 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	return o.runFinalPhase(ctx, sum)
 }
 
-// runFinalPhase runs the closing round for `final: true` lenses REPEATEDLY, until
-// it has nothing left to fix. See config.ReviewLens.Final for why such a lens waits
+// runFinalPhase runs the closing round for `final: true` lenses, after the loop has
+// stopped changing the code. See config.ReviewLens.Final for why such a lens waits
 // for the finished tree.
 //
-// It repeats because loop.max_findings_per_round is a limit on ONE CODER SESSION,
-// not a budget for a phase: it exists because ~17 issues blew the coder's 30m
-// timeout and ~8 fit. Inside the loop that distinction does not matter, since the
-// next round picks up whatever was deferred. Here there IS no next round, so a
-// single capped pass would report the excess and then drop it -- the closing round
-// would fix 8 of 26 coverage gaps and the run would read as complete. The way to
-// process more than one session's worth is more sessions, not a bigger session.
+// It has two parts, because the two kinds of final lens want opposite schedules.
 //
-// Re-reviewing between passes is not waste. Pass 2 sees the tests pass 1 wrote, so
-// it reports what is genuinely still missing rather than working from a list
-// computed before the code changed -- which is also what makes the phase terminate
-// on its own instead of needing to be counted out.
+// The ACTIONABLE lenses repeat until nothing is left to fix, because
+// loop.max_findings_per_round is a limit on ONE CODER SESSION, not a budget for a
+// phase: it exists because ~17 issues blew the coder's 30m timeout and ~8 fit.
+// Inside the loop that distinction does not matter, since the next round picks up
+// whatever was deferred. Here there IS no next round, so a single capped pass would
+// report the excess and then drop it -- the closing round would fix 8 of 26 coverage
+// gaps and the run would read as complete. Processing more than one session's worth
+// means more sessions, not a bigger session. Re-reviewing between passes is not
+// waste either: pass 2 sees the tests pass 1 wrote, so it reports what is genuinely
+// still missing rather than working from a list computed before the code changed --
+// which is also what makes the phase terminate on its own.
 //
-// It runs after every normal termination -- converged, all-rejected, and
+// The ADVISORY lenses then run exactly ONCE, last. They are reports, and a report
+// wants to describe the code that actually shipped -- which is only known once the
+// actionable half has stopped changing it. Running them per pass would emit one
+// maintainability and one design report for every pass, which is precisely the
+// per-round waste `final` exists to remove.
+//
+// The phase runs after every normal termination -- converged, all-rejected, and
 // max-iterations alike -- because in all three the loop is done editing. It does
 // NOT run after an error or an interruption: the tree is then in a state nobody
 // vouched for, and the honest move is to stop rather than start new work on it.
@@ -449,19 +456,38 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 // "converged" into "all-rejected" would report the loop's outcome as something it
 // was not.
 func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary) error {
-	asgs := o.finalAssignments()
+	actionable, advisory := o.finalAssignments()
 	// A canceled context means the operator asked to stop, so the closing phase is
 	// simply not started. Returning nil rather than the cancellation is deliberate:
 	// the LOOP already finished and recorded its own outcome, and skipping optional
 	// extra work must not rewrite a run that genuinely converged into a failure.
-	if len(asgs) == 0 || o.cfg.Loop.ReviewOnly || ctx.Err() != nil {
+	if len(actionable)+len(advisory) == 0 || o.cfg.Loop.ReviewOnly || ctx.Err() != nil {
 		return nil //nolint:nilerr // see above: skipping optional work is not a run failure
 	}
-	// Bounded by the same safety valve as the loop rather than a knob of its own:
-	// the phase stops on its own as soon as a pass finds nothing or fixes nothing,
-	// and this only catches a lens that never runs out of things to say.
+	if err := o.runFinalFixPasses(ctx, sum, actionable); err != nil {
+		return err
+	}
+	// The report goes last, over the tree as it finally stands. Skipped on a
+	// cancellation: the operator asked to stop, and a report is not worth a session.
+	if len(advisory) > 0 && ctx.Err() == nil {
+		if _, err := o.runFinalPass(ctx, sum, advisory, "report"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runFinalFixPasses repeats the actionable half of the closing round until it has
+// nothing left to fix, bounded by the same safety valve as the loop rather than a
+// knob of its own -- the phase stops on its own as soon as a pass finds nothing or
+// fixes nothing, so the bound only catches a lens that never runs out of things to
+// say.
+func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSummary, actionable []model.Assignment) error {
+	if len(actionable) == 0 {
+		return nil
+	}
 	for pass := 1; pass <= o.cfg.Loop.MaxIterations; pass++ {
-		done, err := o.runFinalPass(ctx, sum, asgs, pass)
+		done, err := o.runFinalPass(ctx, sum, actionable, fmt.Sprintf("pass %d", pass))
 		if err != nil {
 			return err
 		}
@@ -493,9 +519,13 @@ func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary) {
 // runFinalPass is one closing round: review the finished tree, hand the coder up to
 // one session's worth, verify, commit. done=true when nothing changed, so another
 // pass would ask the same question of the same code.
-func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, asgs []model.Assignment, pass int) (done bool, err error) {
+//
+// label names this pass in the log ("pass 2", "report"). An all-advisory pass has no
+// findings to fix by construction, so it returns done after the review and never
+// reaches the coder.
+func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, asgs []model.Assignment, label string) (done bool, err error) {
 	round := len(sum.Rounds) + 1
-	o.logf("=== closing round, pass %d (round %d): %d reviewer(s) over the finished tree ===", pass, round, len(asgs))
+	o.logf("=== closing round, %s (round %d): %d reviewer(s) over the finished tree ===", label, round, len(asgs))
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
@@ -525,8 +555,8 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 		Issues:       len(recP.Issues),
 		Corroborated: corroboratedCount(recP.Issues),
 	})
-	o.logf("closing pass %d: %d finding(s), %d advisory, %d reviewer error(s)",
-		pass, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
+	o.logf("closing %s: %d finding(s), %d advisory, %d reviewer error(s)",
+		label, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
 	// A failed closing reviewer is a failed closing pass, checked BEFORE an empty
 	// finding set is read as a completed final review. Nothing follows to catch what
 	// a dead reviewer never looked at, so "no findings" from a review that did not
@@ -556,7 +586,7 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	// a run whose loop genuinely converged into an error. Nothing for a later pass
 	// either: those verdicts stand, so the phase is done.
 	if len(activeIssues(recP)) == 0 {
-		o.logf("closing pass %d: all %d issue(s) were already decided in an earlier round; nothing left to fix", pass, len(recP.Issues))
+		o.logf("closing %s: all %d issue(s) were already decided in an earlier round; nothing left to fix", label, len(recP.Issues))
 		return true, nil
 	}
 	// allowSalvage=false: a failed coder's partial edits must not be committed here.
@@ -566,7 +596,7 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	if _, err := o.fix(ctx, recP, sum.Rounds[:len(sum.Rounds)-1], false); err != nil {
 		return false, err
 	}
-	o.logf("closing pass %d: coder fixed %d, rejected %d", pass, recP.Fixed, recP.Rejected)
+	o.logf("closing %s: coder fixed %d, rejected %d", label, recP.Fixed, recP.Rejected)
 	// Whether to commit is decided from the TREE, not from the Fixed count, exactly
 	// as finalizeFix decides it for a loop round. The closing round runs the same
 	// write-capable coder, so it can just as well reject everything after having
@@ -847,22 +877,38 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	return o.finalizeFix(ctx, recP, round, sum)
 }
 
-// finalAssignments builds the closing round: every final lens on EVERY agent it
-// may use. Breadth rather than rotation, because there is no next round to catch
-// what one model missed -- this is the last look at the finished code.
-func (o *Orchestrator) finalAssignments() []model.Assignment {
+// finalAssignments builds the closing round's work, SPLIT by whether the findings
+// get fixed, because the two halves want opposite schedules.
+//
+// The actionable half drives the repeat: its findings go to the coder, the cap
+// bounds each session, and the phase asks again until nothing is left. The advisory
+// half is a report, and a report wants to run exactly once, describing the code that
+// actually shipped -- which is only known once the actionable half has finished
+// changing it. Running both on every pass would print one maintainability and one
+// design report per pass, which is the per-round waste `final` exists to remove,
+// reintroduced inside the closing round.
+//
+// Each lens is assigned to EVERY agent it may use, so an unpinned lens gets the
+// whole panel: for the actionable half that is breadth on the last look, with no
+// next round to catch what one model missed. Pin a lens whose findings are only
+// reported -- four overlapping documents is not four times the insight.
+func (o *Orchestrator) finalAssignments() (actionable, advisory []model.Assignment) {
 	rv := o.cfg.Roles.Review
-	var out []model.Assignment
 	for _, l := range rv.Prompts {
 		if !l.Final {
 			continue
 		}
 		// A pinned final lens stays pinned: LensAgents returns just that agent.
 		for _, a := range rv.LensAgents(l) {
-			out = append(out, model.Assignment{Lens: l.Prompt, Agent: a, Advisory: l.Advisory, Pinned: l.Agent != ""})
+			asg := model.Assignment{Lens: l.Prompt, Agent: a, Advisory: l.Advisory, Pinned: l.Agent != ""}
+			if l.Advisory {
+				advisory = append(advisory, asg)
+			} else {
+				actionable = append(actionable, asg)
+			}
 		}
 	}
-	return out
+	return actionable, advisory
 }
 
 // deferOverCap enforces loop.max_findings_per_round over ISSUES, not raw
