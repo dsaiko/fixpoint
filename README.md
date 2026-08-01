@@ -132,9 +132,12 @@ Per-lens modifiers:
   lenses where automated fixing is too risky (design/architecture), and for any
   lens whose findings are open-ended enough that requiring them to reach zero
   would keep the loop from ever converging.
-- **`once: true`** — the lens runs in round 1 only. Pairs well with an
-  advisory design lens: one report per run instead of a full agent session
-  every round.
+- **`once: true`** — the lens runs in round 1 only: one report per run instead of
+  a session every round. Consider `final: true` instead — it costs the same single
+  session and reports on the code the run *produced* rather than the code it
+  started from, which for a lens nobody acts on mid-run is the only state that
+  matters. `once` earns its keep only when you specifically want the "before"
+  picture.
 - **`final: true`** — the lens is held out of the loop and runs once at the end,
   on **every** agent in the pool, in a closing round whose findings are fixed like
   any other. For a lens whose subject is the *finished* code. `review-tests` is the
@@ -152,6 +155,13 @@ Per-lens modifiers:
   an already-decided run. `final` and `once` are mutually exclusive, and a
   review-only run has no closing round (there is no coder), so a final lens simply
   runs in its single round.
+
+  **Pin a final lens whose findings are advisory.** Unpinned means the whole panel,
+  which is right when the findings get fixed — nothing follows to catch what one
+  model missed. For a report a human reads, it means four overlapping documents and
+  corroboration that buys nothing, since nothing gets scheduled. The shipped
+  `fix-code` uses both shapes: `review-tests` unpinned and fixed, `review-design`
+  and `review-maintainability` pinned and reported.
 
 ## Observations and issues
 

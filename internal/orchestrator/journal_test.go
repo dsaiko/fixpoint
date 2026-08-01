@@ -401,3 +401,71 @@ func TestRunSurvivesAJournalThatCannotBeWritten(t *testing.T) {
 		t.Errorf("journal warnings = %d, want exactly 1 for the whole run", warnings)
 	}
 }
+
+// An advisory final lens is the shape the shipped config uses for maintainability
+// and design: one report on the finished code, never handed to the coder. The
+// closing round must therefore run the lens, record its findings as advisory, and
+// then stop -- no coder invocation and no commit, because there is nothing to fix.
+func TestFinalAdvisoryLensReportsWithoutInvokingTheCoder(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.cfg.Agents["mock2"] = f.cfg.Agents["mock"]
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts, config.ReviewLens{
+		Agent:    "mock2",
+		Prompt:   f.cfg.Roles.Review.Prompts[0].Prompt,
+		Advisory: true,
+		Final:    true,
+	})
+	f.respond(1, reviewResponse(t))                     // loop round: clean
+	f.respond(2, reviewResponse(t, aFinding("smelly"))) // closing round: advisory
+	// No response 3: if the coder were invoked it would read a missing file and the
+	// round would fail, so a passing test proves it was not.
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Rounds) != 2 || !sum.Rounds[1].Final {
+		t.Fatalf("want a closing round, got %d round(s)", len(sum.Rounds))
+	}
+	last := sum.Rounds[1]
+	if len(last.Advisory) != 1 {
+		t.Errorf("closing round advisory = %d, want 1: the report is the deliverable", len(last.Advisory))
+	}
+	if len(last.Findings) != 0 {
+		t.Errorf("closing round findings = %d, want 0: an advisory lens never reaches the coder", len(last.Findings))
+	}
+	if last.Fixed != 0 || last.CommitSHA != "" {
+		t.Errorf("closing round fixed=%d commit=%q, want nothing committed", last.Fixed, last.CommitSHA)
+	}
+	if got := f.invocations(); got != 2 {
+		t.Errorf("agent invocations = %d, want 2 (one loop reviewer + one closing reviewer, no coder)", got)
+	}
+}
+
+// A pinned final lens must run on its own agent only. Unpinned means the whole
+// panel, which is right when the findings get fixed and wrong for a report -- four
+// overlapping documents to read, and corroboration that buys nothing.
+func TestFinalLensPinnedRunsOnOneAgentOnly(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.cfg.Roles.Review.Agents = []string{"mock", "mock2", "mock3"}
+	for _, n := range []string{"mock2", "mock3"} {
+		f.cfg.Agents[n] = f.cfg.Agents["mock"]
+	}
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts, config.ReviewLens{
+		Agent:    "mock3",
+		Prompt:   f.cfg.Roles.Review.Prompts[0].Prompt,
+		Advisory: true,
+		Final:    true,
+	})
+	f.respond(1, reviewResponse(t))
+	f.respond(2, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	asgs := sum.Rounds[len(sum.Rounds)-1].Assignments
+	if len(asgs) != 1 || asgs[0].Agent != "mock3" {
+		t.Errorf("closing assignments = %+v, want only the pinned mock3 despite a 3-agent pool", asgs)
+	}
+}

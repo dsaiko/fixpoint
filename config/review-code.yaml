@@ -19,12 +19,13 @@ roles:
       - review-bugs
       - review-security
       - review-concurrency
-      - { prompt: review-maintainability, advisory: true }
-      # final: true to match fix-code. A review-only run has no closing round (there
-      # is no coder to hand it to), so the lens simply runs in this one round -- which
-      # is what keeps this config a complete preview of its fix sibling.
+      # The same panel as fix-code, modifiers included -- see the reasoning there.
+      # A review-only run has no closing round (there is no coder to hand findings
+      # to), so a final lens simply runs in this one round, which is what keeps this
+      # config a complete preview of its fix sibling rather than a subset of it.
       - { prompt: review-tests, final: true }
-      - { agent: claude, prompt: review-design, advisory: true, once: true }
+      - { agent: claude, prompt: review-maintainability, advisory: true, final: true }
+      - { agent: claude, prompt: review-design, advisory: true, final: true }
 
 loop:
   review_only: true

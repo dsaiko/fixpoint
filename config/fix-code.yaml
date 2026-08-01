@@ -19,25 +19,43 @@ roles:
     strategy: rotate
     agents: [codex, claude, gemma4, glm]
     prompts:
+      # The LOOP hunts what has to reach zero for the run to converge.
       - review-bugs # correctness
       - review-security # security
       - review-concurrency # concurrency
-      # advisory: reported for a human, never handed to the coder, and excluded
-      # from the loop's termination condition -- so an open-ended lens cannot
-      # keep the run from ever converging.
-      - { prompt: review-maintainability, advisory: true }
-      # final: held out of the loop and run ONCE at the end, on every agent, with
-      # its findings fixed like any other. Coverage is a question about finished
-      # code: asked inside the loop it assessed work later rounds rewrote, so it
-      # demanded tests for intermediate states and re-reported the gap each time the
-      # code moved. In a five-round run that made it the largest producer (30 of 68
+
+      # The CLOSING ROUND assesses the finished code -- see `final: true` in the
+      # root README. Coverage is a question about code that has stopped changing:
+      # asked inside the loop it assessed work later rounds rewrote, so it demanded
+      # tests for intermediate states and re-reported the gap each time the code
+      # moved. In a five-round run that made it the largest producer (30 of 68
       # reports) and the largest waster (18 deferred), and 65% of everything the run
-      # wrote was test code. Asked once at the end, by the whole panel, it is
-      # bounded -- nothing follows it to starve.
+      # wrote was test code. Unpinned, so the whole panel takes the last look:
+      # nothing follows to catch what one model missed, and these findings are
+      # FIXED, so breadth is worth more than rotation.
       - { prompt: review-tests, final: true } # coverage of what the run changed
-      # once: round 1 only. Architecture barely changes between fix rounds, so
-      # this produces one report per run instead of paying a session every round.
-      - { agent: claude, prompt: review-design, advisory: true, once: true }
+
+      # advisory: reported for a human, never handed to the coder, and excluded from
+      # the termination condition. Both lenses below propose restructuring -- of the
+      # discard/stash paths that carry the fail-closed invariant, of shared git
+      # process setup, of the architecture itself. A coder refactor there can pass
+      # fmt/vet/test/lint and still be wrong in exactly the way that matters, because
+      # a dirty tree on an abnormal exit is not something the happy-path suite
+      # exercises. Adding tests is additive and safe to automate; rewriting recovery
+      # code is not. So: reported, for you to act on.
+      #
+      # advisory + final + PINNED, which is the right shape for a report:
+      #   - final, not recurring -- an advisory report nobody acts on mid-run is
+      #     paid for per round and read never. One report, on the code that actually
+      #     shipped. (This also replaces `once: true`, whose report described the
+      #     architecture as it was BEFORE the run; the last run added ~3000 lines,
+      #     so by the end it described code that no longer existed. Same one
+      #     session, more relevant subject.)
+      #   - pinned, not fanned out -- an unpinned final lens runs on every agent,
+      #     which for a human-read report means four overlapping documents to read
+      #     and corroboration that buys nothing, since nothing gets scheduled.
+      - { agent: claude, prompt: review-maintainability, advisory: true, final: true }
+      - { agent: claude, prompt: review-design, advisory: true, final: true }
 
 # The deterministic gate for THIS project. fixpoint runs these itself after the
 # coder and refuses to commit a round that fails them, so a fix that breaks the
