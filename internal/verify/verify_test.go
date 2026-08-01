@@ -60,6 +60,29 @@ func TestRunUnstartableCommandFails(t *testing.T) {
 	}
 }
 
+// Config validation rejects an empty run list, but a command that reaches
+// execution with no argv must fail that one check -- not panic and take the
+// whole pass, and the round with it, down.
+func TestRunEmptyArgvFailsWithoutPanicking(t *testing.T) {
+	rep := Run(t.Context(), cfg(time.Minute,
+		config.VerifyCommand{Name: "empty", Run: nil},
+		config.VerifyCommand{Name: "ok", Run: []string{"true"}},
+	), t.TempDir(), nil)
+
+	if len(rep.Results) != 2 {
+		t.Fatalf("got %d results, want 2: an empty argv must not stop later commands", len(rep.Results))
+	}
+	if rep.Results[0].Passed {
+		t.Error("a command with no argv must not be reported as passing")
+	}
+	if rep.Results[0].Err == "" {
+		t.Error("a command with no argv must record why it could not run")
+	}
+	if !rep.Results[1].Passed {
+		t.Error("the following command must still run")
+	}
+}
+
 // Optional commands are recorded but never gate the round.
 func TestOptionalCommandDoesNotBlock(t *testing.T) {
 	rep := Run(t.Context(), cfg(time.Minute,

@@ -149,6 +149,15 @@ func Run(ctx context.Context, cfg config.Verify, dir string, env []string) Repor
 func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, dir string, env []string) Result {
 	res := Result{Name: c.Name, Argv: c.Run, Optional: c.Optional}
 
+	// Config validation rejects an empty run list, so reaching here means the
+	// command was built some other way. Record it as a command that could not run
+	// rather than indexing c.Run[0] and taking the whole loop down with a panic:
+	// one misconfigured gate must fail loudly on its own, not kill the round.
+	if len(c.Run) == 0 {
+		res.Err = "verify command has no argv configured"
+		return res
+	}
+
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
