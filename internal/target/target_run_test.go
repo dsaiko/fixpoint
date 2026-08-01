@@ -61,6 +61,38 @@ func TestRunSeparatesStdoutFromStderr(t *testing.T) {
 	}
 }
 
+// A git/gh that exits SUCCESSFULLY after backgrounding a child leaves that child
+// running: cmd.Cancel only fires on cancellation. The child -- a credential
+// helper, a hook, one of gh's internal git calls -- is then free to mutate the
+// repository while the clean-tree check, verification, or the round commit runs.
+// run kills the whole process group on every exit path, like agent.Run.
+func TestRunKillsBackgroundedChildOnSuccess(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable to spawn a child process")
+	}
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "child-survived")
+	c := New(config.Target{Path: dir})
+	// The child's pipes go to /dev/null so it does not hold run's output pipes open:
+	// this is the success path, where the command is reported as done immediately
+	// and nothing else would ever reap the child.
+	out, err := c.run(t.Context(), "sh", "-c",
+		"( sleep 1; touch '"+sentinel+"' ) >/dev/null 2>&1 &\necho leader done\nexit 0")
+	if err != nil {
+		t.Fatalf("run() = %v, want success", err)
+	}
+	if !strings.Contains(out, "leader done") {
+		t.Errorf("run() = %q, want the leader's stdout", out)
+	}
+	// Well past the child's own delay: if it were still alive it would have run.
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("a backgrounded child survived a successful command and mutated the directory afterwards")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 // run honors context cancellation and kills the whole process group: a canceled
 // command with a backgrounded child (which inherits the stdout pipe) must return
 // promptly rather than blocking on the child until it exits ~60s later.

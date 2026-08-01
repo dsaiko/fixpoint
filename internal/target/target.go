@@ -305,25 +305,52 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	cmd.WaitDelay = 2 * time.Second
 	errBuf := agent.NewBoundedBuffer(maxRunOutput, agent.TruncationMarker(maxRunOutput))
 	cmd.Stderr = errBuf
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
 	desc := "git " + strings.Join(args, " ")
-	if err := cmd.Start(); err != nil {
+	// Our own pipe rather than cmd.StdoutPipe, whose read end only cmd.Wait can
+	// close -- and Wait cannot be called until the scan finishes. A descendant git
+	// left behind holding the write end would then block the scan for the whole
+	// gitOpTimeout. Owning both ends lets the waiter below unblock the scan as soon
+	// as the leader is gone, and lets the scan drop the pipe on any exit path.
+	pr, pw, err := os.Pipe()
+	if err != nil {
 		return fmt.Errorf("%s: %w", desc, err)
 	}
-	sc := bufio.NewScanner(stdout)
+	// Closing twice is harmless (os.File guards it); the defer covers the early
+	// returns, the explicit close below ends the scan.
+	defer func() { _ = pr.Close() }()
+	cmd.Stdout = pw
+	if err := cmd.Start(); err != nil {
+		_ = pw.Close()
+		return fmt.Errorf("%s: %w", desc, err)
+	}
+	// Drop the parent's write end: the child and its descendants now hold the only
+	// ones, so EOF on pr means every process that could still write is gone.
+	_ = pw.Close()
+	waited := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		// Own the whole subprocess lifecycle, not just the leader, exactly as
+		// agent.Run and verify.runOne do: cmd.Cancel fires only on cancellation, so
+		// a git that exits SUCCESSFULLY after spawning a child leaves it alive in our
+		// process group -- free to mutate the repository concurrently with a later
+		// clean-tree check or round commit, and, if it inherited stdout, to stall the
+		// scan below until the operation timeout. SIGKILL the group on every exit
+		// path; it is a no-op once the group is empty, which is the common case.
+		_ = agent.KillProcessGroup(cmd)
+		waited <- err
+	}()
+	sc := bufio.NewScanner(pr)
 	sc.Buffer(make([]byte, 0, 64<<10), maxGitPath)
 	sc.Split(scanNUL)
 	for sc.Scan() {
 		fn(sc.Text())
 	}
 	scanErr := sc.Err()
-	// Drain anything left before Wait: a scan that stopped early would otherwise
-	// leave git blocked on a full pipe until the WaitDelay kill.
-	_, _ = io.Copy(io.Discard, stdout)
-	werr := cmd.Wait()
+	// Stop reading on every exit path. A scan that stopped early would otherwise
+	// leave git blocked on a full pipe; closing the read end fails its next write
+	// instead, and the scan error below outranks the exit status that produces.
+	_ = pr.Close()
+	werr := <-waited
 	// A scan failure comes first: it means the listing was not read in full, which
 	// git's own exit status cannot tell us.
 	if scanErr != nil {
@@ -1135,6 +1162,15 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	cmd.Stderr = errBuf
 	cmd.Stdin = stdin
 	err := cmd.Run()
+	// Own the whole subprocess lifecycle, not just the leader, exactly as agent.Run
+	// and verify.runOne do. cmd.Cancel (KillProcessGroup) fires only on
+	// cancellation, so a git/gh that exits SUCCESSFULLY after spawning a child --
+	// a credential helper, a hook, one of gh's internal git calls -- leaves that
+	// child alive in our process group, free to mutate the repository concurrently
+	// with the clean-tree check, verification, or the round commit, or to leak past
+	// an aborted run. SIGKILL the whole group on every exit path; it is a no-op once
+	// the group is empty, which is the common case.
+	_ = agent.KillProcessGroup(cmd)
 	stdout := outBuf.String()
 	if err != nil {
 		return stdout, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(errBuf.String()))

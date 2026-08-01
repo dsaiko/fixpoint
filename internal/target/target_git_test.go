@@ -1730,9 +1730,9 @@ func TestCollectDirectoryOversizedEntryFails(t *testing.T) {
 	}
 }
 
-// gitScanNUL drains stdout and then Waits, so a canceled run must be terminated by
-// the Cancel hook rather than left to finish: listGitFiles is called with the run's
-// context and Ctrl-C has to reach it. Asserted on listGitFiles directly, because
+// gitScanNUL blocks on the listing until git's stdout reaches EOF, so a canceled
+// run must be terminated by the Cancel hook rather than left to finish:
+// listGitFiles is called with the run's context and Ctrl-C has to reach it. Asserted on listGitFiles directly, because
 // listFiles' work-tree probe is itself a git command and fails first under a
 // canceled context, so it would never reach the listing.
 func TestListGitFilesCanceledContextReturnsPromptly(t *testing.T) {
@@ -1752,7 +1752,70 @@ func TestListGitFilesCanceledContextReturnsPromptly(t *testing.T) {
 			t.Fatal("listGitFiles() = nil on a canceled context, want an error")
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("listGitFiles did not return on a canceled context; it hung on the drain-then-Wait sequence")
+		t.Fatal("listGitFiles did not return on a canceled context; the scan was not interrupted")
+	}
+}
+
+// A git that exits SUCCESSFULLY after backgrounding a child leaves that child
+// running: cmd.Cancel only fires on cancellation. The child is then free to mutate
+// the repository while the clean-tree check, verification, or the round commit
+// runs. gitScanNUL kills the whole process group on every exit path, like
+// agent.Run and verify.runOne.
+func TestCollectDirectoryKillsBackgroundedChildOnSuccess(t *testing.T) {
+	repo := gitRepo(t)
+	sentinel := filepath.Join(t.TempDir(), "child-survived")
+	// The child's pipes go to /dev/null so it does not hold the listing pipe open:
+	// this is the case where the scan ends cleanly and nothing else would reap it.
+	shimGit(t, "ls-files", "    ( sleep 1; touch '"+sentinel+"' ) >/dev/null 2>&1 &\n"+
+		"    printf 'main.go\\0'\n    exit 0")
+
+	material, err := New(config.Target{Mode: "directory", Path: repo}).Collect(t.Context())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if !strings.Contains(material, "main.go") {
+		t.Errorf("the listing should still be produced:\n%s", material)
+	}
+	// Well past the child's own delay: if it were still alive it would have run.
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("a backgrounded child survived a successful listing and mutated the directory afterwards")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+// The scan reads stdout to EOF, and a child that inherited the write end holds it
+// open after git itself exits. Nothing may make that wait unbounded: the whole
+// collection would otherwise stall until gitOpTimeout (ten minutes) even though
+// the listing is complete and git is gone.
+func TestCollectDirectoryChildHoldingStdoutDoesNotStallScan(t *testing.T) {
+	repo := gitRepo(t)
+	// The child inherits stdout and outlives the leader by a minute. Only its stderr
+	// is redirected: that stream is a copy-goroutine pipe, already bounded by
+	// WaitDelay, and holding it too would just report the collection as a WaitDelay
+	// expiry instead of exercising the stdout stall this test is about.
+	shimGit(t, "ls-files", "    printf 'main.go\\0'\n    sleep 60 2>/dev/null &\n    exit 0")
+
+	type result struct {
+		material string
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		material, err := New(config.Target{Mode: "directory", Path: repo}).Collect(t.Context())
+		done <- result{material, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("Collect: %v", got.err)
+		}
+		if !strings.Contains(got.material, "main.go") {
+			t.Errorf("the listing should still be produced:\n%s", got.material)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Collect hung on a descendant holding stdout after git exited; the scan is bounded only by gitOpTimeout")
 	}
 }
 
