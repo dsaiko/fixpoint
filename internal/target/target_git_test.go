@@ -1073,6 +1073,44 @@ func TestCommitPreservesStagedAdditionUnderExcludedPaths(t *testing.T) {
 	}
 }
 
+// A repository with no commits yet is a supported target (HeadSHA and SquashSince
+// both treat an unborn branch as a valid starting point), so the FIRST round commit
+// must land there with the default logs exclusion in play. `git reset HEAD` resets
+// to the empty tree on an unborn branch rather than failing -- which is also why an
+// excluded path staged before the run still has to be restored afterwards: there is
+// no HEAD version for the reset to leave behind.
+func TestCommitOnUnbornBranchWithExcludedPaths(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	git(t, dir, "config", "user.email", "test@example.com")
+	git(t, dir, "config", "user.name", "test")
+	git(t, dir, "config", "commit.gpgsign", "false")
+
+	writeFile(t, dir, "logs/new.log", "staged addition\n")
+	git(t, dir, "add", "logs/new.log")
+	stagedBlob := strings.Fields(git(t, dir, "ls-files", "--stage", "--", "logs/new.log"))[1]
+	writeFile(t, dir, "main.go", "package main\n") // the round's own work
+
+	c := New(config.Target{Path: dir})
+	sha, err := c.Commit(t.Context(), "fixpoint: round 1", "body", "logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha == "" {
+		t.Fatal("expected the repository's first commit to land")
+	}
+	shown := git(t, dir, "show", "--name-only", "--format=", "HEAD")
+	if !strings.Contains(shown, "main.go") {
+		t.Errorf("first commit does not contain main.go:\n%s", shown)
+	}
+	if strings.Contains(shown, "logs/new.log") {
+		t.Errorf("first commit carried an excluded path:\n%s", shown)
+	}
+	if entry := git(t, dir, "ls-files", "--stage", "--", "logs/new.log"); !strings.Contains(entry, stagedBlob) {
+		t.Errorf("index entry = %q, want the staged addition %s preserved", entry, stagedBlob)
+	}
+}
+
 func TestStashDirty(t *testing.T) {
 	repo := gitRepo(t)
 	c := New(config.Target{Path: repo})

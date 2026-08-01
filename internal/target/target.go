@@ -653,18 +653,22 @@ func (c *Collector) stagedExcluded(ctx context.Context, exclude []string) (strin
 	if len(exclude) == 0 {
 		return "", nil
 	}
-	// No HEAD yet (an unborn branch): the reset in Commit fails before any commit
-	// lands, so there is no round commit whose staging could destroy anything.
-	if !c.hasHEAD(ctx) {
-		return "", nil
-	}
 	specs := literalPathspec(exclude)
-	diff, err := c.git(ctx, append([]string{"diff-index", "--cached", "--name-only", "-z", "HEAD", "--"}, specs...)...)
-	if err != nil {
-		return "", fmt.Errorf("check for staged changes under the excluded path(s): %w: %s", err, diff)
-	}
-	if strings.Trim(diff, "\x00") == "" {
-		return "", nil
+	// With a HEAD, the reset in Commit puts each excluded entry back to its HEAD
+	// version, so only an index that DIFFERS from HEAD there has anything to
+	// preserve. On an unborn branch `reset HEAD` resets to the EMPTY TREE (git
+	// treats a literal "HEAD" that does not resolve that way), which drops every
+	// excluded entry outright -- so there the whole index under the exclusion is
+	// at stake and the diff-index shortcut, which needs a HEAD to run at all,
+	// does not apply.
+	if c.hasHEAD(ctx) {
+		diff, err := c.git(ctx, append([]string{"diff-index", "--cached", "--name-only", "-z", "HEAD", "--"}, specs...)...)
+		if err != nil {
+			return "", fmt.Errorf("check for staged changes under the excluded path(s): %w: %s", err, diff)
+		}
+		if strings.Trim(diff, "\x00") == "" {
+			return "", nil
+		}
 	}
 	out, err := c.git(ctx, append([]string{"ls-files", "--stage", "-z", "--"}, specs...)...)
 	if err != nil {
