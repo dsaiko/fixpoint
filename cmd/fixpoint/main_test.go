@@ -433,6 +433,65 @@ func TestNotifySignalsStopCancels(t *testing.T) {
 	}
 }
 
+// run() tears the handler down as soon as o.Run returns and still defers the same
+// stop func, so stop must be idempotent: a second close(done) inside it would
+// panic and take the process down after a run that had already succeeded.
+func TestNotifySignalsStopIsIdempotent(t *testing.T) {
+	ctx, stop := notifySignals(func(string, ...any) {})
+	stop()
+	stop()
+	if ctx.Err() == nil {
+		t.Error("stop() should cancel the returned context")
+	}
+}
+
+// The post-run window: once o.Run has returned there is no step to stop and no
+// tree to reconcile, so the handler must already be gone while the scoreboard and
+// the closing log lines print -- otherwise an interrupt there announces a pause
+// that never happens, and a second one force-quits a run that already succeeded
+// with exit 1. The assertion has to run inside the window, so it rides the logRaw
+// wrapper (the scoreboard is the first thing printed after the run returns) and
+// reads a stop() flag recorded through the installSignals seam.
+func TestRunTearsDownSignalHandlerBeforeScoreboard(t *testing.T) {
+	f := newFixture(t)
+	f.respond(1, reviewResponse(t))
+
+	var stopped, sawScoreboard, stillLive bool
+	origInstall := installSignals
+	installSignals = func(logf func(string, ...any)) (context.Context, func()) {
+		ctx, stop := origInstall(logf)
+		return ctx, func() {
+			stop()
+			stopped = true
+		}
+	}
+	origLogger := newRunLogger
+	newRunLogger = func(stderr io.Writer) (func(string, ...any), func(string)) {
+		logf, logRaw := origLogger(stderr)
+		return logf, func(s string) {
+			if !sawScoreboard {
+				sawScoreboard, stillLive = true, !stopped
+			}
+			logRaw(s)
+		}
+	}
+	t.Cleanup(func() {
+		installSignals, newRunLogger = origInstall, origLogger
+	})
+
+	var buf bytes.Buffer
+	cfg := f.configFile("directory", "", "  review_only: true")
+	if got := run([]string{"-config", cfg}, &buf, &buf); got != 0 {
+		t.Fatalf("run() = %d, want 0; stderr:\n%s", got, buf.String())
+	}
+	if !sawScoreboard {
+		t.Fatal("the scoreboard never went through the wrapped writer, so the post-run window was never observed")
+	}
+	if stillLive {
+		t.Error("the interrupt handler was still installed while the scoreboard printed; a signal there would be mistaken for an in-run interrupt")
+	}
+}
+
 func TestRunReviewerFailureExits1(t *testing.T) {
 	f := newFixture(t)
 	f.respond(1, "no review block") // reviewer contract violation

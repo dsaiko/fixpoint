@@ -132,7 +132,7 @@ Flags:
 		return 0
 	}
 
-	ctx, stop := notifySignals(logf)
+	ctx, stop := installSignals(logf)
 	defer stop()
 
 	if *checkLive {
@@ -146,6 +146,14 @@ Flags:
 	}
 
 	sum, err := o.Run(ctx)
+	// Tear the handler down the instant the run is over, not at return. Everything
+	// below is output; there is no step left to stop and no tree left to reconcile,
+	// so an interrupt arriving here is not an in-run pause -- and with the watch
+	// still live, the first would announce a pause that never happens and a second
+	// would force-quit a run that already succeeded. The deferred stop() above stays
+	// as the backstop for the early-return paths; stop is idempotent.
+	stop()
+
 	// The scoreboard prints even when the run failed: a partial run still spent
 	// tokens and may have committed rounds, and that is exactly when the operator
 	// needs to see what landed. It goes through logRaw rather than logf, which
@@ -235,6 +243,14 @@ func newLogger(stderr io.Writer) (logf func(string, ...any), logRaw func(string)
 // an in-process os.Exit would take the test binary with it.
 var forceQuit = func() { os.Exit(1) }
 
+// installSignals is the constructor run() uses for its interrupt handler. It is a
+// variable for the same reason newRunLogger is: whether the handler is still
+// installed while the end-of-run output prints is not observable from outside the
+// process -- the stdlib exposes no way to ask whether a signal has a handler, and
+// sending a real one to find out kills the test binary on exactly the path that
+// should pass -- so a test wraps this to watch stop() land before the scoreboard.
+var installSignals = notifySignals
+
 // notifySignals returns a context canceled by the first SIGINT/SIGTERM, and
 // keeps a SECOND one fatal. It replaces signal.NotifyContext, whose relay
 // goroutine cancels once and then RETURNS while its signal.Notify registration
@@ -247,7 +263,8 @@ var forceQuit = func() { os.Exit(1) }
 // is bounded only per git operation, several operations deep; on a large
 // repository, or if one of them wedges, the operator has asked to stop and must
 // still be able to ask again. The returned stop func unregisters the handler and
-// releases the goroutine.
+// releases the goroutine; it is idempotent, so the caller can tear the handler
+// down as soon as the run is over and still defer it as a backstop.
 func notifySignals(logf func(string, ...any)) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Buffered: signal delivery never blocks, and a second signal arriving while
@@ -260,16 +277,21 @@ func notifySignals(logf func(string, ...any)) (context.Context, func()) {
 		defer close(stopped)
 		watchSignals(ch, done, logf, cancel)
 	}()
+	// once, so the caller can both tear down at the end of the run and defer the
+	// same func: a second close(done) would panic.
+	var once sync.Once
 	return ctx, func() {
-		// The order is the whole point: stop delivery, release the goroutine, and wait
-		// for it to acknowledge before canceling. Canceling while the goroutine can
-		// still run leaves it racing the caller's normal exit -- with nothing to join
-		// on, a queued signal could force-quit the process out from under a run that
-		// had already succeeded.
-		signal.Stop(ch)
-		close(done)
-		<-stopped
-		cancel()
+		once.Do(func() {
+			// The order is the whole point: stop delivery, release the goroutine, and wait
+			// for it to acknowledge before canceling. Canceling while the goroutine can
+			// still run leaves it racing the caller's normal exit -- with nothing to join
+			// on, a queued signal could force-quit the process out from under a run that
+			// had already succeeded.
+			signal.Stop(ch)
+			close(done)
+			<-stopped
+			cancel()
+		})
 	}
 }
 
