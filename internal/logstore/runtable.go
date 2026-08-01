@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
-	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -164,11 +163,11 @@ func (st *runStats) absorbAttribution(r model.RoundRecord, get getFn) {
 			id = f.ID // ungrouped: still one unit of work
 		}
 		get(st.agents, &st.agentOrder, f.Agent).issues[id] = true
-		get(st.lenses, &st.lensOrder, config.LensName(f.Lens)).issues[id] = true
+		get(st.lenses, &st.lensOrder, f.Lens).issues[id] = true
 	}
 	for _, f := range r.Advisory {
 		get(st.agents, &st.agentOrder, f.Agent).advisory++
-		get(st.lenses, &st.lensOrder, config.LensName(f.Lens)).advisory++
+		get(st.lenses, &st.lensOrder, f.Lens).advisory++
 	}
 	// A reviewer that failed contributed nothing this round but still cost a
 	// session, and its silence is why a clean round may not mean a clean tree.
@@ -194,7 +193,7 @@ func (st *runStats) absorbCosts(r model.RoundRecord, get getFn) {
 		a := get(st.agents, &st.agentOrder, s.Agent)
 		a.dur += d
 		a.usage.Add(s.Usage)
-		l := get(st.lenses, &st.lensOrder, config.LensName(s.Lens))
+		l := get(st.lenses, &st.lensOrder, s.Lens)
 		l.dur += d
 		l.usage.Add(s.Usage)
 	}

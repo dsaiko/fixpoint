@@ -155,6 +155,26 @@ func TestRunTableSeparatesAdvisoryFromIssues(t *testing.T) {
 	t.Errorf("advisory lens missing from the lens table:\n%s", got)
 }
 
+// Finding.Lens and StepStat.Lens are already lens NAMES: the orchestrator derived
+// them from the prompt path before writing the record. Deriving a name again here
+// would strip a second extension from any name that still contains a dot, so the
+// LENS table would show a row matching nothing in the logs -- and two lenses whose
+// names differ only past the dot would collapse into one row, misattributing their
+// issues, advisory notes, errors and cost to each other.
+func TestRunTableTakesLensNamesAsGivenWithoutRederivingThem(t *testing.T) {
+	sum := twoAgentRun()
+	r := &sum.Rounds[0]
+	r.Findings[0].Lens = "review-bugs.v2"
+	r.Advisory[0].Lens = "review-bugs.v3"
+	r.Steps[0].Lens = "review-bugs.v2"
+	got := RenderRunTable(sum)
+	for _, want := range []string{"review-bugs.v2", "review-bugs.v3"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("lens table lost a name segment, %q is missing:\n%s", want, got)
+		}
+	}
+}
+
 // A review-only run has no coder, and saying "0 fixed" would imply one ran and
 // achieved nothing.
 func TestRunTableSaysTheCoderNeverRanInAReviewOnlyRun(t *testing.T) {
