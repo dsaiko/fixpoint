@@ -1621,6 +1621,65 @@ func (o *Orchestrator) stashForReconcile(ctx context.Context, msg string) (bool,
 	return stashed, err
 }
 
+// discard is one abnormal exit's description: what happened, what to stash it
+// under, and what the caller wants surfaced.
+type discard struct {
+	round int
+	// reason is a model.Discard* constant.
+	reason string
+	// base is the error to return, already phrased for the operator.
+	base error
+	// stashMsg labels the stash entry the operator will find.
+	stashMsg string
+	// checks names the blocking gate commands, when the gate is why this happened.
+	checks []string
+	// recovered is logged (not returned) when the stash succeeded and the caller
+	// treats this exit as recoverable rather than fatal -- a failed commit whose
+	// error is surfaced on its own, for instance.
+	recovered string
+	// returnBase suppresses the "the edits were stashed" suffix, for a caller whose
+	// error is passed through verbatim (an interruption, a commit failure).
+	returnBase bool
+}
+
+// discardRound is the one path off an abnormal exit: stash the tree back to clean,
+// record what happened in the journal, and return the error to surface.
+//
+// Every caller used to do this itself, and the copies had diverged in a way that
+// only the journal showed. Two of them journaled BEFORE testing the stash error, so
+// their record said `stashed: false` and nothing more -- indistinguishable from
+// "there was nothing to stash", when in fact the stash had FAILED and the working
+// tree was left dirty. That is the single most important thing this record can say:
+// it is the one exit where fixpoint knowingly leaves unreconciled edits behind, the
+// run summary may never be written, and the next run refuses at preflight over a
+// dirty tree the operator never made. Six paths, one of which is right, is a bug
+// factory -- so there is now one.
+func (o *Orchestrator) discardRound(ctx context.Context, d discard) error {
+	stashed, serr := o.stashForReconcile(ctx, d.stashMsg)
+	ev := model.JournalRoundDiscarded{
+		Reason:  d.reason,
+		Stashed: stashed,
+		Checks:  d.checks,
+		Error:   d.base.Error(),
+	}
+	if serr != nil {
+		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", d.base, serr)
+	}
+	// Journaled on BOTH paths, and after the stash result is known: recording the
+	// outcome is the point, and a stash failure is the outcome worth recording most.
+	o.journal(model.EvRoundDiscarded, d.round, ev)
+	if serr != nil {
+		return fmt.Errorf("%w; and the modified working tree could not be reconciled (it is left dirty): %w", d.base, serr)
+	}
+	if stashed && d.recovered != "" {
+		o.logf("%s", d.recovered)
+	}
+	if stashed && !d.returnBase {
+		return fmt.Errorf("%w. The edits were stashed -- inspect or recover them with `git stash pop`", d.base)
+	}
+	return d.base
+}
+
 // fix hands the round's active findings to the coder and applies its
 // verdicts. When the coder fails mid-round (timeout, session limit, malformed
 // output) but already edited files, the partial work is committed and
@@ -1712,25 +1771,13 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 // successful termination. The edits are stashed instead (recoverable with
 // `git stash`) and the round fails, mirroring reconcileRejectedEdits.
 func (o *Orchestrator) discardFailedFix(ctx context.Context, round int, runErr error) error {
-	base := fmt.Errorf("closing round %d: coder failed: %w; no round follows to re-review partial work, so its edits were not committed", round, runErr)
-	stashMsg := fmt.Sprintf("fixpoint: closing round %d discarded (coder failed)", round)
-	stashed, serr := o.stashForReconcile(ctx, stashMsg)
-	ev := model.JournalRoundDiscarded{
-		Reason:  model.DiscardFinalCoderFailed,
-		Stashed: stashed,
-		Error:   base.Error(),
-	}
-	if serr != nil {
-		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", base, serr)
-		o.journal(model.EvRoundDiscarded, round, ev)
-		return fmt.Errorf("%w; and the modified working tree could not be reconciled (it is left dirty): %w", base, serr)
-	}
-	o.journal(model.EvRoundDiscarded, round, ev)
-	if stashed {
-		o.logf("closing round %d: coder failed (%v); its edits were stashed, clean tree restored", round, runErr)
-		return fmt.Errorf("%w. The edits were stashed -- inspect or recover them with `git stash pop`", base)
-	}
-	return base
+	return o.discardRound(ctx, discard{
+		round:     round,
+		reason:    model.DiscardFinalCoderFailed,
+		base:      fmt.Errorf("closing round %d: coder failed: %w; no round follows to re-review partial work, so its edits were not committed", round, runErr),
+		stashMsg:  fmt.Sprintf("fixpoint: closing round %d discarded (coder failed)", round),
+		recovered: fmt.Sprintf("closing round %d: coder failed (%v); its edits were stashed, clean tree restored", round, runErr),
+	})
 }
 
 // reconcileInterrupt stashes any working-tree edits left by a canceled coder
@@ -1740,23 +1787,22 @@ func (o *Orchestrator) discardFailedFix(ctx context.Context, round int, runErr e
 // already canceled; target.Collector still bounds each git subprocess with its
 // own operation deadline.
 func (o *Orchestrator) reconcileInterrupt(round int, cause error) error {
-	stashMsg := fmt.Sprintf("fixpoint: interrupted round %d", round)
-	stashed, serr := o.collector.StashDirty(context.Background(), stashMsg, o.gitExclude...)
-	ev := model.JournalRoundDiscarded{
-		Reason:  model.DiscardInterrupted,
-		Stashed: stashed,
-		Error:   cause.Error(),
-	}
-	if serr != nil {
-		// The tree is LEFT DIRTY. Recording that is the single most useful thing the
-		// journal can do here: it is the one exit where fixpoint knowingly leaves
-		// unreconciled edits behind, and the summary may not get written at all.
-		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", cause, serr)
-		o.journal(model.EvRoundDiscarded, round, ev)
-		return fmt.Errorf("coder round %d interrupted: %w; and the modified working tree could not be reconciled (it is left dirty): %w: %w", round, cause, serr, errInterruptedTreeDirty)
-	}
-	o.journal(model.EvRoundDiscarded, round, ev)
-	return cause
+	// An already-canceled context, because that is what this path IS. It is how
+	// stashForReconcile knows to run the stash on a fresh context (the run's would
+	// fail every git operation instantly, stashing nothing) and to mark a stash
+	// failure with errInterruptedTreeDirty, so recordRunError cannot soften a dirty
+	// tree into a clean interruption.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// returnBase: an interruption surfaces as the interruption. The operator asked
+	// to stop and does not need the stash narrated back at them.
+	return o.discardRound(ctx, discard{
+		round:      round,
+		reason:     model.DiscardInterrupted,
+		base:       fmt.Errorf("coder round %d interrupted: %w", round, cause),
+		stashMsg:   fmt.Sprintf("fixpoint: interrupted round %d", round),
+		returnBase: true,
+	})
 }
 
 // reconcileFailedCommit stashes the edits that Commit's `git add -A` staged
@@ -1765,23 +1811,16 @@ func (o *Orchestrator) reconcileInterrupt(round int, cause error) error {
 // next run. It mirrors salvagePartialFix's failed-commit handling: return the
 // original commit error to surface, or a combined error if the stash also fails.
 func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, commitErr error) error {
-	stashMsg := fmt.Sprintf("fixpoint: recovered edits from failed commit in round %d", round)
-	stashed, serr := o.stashForReconcile(ctx, stashMsg)
-	ev := model.JournalRoundDiscarded{
-		Reason:  model.DiscardCommitFailed,
-		Stashed: stashed,
-		Error:   commitErr.Error(),
-	}
-	if serr != nil {
-		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", commitErr, serr)
-		o.journal(model.EvRoundDiscarded, round, ev)
-		return fmt.Errorf("round %d commit failed: %w; and the modified working tree could not be reconciled (it is left dirty): %w", round, commitErr, serr)
-	}
-	o.journal(model.EvRoundDiscarded, round, ev)
-	if stashed {
-		o.logf("round %d: commit failed (%v); edits stashed (recover with `git stash`), clean tree restored", round, commitErr)
-	}
-	return commitErr
+	// returnBase: the commit error is what the caller surfaces, unchanged -- the
+	// stash is cleanup, not part of the diagnosis.
+	return o.discardRound(ctx, discard{
+		round:      round,
+		reason:     model.DiscardCommitFailed,
+		base:       fmt.Errorf("round %d commit failed: %w", round, commitErr),
+		stashMsg:   fmt.Sprintf("fixpoint: recovered edits from failed commit in round %d", round),
+		recovered:  fmt.Sprintf("round %d: commit failed (%v); edits stashed (recover with `git stash`), clean tree restored", round, commitErr),
+		returnBase: true,
+	})
 }
 
 // reconcileRejectedEdits handles a round whose coder rejected every issue yet
@@ -1791,25 +1830,13 @@ func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, com
 // that run until an operator cleans up by hand. So they are stashed through the
 // same path every other abnormal exit uses, and stay recoverable.
 func (o *Orchestrator) reconcileRejectedEdits(ctx context.Context, round int) error {
-	base := fmt.Errorf("round %d: coder rejected every finding yet modified the working tree; refusing to commit edits no verdict accounts for", round)
-	stashMsg := fmt.Sprintf("fixpoint: round %d discarded (rejected verdicts with edits)", round)
-	stashed, serr := o.stashForReconcile(ctx, stashMsg)
-	ev := model.JournalRoundDiscarded{
-		Reason:  model.DiscardRejectedWithEdits,
-		Stashed: stashed,
-		Error:   base.Error(),
-	}
-	if serr != nil {
-		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", base, serr)
-		o.journal(model.EvRoundDiscarded, round, ev)
-		return fmt.Errorf("%w; and the modified working tree could not be reconciled (it is left dirty): %w", base, serr)
-	}
-	o.journal(model.EvRoundDiscarded, round, ev)
-	if stashed {
-		o.logf("round %d: edits left by an all-rejected round were stashed; clean tree restored", round)
-		return fmt.Errorf("%w. The edits were stashed -- inspect or recover them with `git stash pop`", base)
-	}
-	return base
+	return o.discardRound(ctx, discard{
+		round:     round,
+		reason:    model.DiscardRejectedWithEdits,
+		base:      fmt.Errorf("round %d: coder rejected every finding yet modified the working tree; refusing to commit edits no verdict accounts for", round),
+		stashMsg:  fmt.Sprintf("fixpoint: round %d discarded (rejected verdicts with edits)", round),
+		recovered: fmt.Sprintf("round %d: edits left by an all-rejected round were stashed; clean tree restored", round),
+	})
 }
 
 // salvagePartialFix handles a coder failure (timeout, session limit,
@@ -2155,21 +2182,14 @@ func (o *Orchestrator) rejectUnverifiedRound(ctx context.Context, rec *model.Rou
 			failed = append(failed, r.Name)
 		}
 	}
-	stashed, serr := o.stashForReconcile(ctx, fmt.Sprintf("fixpoint: round %d discarded (verification failed)", rec.Round))
-	base := fmt.Errorf("round %d: verification failed after a correction attempt (%s); the round was not committed",
-		rec.Round, strings.Join(failed, ", "))
-	o.journal(model.EvRoundDiscarded, rec.Round, model.JournalRoundDiscarded{
-		Reason:  model.DiscardVerifyFailed,
-		Stashed: stashed,
-		Checks:  failed,
+	return o.discardRound(ctx, discard{
+		round:  rec.Round,
+		reason: model.DiscardVerifyFailed,
+		base: fmt.Errorf("round %d: verification failed after a correction attempt (%s); the round was not committed",
+			rec.Round, strings.Join(failed, ", ")),
+		stashMsg: fmt.Sprintf("fixpoint: round %d discarded (verification failed)", rec.Round),
+		checks:   failed,
 	})
-	if serr != nil {
-		return fmt.Errorf("%w; and the working tree could not be restored: %w", base, serr)
-	}
-	if stashed {
-		return fmt.Errorf("%w. The coder's edits were stashed -- recover them with `git stash pop`", base)
-	}
-	return base
 }
 
 // rejectUnverifiedSalvage handles the one case where a failed coder's partial work
@@ -2186,22 +2206,14 @@ func (o *Orchestrator) rejectUnverifiedSalvage(ctx context.Context, rec *model.R
 	for _, r := range blocking {
 		names = append(names, r.Name)
 	}
-	base := fmt.Errorf("coder round %d failed (%w) and the partial work it left does not pass verification (%s); it was not committed",
-		rec.Round, runErr, strings.Join(names, ", "))
-	stashed, serr := o.stashForReconcile(ctx, fmt.Sprintf("fixpoint: unverified partial work from failed round %d", rec.Round))
-	o.journal(model.EvRoundDiscarded, rec.Round, model.JournalRoundDiscarded{
-		Reason:  model.DiscardSalvageFailed,
-		Stashed: stashed,
-		Checks:  names,
-		Error:   runErr.Error(),
+	return o.discardRound(ctx, discard{
+		round:  rec.Round,
+		reason: model.DiscardSalvageFailed,
+		base: fmt.Errorf("coder round %d failed (%w) and the partial work it left does not pass verification (%s); it was not committed",
+			rec.Round, runErr, strings.Join(names, ", ")),
+		stashMsg: fmt.Sprintf("fixpoint: unverified partial work from failed round %d", rec.Round),
+		checks:   names,
 	})
-	if serr != nil {
-		return fmt.Errorf("%w; and the working tree could not be restored: %w", base, serr)
-	}
-	if stashed {
-		return fmt.Errorf("%w. The edits were stashed -- inspect or recover them with `git stash pop`", base)
-	}
-	return base
 }
 
 // fixVerification invokes the coder a second time with the verification failures
