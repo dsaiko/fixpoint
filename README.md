@@ -450,11 +450,27 @@ The `verify` commands are filtered too, from the other direction. They are argv 
 *target* can supply, so running them with fixpoint's whole environment would hand a
 `curl $ANTHROPIC_API_KEY` "build" command every credential the agents deliberately
 do not share. They inherit fixpoint's environment **minus** every variable that
-carries an agent credential: the names your agent files declare (`env.pass`,
-`env.set`) plus a built-in list (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-`CODEX_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`,
-and the three `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`
-names). That direction is a denylist rather than an allowlist on purpose: what a
+carries a credential — not just the agents'. That means the names your agent files
+declare (`env.pass`, `env.set`), a few exact names whose value is auth material
+(`KUBECONFIG`, `NETRC`, `DOCKER_AUTH_CONFIG`), and every variable whose name is
+credential-*shaped*: one whose underscore-separated words include `TOKEN`,
+`SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL(S)`, `API_KEY`,
+`ACCESS_KEY`, `SECRET_KEY`, `PRIVATE_KEY` or `SIGNING_KEY`. Matching the shape
+rather than a roster of vendor names is what covers `ANTHROPIC_API_KEY` and the
+release tokens of the CI job you ran fixpoint from (`NPM_TOKEN`,
+`DOCKER_PASSWORD`, `PYPI_TOKEN`, `SONAR_TOKEN`, `GPG_PASSPHRASE`,
+`GOOGLE_APPLICATION_CREDENTIALS`, ...) and your own `ACME_INTERNAL_TOKEN`, none of
+which a build check needs to see. Words match on underscore boundaries, so
+`GIT_AUTHOR_NAME` and `TOKENIZERS_PARALLELISM` are untouched.
+
+Set `FIXPOINT_STRIP_ENV` to name extra variables to remove, and `FIXPOINT_KEEP_ENV`
+to spare one the shape rule caught but a check really needs (both take a comma- or
+space-separated list). They are environment variables and deliberately not config
+keys: a bundle inside the target shadows yours, so a keep list in YAML would let
+the reviewed repository hand itself these secrets — which is also why
+`FIXPOINT_KEEP_ENV` cannot override an explicitly denied name.
+
+That direction is a denylist rather than an allowlist on purpose: what a
 build actually needs is language- and project-specific (`GOFLAGS`, `JAVA_HOME`,
 `CARGO_HOME`, `VIRTUAL_ENV`, ...), and an allowlist would silently break checks by
 dropping what it forgot.

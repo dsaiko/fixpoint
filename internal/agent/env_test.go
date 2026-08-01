@@ -183,3 +183,91 @@ func TestEnvWithoutCredentialsStripsAgentSecrets(t *testing.T) {
 		t.Error("EnvWithoutCredentials must never return nil: exec would inherit the full environment")
 	}
 }
+
+// verifyEnvNames runs the gate's filter and returns the names that survived.
+func verifyEnvNames(t *testing.T, agents map[string]config.Agent) map[string]bool {
+	t.Helper()
+	names := map[string]bool{}
+	for _, kv := range EnvWithoutCredentials(agents) {
+		k, _, _ := strings.Cut(kv, "=")
+		names[k] = true
+	}
+	return names
+}
+
+// The operator's own secrets are just as exfiltratable as the agents' -- a verify
+// command reads the whole environment it is handed -- and fixpoint cannot know the
+// name of every vendor's token. So the gate matches the SHAPE of a credential
+// name, and this test pins both halves of that: the names it must strip, and the
+// ordinary build variables it must not, because a rule that eats GIT_AUTHOR_NAME
+// or TOKENIZERS_PARALLELISM breaks checks for no security gain.
+func TestEnvWithoutCredentialsStripsCredentialShapedNames(t *testing.T) {
+	stripped := []string{
+		// The vendor keys the hardcoded roster used to name one by one.
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
+		"GOOGLE_API_KEY", "GEMINI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+		// CI/CD credentials nobody enumerated, plus a purely in-house one.
+		"NPM_TOKEN", "DOCKER_PASSWORD", "PYPI_TOKEN", "TWINE_PASSWORD", "SONAR_TOKEN",
+		"GPG_PASSPHRASE", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
+		"SSH_PRIVATE_KEY", "DB_PASSWORD", "ACME_INTERNAL_TOKEN", "SECRETS_FILE",
+		// Exact-match entries: credential material whose name says nothing.
+		"KUBECONFIG", "NETRC", "DOCKER_AUTH_CONFIG",
+	}
+	kept := []string{
+		"GIT_AUTHOR_NAME",        // AUTH is not a word boundary match
+		"TOKENIZERS_PARALLELISM", // nor is TOKEN inside TOKENIZERS
+		"COMPASS_URL",            // nor PASS inside COMPASS
+		"SSH_KEY_ALGORITHMS",     // bare KEY is not a credential word
+		"GOFLAGS", "JAVA_HOME",   // the ordinary build environment
+	}
+	for _, name := range append(append([]string(nil), stripped...), kept...) {
+		t.Setenv(name, "value")
+	}
+
+	names := verifyEnvNames(t, nil)
+	for _, gone := range stripped {
+		if names[gone] {
+			t.Errorf("%s survived; a credential-shaped variable must not reach a target-supplied verify command", gone)
+		}
+	}
+	for _, want := range kept {
+		if !names[want] {
+			t.Errorf("%s was stripped; the shape rule must match on underscore boundaries, not as a substring", want)
+		}
+	}
+}
+
+// FIXPOINT_STRIP_ENV / FIXPOINT_KEEP_ENV are the operator's adjustments, and they
+// are environment variables rather than config keys because a bundle inside the
+// target shadows the operator's -- so a keep list in YAML would let the reviewed
+// repository hand itself the very secrets this gate withholds. The asymmetry is
+// the point: keep can rescue a shape match, never an explicit denial.
+func TestEnvWithoutCredentialsOperatorLists(t *testing.T) {
+	t.Setenv("HOUSE_BLEND", "bespoke-secret-that-does-not-look-like-one")
+	t.Setenv("SPARE_ME_TOKEN", "the-check-really-needs-this")
+	t.Setenv("MY_HOUSE_TOKEN", "declared-by-an-agent")
+	t.Setenv("KUBECONFIG", "explicitly-denied")
+	t.Setenv(stripEnvVar, "HOUSE_BLEND, KUBECONFIG")
+	t.Setenv(keepEnvVar, "SPARE_ME_TOKEN MY_HOUSE_TOKEN KUBECONFIG")
+
+	names := verifyEnvNames(t, map[string]config.Agent{
+		"house": {Env: config.AgentEnv{Pass: []string{"MY_HOUSE_TOKEN"}}},
+	})
+
+	if !names["SPARE_ME_TOKEN"] {
+		t.Error("SPARE_ME_TOKEN was stripped; FIXPOINT_KEEP_ENV must spare a name the shape rule matched, else an over-broad match leaves a legitimate check unfixable")
+	}
+	for _, gone := range []string{"HOUSE_BLEND", "MY_HOUSE_TOKEN", "KUBECONFIG"} {
+		if names[gone] {
+			t.Errorf("%s survived; FIXPOINT_KEEP_ENV must not override an explicit denial (the strip list, an agent's env.pass, or the built-in names)", gone)
+		}
+	}
+	// fixpoint's own knobs describe the filter; the filtered process has no use
+	// for them.
+	for _, gone := range []string{stripEnvVar, keepEnvVar} {
+		if names[gone] {
+			t.Errorf("%s survived; it configures the filter and must not be passed through it", gone)
+		}
+	}
+}

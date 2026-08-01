@@ -2,8 +2,10 @@ package agent
 
 import (
 	"os"
+	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/dsaiko/fixpoint/internal/config"
 )
@@ -63,23 +65,86 @@ func BaselineEnvNames() []string {
 // agents' own declarations (env.pass / env.set) extend this at run time, so an
 // operator who authenticates an agent with some other variable is covered without
 // this list having to know about it.
+//
+// Names here are matched EXACTLY, and every entry is one the shape rule below
+// would not catch on its own: the products whose credential variable is not
+// spelled with a credential word (KUBECONFIG, NETRC, DOCKER_AUTH_CONFIG all name a
+// file or a blob of auth material). The vendor keys that do say TOKEN, SECRET or
+// API_KEY are deliberately NOT enumerated here -- credentialNameRE covers those,
+// and a hand-maintained roster of vendor names is exactly the list that is one
+// release behind whatever the operator actually has exported.
 var knownCredentialEnv = []string{
-	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-	"OPENAI_API_KEY", "CODEX_API_KEY",
-	"GOOGLE_API_KEY", "GEMINI_API_KEY",
-	"GITHUB_TOKEN", "GH_TOKEN",
-	"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+	"KUBECONFIG", "NETRC", "DOCKER_AUTH_CONFIG",
+}
+
+// credentialNameRE matches a variable name that is credential-SHAPED, whichever
+// product it belongs to: it is what makes the gate cover NPM_TOKEN,
+// DOCKER_PASSWORD, PYPI_TOKEN, TWINE_PASSWORD, SONAR_TOKEN, GPG_PASSPHRASE,
+// GOOGLE_APPLICATION_CREDENTIALS, AZURE_CLIENT_SECRET and an in-house
+// ACME_INTERNAL_TOKEN without knowing any of them by name. It also covers every
+// agent credential the old hardcoded roster listed (ANTHROPIC_API_KEY,
+// GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, ...), which is the evidence that the shape
+// rather than the vendor is the thing worth matching.
+//
+// Words match on underscore boundaries, NOT as substrings. A substring rule
+// looks equivalent and is not: `AUTH` occurs inside GIT_AUTHOR_NAME, `PASS`
+// inside COMPASS_URL, `TOKEN` inside TOKENIZERS_PARALLELISM -- stripping those
+// breaks commits and builds for no security gain. For the same reason bare KEY is
+// absent (SSH_KEY_ALGORITHMS, KEYCHAIN, ...) while the compounds that only ever
+// name a secret are present. AUTH is absent entirely: AUTH_TOKEN already matches
+// on TOKEN, and the standalone word appears in too much non-secret configuration.
+//
+// This over-strips by design where the two conflict -- a check that fails because
+// its credential is gone says so loudly, whereas a leaked credential says nothing
+// at all -- and FIXPOINT_KEEP_ENV is the operator's escape hatch for the cases
+// where a check legitimately needs one (a private-registry NPM_TOKEN, say).
+var credentialNameRE = regexp.MustCompile(`(?i)(?:^|_)(?:api_?keys?|access_keys?|secret_keys?|private_keys?|signing_keys?|tokens?|secrets?|passwords?|passwd|passphrases?|credentials?)(?:$|_)`)
+
+// stripEnvVar and keepEnvVar let the OPERATOR adjust the gate for their own
+// environment: FIXPOINT_STRIP_ENV names extra variables to remove (a bespoke
+// credential whose name says nothing about being one), FIXPOINT_KEEP_ENV names
+// variables to spare from credentialNameRE (a check that genuinely needs one).
+// Both take a list separated by commas or whitespace.
+//
+// They are environment variables and NOT config keys, for the same reason
+// loop.trusted_target is flag-only: the FIRST bundle search location is inside the
+// target, so a `verify.strip_env` key would be one the reviewed repository could
+// shadow -- and a keep list in YAML would be strictly worse, letting a hostile
+// bundle write `keep_env: [ANTHROPIC_API_KEY]` and hand itself every secret this
+// function exists to withhold. The invoking environment is a channel the target
+// cannot write to.
+//
+// Neither list can rescue an EXPLICIT denial (knownCredentialEnv, an agent's
+// env.pass/env.set, or FIXPOINT_STRIP_ENV itself). Keeping the hard guarantee --
+// a verify command never sees a credential fixpoint knows an agent authenticates
+// with -- unconditional means a typo in an operator's keep list cannot quietly
+// reopen the exfiltration path this gate closes.
+const (
+	stripEnvVar = "FIXPOINT_STRIP_ENV"
+	keepEnvVar  = "FIXPOINT_KEEP_ENV"
+)
+
+// envNameList splits one of the operator's lists on commas or whitespace. Empty
+// entries are dropped, so a trailing comma is not a variable named "".
+func envNameList(v string) []string {
+	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
 }
 
 // EnvWithoutCredentials returns fixpoint's own environment minus every variable
-// that carries an agent credential: the names the configured agents declare
-// (env.pass and env.set) plus knownCredentialEnv.
+// that carries a credential: the names the configured agents declare (env.pass
+// and env.set), knownCredentialEnv, the operator's FIXPOINT_STRIP_ENV list, and
+// any name whose SHAPE says credential (credentialNameRE), except the names the
+// operator spared in FIXPOINT_KEEP_ENV.
 //
 // It exists because the verify gate runs argv the TARGET supplies (a bundle file
 // inside the target shadows the operator's), and inheriting fixpoint's whole
 // environment there would hand those commands exactly the secrets buildEnv keeps
 // away from the agents themselves -- a `curl $ANTHROPIC_API_KEY` verify command
-// would exfiltrate every agent credential before a coder edits anything.
+// would exfiltrate every agent credential before a coder edits anything. The same
+// command can read any OTHER secret in that environment just as easily, which is
+// why the filter is not limited to the credentials fixpoint itself uses: an
+// operator running fixpoint from CI has the release and registry tokens of that
+// job exported too, and none of them are anything a build check needs to see.
 //
 // Unlike buildEnv this never returns nil: an empty result must mean "an empty
 // environment", not "inherit the parent's".
@@ -96,10 +161,25 @@ func EnvWithoutCredentials(agents map[string]config.Agent) []string {
 			deny[name] = true
 		}
 	}
+	// fixpoint's own knobs go too: they configure this filter, and a verify
+	// command has no use for the list of what was withheld from it.
+	deny[stripEnvVar] = true
+	deny[keepEnvVar] = true
+	for _, name := range envNameList(os.Getenv(stripEnvVar)) {
+		deny[name] = true
+	}
+	keep := map[string]bool{}
+	for _, name := range envNameList(os.Getenv(keepEnvVar)) {
+		keep[name] = true
+	}
+
 	env := os.Environ()
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
-		if k, _, ok := strings.Cut(kv, "="); ok && deny[k] {
+		k, _, ok := strings.Cut(kv, "=")
+		// An entry with no "=" cannot be attributed to a name; pass it through
+		// rather than guess, exactly as before.
+		if ok && (deny[k] || (credentialNameRE.MatchString(k) && !keep[k])) {
 			continue
 		}
 		out = append(out, kv)

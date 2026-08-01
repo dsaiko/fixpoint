@@ -181,17 +181,35 @@ should unset them for fixpoint's own process.
 warning. It exists for a CLI whose requirements are unknown, at the cost of
 re-exposing every exported secret to that agent.
 
-**`verify` commands do not receive the agents' credentials.** They are argv the
+**`verify` commands do not receive credentials.** They are argv the
 target can supply (a bundle inside the target is searched first), so they inherit
 fixpoint's environment *minus* every variable an agent file declares under
-`env.pass` / `env.set` and minus a built-in credential list (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `CODEX_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`,
-`GITHUB_TOKEN`, `GH_TOKEN`, and the `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` trio). Otherwise the gate would be a way around the
+`env.pass` / `env.set`, minus a few exact names whose value is auth material
+(`KUBECONFIG`, `NETRC`, `DOCKER_AUTH_CONFIG`), and minus every variable whose name
+is credential-*shaped* — one whose underscore-separated words include `TOKEN`,
+`SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL(S)`, `API_KEY`,
+`ACCESS_KEY`, `SECRET_KEY`, `PRIVATE_KEY` or `SIGNING_KEY`. That covers
+`ANTHROPIC_API_KEY` and `GITHUB_TOKEN` as well as the CI secrets nobody
+enumerates (`NPM_TOKEN`, `DOCKER_PASSWORD`, `PYPI_TOKEN`, `SONAR_TOKEN`,
+`GPG_PASSPHRASE`, `GOOGLE_APPLICATION_CREDENTIALS`, …) and your own
+`ACME_INTERNAL_TOKEN`. Matching is on word boundaries, so `GIT_AUTHOR_NAME` and
+`TOKENIZERS_PARALLELISM` survive. Otherwise the gate would be a way around the
 filtering above: a "build" command that curls a key out is not a model's
 misbehavior, it is just argv. This direction is a denylist, because what a build
 needs is project-specific and an allowlist would break checks by dropping what it
 forgot.
+
+Two **environment variables** — not config keys — adjust it for your machine:
+`FIXPOINT_STRIP_ENV` names extra variables to remove (a secret whose name gives no
+hint), `FIXPOINT_KEEP_ENV` names variables to spare from the shape rule (a check
+that genuinely needs one, say a private-registry `NPM_TOKEN`). Both accept a
+comma- or space-separated list. They are read from the invocation and not from
+YAML for the same reason `loop.trusted_target` is flag-only: this directory can be
+shipped by the repository under review, and a keep list it could write would let
+it hand itself the secrets the gate exists to withhold. For that reason
+`FIXPOINT_KEEP_ENV` cannot rescue a name that was denied explicitly — by
+`FIXPOINT_STRIP_ENV`, by the exact-name list, or by an agent's `env.pass` /
+`env.set`.
 
 **Fix rounds are fail-closed.** The coder edits files with permission checks
 disabled and is not confined to the target, so a prompt-injection payload in any
