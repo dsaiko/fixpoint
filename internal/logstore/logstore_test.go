@@ -205,6 +205,49 @@ func TestStepAndPromptRedactSecrets(t *testing.T) {
 	}
 }
 
+// The durable artifacts are read back in a terminal, so agent-authored text in
+// them gets the same escaping the live output gets: a prompt-injected reviewer
+// (or reviewed content quoted into the prompt) must not be able to drive the
+// terminal of whoever `cat`s the log. Raw is exempt -- it is the fidelity record.
+func TestStepAndPromptEscapeTerminalControls(t *testing.T) {
+	s, dir := newStore(t, "md", "raw")
+	// OSC 52 (clipboard write), a screen clear, and a right-to-left override.
+	const rlo = "\u202e"
+	attack := "\x1b]52;c;ZXZpbA==\x07\x1b[2Jinnocent" + rlo + "txt.eb"
+	md := "# Review\n\n## [r1.1] " + attack + "\n\n\tindented snippet\n"
+	if err := s.Step("review", "claude", "review-bugs", 1, nil, md, "$ raw "+attack); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Prompt("fix", "claude-coder", "fix", 1, "the diff carries "+attack+"\nsecond line\n"); err != nil {
+		t.Fatal(err)
+	}
+	files := roundFiles(t, dir, 1)
+	for _, name := range []string{"review-claude-review-bugs.md", "fix-claude-coder-fix.prompt"} {
+		content, ok := files[name]
+		if !ok {
+			t.Fatalf("%s not written; files: %v", name, files)
+		}
+		if strings.ContainsAny(content, "\x1b\x07") || strings.Contains(content, rlo) {
+			t.Errorf("%s still carries terminal control sequences:\n%q", name, content)
+		}
+		// Escaped, not dropped: the text stays visible and greppable.
+		if !strings.Contains(content, "\\x1b") || !strings.Contains(content, "\\u202e") {
+			t.Errorf("%s dropped the offending text instead of escaping it:\n%q", name, content)
+		}
+		// Escaping must not flatten the document: line breaks are what keeps a
+		// durable artifact readable.
+		if !strings.Contains(content, "\n") {
+			t.Errorf("%s was flattened onto one line:\n%q", name, content)
+		}
+	}
+	if got := files["review-claude-review-bugs.raw"]; got != "$ raw "+attack {
+		t.Errorf("raw log is the fidelity record and must keep its bytes: %q", got)
+	}
+	if !strings.Contains(files["review-claude-review-bugs.md"], "\n\tindented snippet\n") {
+		t.Errorf("md lost the tab indentation:\n%q", files["review-claude-review-bugs.md"])
+	}
+}
+
 func TestStepSkipsJSONWhenParseFailed(t *testing.T) {
 	s, dir := newStore(t, "md", "json")
 	if err := s.Step("review", "claude", "review-bugs", 1, nil, "md", "raw"); err != nil {
@@ -502,6 +545,39 @@ func TestSummaryRedactsSecrets(t *testing.T) {
 	}
 	if len(back.Rounds) != 1 || len(back.Rounds[0].Findings) != 1 || back.Rounds[0].Findings[0].Title != "leak" {
 		t.Fatalf("redaction altered the non-secret summary payload: %+v", back)
+	}
+}
+
+// The summary is the one artifact an operator is certain to open, and it carries
+// agent-authored titles and verdict details forward, so it is escaped like the
+// per-step md.
+func TestSummaryEscapesTerminalControls(t *testing.T) {
+	s, dir := newStore(t, "md")
+	const attack = "\x1b[2Jcleared"
+	sum := &model.RunSummary{
+		Termination: model.TermConverged,
+		Rounds: []model.RoundRecord{{
+			Round: 1,
+			Findings: []model.Finding{{
+				ID: "r1.1", Title: attack, Severity: "high", File: "a.go", Line: 3,
+				Verdict: "fixed", VerdictDetail: attack,
+			}},
+			Fixed: 1,
+		}},
+	}
+	if _, err := s.Summary(sum); err != nil {
+		t.Fatal(err)
+	}
+	md := filesIn(t, singleRunDir(t, dir))["summary.md"]
+	if strings.Contains(md, "\x1b") {
+		t.Errorf("summary.md still carries an escape sequence:\n%q", md)
+	}
+	if !strings.Contains(md, "\\x1b[2Jcleared") {
+		t.Errorf("summary.md dropped the offending title instead of escaping it:\n%s", md)
+	}
+	// The scoreboard's box drawing and the markdown structure must survive.
+	if !strings.Contains(md, "# fixpoint run summary\n") || !strings.Contains(md, "\u2500") {
+		t.Errorf("summary.md lost its structure:\n%s", md)
 	}
 }
 

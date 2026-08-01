@@ -149,7 +149,14 @@ func (s *Store) Step(role, agentName, promptName string, round int, parsed any, 
 			// becomes "[REDACTED]").
 			content = []byte(agent.RedactSecrets(string(b)))
 		case "md":
-			content = []byte(agent.RedactSecrets(md))
+			// The rendering is built from agent-authored text (finding titles,
+			// descriptions, suggestions, verdict details). An operator reads this
+			// file back in a terminal, so it gets the same escaping the live
+			// output gets -- a prompt-injected reviewer must not be able to move
+			// the cursor or write the clipboard of whoever pages the log. Raw
+			// keeps its bytes: it is the fidelity record the escaping is measured
+			// against.
+			content = []byte(agent.EscapeTerminalBlock(agent.RedactSecrets(md)))
 		case "raw":
 			content = []byte(raw) // Result.Raw already redacted this
 		}
@@ -174,7 +181,9 @@ func (s *Store) Prompt(role, agentName, promptName string, round int, text strin
 	// which very commonly contains the exact secret under review (a commit
 	// adding an API key or .env). Redact before this always-written file lands
 	// on disk -- dropping `raw` must not leave secrets persisted elsewhere.
-	return writeArtifact(name, []byte(agent.RedactSecrets(text)))
+	// The same material is repository-controlled, so it is also escaped: reading
+	// a prompt log back must not let the reviewed content drive the terminal.
+	return writeArtifact(name, []byte(agent.EscapeTerminalBlock(agent.RedactSecrets(text))))
 }
 
 // Summary writes the run summary as md + json (raw does not apply).
@@ -202,7 +211,10 @@ func (s *Store) Summary(sum *model.RunSummary) (string, error) {
 			// value here cannot break the serialized JSON.)
 			content = []byte(agent.RedactSecrets(string(b)))
 		} else {
-			content = []byte(agent.RedactSecrets(renderSummaryMD(sum)))
+			// Escaped for the same reason the per-step md is: the summary carries
+			// the finding titles and verdict details forward, and it is the one
+			// artifact an operator is certain to open.
+			content = []byte(agent.EscapeTerminalBlock(agent.RedactSecrets(renderSummaryMD(sum))))
 			mdPath = name
 		}
 		if err := writeArtifact(name, content); err != nil {

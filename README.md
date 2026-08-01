@@ -552,7 +552,11 @@ that would lose artifacts:
 The exact prompt sent to each agent is always written at invocation start, so
 a slow or killed agent's input is inspectable mid-run. Run directories and
 files are owner-only (0700/0600), and persisted artifacts pass through a
-best-effort credential redactor — but see below.
+best-effort credential redactor — but see below. The `.md`, `.prompt` and
+summary artifacts are also terminal-escaped, so paging one cannot let injected
+agent output or reviewed content drive your terminal; `.raw` deliberately keeps
+its bytes as the fidelity record, so pipe it through `cat -v` or a pager that
+does not interpret escapes.
 
 ### The end-of-run table
 
