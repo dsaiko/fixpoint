@@ -2845,9 +2845,11 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 		o.logf("WARNING: failed to write the verification-correction prompt: %v", err)
 	}
 	res := agent.Run(ctx, a, text, o.cfg.Target.Path)
-	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, lens, len(text), res, res.Err != nil))
 	var out model.FixOutput
 	parseErr := agent.ExtractJSON(res.Stdout, "fix", &out)
+	// Failed the same way logStep gates below: a run whose output would not parse
+	// produced nothing usable, so the step summary must not report it as a success.
+	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, lens, len(text), res, res.Err != nil || parseErr != nil))
 	// Routed through logStep so the correction attempt gets the same ok-gating as
 	// every other step: a run that failed or whose output would not parse must not
 	// persist a zero FixOutput that reads back as a clean "no results" report.
