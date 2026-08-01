@@ -818,14 +818,22 @@ func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSumm
 }
 
 // warnFinalPhaseCapped reports what the closing phase ran out of passes before
-// fixing. Staying quiet about THAT is exactly the failure this phase exists to
+// finishing. Staying quiet about THAT is exactly the failure this phase exists to
 // avoid: a run that fixed some of its coverage gaps and said nothing about the rest
 // reads as complete.
 //
-// It says nothing when the last pass left nothing open, which is the ordinary way a
-// bounded phase ends: the cap is low on purpose (see config.Loop.MaxFinalPasses),
-// so a warning on every clean exhaustion would be noise on most runs -- and a
-// warning that usually means nothing is not read on the run where it does.
+// It is only reached when the LAST allowed pass returned done=false, so there is no
+// clean exhaustion to keep quiet about -- a pass that found nothing, fixed nothing
+// or hit a decided-only round ends the phase with done=true and never gets here.
+// done=false leaves the run in one of two states, and both are reported because in
+// both the run's last edits are unvouched for:
+//
+//   - Issues the pass reported are still open (the cap deferred them, or the coder
+//     rejected them and the deferred remainder never reached it).
+//   - Every issue it reported was FIXED, which is exactly why it asked for another
+//     pass: those commits changed the tree, and the review that would have judged
+//     them is the pass the cap refused. Silence here reads as a clean finish over a
+//     tree whose final edits nobody looked at.
 func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary, passes int) {
 	open := 0
 	if n := len(sum.Rounds); n > 0 {
@@ -836,6 +844,8 @@ func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary, passes int) {
 		}
 	}
 	if open == 0 {
+		o.logf("WARNING: the closing round stopped after %d pass(es) (loop.max_final_passes); its last pass fixed every issue it reported, but those fixes changed the tree and were NOT re-reviewed",
+			passes)
 		return
 	}
 	o.logf("WARNING: the closing round stopped after %d pass(es) (loop.max_final_passes) with %d issue(s) still open; they are recorded in the summary and were NOT fixed",

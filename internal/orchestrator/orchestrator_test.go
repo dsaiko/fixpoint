@@ -3381,6 +3381,47 @@ func TestFinalPhaseStopsAtMaxFinalPasses(t *testing.T) {
 	}
 }
 
+// warnFinalPhaseCapped only runs when the last allowed pass asked for another one,
+// so every call is a real exhaustion. It used to say nothing when that pass had
+// fixed everything it reported -- the very case where the closing round committed
+// edits and then ran out of passes to review them, leaving a run that reads as a
+// clean finish over a tree nobody looked at last.
+func TestWarnFinalPhaseCappedAlwaysReportsExhaustion(t *testing.T) {
+	issue := func(status string) model.Issue {
+		return model.Issue{ID: "i1", Status: status}
+	}
+	tests := []struct {
+		name  string
+		last  model.RoundRecord
+		wants []string
+	}{
+		{
+			name:  "issues still open",
+			last:  model.RoundRecord{Round: 3, Final: true, Issues: []model.Issue{issue(model.VerdictDeferred)}},
+			wants: []string{"WARNING", "1 issue(s) still open", "NOT fixed"},
+		},
+		{
+			name:  "everything fixed, so the fixes themselves went unreviewed",
+			last:  model.RoundRecord{Round: 3, Final: true, Issues: []model.Issue{issue(model.VerdictFixed)}},
+			wants: []string{"WARNING", "NOT re-reviewed"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var log strings.Builder
+			o := &Orchestrator{logf: func(format string, args ...any) {
+				fmt.Fprintf(&log, format+"\n", args...)
+			}}
+			o.warnFinalPhaseCapped(&model.RunSummary{Rounds: []model.RoundRecord{tc.last}}, 2)
+			for _, want := range tc.wants {
+				if !strings.Contains(log.String(), want) {
+					t.Errorf("warning is missing %q:\n%s", want, log.String())
+				}
+			}
+		})
+	}
+}
+
 func TestFinalLensRunsAfterTheLoopAndStopsWhenClean(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.finalLens()

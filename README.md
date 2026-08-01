@@ -159,8 +159,9 @@ Per-lens modifiers:
   pass 2 sees the tests pass 1 wrote, so it reports what's genuinely still missing
   instead of working from a list computed before the code changed — which is also
   what makes the phase stop on its own. `loop.max_final_passes` (default 2) bounds
-  it as a last resort, and if it runs out with issues still open the run says so
-  loudly rather than dropping them silently.
+  it as a last resort, and running out is always said loudly rather than dropped
+  silently — either issues are still open, or the last pass fixed everything it
+  reported and there was no pass left to review those fixes.
 
   Two, and its own knob rather than `max_iterations`, because this phase is where a
   measured run spent 51 minutes and still had pass 2 producing four *new* issues:
