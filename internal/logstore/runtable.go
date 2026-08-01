@@ -368,8 +368,16 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 		out = append(out, [2]string{"flags", strings.Join(sum.Overrides, ", ")})
 	}
 	if st.verifyRounds > 0 {
+		// Escaped for the same reason the rows above are: a check's name is
+		// verify.commands[].name from a config the repository under review may own,
+		// and a cell that can emit ESC/CSI would redraw the rows printed after it --
+		// including the commits row and the exit row.
+		names := make([]string, 0, len(st.verifyNames))
+		for _, n := range st.verifyNames {
+			names = append(names, agent.EscapeTerminal(n))
+		}
 		out = append(out, [2]string{"verify", fmt.Sprintf("%s · passed in %d/%d round(s)",
-			strings.Join(st.verifyNames, ", "), st.verifyPassed, st.verifyRounds)})
+			strings.Join(names, ", "), st.verifyPassed, st.verifyRounds)})
 	}
 	return out
 }
@@ -377,7 +385,10 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 // runOutcome is the "what happened" block that closes the table.
 func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 	out := [][2]string{}
-	coder := sum.Coder
+	// Escaped like the reviewer rows: the coder's name is roles.coder.agent from a
+	// config the repository under review may own, and this row is followed by the
+	// commits and exit rows a CSI sequence here could overwrite.
+	coder := agent.EscapeTerminal(sum.Coder)
 	if coder == "" {
 		coder = "coder"
 	}

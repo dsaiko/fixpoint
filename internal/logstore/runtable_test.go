@@ -301,6 +301,55 @@ func TestRunTableEscapesTerminalControlsInErrorsAndContributorNames(t *testing.T
 	}
 }
 
+// The verify row prints verify.commands[].name and the coder row prints
+// roles.coder.agent, both straight from a config the repository under review may
+// own once the operator passes -trusted-target. They sit ABOVE the commits row and
+// the exit row -- the two lines that say what landed and how the run ended -- so a
+// cursor-up plus erase-line from either would rewrite exactly the part of the
+// report the operator is reading it for.
+func TestRunTableEscapesTerminalControlsInVerifyAndCoderNames(t *testing.T) {
+	sum := twoAgentRun()
+	// CSI erase-line + cursor-up, as a hostile verify command name could carry.
+	sum.Rounds[0].Verify[0].Name = "te\x1b[2K\x1b[Ast"
+	// A bidi override plus an OSC that retitles the operator's terminal.
+	sum.Coder = "cla\u202eude\x1b]0;pwned\x07-coder"
+	sum.Rounds[0].Steps[1].Agent = sum.Coder
+
+	got := RenderRunTable(sum)
+
+	for _, raw := range []string{"\x1b", "\x07", "\u202e"} {
+		if strings.Contains(got, raw) {
+			t.Errorf("run table still contains the raw control %q:\n%q", raw, got)
+		}
+	}
+	for _, want := range []string{
+		`te\x1b[2K\x1b[Ast`,                  // the verify row's check name
+		`cla\u202eude\x1b]0;pwned\x07-coder`, // the coder row's agent name
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("run table is missing the escaped form %q:\n%s", want, got)
+		}
+	}
+	// Escaping is per field, so the rows below these two are still where they were.
+	benign := twoAgentRun()
+	benign.Rounds[0].Verify[0].Name = "test-alt"
+	benign.Coder = "claude-alt-coder"
+	benign.Rounds[0].Steps[1].Agent = benign.Coder
+	if a, b := len(strings.Split(got, "\n")), len(strings.Split(RenderRunTable(benign), "\n")); a != b {
+		t.Errorf("the escaped table has %d lines, the benign one %d:\n%s", a, b, got)
+	}
+	for _, label := range []string{" verify     ", " coder      ", " commits    ", " exit       "} {
+		if !strings.Contains(got, label) {
+			t.Errorf("the %q column is no longer aligned:\n%s", strings.TrimSpace(label), got)
+		}
+	}
+	for i, line := range strings.Split(got, "\n") {
+		if line != strings.TrimRight(line, " \t") {
+			t.Errorf("line %d has trailing whitespace: %q", i+1, line)
+		}
+	}
+}
+
 // A multi-line error is cut to its first line BEFORE escaping: escaping first
 // would turn the newline into a printable "\x0a" that firstLine could no longer
 // find, and the whole of a subprocess's stderr would land in the exit row.
