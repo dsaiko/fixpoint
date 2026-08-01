@@ -55,6 +55,21 @@ func TestFingerprintIgnoresCategory(t *testing.T) {
 	}
 }
 
+// A line without a file names nothing: two lenses that both omit the path and both
+// happen to land on line 42 are looking at different code, so keying identity on
+// the bare line would hand the coder one issue when there are two and silently drop
+// the second reading's title, description and suggestion.
+func TestAbsorbKeepsFilelessFindingsWithTheSameLineApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "", 42, "config pointer can be nil"),
+		obs("b", "tests", "tests", "high", "", 42, "the retry budget is never asserted"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: a line alone must not give two unrelated findings one identity", len(got))
+	}
+}
+
 // Reviewers point at slightly different lines for one defect -- the declaration,
 // the use, the enclosing function.
 func TestAbsorbMergesNearbyLines(t *testing.T) {

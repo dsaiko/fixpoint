@@ -332,18 +332,30 @@ func (l *Ledger) Get(id string) (model.Issue, bool) {
 }
 
 // Fingerprint derives a deterministic identity for an observation: the normalized
-// path plus either the exact line or, when no line is given, a normalized title.
+// path plus either the exact line or, when there is no path or no line, a
+// normalized title.
 //
 // It is deliberately conservative. Merging two distinct problems is worse than
 // leaving a duplicate, because the coder is then told to fix one thing when there
 // were two -- whereas a surviving duplicate merely costs a slot, which is the
-// status quo this improves on.
+// status quo this improves on. Hence a line only carries identity alongside a
+// path: two reviewers that both omit the file and both happen to name line 42 are
+// not looking at the same code, and keying on the bare line would fold them into
+// one issue whose title, description and suggestion come from a single reading,
+// hiding the other problem from the coder entirely.
 func Fingerprint(f model.Finding) string {
 	path := normalizePath(f.File)
-	if f.Line > 0 {
+	if path != "" && f.Line > 0 {
 		return fmt.Sprintf("%s#L%d", path, f.Line)
 	}
-	return path + "#" + normalizeTitle(f.Title)
+	title := normalizeTitle(f.Title)
+	if title == "" {
+		// Nothing distinctive survived normalization -- a title of only filler
+		// words or punctuation. Fall back to the raw text so two differently
+		// worded findings still get separate identities.
+		title = strings.ToLower(strings.TrimSpace(f.Title))
+	}
+	return path + "#" + title
 }
 
 // normalizePath makes paths comparable across reviewers that spell them
