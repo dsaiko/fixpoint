@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3911,6 +3912,91 @@ func TestPerFixSessionsWriteDistinctArtifacts(t *testing.T) {
 		}
 		if strings.Contains(string(b), "[i1]") && strings.Contains(string(b), "[i2]") {
 			t.Errorf("%s asks about both issues; a session must get exactly one", filepath.Base(name))
+		}
+	}
+}
+
+// gatedScript writes an agent that drains stdin and then blocks until gate
+// exists, so a test owns the exact moment the invocation ends.
+func gatedScript(t *testing.T, gate string) string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "gated.sh")
+	body := "#!/bin/sh\ncat > /dev/null\nwhile [ ! -f '" + gate + "' ]; do sleep 0.01; done\necho done\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+// A heartbeat tick already inside logf when the agent exits must finish BEFORE
+// runAgent returns: otherwise the "still running" line lands after the caller
+// has moved on, interleaved with whatever it logs next -- or with the
+// end-of-run table, whose column alignment it shreds. hb.Wait is the only thing
+// enforcing that, and the 5-minute default interval puts the tick out of reach
+// of any test, so the field seam is what makes the join observable at all.
+// Deleting hb.Wait turns the ordering below around.
+func TestRunAgentWaitsForInFlightHeartbeat(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	gate := filepath.Join(t.TempDir(), "gate")
+	f.cfg.Agents["gated"] = config.Agent{
+		Command: []string{gatedScript(t, gate)}, PromptVia: "stdin", Timeout: config.Duration(time.Minute),
+	}
+
+	// The recorded transcript: heartbeat lines as they complete, plus a marker
+	// appended the instant runAgent returns. Its own mutex, so -race sees any
+	// unsynchronized write.
+	var mu sync.Mutex
+	var lines []string
+	record := func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, s)
+	}
+
+	entered := make(chan struct{}) // the first heartbeat has reached logf...
+	release := make(chan struct{}) // ...and is held there until the test says so
+	var hold sync.Once
+	o := f.orchestrator()
+	o.heartbeatEvery = 10 * time.Millisecond
+	o.logf = func(format string, args ...any) {
+		hold.Do(func() {
+			close(entered)
+			<-release
+		})
+		record(fmt.Sprintf(format, args...))
+	}
+
+	const marker = "<runAgent returned>"
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		o.runAgent(t.Context(), "review: gated via lens", "review", "gated", "lens", 1, "prompt")
+		record(marker)
+	}()
+
+	<-entered
+	// The tick is now blocked inside logf. Let the agent exit: close(done) and the
+	// return are free to happen immediately, and only the join holds them back.
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond) // ample room for an unjoined return to record first
+	close(release)
+	<-returned
+
+	mu.Lock()
+	got := append([]string(nil), lines...)
+	mu.Unlock()
+
+	if len(got) < 2 {
+		t.Fatalf("transcript = %q, want at least one heartbeat line and the return marker", got)
+	}
+	if got[len(got)-1] != marker {
+		t.Errorf("transcript = %q, want %q last: runAgent returned while a heartbeat was still printing", got, marker)
+	}
+	for _, l := range got[:len(got)-1] {
+		if !strings.Contains(l, "still running") || !strings.Contains(l, "review: gated via lens") {
+			t.Errorf("transcript line %q is not a labeled heartbeat: %q", l, got)
 		}
 	}
 }

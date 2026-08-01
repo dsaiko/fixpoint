@@ -60,6 +60,12 @@ type Orchestrator struct {
 	// journalWarn keeps a broken journal to ONE warning. A full disk would
 	// otherwise emit a line per transition and bury the run's real output.
 	journalWarn sync.Once
+	// heartbeatEvery is how often runAgent's progress line fires. It is a field
+	// defaulting to heartbeatDefault rather than a bare const so a test can shorten
+	// it: the tick body is the only thing that makes the heartbeat goroutine touch
+	// logf, so without a seam the join below it (hb.Wait) is unobservable and could
+	// be deleted with the whole suite still green.
+	heartbeatEvery time.Duration
 	// journalWrite is how a transition reaches the journal. It is a field holding
 	// o.logs.Journal rather than a direct call, so a test can inject a failing
 	// writer: "a journal failure never fails the run" is a load-bearing property
@@ -172,6 +178,8 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		overrides:    l.Overrides.Applied(),
 		journalWrite: logs.Journal,
 		verifyEnv:    agent.EnvWithoutCredentials(cfg.Agents),
+
+		heartbeatEvery: heartbeatDefault,
 	}
 	// Exclude the template's literal prefix, not the rendered path: the rendered
 	// path changes every run (and every round), so only the static base is a
@@ -1691,10 +1699,10 @@ func (o *Orchestrator) assignments(round int) []model.Assignment {
 	return out
 }
 
-// heartbeatEvery is how often a still-running agent invocation emits a
+// heartbeatDefault is how often a still-running agent invocation emits a
 // progress line, so a long silent stretch is visibly alive rather than
 // ambiguous (thinking-heavy coders can run 20+ minutes without output).
-const heartbeatEvery = 5 * time.Minute
+const heartbeatDefault = 5 * time.Minute
 
 // runAgent persists the prompt (before invoking, so a killed or hung agent's
 // input is still inspectable), invokes the agent with a heartbeat, and
@@ -1705,6 +1713,13 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 		o.logf("WARNING: writing %s prompt log: %v", role, err)
 	}
 	start := time.Now()
+	// Defensive: New always sets the interval, but a hand-built Orchestrator
+	// (several tests construct one directly) leaves it zero, and NewTicker(0)
+	// panics -- which would take the whole run down over a progress line.
+	every := o.heartbeatEvery
+	if every <= 0 {
+		every = heartbeatDefault
+	}
 	done := make(chan struct{})
 	// Awaited, not just signaled: a tick already inside logf would otherwise
 	// still be printing after runAgent returns, interleaving a "still running"
@@ -1713,7 +1728,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 	hb.Add(1)
 	go func() {
 		defer hb.Done()
-		t := time.NewTicker(heartbeatEvery)
+		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
 			select {

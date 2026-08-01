@@ -65,33 +65,7 @@ Flags:
 		return 2
 	}
 
-	var logMu sync.Mutex // reviewer goroutines log concurrently
-	logf := func(format string, args ...any) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		// Redact before writing: reviewer/coder/git errors flow through here
-		// verbatim, and a prompt-injected agent can smuggle a credential into one
-		// (e.g. inside an invalid severity that validateReviewFindings echoes back).
-		// Persisted logs already mask these; stderr and CI console logs must too.
-		//
-		// Then escape, so every line is display-only. The same target-controlled text
-		// reaches here as reaches the listing: agent/prompt names and the bundle paths
-		// they resolved to (logSource), the ProjectSuppliedPolicy listing the operator
-		// reads before asserting -trusted-target, and git/agent output quoted into an
-		// error. Escaping last means the redaction mask itself is never split by an
-		// escape, and that a name embedding ESC/CSI cannot scroll the other entries of
-		// a refusal off the screen and get trust asserted on a listing it drew.
-		msg := agent.EscapeTerminal(agent.RedactSecrets(fmt.Sprintf(format, args...)))
-		fmt.Fprintf(stderr, "%s %s\n", time.Now().Format("15:04:05"), msg)
-	}
-	// logRaw writes pre-formatted, multi-line output under the same lock as logf,
-	// so a heartbeat or signal-handler line cannot land mid-table and shred the
-	// column alignment. Callers own redaction/escaping for what they pass.
-	logRaw := func(s string) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		fmt.Fprint(stderr, s)
-	}
+	logf, logRaw := newLogger(stderr)
 
 	// Anchor the run at the project root -- the git root, or the nearest directory
 	// holding a config bundle, found by walking up from the working directory. Every
@@ -209,6 +183,44 @@ Flags:
 		logf("no changes were made: the coder rejected every finding this round")
 	}
 	return model.ExitCode(sum.Termination)
+}
+
+// newLogger builds the run's two stderr writers over ONE mutex: logf for the
+// timestamped single lines everything logs, and logRaw for pre-formatted
+// multi-line output. It is a function rather than two closures inside run() so
+// a test can drive both against a writer of its own and pin the shared lock --
+// the interleaving it prevents needs a concurrent writer, which a normal run
+// only has in a window (the end-of-run table racing the signal handler) that a
+// full-CLI test cannot open on demand.
+func newLogger(stderr io.Writer) (logf func(string, ...any), logRaw func(string)) {
+	var logMu sync.Mutex // reviewer goroutines log concurrently
+	logf = func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		// Redact before writing: reviewer/coder/git errors flow through here
+		// verbatim, and a prompt-injected agent can smuggle a credential into one
+		// (e.g. inside an invalid severity that validateReviewFindings echoes back).
+		// Persisted logs already mask these; stderr and CI console logs must too.
+		//
+		// Then escape, so every line is display-only. The same target-controlled text
+		// reaches here as reaches the listing: agent/prompt names and the bundle paths
+		// they resolved to (logSource), the ProjectSuppliedPolicy listing the operator
+		// reads before asserting -trusted-target, and git/agent output quoted into an
+		// error. Escaping last means the redaction mask itself is never split by an
+		// escape, and that a name embedding ESC/CSI cannot scroll the other entries of
+		// a refusal off the screen and get trust asserted on a listing it drew.
+		msg := agent.EscapeTerminal(agent.RedactSecrets(fmt.Sprintf(format, args...)))
+		fmt.Fprintf(stderr, "%s %s\n", time.Now().Format("15:04:05"), msg)
+	}
+	// logRaw writes pre-formatted, multi-line output under the same lock as logf,
+	// so a heartbeat or signal-handler line cannot land mid-table and shred the
+	// column alignment. Callers own redaction/escaping for what they pass.
+	logRaw = func(s string) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		fmt.Fprint(stderr, s)
+	}
+	return logf, logRaw
 }
 
 // forceQuit ends the process on a second interrupt, with the interrupted run's

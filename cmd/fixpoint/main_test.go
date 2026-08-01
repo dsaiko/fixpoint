@@ -934,3 +934,65 @@ func TestRunAllowUntrustedFixFlag(t *testing.T) {
 		}
 	})
 }
+
+// gateWriter records each Write in arrival order and holds the one carrying
+// mark open for hold, modeling a stderr that does not write atomically. A
+// second writer entering that window would have its output land inside the
+// held one on a real terminal.
+type gateWriter struct {
+	mark    string
+	hold    time.Duration
+	started chan struct{} // closed as the marked Write begins
+
+	mu     sync.Mutex
+	writes []string
+}
+
+func (w *gateWriter) Write(p []byte) (int, error) {
+	s := string(p)
+	if strings.Contains(s, w.mark) {
+		close(w.started)
+		time.Sleep(w.hold)
+	}
+	w.mu.Lock()
+	w.writes = append(w.writes, s)
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *gateWriter) recorded() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.writes...)
+}
+
+// The end-of-run scoreboard goes out through logRaw while the signal handler
+// (still installed until run returns) can log at any moment. logRaw must
+// therefore take the SAME lock as logf, or a timestamped line lands inside the
+// table and shreds its column alignment. Dropping the lock from logRaw makes
+// the concurrent line arrive first here.
+func TestLogRawSerializesAgainstLogLines(t *testing.T) {
+	w := &gateWriter{mark: "TABLE", hold: 200 * time.Millisecond, started: make(chan struct{})}
+	logf, logRaw := newLogger(w)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		logRaw("\nTABLE row one\nTABLE row two\n")
+	}()
+
+	<-w.started        // the table write is in progress...
+	logf("concurrent") // ...so this must not be written until it finishes
+	<-done
+
+	got := w.recorded()
+	if len(got) != 2 {
+		t.Fatalf("writes = %q, want the table and the log line", got)
+	}
+	if !strings.Contains(got[0], "TABLE") {
+		t.Errorf("writes = %q, want the table first: logRaw did not hold the log lock", got)
+	}
+	if !strings.Contains(got[1], "concurrent") {
+		t.Errorf("writes = %q, want the concurrent line second", got)
+	}
+}
