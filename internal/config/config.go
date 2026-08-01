@@ -950,7 +950,11 @@ func (c *Config) Validate() error {
 		// target.path "." down to "agent.sh", which drops the separator and would
 		// send exec.LookPath back to a PATH search. Making it absolute keeps a
 		// separator so LookPath validates the file directly.
-		if !filepath.IsAbs(bin) && strings.ContainsRune(bin, filepath.Separator) {
+		//
+		// Both '/' and filepath.Separator count: Windows accepts a forward slash
+		// as a separator too, so checking only the native one would leave
+		// "./agent.sh" validated against fixpoint's working directory there.
+		if !filepath.IsAbs(bin) && (strings.ContainsRune(bin, '/') || strings.ContainsRune(bin, filepath.Separator)) {
 			abs, err := filepath.Abs(filepath.Join(c.Target.Path, bin))
 			if err != nil {
 				return fmt.Errorf("agents.%s: resolving %q against target.path: %w", name, bin, err)
