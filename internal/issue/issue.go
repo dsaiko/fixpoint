@@ -327,18 +327,31 @@ func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 			it.File = obs.File
 			it.Line = obs.Line
 		}
-		if obs.Title != "" {
-			it.Title = obs.Title
-			it.Description = obs.Description
-			it.Suggestion = obs.Suggestion
-		}
+		adoptText(it, obs)
 	}
 	if model.WorseSeverity(obs.Severity, it.Severity) {
 		it.Severity = obs.Severity
-		it.Title = obs.Title // keep the title and body from the worst reading
+		adoptText(it, obs) // keep the title and body from the worst reading
+		if obs.Category != "" {
+			it.Category = obs.Category
+		}
+	}
+}
+
+// adoptText copies an observation's text onto the issue field by field, keeping
+// whatever the issue already has wherever the observation left a field blank.
+// Only the title is validated as required when findings are ingested, so an
+// observation that omits the description or the suggestion must not erase the
+// detail that explains the defect to the coder.
+func adoptText(it *model.Issue, obs *model.Finding) {
+	if obs.Title != "" {
+		it.Title = obs.Title
+	}
+	if obs.Description != "" {
 		it.Description = obs.Description
+	}
+	if obs.Suggestion != "" {
 		it.Suggestion = obs.Suggestion
-		it.Category = obs.Category
 	}
 }
 

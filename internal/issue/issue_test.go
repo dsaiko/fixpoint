@@ -460,6 +460,36 @@ func TestAbsorbReanchorsOnALaterRoundReport(t *testing.T) {
 	}
 }
 
+// A worse-severity reading raises the severity, but a reviewer who fills in only
+// the title must not blank the description, suggestion, or category: only the
+// title is required of a finding, and what is left is the detail that explains the
+// defect to the coder.
+func TestAbsorbKeepsIssueTextWhenTheWorseReadingIsBare(t *testing.T) {
+	l := NewLedger()
+	full := obs("a", "bugs", "bug", "low", "main.go", 10, "nil deref on the config pointer")
+	full.Description = "the pointer is dereferenced before the nil check"
+	full.Suggestion = "check before dereferencing"
+	if got := l.Absorb(1, []model.Finding{full}); len(got) != 1 {
+		t.Fatalf("got %d issues, want 1", len(got))
+	}
+	bare := obs("b", "security", "", "high", "main.go", 10, "config pointer may be nil")
+
+	got := l.Absorb(2, []model.Finding{bare})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want the re-report to join the existing issue", len(got))
+	}
+	it := got[0]
+	if it.Severity != "high" || it.Title != bare.Title {
+		t.Errorf("issue = %q (%s), want the worse reading's severity and title", it.Title, it.Severity)
+	}
+	if it.Description != full.Description || it.Suggestion != full.Suggestion {
+		t.Errorf("issue text = %q/%q, want the first reading's detail kept", it.Description, it.Suggestion)
+	}
+	if it.Category != "bug" {
+		t.Errorf("Category = %q, want bug kept: the worse reading did not classify it", it.Category)
+	}
+}
+
 // Within ONE round the worst-severity reading still wins, so the result does not
 // depend on which reviewer finished first.
 func TestAbsorbDoesNotReanchorWithinARound(t *testing.T) {
