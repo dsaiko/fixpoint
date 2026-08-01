@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -363,6 +366,84 @@ func TestRunPassesWhenDescendantHoldsOutputPipe(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("Run hung with a descendant on the output pipe")
 	}
+}
+
+// A descendant that ESCAPED the process group survives the kill that follows the
+// leader's exit and holds the output pipe for the whole drain grace, so a timeout
+// shorter than that grace expires while runOne is still tearing a SUCCESSFUL
+// check down. The check itself exited 0 well inside its deadline, so it must be
+// recorded as passing: calling it "timed out" fails a gate that passed, sends the
+// coder off on a correction attempt it does not need, and -- when that attempt
+// cannot fix a check that was never broken -- discards valid edits.
+func TestRunKeepsPassWhenDeadlineExpiresDuringTeardown(t *testing.T) {
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("perl unavailable to spawn a detached pipe-holder")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
+	script := filepath.Join(dir, "leader.sh")
+	// The leader waits for the holder to publish its PID -- written after setpgrp, so
+	// by then it really has escaped the group the exit is about to kill -- then exits
+	// 0 well inside the 2s timeout. The drain that follows runs past that deadline.
+	body := fmt.Sprintf("#!/bin/sh\n"+
+		"perl -e 'setpgrp(0,0); open(F,\">\",$ARGV[0]) or die; print F $$; close F; sleep 60' '%s' &\n"+
+		"n=0\nwhile [ ! -s '%s' ] && [ $n -lt 5 ]; do sleep 1; n=$((n+1)); done\n"+
+		"echo leader done\nexit 0\n", pidFile, pidFile)
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan Report, 1)
+	go func() {
+		done <- Run(t.Context(), cfg(2*time.Second,
+			config.VerifyCommand{Name: "leader", Run: []string{script}},
+		), dir, nil)
+	}()
+	select {
+	case rep := <-done:
+		r := rep.Results[0]
+		if !r.Passed || r.Err != "" {
+			t.Fatalf("a check that exited 0 before its deadline must pass even when the drain crossed it: %+v", r)
+		}
+		if !strings.Contains(r.Output, "leader done") {
+			t.Errorf("output = %q, want the check's own output kept", r.Output)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run hung with a detached descendant on the output pipe past the deadline")
+	}
+}
+
+// reapDetachedChild kills the sleeper the test above deliberately detaches into
+// its own process group (so the drain grace expires before it exits) and waits for
+// it to disappear, so a successful run leaves nothing behind. The child publishes
+// its PID to pidFile at startup; tolerate it not being written yet, since Run can
+// return once the grace expires before that write lands.
+func reapDetachedChild(t *testing.T, pidFile string) {
+	t.Helper()
+	var pid int
+	for range 50 {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if p, perr := strconv.Atoi(strings.TrimSpace(string(b))); perr == nil && p > 0 {
+				pid = p
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pid == 0 {
+		t.Log("detached child never published its PID; nothing to reap")
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	// Poll until the orphan is gone (reparented to init, which reaps it after the
+	// kill). syscall.Kill(pid, 0) errors once it no longer exists.
+	for range 100 {
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("detached child %d still alive after SIGKILL", pid)
 }
 
 // boundedBuffer's mutex guards a Write/String overlap. The supervisor now waits

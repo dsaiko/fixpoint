@@ -175,9 +175,14 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 	// environment, and it is persisted and fed back to the coder.
 	res.Output = agent.RedactSecrets(buf.String())
 
+	// The leader's own status comes FIRST, exactly as in agent.Run. Supervise
+	// returns only after cmd.Wait, the process-group kill and the drain -- and that
+	// drain can burn pipeDrainGrace when a descendant escaped the group -- so the
+	// deadline can expire in the window after a check exited 0. Reading cmdCtx.Err
+	// before err would record such a check as timed out, sending a passing gate back
+	// to the coder for a correction it does not need and ultimately discarding valid
+	// edits. Reclassify a FAILURE as a timeout, never a success.
 	switch {
-	case cmdCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
-		res.Err = fmt.Sprintf("timed out after %s", timeout)
 	case err == nil:
 		res.Passed = true
 		if leakedPipe {
@@ -189,6 +194,8 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 			// a check that passed.
 			res.Output += "\n[fixpoint: the command exited 0 but a descendant held its output pipe open; the capture ends where fixpoint closed the pipe]\n"
 		}
+	case cmdCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
+		res.Err = fmt.Sprintf("timed out after %s", timeout)
 	default:
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
