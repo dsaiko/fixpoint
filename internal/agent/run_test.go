@@ -240,6 +240,44 @@ func TestRunKillsPipeHoldingChildBeforeItCanEditTheTree(t *testing.T) {
 	}
 }
 
+// The same ordering requirement as above, reached through STDIN instead of the
+// output pipes. prompt_via: stdin is the default, so the prompt arrives as an
+// ordinary reader; if exec owned that pipe it would run the copy itself and
+// cmd.Wait would block on it for the whole WaitDelay whenever a descendant
+// inherited fd 0 and the leader exited without consuming the prompt -- giving
+// that descendant the same window to edit the tree after the leader is recorded
+// as finished. The prompt here is larger than the pipe buffer so the feed cannot
+// simply be buffered and forgotten.
+func TestRunKillsStdinHoldingChildBeforeItCanEditTheTree(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "edited-during-stdin-feed")
+	// The child keeps the prompt pipe on fd 0 -- via fd 3, since a non-interactive
+	// shell gives a background job /dev/null for stdin before explicit
+	// redirections, where an agent's own spawned child (an MCP server, a language
+	// server) simply inherits it -- and redirects its output, so ONLY stdin can hold
+	// things up. The leader never reads the prompt and exits 0 at once.
+	a := config.Agent{
+		Command:   []string{script(t, "exec 3<&0\n{ sleep 1; echo edited > '"+sentinel+"'; } <&3 >/dev/null 2>&1 &\nexit 0")},
+		PromptVia: "stdin",
+		Timeout:   config.Duration(time.Minute),
+	}
+	res := Run(t.Context(), a, strings.Repeat("prompt ", 40000), dir)
+	if res.Err != nil {
+		t.Fatalf("Run() err = %v, want a clean success", res.Err)
+	}
+	if strings.Contains(res.Stderr, "held the output pipe open") {
+		t.Errorf("stderr = %q: no descendant held an OUTPUT pipe, so nothing was cut short", res.Stderr)
+	}
+	// Past the child's own delay: if the stdin feed postponed the group kill it has
+	// written by now.
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("a stdin-holding child survived its leader's exit and edited the working tree")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func TestRunContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
