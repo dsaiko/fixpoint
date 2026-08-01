@@ -4,7 +4,7 @@
 # -trusted-target -- those files supply the commands fixpoint executes and the
 # prompts it sends.) Same lens panel as fix-code, so it also previews what fix-code
 # would be handed.
-description: Review a whole project once, no edits. The safe starting point.
+description: Review a whole project once, no edits (-trusted-target if it ships its own bundle).
 
 extends: defaults
 
@@ -19,8 +19,11 @@ roles:
       - review-bugs
       - review-security
       - review-concurrency
-      - review-tests
       - { prompt: review-maintainability, advisory: true }
+      # final: true to match fix-code. A review-only run has no closing round (there
+      # is no coder to hand it to), so the lens simply runs in this one round -- which
+      # is what keeps this config a complete preview of its fix sibling.
+      - { prompt: review-tests, final: true }
       - { agent: claude, prompt: review-design, advisory: true, once: true }
 
 loop:

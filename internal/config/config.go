@@ -164,6 +164,24 @@ type ReviewLens struct {
 	// report per run instead of one per round.
 	Once bool `yaml:"once"`
 
+	// Final holds the lens out of the review->fix loop entirely and runs it once,
+	// on EVERY agent in the pool, in a single closing round after the loop has
+	// finished -- its findings then go to the coder like any other.
+	//
+	// It exists for a lens whose subject is the FINISHED code rather than the code
+	// in front of it. review-tests is the case: run inside the loop it assesses
+	// coverage of work later rounds rewrite, so it demands tests for intermediate
+	// states and re-reports the gap once the code moves. In a five-round run that
+	// made it the largest producer (30 of 68 reports) and the largest waster (18
+	// deferred), and 65% of everything the run wrote was test code. Deferring it to
+	// the end means the coverage question is asked once, about code that has stopped
+	// changing, and the whole panel asks it -- it is the last look, so breadth is
+	// worth more than rotation.
+	//
+	// Unlike `advisory: true` the findings are still FIXED; unlike a normal lens it
+	// cannot starve the loop, because nothing follows it.
+	Final bool `yaml:"final"`
+
 	// PromptPath is filled in by the loader, never by YAML.
 	PromptPath string `yaml:"-"`
 }
@@ -187,7 +205,7 @@ func (l *ReviewLens) UnmarshalYAML(node *yaml.Node) error {
 	// unknown keys ourselves.
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		switch node.Content[i].Value {
-		case "agent", "prompt", "advisory", "once":
+		case "agent", "prompt", "advisory", "once", "final":
 		default:
 			return fmt.Errorf("line %d: unknown review lens field %q", node.Content[i].Line, node.Content[i].Value)
 		}
@@ -659,21 +677,30 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("roles.review.strategy: unknown strategy %q (want fixed | rotate | all)", c.Roles.Review.Strategy)
 	}
 
-	// A fix run must have at least one recurring (non-once) reviewer lens.
-	// once-only lenses run in round 1 only, so if EVERY lens is once, rounds
-	// after the first have no reviewers: the fix would then be "verified" by an
-	// empty review and the run could converge without any finding ever being
-	// re-checked. review-only runs are a single round, so this does not apply.
+	// once and final are contradictory schedules: one pins the lens to the first
+	// round, the other holds it back until after the last. Silently honoring either
+	// would run the lens somewhere the author did not ask for.
+	for i, l := range c.Roles.Review.Prompts {
+		if l.Once && l.Final {
+			return fmt.Errorf("roles.review.prompts: lens %d (%s) sets both once and final; once runs it in round 1 only and final runs it in the closing round after the loop -- pick one", i, l.Prompt)
+		}
+	}
+
+	// A fix run must have at least one recurring reviewer lens: one that is neither
+	// once (round 1 only) nor final (after the loop). If EVERY lens is one of those,
+	// the rounds in between have no reviewers, the fix is "verified" by an empty
+	// review, and the run converges without any finding ever being re-checked.
+	// review-only runs are a single round, so this does not apply.
 	if !c.Loop.ReviewOnly {
 		recurring := false
 		for _, l := range c.Roles.Review.Prompts {
-			if !l.Once {
+			if !l.Once && !l.Final {
 				recurring = true
 				break
 			}
 		}
 		if !recurring {
-			return errors.New("roles.review.prompts: a fix run needs at least one recurring reviewer lens to verify each round, but every lens is once: true (they run only in round 1); set once: false on one, or use loop.review_only")
+			return errors.New("roles.review.prompts: a fix run needs at least one recurring reviewer lens to verify each round, but every lens is once: true (round 1 only) or final: true (after the loop); clear one of those, or use loop.review_only")
 		}
 	}
 

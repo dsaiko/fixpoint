@@ -2948,3 +2948,140 @@ func TestRunRefusesWhileAnotherRunHoldsTheRepository(t *testing.T) {
 		t.Errorf("repo has %d commits, want 1 (nothing may be committed)", got)
 	}
 }
+
+// ---- closing round for final: true lenses ------------------------------------
+
+// finalLens adds a `final: true` lens on a second agent, so the closing round is
+// distinguishable from the loop's own reviewer.
+func (f *fixture) finalLens() {
+	f.t.Helper()
+	f.cfg.Agents["mock2"] = f.cfg.Agents["mock"]
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts, config.ReviewLens{
+		Agent:  "mock2",
+		Prompt: f.cfg.Roles.Review.Prompts[0].Prompt,
+		Final:  true,
+	})
+}
+
+// A final lens must not run during the loop -- that is the whole point, since its
+// subject is the finished code -- and must run once after it, with its findings
+// fixed like any other.
+func TestFinalLensRunsOnceAfterTheLoop(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t, aFinding("off by one"))) // round 1 reviewer
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean -> converged
+	// A distinct location, or it would match the round-1 issue by fingerprint.
+	f.respond(4, reviewResponse(t, model.ReviewFinding{
+		Category: "tests", Severity: "medium", File: "helper.go", Line: 42, Title: "no test here",
+	}))
+	f.editRepoOn(5)
+	f.respond(5, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "test added"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The loop's verdict survives: the closing round is extra work on an already
+	// decided run, not a new verdict on it.
+	if sum.Termination != model.TermConverged {
+		t.Errorf("termination = %q, want the loop's converged to be preserved", sum.Termination)
+	}
+	if len(sum.Rounds) != 3 {
+		t.Fatalf("got %d rounds, want 3 (two loop rounds + the closing round)", len(sum.Rounds))
+	}
+	// The loop rounds saw ONLY the recurring lens; the final lens was held back.
+	for i, r := range sum.Rounds[:2] {
+		for _, a := range r.Assignments {
+			if a.Agent == "mock2" {
+				t.Errorf("round %d ran the final lens (%s) inside the loop", i+1, a.Agent)
+			}
+		}
+		if r.Final {
+			t.Errorf("round %d is marked final", i+1)
+		}
+	}
+	last := sum.Rounds[2]
+	if !last.Final {
+		t.Error("the closing round must be marked Final so a reader can tell it from a loop round")
+	}
+	if len(last.Assignments) != 1 || last.Assignments[0].Agent != "mock2" {
+		t.Errorf("closing round assignments = %+v, want only the final lens", last.Assignments)
+	}
+	if last.Fixed != 1 {
+		t.Errorf("closing round fixed = %d, want 1: a final lens's findings are fixed, not just reported", last.Fixed)
+	}
+	if last.CommitSHA == "" {
+		t.Error("the closing round's fix was not committed")
+	}
+}
+
+// The closing round runs after max-iterations too: the loop is equally done
+// editing, whether it converged or ran out of rounds.
+func TestFinalLensRunsAfterMaxIterations(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t, aFinding("still broken")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t)) // closing round: nothing to report
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Termination != model.TermMaxIterations {
+		t.Errorf("termination = %q, want max-iterations preserved", sum.Termination)
+	}
+	if len(sum.Rounds) != 2 || !sum.Rounds[1].Final {
+		t.Fatalf("want a closing round after max-iterations, got %d round(s)", len(sum.Rounds))
+	}
+}
+
+// A failed run must not start new work: the tree is in a state nobody vouched for.
+func TestFinalLensSkippedWhenTheLoopFailed(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.finalLens()
+	// The coder claims a fix but leaves the tree untouched, which fails the round.
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "lied"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("expected the round to fail")
+	}
+	for _, r := range sum.Rounds {
+		if r.Final {
+			t.Error("a closing round ran after the loop failed; the tree is unverified at that point")
+		}
+	}
+}
+
+// In a review-only run there is no closing round -- no coder to hand findings to --
+// so a final lens runs in the single round instead. Without that, a review-only
+// config would silently drop the lens and stop previewing its fix sibling.
+func TestFinalLensRunsInlineForAReviewOnlyRun(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, ReviewOnly: true})
+	f.finalLens()
+	f.respond(1, reviewResponse(t))
+	f.respond(2, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Rounds) != 1 {
+		t.Fatalf("got %d rounds, want 1: a review-only run has no closing round", len(sum.Rounds))
+	}
+	var sawFinalAgent bool
+	for _, a := range sum.Rounds[0].Assignments {
+		if a.Agent == "mock2" {
+			sawFinalAgent = true
+		}
+	}
+	if !sawFinalAgent {
+		t.Errorf("the final lens must run inline in a review-only run, got %+v", sum.Rounds[0].Assignments)
+	}
+}

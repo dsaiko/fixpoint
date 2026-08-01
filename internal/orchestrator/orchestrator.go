@@ -253,10 +253,14 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 			Agents:  o.source.Agents,
 			Prompts: o.source.Prompts,
 		},
-		Mode:       string(o.cfg.Target.Mode),
-		Path:       o.cfg.Target.Path,
-		Strategy:   string(o.cfg.Roles.Review.Strategy),
-		ReviewOnly: o.cfg.Loop.ReviewOnly,
+		Mode:                string(o.cfg.Target.Mode),
+		Path:                o.cfg.Target.Path,
+		Strategy:            string(o.cfg.Roles.Review.Strategy),
+		ReviewOnly:          o.cfg.Loop.ReviewOnly,
+		MaxIterations:       o.cfg.Loop.MaxIterations,
+		MaxFindingsPerRound: o.cfg.Loop.MaxFindingsPerRound,
+		Overrides:           o.overrides,
+		Coder:               o.cfg.Roles.Coder.Agent,
 	}
 	err := o.run(ctx, sum)
 	sum.FinishedAt = time.Now()
@@ -388,11 +392,85 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 			return err
 		}
 		if done {
-			return nil
+			return o.runFinalRound(ctx, sum)
 		}
 	}
 	sum.Termination = model.TermMaxIterations
-	return nil
+	return o.runFinalRound(ctx, sum)
+}
+
+// runFinalRound runs the closing round for `final: true` lenses, once, after the
+// loop has stopped changing the code. See config.ReviewLens.Final for why a lens
+// wants this: it asks its question about the FINISHED tree instead of about work
+// the next round will rewrite.
+//
+// It runs after every normal termination -- converged, all-rejected, and
+// max-iterations alike -- because in all three the loop is done editing. It does
+// NOT run after an error or an interruption: the tree is then in a state nobody
+// vouched for, and the honest move is to stop rather than start new work on it.
+//
+// The loop's termination is preserved across it. The closing round is extra work
+// on an already-decided run, not a new verdict on it, and letting it rewrite
+// "converged" into "all-rejected" would report the loop's outcome as something it
+// was not.
+func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary) error {
+	asgs := o.finalAssignments()
+	// A canceled context means the operator asked to stop, so the closing round is
+	// simply not started. Returning nil rather than the cancellation is deliberate:
+	// the LOOP already finished and recorded its own outcome, and skipping optional
+	// extra work must not rewrite a run that genuinely converged into a failure.
+	if len(asgs) == 0 || o.cfg.Loop.ReviewOnly || ctx.Err() != nil {
+		return nil //nolint:nilerr // see above: skipping optional work is not a run failure
+	}
+	round := len(sum.Rounds) + 1
+	o.logf("=== final round (%d): %d closing reviewer(s) over the finished tree ===", round, len(asgs))
+
+	material, err := o.collector.Collect(ctx)
+	if err != nil {
+		return err
+	}
+	rec := model.RoundRecord{Round: round, Assignments: asgs, Final: true}
+	o.journal(model.EvRoundStarted, round, model.JournalRoundStarted{
+		Assignments: journalAssignments(asgs),
+		Final:       true,
+	})
+	o.review(ctx, &rec, material, sum.Rounds)
+	sum.Rounds = append(sum.Rounds, rec)
+	recP := &sum.Rounds[len(sum.Rounds)-1]
+	recP.Issues = o.ledger.Absorb(round, recP.Findings)
+	o.journal(model.EvReviewFinished, round, model.JournalReviewFinished{
+		Observations: len(recP.Findings),
+		Advisory:     len(recP.Advisory),
+		Errors:       recP.ReviewErrors,
+	})
+	o.journal(model.EvIssuesAggregated, round, model.JournalIssuesAggregated{
+		Observations: len(recP.Findings),
+		Issues:       len(recP.Issues),
+		Corroborated: corroboratedCount(recP.Issues),
+	})
+	o.logf("final round: %d finding(s), %d advisory, %d reviewer error(s)",
+		len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
+	// Nothing to fix, or the operator stopped us between the review and the fix --
+	// in both cases the round is over and the loop's outcome stands unchanged.
+	if len(recP.Findings) == 0 || ctx.Err() != nil {
+		return nil //nolint:nilerr // a cancellation here leaves the loop's own termination intact
+	}
+
+	// The per-round cap still applies: it exists because one coder session has a
+	// timeout, and that is no less true here. Nothing follows to pick up the
+	// remainder, so anything deferred is reported for a human -- which is the same
+	// deal the cap has always offered, minus the promise of a next round.
+	o.deferOverCap(recP)
+	if _, err := o.fix(ctx, recP, sum.Rounds[:len(sum.Rounds)-1]); err != nil {
+		return err
+	}
+	o.logf("final round: coder fixed %d, rejected %d", recP.Fixed, recP.Rejected)
+	if recP.Fixed == 0 {
+		return nil // nothing to commit; the gate and commit below would no-op
+	}
+	// Same gate and same commit as any other round: a closing round must not be the
+	// one that lands unverified edits.
+	return o.verifyAndCommit(ctx, recP, round)
 }
 
 // claimRepo takes the repository for a run that will write to it and returns the
@@ -641,6 +719,24 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	o.logf("round %d: coder fixed %d, rejected %d", round, recP.Fixed, recP.Rejected)
 
 	return o.finalizeFix(ctx, recP, round, sum)
+}
+
+// finalAssignments builds the closing round: every final lens on EVERY agent it
+// may use. Breadth rather than rotation, because there is no next round to catch
+// what one model missed -- this is the last look at the finished code.
+func (o *Orchestrator) finalAssignments() []model.Assignment {
+	rv := o.cfg.Roles.Review
+	var out []model.Assignment
+	for _, l := range rv.Prompts {
+		if !l.Final {
+			continue
+		}
+		// A pinned final lens stays pinned: LensAgents returns just that agent.
+		for _, a := range rv.LensAgents(l) {
+			out = append(out, model.Assignment{Lens: l.Prompt, Agent: a, Advisory: l.Advisory, Pinned: l.Agent != ""})
+		}
+	}
+	return out
 }
 
 // deferOverCap enforces loop.max_findings_per_round over ISSUES, not raw
@@ -1102,6 +1198,13 @@ func (o *Orchestrator) assignments(round int) []model.Assignment {
 		}
 		if l.Once && round > 1 {
 			continue // once-per-run lens (e.g. design/architecture): round 1 only
+		}
+		// A final lens does not run in the loop at all -- finalAssignments runs it
+		// once after the loop, on the whole pool. In a review-only run there IS no
+		// closing round (no coder to hand anything to), so it runs here instead,
+		// which keeps a review-only config a complete preview of its fix sibling.
+		if l.Final && !o.cfg.Loop.ReviewOnly {
+			continue
 		}
 		// agents is the shared "who may serve this lens" policy (config.LensAgents):
 		// the pinned agent, or the whole pool. The log-collision validator enumerates

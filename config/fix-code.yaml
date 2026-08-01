@@ -22,11 +22,19 @@ roles:
       - review-bugs # correctness
       - review-security # security
       - review-concurrency # concurrency
-      - review-tests # coverage of what the run changed
       # advisory: reported for a human, never handed to the coder, and excluded
       # from the loop's termination condition -- so an open-ended lens cannot
       # keep the run from ever converging.
       - { prompt: review-maintainability, advisory: true }
+      # final: held out of the loop and run ONCE at the end, on every agent, with
+      # its findings fixed like any other. Coverage is a question about finished
+      # code: asked inside the loop it assessed work later rounds rewrote, so it
+      # demanded tests for intermediate states and re-reported the gap each time the
+      # code moved. In a five-round run that made it the largest producer (30 of 68
+      # reports) and the largest waster (18 deferred), and 65% of everything the run
+      # wrote was test code. Asked once at the end, by the whole panel, it is
+      # bounded -- nothing follows it to starve.
+      - { prompt: review-tests, final: true } # coverage of what the run changed
       # once: round 1 only. Architecture barely changes between fix rounds, so
       # this produces one report per run instead of paying a session every round.
       - { agent: claude, prompt: review-design, advisory: true, once: true }

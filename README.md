@@ -129,6 +129,23 @@ Per-lens modifiers:
 - **`once: true`** — the lens runs in round 1 only. Pairs well with an
   advisory design lens: one report per run instead of a full agent session
   every round.
+- **`final: true`** — the lens is held out of the loop and runs once at the end,
+  on **every** agent in the pool, in a closing round whose findings are fixed like
+  any other. For a lens whose subject is the *finished* code. `review-tests` is the
+  case: asked inside the loop it assesses coverage of work later rounds rewrite, so
+  it demands tests for intermediate states and re-reports the gap every time the
+  code moves — in one five-round run it produced 30 of 68 reports, had 18 deferred
+  (more than every other lens combined), and 65% of everything that run wrote was
+  test code. Asked once, at the end, by the whole panel, the question is answered
+  about code that has stopped changing and nothing follows it to starve.
+
+  The closing round runs after **every** normal termination — converged,
+  all-rejected, and max-iterations alike — since the loop is done editing in all
+  three, but not after an error or interruption, when the tree is in a state
+  nobody vouched for. It does not change the run's termination: it is extra work on
+  an already-decided run. `final` and `once` are mutually exclusive, and a
+  review-only run has no closing round (there is no coder), so a final lens simply
+  runs in its single round.
 
 ## Observations and issues
 
@@ -303,7 +320,7 @@ command line.
 
 | Config | What it does |
 |---|---|
-| [review-code](config/review-code.yaml) | Review a whole project once, no edits. The safe starting point. |
+| [review-code](config/review-code.yaml) | Review a whole project once, no edits. Needs `-trusted-target` if the project ships its own bundle. |
 | [review-pr](config/review-pr.yaml) | Review a GitHub pull request; review-only by default. |
 | [fix-code](config/fix-code.yaml) | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
 | [defaults](config/defaults.yaml) | Shared base the others extend; not runnable on its own. |
@@ -388,6 +405,55 @@ The exact prompt sent to each agent is always written at invocation start, so
 a slow or killed agent's input is inspectable mid-run. Run directories and
 files are owner-only (0700/0600), and persisted artifacts pass through a
 best-effort credential redactor — but see below.
+
+### The end-of-run table
+
+Every run prints a scoreboard when it finishes, and the same text opens the
+`summary-*.md`. It prints even when the run failed — a partial run still spent
+tokens and may have committed rounds, which is exactly when you need to see what
+landed.
+
+```
+──────────────────────────────────────────────────────────────────────────────
+ fixpoint · fix-code · max-iterations after 5 round(s) · 2h02m
+──────────────────────────────────────────────────────────────────────────────
+ config     config/fix-code.yaml  (extends defaults)
+ target     directory · /home/coder/fixpoint
+ settings   review+fix · strategy rotate · cap 8 issue(s)/round · max 5 round(s)
+ flags      trusted_target=true
+ verify     fmt, vet, test, lint · passed in 5/5 round(s)
+
+ REVIEWER  issues  fixed  rejected  deferred  advisory  errors    time
+ claude        27     18         0         9        23       1  48m47s
+ codex         23     17         1         5        11       0  44m08s
+ gemma4         9      7         0         2         1       1  36m34s
+ glm            8      4         0         4         6       0  25m38s
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ TOTAL         60     39         1        20
+ rows sum above the total: 7 issue(s) were reported by more than one reviewer
+
+ LENS                    issues  fixed  rejected  deferred  advisory  errors    time
+ review-bugs                 20     15         1         4         0       0  35m21s
+ review-security             12     10         0         2         0       1  44m44s
+ review-tests                26     12         0        14         0       0  24m37s
+ ...
+
+ coder      claude-coder · 39 fixed · 1 rejected · 1h15m
+ commits    5 · f40acbc26fbd a7361e82ecdc d8f4b9d429ea 688156ec2cb8 de3fcaadd43a
+ exit       max-iterations (exit 2)
+──────────────────────────────────────────────────────────────────────────────
+```
+
+It answers the question the interleaved per-round log cannot: **which agent and
+which lens earned their tokens.** A panel is only worth its cost if the answer
+varies between its members, and the table above is what a weak member looks like.
+The `review-tests` row — the most reports, the most deferred, the least converted
+into fixes — is why that lens is now `final: true`.
+
+Attribution is by **issue**, not by raw observation, so two agents reporting one
+defect each get credit for that one issue. The per-agent rows therefore sum to more
+than the distinct TOTAL whenever the panel agreed, and the line under the total
+accounts for the difference.
 
 ### The run journal
 

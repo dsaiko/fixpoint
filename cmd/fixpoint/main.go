@@ -23,6 +23,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/orchestrator"
 )
@@ -157,26 +158,42 @@ Flags:
 	}
 
 	sum, err := o.Run(ctx)
+	// The scoreboard prints even when the run failed: a partial run still spent
+	// tokens and may have committed rounds, and that is exactly when the operator
+	// needs to see what landed. It goes straight to stderr rather than through logf,
+	// which stamps every line with a timestamp and would shred the column alignment.
+	if sum != nil {
+		fmt.Fprint(stderr, "\n"+agent.RedactSecrets(logstore.RenderRunTable(sum)))
+	}
 	if err != nil {
 		logf("run failed: %v", err)
 		return 1
 	}
-	logf("done: %s after %d round(s)", sum.Termination, len(sum.Rounds))
-	switch sum.Termination {
-	case model.TermConverged, model.TermReviewOnly:
-		return 0
-	case model.TermAllRejected:
-		// NOT 0. "The coder rejected every finding" is not "the code is clean" --
-		// it could equally mean the reviewers are miscalibrated or the coder was
-		// unwilling. Nothing changed, so automation keying on exit 0 would read a
-		// no-op as a converged run. Distinct code, distinct meaning.
-		logf("no changes were made: the coder rejected every finding this round")
-		return 3
-	case model.TermMaxIterations:
-		return 2
-	default: // interrupted, error
-		return 1
+	// Keep the one-line, timestamped, greppable outcome as well as the table: the
+	// table is for a human reading the tail, this is what a log scraper matches.
+	// The closing round is counted separately -- it runs after the outcome is
+	// decided, so folding it in would overstate how long convergence took.
+	loopRounds, closing := 0, 0
+	for _, r := range sum.Rounds {
+		if r.Final {
+			closing++
+		} else {
+			loopRounds++
+		}
 	}
+	done := fmt.Sprintf("done: %s after %d round(s)", sum.Termination, loopRounds)
+	if closing > 0 {
+		done += " + closing round"
+	}
+	logf("%s", done)
+	if sum.Termination == model.TermAllRejected {
+		// Exit 3, NOT 0. "The coder rejected every finding" is not "the code is
+		// clean" -- it could equally mean the reviewers are miscalibrated or the
+		// coder was unwilling. Nothing changed, so automation keying on exit 0 would
+		// read a no-op as a converged run.
+		logf("no changes were made: the coder rejected every finding this round")
+	}
+	return model.ExitCode(sum.Termination)
 }
 
 // configName picks the config to run from the positional argument or -config.

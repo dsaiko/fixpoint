@@ -68,15 +68,74 @@ func TestAbsorbMergesNearbyLines(t *testing.T) {
 	}
 }
 
-// ...but not so far apart that unrelated code merges.
-func TestAbsorbKeepsDistantLinesApart(t *testing.T) {
+// ...and distance is not what keeps unrelated code apart -- disagreeing titles are.
+func TestAbsorbKeepsDistantUnrelatedFindingsApart(t *testing.T) {
 	l := NewLedger()
 	got := l.Absorb(1, []model.Finding{
 		obs("a", "bugs", "bug", "high", "pkg/x.go", 10, "one defect"),
 		obs("b", "bugs", "bug", "high", "pkg/x.go", 400, "an entirely different defect"),
 	})
 	if len(got) != 2 {
-		t.Fatalf("got %d issues, want 2: merging distant code would tell the coder to fix one thing when there are two", len(got))
+		t.Fatalf("got %d issues, want 2: merging unrelated code would tell the coder to fix one thing when there are two", len(got))
+	}
+}
+
+// A re-report of one defect after the code moved is the SAME issue, however far it
+// moved. This is the failure that stopped a real five-round run from converging: the
+// fix rounds grew the file above the defect by ~55 lines each round, so the same
+// complaint was minted as a new issue every round (orchestrator.go:1343, :1399,
+// :1453). A new id carries no deferral history, so severity aging restarted each
+// time and the issue was deferred forever, never scheduled and never fixed.
+func TestAbsorbMatchesAcrossRoundsAfterTheCodeMoved(t *testing.T) {
+	l := NewLedger()
+	first := l.Absorb(1, []model.Finding{
+		obs("a", "tests", "tests", "medium", "internal/orchestrator/orchestrator.go", 1343,
+			"Partial-salvage commit journal record (Partial: true) is never asserted"),
+	})
+	if len(first) != 1 {
+		t.Fatalf("round 1: got %d issues, want 1", len(first))
+	}
+	id := first[0].ID
+
+	// Round 2: same defect, reported 56 lines lower by a different agent wording it
+	// differently -- which is the normal case, not an edge case, under `rotate`.
+	second := l.Absorb(2, []model.Finding{
+		obs("b", "tests", "tests", "medium", "internal/orchestrator/orchestrator.go", 1399,
+			"Partial-salvage commit journal payload remains unasserted"),
+	})
+	if len(second) != 1 {
+		t.Fatalf("round 2: got %d issues, want 1: the code moved, the defect did not", len(second))
+	}
+	if second[0].ID != id {
+		t.Errorf("round 2 minted %s for the same defect first seen as %s; a fresh id resets the deferral count and defeats severity aging", second[0].ID, id)
+	}
+}
+
+// Aging depends on the match above holding: the whole point of a stable id is that
+// Deferrals keeps counting across rounds, so a repeatedly skipped issue eventually
+// outranks the fresh ones and gets scheduled.
+func TestDeferralsAccumulateAcrossRoundsAfterTheCodeMoved(t *testing.T) {
+	l := NewLedger()
+	l.Absorb(1, []model.Finding{
+		obs("a", "tests", "tests", "low", "pkg/x.go", 100, "helper has no test coverage"),
+	})
+	id := l.Issues()[0].ID
+	l.Record(id, model.VerdictDeferred, "over cap")
+
+	// Two more rounds, each finding it further down the file as fixes above it land.
+	l.Absorb(2, []model.Finding{
+		obs("b", "tests", "tests", "low", "pkg/x.go", 160, "no test coverage for the helper"),
+	})
+	l.Record(id, model.VerdictDeferred, "over cap")
+	l.Absorb(3, []model.Finding{
+		obs("c", "tests", "tests", "low", "pkg/x.go", 230, "the helper has no test coverage"),
+	})
+
+	if n := len(l.Issues()); n != 1 {
+		t.Fatalf("got %d issues, want 1: three reports of one defect that moved", n)
+	}
+	if got := l.Deferrals(id); got != 2 {
+		t.Errorf("Deferrals(%s) = %d, want 2; without an accumulating count the issue never ages into the cap", id, got)
 	}
 }
 

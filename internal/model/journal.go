@@ -108,6 +108,9 @@ type JournalRunFinished struct {
 // strategy: rotate differs every round and decides who confirmed a clean result.
 type JournalRoundStarted struct {
 	Assignments []string `json:"assignments"` // "lens->agent", advisory ones marked
+	// Final marks the closing round for `final: true` lenses, which runs after the
+	// loop has already decided the run's outcome.
+	Final bool `json:"final,omitempty"`
 }
 
 // JournalReviewFinished separates the three outcomes a review round has: findings

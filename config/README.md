@@ -49,7 +49,7 @@ and in shell completion. The scope says what is examined.
 
 | Config | What it does |
 |---|---|
-| `review-code` | Review a whole project once, no edits. The safe starting point. |
+| `review-code` | Review a whole project once, no edits. Needs `-trusted-target` if the project ships its own bundle. |
 | `review-pr` | Review a GitHub pull request; review-only by default. |
 | `fix-code` | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
 | `defaults` | Shared base — not runnable on its own; `fixpoint --list` marks it as such. Inherit it with `extends: defaults`. |

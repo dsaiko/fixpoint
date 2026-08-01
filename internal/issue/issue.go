@@ -19,12 +19,25 @@ import (
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
-// nearbyLines is how far apart two reports of the same file may be and still be
-// treated as one issue. Reviewers point at slightly different lines for the same
-// defect -- the declaration, the use, the enclosing function -- and demanding an
-// exact match would leave those as separate issues. A few lines is generous enough
-// to catch that without merging genuinely unrelated code.
-const nearbyLines = 5
+// Two reports of the same FILE whose titles agree are one issue, however far apart
+// their lines are. The evidence for sameness is the title; the line is not evidence
+// at all in a repository this tool is actively editing.
+//
+// This used to require the lines to be within a few of each other, on the reasoning
+// that reviewers point at slightly different lines for one defect -- the
+// declaration, the use, the enclosing function. True, but far too narrow: a fix run
+// MOVES code, so a deferred issue re-reported next round is typically tens of lines
+// from where it was. In one five-round run the same complaint was minted four times
+// (orchestrator.go:1343, :1399, :1453, then a different file) as the rounds above it
+// grew by ~55 lines each. That is not merely a duplicate costing a slot, which is
+// what the conservative stance was priced against: a new id has NO deferral history,
+// so severity aging restarted every round and the issue was deferred forever. The
+// run never converged.
+//
+// Merging two distinct problems is still worse than leaving a duplicate, so the
+// title agreement below is what carries the decision -- three unrelated defects in
+// one file are three issues, because their titles do not agree. Only the line
+// window is gone.
 
 // Ledger accumulates issues over a run. It is not safe for concurrent use: the
 // parallel part of a round is the reviewers, and aggregation happens after their
@@ -151,18 +164,16 @@ func (l *Ledger) match(obs *model.Finding) int {
 			return idx
 		}
 	}
-	// Line-proximity match, for "the declaration" versus "the use two lines down".
-	// Proximity ALONE is not enough: three unrelated defects on consecutive lines
-	// of one file are three issues, and merging them would tell the coder to fix
-	// one thing when there are three -- strictly worse than leaving a duplicate,
-	// which only costs a slot. So a nearby line must also describe the same thing.
-	if obs.Line > 0 && obs.File != "" {
+	// Same file, agreeing titles: one issue, at any distance. This is what carries a
+	// re-report across rounds once a fix has moved the code -- see the note on
+	// titlesAgree above for why the line window that used to bound this is gone.
+	if obs.File != "" {
 		for idx := range l.issues {
 			it := l.issues[idx]
-			if it.Line == 0 || normalizePath(it.File) != normalizePath(obs.File) {
+			if normalizePath(it.File) != normalizePath(obs.File) {
 				continue
 			}
-			if abs(it.Line-obs.Line) <= nearbyLines && titlesAgree(it.Title, obs.Title) {
+			if titlesAgree(it.Title, obs.Title) {
 				return idx
 			}
 		}
@@ -376,13 +387,6 @@ var stopwords = map[string]bool{
 	"not": true, "of": true, "on": true, "or": true, "that": true, "the": true,
 	"then": true, "this": true, "to": true, "when": true, "which": true,
 	"with": true, "would": true,
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
 }
 
 func sortedKeys(m map[int]bool) []int {

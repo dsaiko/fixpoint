@@ -164,6 +164,10 @@ type RoundRecord struct {
 	Verify        []VerifyResult `json:"verify,omitempty"`
 	VerifyRetried bool           `json:"verify_retried,omitempty"`
 	Steps         []StepStat     `json:"steps,omitempty"` // per-invocation I/O figures
+	// Final marks the closing round that `final: true` lenses run in, after the loop
+	// has stopped. It is not part of the convergence story -- it happens once the
+	// run's outcome is already decided -- so a reader must be able to tell it apart.
+	Final bool `json:"final,omitempty"`
 }
 
 // StepStat records one agent invocation's size and duration figures, so runs
@@ -188,14 +192,41 @@ type RunSummary struct {
 	// agents that edit code and the config holds the trust gates, so which FILE
 	// each name resolved to is part of the run's record -- a project-local prompt
 	// shadowing the installed one is otherwise invisible after the fact.
-	Sources     RunSources    `json:"sources"`
-	Mode        string        `json:"mode"`
-	Path        string        `json:"path"`
-	Strategy    string        `json:"strategy"`
-	ReviewOnly  bool          `json:"review_only"`
-	Rounds      []RoundRecord `json:"rounds"`
-	Termination string        `json:"termination"`
-	Error       string        `json:"error,omitempty"`
+	Sources    RunSources `json:"sources"`
+	Mode       string     `json:"mode"`
+	Path       string     `json:"path"`
+	Strategy   string     `json:"strategy"`
+	ReviewOnly bool       `json:"review_only"`
+	// The effective limits and command-line assertions the run used. They are what
+	// make the counts readable after the fact: "17 deferred" means nothing without
+	// the per-round cap that deferred them, and "fix rounds ran" needs the flag that
+	// authorized them, since no config file may grant that.
+	MaxIterations       int           `json:"max_iterations,omitempty"`
+	MaxFindingsPerRound int           `json:"max_findings_per_round,omitempty"`
+	Overrides           []string      `json:"overrides,omitempty"`
+	Coder               string        `json:"coder,omitempty"`
+	Rounds              []RoundRecord `json:"rounds"`
+	Termination         string        `json:"termination"`
+	Error               string        `json:"error,omitempty"`
+}
+
+// ExitCode maps a termination to the process exit status, so the run summary and
+// the CLI cannot disagree about what a run meant.
+//
+// all-rejected is deliberately NOT 0: "the coder rejected every finding" could
+// equally mean the reviewers are miscalibrated or the coder was unwilling, and
+// nothing changed -- automation keying on 0 would read a no-op as a clean run.
+func ExitCode(termination string) int {
+	switch termination {
+	case TermConverged, TermReviewOnly:
+		return 0
+	case TermMaxIterations:
+		return 2
+	case TermAllRejected:
+		return 3
+	default: // interrupted, error
+		return 1
+	}
 }
 
 // Termination reasons.

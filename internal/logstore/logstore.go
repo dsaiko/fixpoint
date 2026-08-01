@@ -255,6 +255,9 @@ func RenderFixMD(agent string, round int, findings []model.Finding, notes string
 func renderSummaryMD(sum *model.RunSummary) string {
 	var sb strings.Builder
 	sb.WriteString("# fixpoint run summary\n\n")
+	// The scoreboard first, fenced so its column alignment survives: it is the same
+	// text the run prints when it ends, and the part anyone reads before the detail.
+	sb.WriteString("```\n" + RenderRunTable(sum) + "```\n\n")
 	fmt.Fprintf(&sb, "- started: %s\n", sum.StartedAt.Format(time.RFC3339))
 	fmt.Fprintf(&sb, "- finished: %s\n", sum.FinishedAt.Format(time.RFC3339))
 	fmt.Fprintf(&sb, "- target: %s (%s)\n", sum.Path, sum.Mode)
