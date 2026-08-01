@@ -3699,6 +3699,42 @@ func TestCommitPolicyPerFixCommitsEachIssueSeparately(t *testing.T) {
 	}
 }
 
+// The per-fix subject renders a reviewer-authored title, so it needs the same
+// handling the body gets. A title quoting a credential the reviewer found while
+// exploring must be masked -- the commit is the one artifact meant to be pushed --
+// and a title carrying newlines must not be able to append lines of its own to the
+// message, since `git commit -m` takes its argument literally.
+func TestPerFixCommitSubjectRedactsAndFlattensTheTitle(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1,
+			Title: "leaked AKIA1234567890ABCDEF\nSigned-off-by: Someone <nobody@example.com>"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "rotated"}))
+	f.respond(3, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	if strings.Contains(msg, "AKIA1234567890ABCDEF") {
+		t.Errorf("commit message leaks the credential quoted in the title:\n%s", msg)
+	}
+	if !strings.Contains(msg, "[REDACTED]") {
+		t.Errorf("commit message missing the mask (elided instead of masked?):\n%s", msg)
+	}
+	subject := strings.TrimSpace(gitRun(t, f.repo, "log", "-1", "--format=%s"))
+	if !strings.Contains(subject, "Signed-off-by") {
+		t.Errorf("subject = %q, want the title flattened onto one line, trailer text and all", subject)
+	}
+	for _, line := range strings.Split(msg, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Signed-off-by:") {
+			t.Errorf("the title forged a line of its own into the commit message:\n%s", msg)
+		}
+	}
+}
+
 // per_round regroups the round's per-fix commits into the single commit fixpoint
 // has always produced. The squash is `reset --soft`, so the tree must be identical
 // to what the per-fix commits already verified -- and the body describes the round.

@@ -583,19 +583,25 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 		o.logf("round %d: %s left nothing to commit -- the verification correction reverted it; the finding is reopened", rec.Round, it.ID)
 		return false, nil
 	}
+	// The subject embeds the reviewer-authored title, so it gets the same two
+	// treatments the body does. Flattening first: `git commit -m` takes the
+	// argument literally, so a title carrying newlines would forge extra lines
+	// -- trailers like Signed-off-by: among them -- into the message.
 	header := strings.NewReplacer(
 		"{round}", strconv.Itoa(rec.Round),
 		"{fixed}", "1",
 		"{rejected}", "0",
 		"{issue}", it.ID,
-		"{title}", it.Title,
+		"{title}", strings.Join(strings.Fields(it.Title), " "),
 	).Replace(o.fixCommitMessage())
 	var body strings.Builder
 	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, it.Category, it.Severity, it.Loc())
 	if it.VerdictDetail != "" {
 		body.WriteString("\n" + it.VerdictDetail + "\n")
 	}
-	sha, err := o.collector.Commit(ctx, header, agent.RedactSecrets(body.String()), o.gitExclude...)
+	// Redact the subject as well as the body: it is agent-authored text bound for
+	// a pushed commit, exactly what squashTo redacts for the same reason.
+	sha, err := o.collector.Commit(ctx, agent.RedactSecrets(header), agent.RedactSecrets(body.String()), o.gitExclude...)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, o.reconcileInterrupt(rec.Round, err) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
