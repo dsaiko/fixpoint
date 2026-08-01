@@ -78,6 +78,10 @@ const (
 	// yet edited files: no verdict claims the edits, so they are stashed instead
 	// of committed.
 	DiscardRejectedWithEdits = "rejected_with_edits"
+	// DiscardFinalCoderFailed is the CLOSING round whose coder failed after editing.
+	// A normal round salvages such work because the next round re-reviews it; the
+	// closing round has no next round, so the edits are stashed instead.
+	DiscardFinalCoderFailed = "final_coder_failed"
 )
 
 // JournalRunStarted records what the run was configured to do. It repeats values
@@ -100,8 +104,11 @@ type JournalRunStarted struct {
 // information: the process died before it could finish.
 type JournalRunFinished struct {
 	Termination string `json:"termination"`
-	Rounds      int    `json:"rounds"`
-	Error       string `json:"error,omitempty"`
+	// LoopTermination is how the loop itself ended when a failure in the closing
+	// round afterwards turned Termination into "error". See RunSummary.
+	LoopTermination string `json:"loop_termination,omitempty"`
+	Rounds          int    `json:"rounds"`
+	Error           string `json:"error,omitempty"`
 }
 
 // JournalRoundStarted records the lens-to-agent assignment, which under

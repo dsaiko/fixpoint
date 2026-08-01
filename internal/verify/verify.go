@@ -63,9 +63,20 @@ func (r Report) Failures() []Result {
 // this run's fault, and treating it as one would refuse to work on any repository
 // that starts red. A command missing from the baseline counts as a regression:
 // absent evidence that it ever passed, the safe reading is that this run broke it.
+//
+// A baseline entry that could not RUN -- a missing binary, a bad working
+// directory, a timeout -- is treated as missing rather than as a pre-existing
+// failure. Such an entry says nothing about the project: it says the gate itself
+// never executed. Tolerating its repeat failures would let a misconfigured or
+// permanently timing-out command be silently exempt for the whole run, so the
+// configured check would never once run successfully and no round would ever be
+// blocked by it. Absent evidence, block.
 func (r Report) Regressions(baseline Report) []Result {
 	was := make(map[string]bool, len(baseline.Results))
 	for _, b := range baseline.Results {
+		if b.Err != "" {
+			continue // unusable baseline for this command; see above
+		}
 		was[b.Name] = b.Passed
 	}
 	var out []Result
@@ -74,6 +85,21 @@ func (r Report) Regressions(baseline Report) []Result {
 			continue
 		}
 		if passed, known := was[res.Name]; !known || passed {
+			out = append(out, res)
+		}
+	}
+	return out
+}
+
+// Unrunnable returns the non-optional commands that did not execute at all: a
+// missing binary, a bad working directory, a timeout. In a baseline these are the
+// entries Regressions refuses to read as pre-existing failures, and the caller
+// reports them so an operator is not left believing a check they configured is
+// merely "already red".
+func (r Report) Unrunnable() []Result {
+	var out []Result
+	for _, res := range r.Results {
+		if !res.Optional && res.Err != "" {
 			out = append(out, res)
 		}
 	}

@@ -129,12 +129,11 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		// Keep the run's own logs out of the diff too, not just the untracked
 		// listing: a tracked file under the logs dir (a committed .prompt from an
 		// earlier run) would otherwise show its full modified content here and be
-		// fed back as review material. The pathspec matches the exclusion applied
-		// by GitClean/Commit.
-		if ex := c.excludes(); len(ex) > 0 {
-			args = append(args, "--")
-			args = append(args, pathspec(ex)...)
-		}
+		// fed back as review material. The same pathspec also drops target.exclude
+		// and the mandatory credential patterns, whose content the diff would
+		// otherwise embed verbatim -- see collectPathspec.
+		args = append(args, "--")
+		args = append(args, c.collectPathspec()...)
 		diff, err := c.git(ctx, args...)
 		if err != nil {
 			return "", err
@@ -143,7 +142,7 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		// swallowed: silently treating it as "no untracked files" would drop
 		// them from review without reporting the collection was incomplete.
 		lsArgs := []string{"ls-files", "--others", "--exclude-standard", "--"}
-		lsArgs = append(lsArgs, pathspec(c.excludes())...)
+		lsArgs = append(lsArgs, c.collectPathspec()...)
 		untracked, err := c.git(ctx, lsArgs...)
 		if err != nil {
 			return "", fmt.Errorf("list untracked files: %w", err)
@@ -862,6 +861,28 @@ func pathspec(exclude []string) []string {
 	return specs
 }
 
+// collectPathspec is pathspec plus the target.exclude globs and the mandatory
+// credential patterns, for the git commands that COLLECT review material.
+//
+// listFiles applies EffectiveExcludes to directory mode; without this the git
+// modes applied neither it nor target.exclude, and they are where it matters
+// most: a directory listing only ever names a path, whereas `git diff` embeds the
+// full file CONTENT into every reviewer prompt, into each agent CLI's arguments
+// or stdin, and into the .prompt/.raw artifacts on disk. A PR that adds a .env or
+// a deploy key would hand that key material verbatim to every reviewer, and
+// agent.RedactSecrets is shape-based and best-effort. The `glob` magic gives git
+// the same `**/` semantics compileGlobs gives the directory walk.
+//
+// The positive "." spec comes from pathspec: collection is scoped to target.path,
+// the same scope the clean check and the round commit use.
+func (c *Collector) collectPathspec() []string {
+	specs := pathspec(c.excludes())
+	for _, g := range c.cfg.EffectiveExcludes() {
+		specs = append(specs, ":(exclude,glob)"+g)
+	}
+	return specs
+}
+
 // restoreProtectedPath reproduces one excluded path's pre-stash index and
 // worktree state from the stash's own trees, keeping the two independent so a
 // staged-but-then-modified path keeps both sides: the index from the index
@@ -927,9 +948,18 @@ func (c *Collector) pathInTree(ctx context.Context, tree, p string) (bool, error
 // (a command status/diff/ls-files would spawn) is disabled. This does not cover
 // gitattributes-driven filters/diff-drivers or gh's own internal git calls; a
 // truly untrusted .git should still be reviewed under an external sandbox.
+//
+// protocol.ext.allow=never kills the ext:: helper protocol, whose URL IS a shell
+// command git runs. git's default for it is "user", i.e. permitted for exactly the
+// user-initiated fetches fixpoint performs (`gh pr checkout`, the base-object
+// fetch), and a repo-local url.<ext-url>.insteadOf can route an ordinary-looking
+// remote URL into it. unsafeConfigKey refuses such a rewrite, but this closes the
+// whole class rather than one key at a time -- including the shapes that reach git
+// through gh's internal calls, since gitHardenedEnv exports these as GIT_CONFIG_*.
 var gitSafeConfig = []string{
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",
+	"-c", "protocol.ext.allow=never",
 }
 
 // gitHardenedEnv returns the child environment for every git/gh subprocess:
@@ -981,16 +1011,40 @@ func gitHardenedEnv() []string {
 // are dynamic); a signing program COULD be force-disabled with
 // -c commit.gpgSign=false, but refusing preserves legitimate signed round commits
 // for a trusted operator instead of silently dropping their signatures.
+//
+// The TRANSPORT settings below are the same class on the fetch path this guard
+// exists to protect -- pr mode's `gh pr checkout` and Prepare's `git fetch` of the
+// base object:
+//
+//   - url.<base>.insteadOf / pushInsteadOf rewrite the URL git actually contacts.
+//     `[url "ext::sh -c <cmd>"] insteadOf = https://github.com/` leaves
+//     remote.origin.url an ordinary GitHub URL (so gh still resolves the repo)
+//     while every fetch goes through the ext:: helper protocol, which git runs as
+//     a shell command. gitSafeConfig additionally pins protocol.ext.allow=never so
+//     this particular shape is dead even before the guard sees it, but the rewrite
+//     can target other transports too and the key belongs on the list.
+//   - core.gitProxy is a program git runs for git:// transport.
+//   - remote.<name>.uploadPack/receivePack/proxy are programs run for local and
+//     file transports.
+//
+// The names are dynamic (subsections), so like the filters they cannot be
+// neutralized by a -c override; refusing is the answer.
 func unsafeConfigKey(key string) bool {
 	switch {
 	case strings.HasPrefix(key, "filter.") &&
 		(strings.HasSuffix(key, ".clean") || strings.HasSuffix(key, ".smudge") || strings.HasSuffix(key, ".process")):
 		return true
-	case key == "core.sshcommand":
+	case key == "core.sshcommand" || key == "core.gitproxy":
 		return true
 	case strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"):
 		return true
 	case strings.HasPrefix(key, "gpg.") && strings.HasSuffix(key, ".program"):
+		return true
+	case strings.HasPrefix(key, "url.") &&
+		(strings.HasSuffix(key, ".insteadof") || strings.HasSuffix(key, ".pushinsteadof")):
+		return true
+	case strings.HasPrefix(key, "remote.") &&
+		(strings.HasSuffix(key, ".uploadpack") || strings.HasSuffix(key, ".receivepack") || strings.HasSuffix(key, ".proxy")):
 		return true
 	}
 	return false

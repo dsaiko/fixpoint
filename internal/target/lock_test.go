@@ -64,6 +64,67 @@ func TestLockRepoDoesNotTouchTheWorktree(t *testing.T) {
 	}
 }
 
+// The lock is opened, TRUNCATED, and rewritten inside the target's .git -- which
+// fixpoint treats as attacker-controllable. An extracted archive or crafted
+// checkout can ship .git/fixpoint.lock as a symlink to any file the operator can
+// write, and following it would destroy that file from a review-only run that
+// passes no trust gate. Refuse, and leave the pointed-at file untouched.
+func TestLockRepoRefusesASymlinkedLockFile(t *testing.T) {
+	repo := gitRepo(t)
+	victim := filepath.Join(t.TempDir(), "authorized_keys")
+	const content = "ssh-ed25519 AAAA... operator@host\n"
+	if err := os.WriteFile(victim, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(repo, ".git", lockName)); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := New(config.Target{Path: repo}).LockRepo(t.Context())
+	if err == nil {
+		release()
+		t.Fatal("LockRepo() followed a symlinked lock path; it truncates that file, so an arbitrary file would have been destroyed")
+	}
+	if !strings.Contains(err.Error(), "symlink") || !strings.Contains(err.Error(), lockName) {
+		t.Errorf("refusal must name the path and say why, got: %v", err)
+	}
+	got, rerr := os.ReadFile(victim)
+	if rerr != nil {
+		t.Fatalf("read the symlink target after the refusal: %v", rerr)
+	}
+	if string(got) != content {
+		t.Errorf("the symlink target was modified: %q, want %q", got, content)
+	}
+}
+
+// The same write, through the shape O_NOFOLLOW cannot see: a hard link planted at
+// the lock path is indistinguishable from a regular file at open time, and
+// truncating it destroys the other name for the same inode.
+func TestLockRepoRefusesAHardLinkedLockFile(t *testing.T) {
+	repo := gitRepo(t)
+	victim := filepath.Join(t.TempDir(), "notes.db")
+	const content = "important\n"
+	if err := os.WriteFile(victim, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(victim, filepath.Join(repo, ".git", lockName)); err != nil {
+		t.Skipf("hard links unavailable here: %v", err)
+	}
+
+	release, err := New(config.Target{Path: repo}).LockRepo(t.Context())
+	if err == nil {
+		release()
+		t.Fatal("LockRepo() accepted a hard-linked lock path; truncating it destroys the file it shares an inode with")
+	}
+	got, rerr := os.ReadFile(victim)
+	if rerr != nil {
+		t.Fatalf("read the hard-link target after the refusal: %v", rerr)
+	}
+	if string(got) != content {
+		t.Errorf("the hard-link target was modified: %q, want %q", got, content)
+	}
+}
+
 // A directory that is not a git repository has no repository to lock, and the
 // caller must hear about it rather than proceed unlocked.
 func TestLockRepoFailsOutsideAGitRepository(t *testing.T) {

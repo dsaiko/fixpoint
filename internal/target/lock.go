@@ -40,9 +40,26 @@ func (c *Collector) LockRepo(ctx context.Context) (func(), error) {
 		return nil, fmt.Errorf("locate the git directory of %s to lock it: %w", c.cfg.Path, err)
 	}
 	path := filepath.Join(strings.TrimSpace(gitDir), lockName)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	// O_NOFOLLOW: the lock lives in the TARGET's git directory, which fixpoint
+	// already treats as attacker-controllable (see gitSafeConfig, and the logs
+	// symlink check). An extracted archive or crafted checkout can ship
+	// .git/fixpoint.lock as a symlink to ~/.ssh/authorized_keys or any other file
+	// the operator can write, and the Truncate(0) below would then destroy it --
+	// from a review-only run that passes no trust gate. Without O_NOFOLLOW the open
+	// follows the link; with it the open fails (ELOOP) and the run refuses.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("refusing to run: the repository lock path %s is a symlink; fixpoint truncates and rewrites that file, so following it would destroy whatever it points at. Remove it (a genuine fixpoint lock is a regular file) and treat this checkout as untrusted", path)
+		}
 		return nil, fmt.Errorf("open repository lock %s: %w", path, err)
+	}
+	// Defense in depth for the shapes O_NOFOLLOW does not cover: a hard link to
+	// someone else's file, a fifo that would block a reader, a device node. Only a
+	// regular file we own is safe to truncate and rewrite.
+	if err := checkLockFile(f, path); err != nil {
+		_ = f.Close()
+		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		holder := lockHolder(f)
@@ -64,6 +81,33 @@ func (c *Collector) LockRepo(ctx context.Context) (func(), error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
+}
+
+// checkLockFile confirms the OPENED descriptor is a plain file this user owns,
+// before the caller truncates it. O_NOFOLLOW rejects the symlink shape; this
+// rejects the rest a prepared .git can plant at the path: a hard link to a file
+// elsewhere (which no open flag detects, and which truncation would destroy just
+// as thoroughly), a fifo, a device node. It stats the descriptor rather than the
+// path, so nothing can be swapped in between the check and the write.
+func checkLockFile(f *os.File, path string) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect repository lock %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to run: the repository lock path %s is not a regular file (%s); fixpoint truncates and rewrites that file, and a genuine lock is a plain file. Treat this checkout as untrusted", path, info.Mode().Type())
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil // unknown platform shape; the regular-file check above still held
+	}
+	if st.Nlink > 1 {
+		return fmt.Errorf("refusing to run: the repository lock %s has %d hard links, so it is also some other path; fixpoint truncates and rewrites it, which would destroy that file. Treat this checkout as untrusted", path, st.Nlink)
+	}
+	if uid := os.Getuid(); uid >= 0 && int(st.Uid) != uid {
+		return fmt.Errorf("refusing to run: the repository lock %s is owned by uid %d, not by the user running fixpoint (uid %d); fixpoint truncates and rewrites that file. Treat this checkout as untrusted", path, st.Uid, uid)
+	}
+	return nil
 }
 
 // lockHolder reads the holder description the owning run wrote, for the contention

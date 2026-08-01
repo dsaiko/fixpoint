@@ -129,6 +129,38 @@ func TestRegressionsTreatsUnknownCommandAsRegression(t *testing.T) {
 	}
 }
 
+// A baseline entry that could not RUN -- a missing binary, a bad working
+// directory, a timeout -- records nothing about the project: it records that the
+// gate never executed. Treating it as a pre-existing failure would exempt that
+// command for the whole run, so the configured check could keep never running
+// while every round is committed as if it had passed.
+func TestRegressionsRejectsAnUnusableBaselineEntry(t *testing.T) {
+	baseline := Report{Results: []Result{
+		{Name: "test", Err: "exec: \"go\": executable file not found in $PATH"},
+		{Name: "lint", Err: "timed out after 1m0s"},
+		{Name: "build", Passed: false}, // a genuine pre-existing failure
+	}}
+	after := Report{Results: []Result{
+		{Name: "test", Err: "exec: \"go\": executable file not found in $PATH"},
+		{Name: "lint", Err: "timed out after 1m0s"},
+		{Name: "build", Passed: false},
+	}}
+	got := names(after.Regressions(baseline))
+	if len(got) != 2 || got[0] != "test" || got[1] != "lint" {
+		t.Errorf("Regressions() = %v, want the two unusable-baseline commands to block (build is genuinely pre-existing)", got)
+	}
+	// An unusable baseline command that later succeeds is not a regression.
+	fixed := Report{Results: []Result{{Name: "test", Passed: true}}}
+	if r := fixed.Regressions(baseline); len(r) != 0 {
+		t.Errorf("Regressions() = %v, want none once the command runs and passes", names(r))
+	}
+	// And the caller can name them, so the operator is not told they are merely
+	// "pre-existing failures policy permits".
+	if u := names(baseline.Unrunnable()); len(u) != 2 {
+		t.Errorf("Unrunnable() = %v, want [test lint]", u)
+	}
+}
+
 // Output is captured (both streams), bounded, and reported for diagnosis.
 func TestRunCapturesCombinedOutput(t *testing.T) {
 	dir := t.TempDir()

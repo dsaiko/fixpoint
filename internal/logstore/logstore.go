@@ -264,6 +264,9 @@ func renderSummaryMD(sum *model.RunSummary) string {
 	fmt.Fprintf(&sb, "- strategy: %s, review_only: %v\n", sum.Strategy, sum.ReviewOnly)
 	fmt.Fprintf(&sb, "- rounds: %d\n", len(sum.Rounds))
 	fmt.Fprintf(&sb, "- termination: **%s**\n", sum.Termination)
+	if sum.LoopTermination != "" {
+		fmt.Fprintf(&sb, "- loop termination (before the closing round failed): %s\n", sum.LoopTermination)
+	}
 	if sum.Error != "" {
 		fmt.Fprintf(&sb, "- error: %s\n", sum.Error)
 	}

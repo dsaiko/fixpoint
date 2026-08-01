@@ -1183,6 +1183,79 @@ func TestUnsafeConfig(t *testing.T) {
 			}
 		}
 	})
+
+	// The transport settings are the same class on the path the guard is actually
+	// for: pr mode fetches (gh pr checkout, and Prepare's base-object fetch). A
+	// url.<base>.insteadOf rewrite leaves remote.origin.url an ordinary GitHub URL
+	// -- so nothing else looks wrong -- while routing every fetch through a helper
+	// protocol whose URL git executes.
+	t.Run("flags transport settings that execute programs", func(t *testing.T) {
+		repo := gitRepo(t)
+		git(t, repo, "config", "url.ext::sh -c id.insteadOf", "https://github.com/")
+		git(t, repo, "config", "url.ext::sh -c id.pushInsteadOf", "https://github.com/")
+		git(t, repo, "config", "core.gitProxy", "./payload")
+		git(t, repo, "config", "remote.origin.uploadPack", "./payload")
+		git(t, repo, "config", "remote.origin.receivePack", "./payload")
+		git(t, repo, "config", "remote.origin.proxy", "./payload")
+		keys, err := New(config.Target{Path: repo}).UnsafeConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Join(keys, ",")
+		for _, want := range []string{
+			"url.ext::sh -c id.insteadof", "url.ext::sh -c id.pushinsteadof",
+			"core.gitproxy",
+			"remote.origin.uploadpack", "remote.origin.receivepack", "remote.origin.proxy",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("UnsafeConfig() = %v, want it to include %q", keys, want)
+			}
+		}
+	})
+}
+
+// The diff embeds full file CONTENT into every reviewer prompt and into the
+// on-disk artifacts, so the mandatory credential excludes matter more here than
+// in directory mode -- which only ever emits a list of paths. A PR that adds a
+// .env or a deploy key must not hand the key material to the reviewers.
+func TestCollectGitDiffAppliesExcludes(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: "HEAD", Exclude: []string{"**/vendor/**"}})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Committed inside the diff range: content would otherwise be rendered in full.
+	writeFile(t, repo, ".env", "DB_PASS=hunter2-committed\n")
+	writeFile(t, repo, "deploy/id_rsa.pem", "-----BEGIN PRIVATE KEY-----\ncommitted-key\n")
+	writeFile(t, repo, "vendor/dep/c.go", "package dep // configured-exclude\n")
+	writeFile(t, repo, "main.go", "package main // reviewed\n")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "secrets")
+	// And as untracked files, which are listed by path rather than diffed.
+	writeFile(t, repo, "sub/.env.local", "TOKEN=hunter2-untracked\n")
+	writeFile(t, repo, "sub/ok.txt", "fine\n")
+
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{
+		"hunter2-committed", ".env",
+		"committed-key", "id_rsa.pem",
+		"hunter2-untracked", ".env.local",
+		"configured-exclude", "vendor/dep/c.go",
+	} {
+		if strings.Contains(material, leak) {
+			t.Errorf("Collect() leaked %q into the review material:\n%s", leak, material)
+		}
+	}
+	// ...while everything else is still collected: the exclusion must not silently
+	// narrow the review to nothing.
+	for _, want := range []string{"// reviewed", "sub/ok.txt"} {
+		if !strings.Contains(material, want) {
+			t.Errorf("Collect() missing %q:\n%s", want, material)
+		}
+	}
 }
 
 // ghRemote must select the remote gh treats as the base without assuming

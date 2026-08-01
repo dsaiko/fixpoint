@@ -264,30 +264,17 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 	}
 	err := o.run(ctx, sum)
 	sum.FinishedAt = time.Now()
-	if err != nil && sum.Termination == "" {
-		// Cancellation mid-step (e.g. Ctrl-C while the coder runs) surfaces as
-		// that step's error -- typically a kill message from agent.Run. Record
-		// it as an interruption, like the loop's own ctx checks do, so the
-		// summary distinguishes "user stopped it" from "it failed".
-		// A dirty tree left behind because the interrupt-time stash failed is a
-		// hard failure, not a clean interruption: surface it and record it in the
-		// summary even though ctx was canceled, so the user is never told the run
-		// stopped cleanly while unreconciled edits sit in the tree.
-		if ctx.Err() != nil && !errors.Is(err, errInterruptedTreeDirty) {
-			sum.Termination = model.TermInterrupted
-			err = nil
-		} else {
-			sum.Termination = model.TermError
-			sum.Error = err.Error()
-		}
+	if err != nil {
+		err = recordRunError(ctx, sum, err)
 	}
 	// Journal the outcome BEFORE writing the summary, so the ordering on disk
 	// matches reality: the summary is a whole-run rewrite that can itself fail,
 	// and its failure is exactly when the journal has to already hold the verdict.
 	o.journal(model.EvRunFinished, 0, model.JournalRunFinished{
-		Termination: sum.Termination,
-		Rounds:      len(sum.Rounds),
-		Error:       sum.Error,
+		Termination:     sum.Termination,
+		LoopTermination: sum.LoopTermination,
+		Rounds:          len(sum.Rounds),
+		Error:           sum.Error,
 	})
 	if mdPath, werr := o.logs.Summary(sum); werr != nil {
 		o.logf("WARNING: failed to write summary: %v", werr)
@@ -295,6 +282,42 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 		o.logf("summary written: %s", mdPath)
 	}
 	return sum, err
+}
+
+// recordRunError records a failed run in the summary and returns what Run should
+// hand back to the CLI: nil for a clean interruption, the error otherwise.
+//
+// It applies to EVERY non-nil error, including one raised after the loop already
+// set a termination. The closing round runs after that point, so a failed final
+// reviewer, coder, collection, or commit used to reach the CLI while the summary
+// and the journal still recorded converged / all-rejected / max-iterations with no
+// error -- durable artifacts claiming success for work that failed.
+//
+// Cancellation mid-step (e.g. Ctrl-C while the coder runs) surfaces as that step's
+// error -- typically a kill message from agent.Run. It is recorded as an
+// interruption, like the loop's own ctx checks do, so the summary distinguishes
+// "user stopped it" from "it failed". A dirty tree left behind because the
+// interrupt-time stash failed is a hard failure, not a clean interruption: it is
+// surfaced and recorded even though ctx was canceled, so the user is never told
+// the run stopped cleanly while unreconciled edits sit in the tree.
+func recordRunError(ctx context.Context, sum *model.RunSummary, err error) error {
+	if ctx.Err() != nil && !errors.Is(err, errInterruptedTreeDirty) {
+		// A cancellation during the closing round leaves the loop's own outcome
+		// standing, exactly as runFinalRound's own ctx checks do.
+		if sum.Termination == "" {
+			sum.Termination = model.TermInterrupted
+		}
+		return nil
+	}
+	// Keep the loop's own outcome visible: "the loop converged but the closing
+	// round failed" is a different fact from "the run failed", and the exit status
+	// has to report the failure either way.
+	if sum.Termination != "" && sum.Termination != model.TermError {
+		sum.LoopTermination = sum.Termination
+	}
+	sum.Termination = model.TermError
+	sum.Error = err.Error()
+	return err
 }
 
 func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
@@ -450,6 +473,14 @@ func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary)
 	})
 	o.logf("final round: %d finding(s), %d advisory, %d reviewer error(s)",
 		len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
+	// A failed closing reviewer is a failed closing round, checked BEFORE an empty
+	// finding set is read as a completed final review. Nothing follows to catch what
+	// a dead reviewer never looked at, so "no findings" from a review that did not
+	// finish is not the same statement as "no findings", and proceeding to fix the
+	// findings the survivors did report would act on a knowingly partial last look.
+	if len(recP.ReviewErrors) > 0 {
+		return roundReviewErr(recP)
+	}
 	// Nothing to fix, or the operator stopped us between the review and the fix --
 	// in both cases the round is over and the loop's outcome stands unchanged.
 	if len(recP.Findings) == 0 || ctx.Err() != nil {
@@ -461,7 +492,10 @@ func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary)
 	// remainder, so anything deferred is reported for a human -- which is the same
 	// deal the cap has always offered, minus the promise of a next round.
 	o.deferOverCap(recP)
-	if _, err := o.fix(ctx, recP, sum.Rounds[:len(sum.Rounds)-1]); err != nil {
+	// allowSalvage=false: a failed coder's partial edits must not be committed here.
+	// Salvage is a promise that the next round re-reviews the commit, and there is
+	// no next round -- see discardFailedFix.
+	if _, err := o.fix(ctx, recP, sum.Rounds[:len(sum.Rounds)-1], false); err != nil {
 		return err
 	}
 	o.logf("final round: coder fixed %d, rejected %d", recP.Fixed, recP.Rejected)
@@ -707,7 +741,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 
 	// recP is the round just appended, so prior rounds are everything before it.
 	prior := sum.Rounds[:len(sum.Rounds)-1]
-	salvaged, err := o.fix(ctx, recP, prior)
+	salvaged, err := o.fix(ctx, recP, prior, true)
 	if err != nil {
 		return false, err
 	}
@@ -1428,7 +1462,11 @@ var errInterruptedTreeDirty = errors.New("working tree left dirty after interrup
 // salvaged=true is returned: the loop continues and the next round re-reviews
 // everything. This recovery was performed manually four times before being
 // automated here.
-func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord) (salvaged bool, err error) {
+//
+// allowSalvage is what makes that bargain explicit. It holds only while a LATER
+// round will re-review the salvaged commit; the closing round passes false, and a
+// failed coder there discards its edits instead (see discardFailedFix).
+func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool) (salvaged bool, err error) {
 	coder := o.cfg.Roles.Coder
 	promptName := config.LensName(coder.Prompt)
 	label := "fix: " + coder.Agent
@@ -1493,9 +1531,41 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		return false, o.reconcileInterrupt(rec.Round, interrupted) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
 	}
 	if runErr != nil {
+		if !allowSalvage {
+			return false, o.discardFailedFix(ctx, rec.Round, runErr)
+		}
 		return o.salvagePartialFix(ctx, rec, active, runErr)
 	}
 	return false, nil
+}
+
+// discardFailedFix handles a failed coder in a round nothing follows -- the
+// closing round. salvagePartialFix commits a failed coder's partial edits
+// specifically because the NEXT round re-reviews them; after the closing round
+// there is no next round, so the same commit would leave work no reviewer ever
+// looked at sitting in the repository under a run that still reports the loop's
+// successful termination. The edits are stashed instead (recoverable with
+// `git stash`) and the round fails, mirroring reconcileRejectedEdits.
+func (o *Orchestrator) discardFailedFix(ctx context.Context, round int, runErr error) error {
+	base := fmt.Errorf("closing round %d: coder failed: %w; no round follows to re-review partial work, so its edits were not committed", round, runErr)
+	stashMsg := fmt.Sprintf("fixpoint: closing round %d discarded (coder failed)", round)
+	stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...)
+	ev := model.JournalRoundDiscarded{
+		Reason:  model.DiscardFinalCoderFailed,
+		Stashed: stashed,
+		Error:   base.Error(),
+	}
+	if serr != nil {
+		ev.Error = fmt.Sprintf("%v; tree left dirty: %v", base, serr)
+		o.journal(model.EvRoundDiscarded, round, ev)
+		return fmt.Errorf("%w; and the modified working tree could not be reconciled (it is left dirty): %w", base, serr)
+	}
+	o.journal(model.EvRoundDiscarded, round, ev)
+	if stashed {
+		o.logf("closing round %d: coder failed (%v); its edits were stashed, clean tree restored", round, runErr)
+		return fmt.Errorf("%w. The edits were stashed -- inspect or recover them with `git stash pop`", base)
+	}
+	return base
 }
 
 // reconcileInterrupt stashes any working-tree edits left by a canceled coder
@@ -1793,6 +1863,18 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 	// keep failing, which is easy to misread later as fixpoint ignoring them.
 	o.logf("verify baseline: %s", rep.Summary())
 	o.logf("verify baseline: the failing checks above are pre-existing; policy %s permits them to keep failing", o.cfg.Verify.Policy)
+	// Except the ones that never ran: those recorded no fact about the project, so
+	// verify.Regressions treats them as having no baseline at all and a later
+	// failure of theirs blocks the round. Say so here rather than letting the line
+	// above imply the gate is merely tolerating them.
+	if unrunnable := rep.Unrunnable(); len(unrunnable) > 0 {
+		names := make([]string, 0, len(unrunnable))
+		for _, res := range unrunnable {
+			names = append(names, fmt.Sprintf("%s (%s)", res.Name, res.Err))
+		}
+		o.logf("verify baseline: %s could not run at all, so there is no usable baseline for them; a later failure of these WILL block the round -- fix the command or mark it optional",
+			strings.Join(names, ", "))
+	}
 }
 
 // verifyRound runs the gate over the coder's edits, giving the coder one bounded

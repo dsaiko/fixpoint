@@ -2367,11 +2367,8 @@ func (f *fixture) verifyGate(policy config.VerifyPolicy, failWhenPresent string)
 
 // breakBuildOn makes the mock agent's n-th invocation create the marker file that
 // the configured check fails on -- i.e. a coder whose "fix" breaks the build.
-//
-// n stays a parameter to match repairBuildOn and to name WHICH invocation is the
-// coder's; hardcoding today's 2 would hide that coupling to the fixture's order.
-//
-//nolint:unparam // see above
+// Which invocation is the coder's depends on the test (the closing round's coder
+// runs after an extra reviewer), so it is named rather than assumed.
 func (f *fixture) breakBuildOn(n int, path string) {
 	f.t.Helper()
 	// A real edit AND the breakage, which is the realistic shape: the coder does
@@ -3056,6 +3053,106 @@ func TestFinalLensSkippedWhenTheLoopFailed(t *testing.T) {
 		if r.Final {
 			t.Error("a closing round ran after the loop failed; the tree is unverified at that point")
 		}
+	}
+}
+
+// A closing reviewer that fails is a failed closing round. Nothing follows to
+// catch what it never looked at, so its silence must not be read as "no findings"
+// -- and the run must not report the loop's success while the last look over the
+// finished tree did not happen.
+func TestFinalRoundReviewerFailureFailsTheRun(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t)) // round 1: clean -> converged
+	f.respond(2, "I looked around but forgot the <review> envelope.")
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() succeeded although the only closing reviewer failed")
+	}
+	if !strings.Contains(err.Error(), "reviewer(s) failed") {
+		t.Errorf("error should name the reviewer failure, got: %v", err)
+	}
+	// The durable artifacts must agree with the exit status: a summary still
+	// saying "converged" with no error is a claim of success for work that failed.
+	if sum.Termination != model.TermError || sum.Error == "" {
+		t.Errorf("termination = %q, error = %q; want error recorded in the summary", sum.Termination, sum.Error)
+	}
+	if sum.LoopTermination != model.TermConverged {
+		t.Errorf("loop termination = %q, want the loop's own converged preserved alongside the failure", sum.LoopTermination)
+	}
+	var fin model.JournalRunFinished
+	payload(t, f.journal(), model.EvRunFinished, &fin)
+	if fin.Termination != model.TermError || fin.Error == "" {
+		t.Errorf("run_finished = %+v, want the closing-round failure recorded", fin)
+	}
+}
+
+// The same for anything else the closing round does: an error raised after the
+// loop set its termination must still reach the summary and the journal.
+func TestFinalRoundFailureIsRecordedOverTheLoopTermination(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	f.respond(1, reviewResponse(t)) // the loop's only round: clean -> converged
+	f.respond(2, reviewResponse(t, model.ReviewFinding{
+		Category: "tests", Severity: "medium", File: "helper.go", Line: 42, Title: "no test here",
+	}))
+	// The closing coder's edits break the gate, and its one correction attempt
+	// does not repair them: the closing round cannot be committed.
+	f.breakBuildOn(3, "broken.txt")
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "still done"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() succeeded although the closing round failed")
+	}
+	if sum.Termination != model.TermError || sum.Error == "" {
+		t.Errorf("termination = %q, error = %q; want the failure recorded", sum.Termination, sum.Error)
+	}
+	if sum.LoopTermination != model.TermConverged {
+		t.Errorf("loop termination = %q, want the loop's converged preserved", sum.LoopTermination)
+	}
+}
+
+// salvagePartialFix commits a failed coder's partial edits because the NEXT round
+// re-reviews them. The closing round has no next round, so the same commit would
+// leave work no reviewer ever saw in the repository under a run still reporting
+// the loop's success. Stash it and fail instead.
+func TestFinalRoundDoesNotSalvageAFailedCoder(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t)) // round 1: clean -> converged
+	f.respond(2, reviewResponse(t, model.ReviewFinding{
+		Category: "tests", Severity: "medium", File: "helper.go", Line: 42, Title: "no test here",
+	}))
+	f.editRepoOn(3)
+	f.respond(3, "I changed files but forgot the <fix> envelope.") // fails parsing
+
+	before := f.commitCount()
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() succeeded although the closing round's coder failed after editing")
+	}
+	if got := f.commitCount(); got != before {
+		t.Errorf("repo has %d commits, want %d: partial closing-round work must not be committed unreviewed", got, before)
+	}
+	if subjects := gitRun(t, f.repo, "log", "--format=%s"); strings.Contains(subjects, "partial") {
+		t.Errorf("a partial closing round was committed:\n%s", subjects)
+	}
+	if sum.Termination != model.TermError {
+		t.Errorf("termination = %q, want error", sum.Termination)
+	}
+	// The work is preserved and the tree restored, like every other discard path.
+	if stashes := gitRun(t, f.repo, "stash", "list"); !strings.Contains(stashes, "closing round") {
+		t.Errorf("the closing round's edits must be stashed for recovery, got stash list: %q", stashes)
+	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("working tree left dirty after discarding the closing round: %q", status)
+	}
+	if d := f.discarded(model.DiscardFinalCoderFailed); !d.Stashed || d.Error == "" {
+		t.Errorf("round_discarded = %+v, want the stash and the coder error recorded", d)
 	}
 }
 

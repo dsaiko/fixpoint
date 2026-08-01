@@ -87,6 +87,12 @@ What gets reviewed is controlled by `target.mode`:
 Fix rounds require `target.path` to be a git repository with a clean working
 tree at run start (in every mode); `review_only` runs anywhere.
 
+`target.exclude` and the credential patterns fixpoint enforces on top of it apply
+in **every** mode: in `git-diff` and `pr` they become git exclude pathspecs, so an
+excluded file never contributes its diff or its name to the collected material.
+That matters most there, since a diff carries file *content* into every reviewer's
+prompt, where a directory listing only carries paths.
+
 In `directory` mode against a git repository, scope comes from
 `git ls-files --cached --others --exclude-standard` — tracked files plus
 untracked ones the project doesn't ignore. So build output, caches, local
