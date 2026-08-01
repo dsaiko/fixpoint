@@ -644,14 +644,25 @@ func (c *Collector) Commit(ctx context.Context, header, body string, exclude ...
 	return sha, cerr
 }
 
-// stagedExcluded returns the raw `ls-files --stage -z` records for the index
-// entries currently under the excluded paths, or "" when there is nothing whose
-// loss the add/reset pair in Commit could cause. It is deliberately empty in the
-// ordinary case -- an index that matches HEAD there is reproduced exactly by the
-// reset -- so a normal round commit runs no index surgery at all.
-func (c *Collector) stagedExcluded(ctx context.Context, exclude []string) (string, error) {
+// stagedIndex is stagedExcluded's snapshot of the index under the excluded
+// paths. restore is what says whether the snapshot has to be put back at all;
+// it is NOT implied by entries being non-empty, because a staged DELETION is
+// represented by the ABSENCE of a record: ls-files emits nothing for it, yet the
+// reset in Commit resurrects the deleted path's HEAD entry, so an empty snapshot
+// is exactly the state that must be restored.
+type stagedIndex struct {
+	entries string // raw `ls-files --stage -z` records, empty for a pure deletion
+	restore bool
+}
+
+// stagedExcluded snapshots the index entries currently under the excluded paths,
+// with restore set only when there is something whose loss the add/reset pair in
+// Commit could cause. It deliberately reports no restoration in the ordinary case
+// -- an index that matches HEAD there is reproduced exactly by the reset -- so a
+// normal round commit runs no index surgery at all.
+func (c *Collector) stagedExcluded(ctx context.Context, exclude []string) (stagedIndex, error) {
 	if len(exclude) == 0 {
-		return "", nil
+		return stagedIndex{}, nil
 	}
 	specs := literalPathspec(exclude)
 	// With a HEAD, the reset in Commit puts each excluded entry back to its HEAD
@@ -664,17 +675,17 @@ func (c *Collector) stagedExcluded(ctx context.Context, exclude []string) (strin
 	if c.hasHEAD(ctx) {
 		diff, err := c.git(ctx, append([]string{"diff-index", "--cached", "--name-only", "-z", "HEAD", "--"}, specs...)...)
 		if err != nil {
-			return "", fmt.Errorf("check for staged changes under the excluded path(s): %w: %s", err, diff)
+			return stagedIndex{}, fmt.Errorf("check for staged changes under the excluded path(s): %w: %s", err, diff)
 		}
 		if strings.Trim(diff, "\x00") == "" {
-			return "", nil
+			return stagedIndex{}, nil
 		}
 	}
 	out, err := c.git(ctx, append([]string{"ls-files", "--stage", "-z", "--"}, specs...)...)
 	if err != nil {
-		return "", fmt.Errorf("read index entries for the excluded path(s): %w: %s", err, out)
+		return stagedIndex{}, fmt.Errorf("read index entries for the excluded path(s): %w: %s", err, out)
 	}
-	return out, nil
+	return stagedIndex{entries: out, restore: true}, nil
 }
 
 // hasHEAD reports whether HEAD resolves to a commit. A false covers both an unborn
@@ -691,9 +702,11 @@ func (c *Collector) hasHEAD(ctx context.Context) bool {
 // index is rewritten once: a partial restore is what would actually lose the
 // staged version. A mode of 0 tells --index-info to drop a path, which is how an
 // entry staging left behind (an untracked file under a non-ignored exclusion) is
-// removed, and how a staged deletion is reproduced rather than resurrected.
-func (c *Collector) restoreStagedExcluded(ctx context.Context, exclude []string, staged string) error {
-	if staged == "" {
+// removed, and how a staged deletion is reproduced rather than resurrected: a
+// snapshot with no records at all still has to run, since emptying the index
+// under the exclusion is precisely what puts that deletion back.
+func (c *Collector) restoreStagedExcluded(ctx context.Context, exclude []string, staged stagedIndex) error {
+	if !staged.restore {
 		return nil
 	}
 	current, err := c.git(ctx, append([]string{"ls-files", "--stage", "-z", "--"}, literalPathspec(exclude)...)...)
@@ -708,7 +721,12 @@ func (c *Collector) restoreStagedExcluded(ctx context.Context, exclude []string,
 			sb.WriteString("0 " + nullOID + "\t" + path + "\x00")
 		}
 	}
-	sb.WriteString(staged) // already NUL-terminated records
+	sb.WriteString(staged.entries) // already NUL-terminated records
+	if sb.Len() == 0 {
+		// Nothing staged before, nothing staged now: the index under the exclusion
+		// already matches the snapshot, so leave it alone.
+		return nil
+	}
 	if out, err := c.gitInput(ctx, sb.String(), "update-index", "-z", "--index-info"); err != nil {
 		return fmt.Errorf("git update-index: %w: %s", err, out)
 	}

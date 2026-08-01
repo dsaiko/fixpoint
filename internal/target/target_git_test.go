@@ -1073,6 +1073,36 @@ func TestCommitPreservesStagedAdditionUnderExcludedPaths(t *testing.T) {
 	}
 }
 
+// And for an excluded path staged as a DELETION, the one case with no index entry
+// to save: ls-files emits nothing for it, so the snapshot is empty even though the
+// reset in Commit resurrects the path's HEAD entry. Restoration has to run anyway
+// and empty the index under the exclusion, or the round commit silently un-deletes
+// the user's staged removal.
+func TestCommitPreservesStagedDeletionUnderExcludedPaths(t *testing.T) {
+	repo := gitRepo(t)
+	writeFile(t, repo, "logs/run.log", "committed\n")
+	git(t, repo, "add", "logs/run.log")
+	git(t, repo, "commit", "-q", "-m", "a tracked log")
+
+	git(t, repo, "rm", "-q", "--", "logs/run.log") // staged deletion under the exclusion
+	writeFile(t, repo, "fixed.go", "package main\n")
+
+	c := New(config.Target{Path: repo})
+	sha, err := c.Commit(t.Context(), "fixpoint: round 1", "body", "logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha == "" {
+		t.Fatal("expected a commit for fixed.go")
+	}
+	if shown := git(t, repo, "show", "--name-only", "--format=", "HEAD"); strings.Contains(shown, "logs/run.log") {
+		t.Errorf("the round commit carried an excluded path:\n%s", shown)
+	}
+	if entry := git(t, repo, "ls-files", "--stage", "--", "logs/run.log"); strings.TrimSpace(entry) != "" {
+		t.Errorf("index entry = %q, want none: the round commit undid the staged deletion of an excluded path", entry)
+	}
+}
+
 // A repository with no commits yet is a supported target (HeadSHA and SquashSince
 // both treat an unborn branch as a valid starting point), so the FIRST round commit
 // must land there with the default logs exclusion in play. `git reset HEAD` resets
