@@ -253,8 +253,10 @@ knowing which fix broke them, and it buys back the eight-fix round that used to 
 discarded whole. Keep `verify.commands` cheapest-first, as the config already
 advises — the gate stops at the first blocking failure.
 
-Squashing is `reset --soft`, so a squashed commit's content is byte-for-byte what
-the per-fix commits already verified one at a time. It only ever removes
+Squashing re-commits the index as it stands, so a squashed commit's content is
+byte-for-byte what the per-fix commits already verified one at a time. The
+replacement commit is built before the branch moves, so a squash that fails leaves
+the per-fix commits exactly where they were. It only ever removes
 information, which is why `per_fix` is the default. A failed or interrupted run is
 never squashed: its per-fix commits are how you see how far it got.
 

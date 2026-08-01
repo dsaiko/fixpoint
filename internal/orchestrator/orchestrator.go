@@ -619,9 +619,9 @@ func (o *Orchestrator) fixCommitMessage() string {
 // keeps them; per_round collapses the round into the single commit fixpoint has
 // always produced; per_run leaves them for the end of the run.
 //
-// The squash is a pure regrouping -- `reset --soft` leaves the index and worktree
-// untouched -- so the content is byte-for-byte what the per-fix commits already put
-// through the gate one at a time.
+// The squash is a pure regrouping -- it re-commits the index and leaves the
+// worktree untouched -- so the content is byte-for-byte what the per-fix commits
+// already put through the gate one at a time.
 func (o *Orchestrator) squashRound(ctx context.Context, rec *model.RoundRecord, base string, committed int) error {
 	if committed == 0 || o.cfg.Loop.CommitPolicy != config.CommitPerRound {
 		return nil

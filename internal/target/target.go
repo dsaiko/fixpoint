@@ -746,29 +746,70 @@ func (c *Collector) HeadSHA(ctx context.Context) (string, error) {
 }
 
 // SquashSince replaces every commit after base with a single commit carrying the
-// same tree, for loop.commit_policy. It is a pure regrouping: `reset --soft` moves
-// the branch and leaves the index and worktree exactly as they are, so the content
-// committed here is byte-for-byte the content the per-fix commits already put
-// through the verify gate one at a time.
+// same tree, for loop.commit_policy. It is a pure regrouping: the replacement
+// commit is built from the index as it stands, so the content committed here is
+// byte-for-byte the content the per-fix commits already put through the verify
+// gate one at a time.
+//
+// The order matters and is the whole point of using commit-tree rather than
+// `reset --soft` + `git commit`: write-tree and commit-tree only WRITE OBJECTS,
+// leaving HEAD, the index and the worktree untouched, so every failure or
+// cancellation before the closing ref move is a no-op (at worst an unreferenced
+// commit object that gc collects). Rewinding the branch first would mean a failed
+// or canceled commit leaves the branch rewound with the already-verified commits
+// reachable only through the reflog. The single `reset --soft` at the end is one
+// atomic ref update: it either happens or it does not.
 //
 // base == "" squashes back to an unborn branch, which is why HeadSHA reports that
-// state as an empty string rather than an error.
+// state as an empty string rather than an error; the replacement is then a root
+// commit rather than a child of base.
 func (c *Collector) SquashSince(ctx context.Context, base, header, body string) (string, error) {
-	if base == "" {
-		// No commit to reset onto: unstage nothing, just move the branch pointer off
-		// its commits by pointing HEAD at an empty tree's parent -- i.e. delete the
-		// ref and re-commit the index.
-		if out, err := c.git(ctx, "update-ref", "-d", "HEAD"); err != nil {
-			return "", fmt.Errorf("git update-ref -d HEAD: %w: %s", err, out)
-		}
-	} else if out, err := c.git(ctx, "reset", "--soft", base); err != nil {
-		return "", fmt.Errorf("git reset --soft %s: %w: %s", base, err, out)
+	// The index already holds everything the squashed commits staged, so turn it
+	// into a tree directly rather than re-running Commit's add/exclude dance:
+	// re-staging would pick up anything that arrived in the worktree since, which
+	// no verify pass has seen.
+	tree, err := c.git(ctx, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("git write-tree: %w: %s", err, tree)
 	}
-	// The index already holds everything the squashed commits staged, so commit it
-	// directly rather than re-running Commit's add/exclude dance: re-staging would
-	// pick up anything that arrived in the worktree since, which no verify pass has
-	// seen.
-	return c.commitStaged(ctx, header, body)
+	// commit-tree takes the message verbatim, while `git commit -m` cleans it up
+	// first; run it through stripspace so a squashed commit reads exactly like the
+	// per-fix commits it replaces (no trailing whitespace, no doubled blank lines).
+	msg, err := c.gitInput(ctx, header+"\n\n"+body, "stripspace")
+	if err != nil {
+		return "", fmt.Errorf("git stripspace: %w: %s", err, msg)
+	}
+	args := []string{"commit-tree", strings.TrimSpace(tree)}
+	if base != "" {
+		args = append(args, "-p", base)
+	}
+	// commit-tree, unlike `git commit`, ignores commit.gpgsign and would silently
+	// drop the signature the per-fix commits carry in a repository that signs.
+	if signed, err := c.git(ctx, "config", "--bool", "--get", "commit.gpgsign"); err == nil && strings.TrimSpace(signed) == "true" {
+		args = append(args, "-S")
+	}
+	out, err := c.gitInput(ctx, msg, args...)
+	if err != nil {
+		return "", fmt.Errorf("git commit-tree: %w: %s", err, out)
+	}
+	sha := strings.TrimSpace(out)
+	// Capture HEAD before the ref move so a cancellation landing between the update
+	// and git's exit can still be recognized as a squash that happened -- the same
+	// recovery commitStaged does around `git commit`.
+	before, err := c.git(ctx, "rev-parse", "HEAD")
+	if err != nil && ctx.Err() != nil {
+		return "", err
+	}
+	before = strings.TrimSpace(before)
+	// --soft moves the branch and leaves the index and worktree exactly as they
+	// are; the index is already the tree just committed, so nothing changes on disk.
+	if out, err := c.git(ctx, "reset", "--soft", sha); err != nil {
+		if ctx.Err() != nil && c.committedSHA(before) == sha { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: ctx is canceled but a landed squash must still be recorded
+			return sha, nil
+		}
+		return "", fmt.Errorf("git reset --soft %s: %w: %s", sha, err, out)
+	}
+	return sha, nil
 }
 
 // commitStaged commits whatever is already in the index, returning the new SHA. It

@@ -476,6 +476,97 @@ func TestCommit(t *testing.T) {
 	}
 }
 
+func TestSquashSince(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Path: repo})
+	base := git(t, repo, "rev-parse", "HEAD")
+	base = strings.TrimSpace(base)
+	for _, name := range []string{"one.go", "two.go"} {
+		writeFile(t, repo, name, "package main\n")
+		if _, err := c.Commit(t.Context(), "fix "+name, "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sha, err := c.SquashSince(t.Context(), base, "fixpoint: round 1", "Fixed:\n- one\n- two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD")); head != sha {
+		t.Fatalf("HEAD = %s, want the squashed commit %s", head, sha)
+	}
+	if parent := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD^")); parent != base {
+		t.Errorf("squashed commit's parent = %s, want base %s", parent, base)
+	}
+	// The message must read like a per-fix commit: `git commit -m` cleanup applied.
+	if msg := git(t, repo, "log", "-1", "--format=%B"); msg != "fixpoint: round 1\n\nFixed:\n- one\n- two\n\n" {
+		t.Errorf("commit message = %q", msg)
+	}
+	// A squash is a pure regrouping: same content, clean tree, one commit.
+	if files := git(t, repo, "show", "--name-only", "--format=", "HEAD"); !strings.Contains(files, "one.go") || !strings.Contains(files, "two.go") {
+		t.Errorf("squashed commit files = %q", files)
+	}
+	if clean, err := c.GitClean(t.Context()); err != nil || !clean {
+		t.Errorf("tree not clean after squash: clean=%v err=%v", clean, err)
+	}
+}
+
+// base == "" squashes back to an unborn branch: the replacement is a root commit.
+func TestSquashSinceUnbornBase(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	git(t, dir, "config", "user.email", "test@example.com")
+	git(t, dir, "config", "user.name", "test")
+	git(t, dir, "config", "commit.gpgsign", "false")
+	c := New(config.Target{Path: dir})
+	writeFile(t, dir, "main.go", "package main\n")
+	if _, err := c.Commit(t.Context(), "fix", "body"); err != nil {
+		t.Fatal(err)
+	}
+
+	sha, err := c.SquashSince(t.Context(), "", "fixpoint: run", "Fixed:\n- one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD")); head != sha {
+		t.Fatalf("HEAD = %s, want the squashed commit %s", head, sha)
+	}
+	if count := strings.TrimSpace(git(t, dir, "rev-list", "--count", "HEAD")); count != "1" {
+		t.Errorf("commit count = %s, want 1 root commit", count)
+	}
+	if clean, err := c.GitClean(t.Context()); err != nil || !clean {
+		t.Errorf("tree not clean after squash: clean=%v err=%v", clean, err)
+	}
+}
+
+// A squash that cannot create its replacement commit must leave the branch alone:
+// rewinding first would strand the already-verified per-fix commits in the reflog
+// with their content only staged. The failure is injected through signing --
+// commit.gpgsign with a gpg that always fails -- because that breaks exactly the
+// commit-creating step and nothing before it.
+func TestSquashSinceFailureLeavesTheBranchIntact(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Path: repo})
+	base := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	writeFile(t, repo, "one.go", "package main\n")
+	if _, err := c.Commit(t.Context(), "fix one.go", "body"); err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	git(t, repo, "config", "commit.gpgsign", "true")
+	git(t, repo, "config", "gpg.program", "/bin/false")
+
+	if sha, err := c.SquashSince(t.Context(), base, "fixpoint: round 1", "Fixed:\n- one"); err == nil {
+		t.Fatalf("SquashSince() = %q, want an error when the commit cannot be created", sha)
+	}
+	if now := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD")); now != head {
+		t.Errorf("HEAD = %s after a failed squash, want the pre-squash commit %s", now, head)
+	}
+	if clean, err := c.GitClean(t.Context()); err != nil || !clean {
+		t.Errorf("tree not clean after a failed squash: clean=%v err=%v", clean, err)
+	}
+}
+
 // waitForFile polls until path exists (or the test times out), then returns.
 // Used to synchronize a cancellation with a git shim that signals via a file.
 func waitForFile(t *testing.T, path string) {
