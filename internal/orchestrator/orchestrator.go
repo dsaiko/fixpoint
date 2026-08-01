@@ -2672,19 +2672,18 @@ var verifyAttemptLabel = map[string]string{
 // that does not build". The work is stashed rather than deleted so an operator can
 // inspect or recover it.
 func (o *Orchestrator) rejectUnverifiedRound(ctx context.Context, rec *model.RoundRecord) error {
-	failed := make([]string, 0, len(rec.Verify))
-	for _, r := range rec.Verify {
-		if !r.Optional && !r.Passed {
-			failed = append(failed, r.Name)
-		}
-	}
+	// The blocking set, not every non-optional failure: under no_regressions a check
+	// that was already red at the baseline fails without blocking, and naming it here
+	// would accuse a check the policy permits while hiding the one that actually
+	// caused the discard. verifyPass recorded it from the same pass that blocked.
+	blocking := rec.VerifyBlocking
 	return o.discardEdits(ctx, discard{
 		round:  rec.Round,
 		reason: model.DiscardVerifyFailed,
 		base: fmt.Errorf("round %d: verification failed after a correction attempt (%s); the round was not committed",
-			rec.Round, strings.Join(failed, ", ")),
+			rec.Round, strings.Join(blocking, ", ")),
 		stashMsg: fmt.Sprintf("fixpoint: round %d discarded (verification failed)", rec.Round),
-		checks:   failed,
+		checks:   blocking,
 	})
 }
 
