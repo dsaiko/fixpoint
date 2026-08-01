@@ -2344,6 +2344,51 @@ func TestCollectDirectoryChildHoldingStdoutDoesNotStallScan(t *testing.T) {
 	}
 }
 
+// The group kill reaches only the group. A descendant that left it -- setsid, or a
+// git that daemonizes -- keeps the inherited stdout open, so the listing pipe never
+// reaches EOF and the scan blocks on a writer nothing in this process can signal.
+// The context deadline has to cut it loose; otherwise the collection hangs for as
+// long as that escaped child cares to live, which is not bounded at all.
+func TestListGitFilesDetachedChildHoldingStdoutIsBounded(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid unavailable to detach the child from the process group")
+	}
+	repo := gitRepo(t)
+	// setsid puts the child in a session -- and so a process group -- of its own, so
+	// the SIGKILL sent to git's group misses it and it keeps the inherited stdout.
+	// Its stderr goes to /dev/null: holding that too would measure the stderr drain
+	// grace instead of the stdout stall under test. The leader lingers a second
+	// before exiting so the kill that follows its exit cannot land while setsid is
+	// still forking, which would catch the child while it is still in the group.
+	shimGit(t, "ls-files", "    printf 'main.go\\0'\n    setsid sleep 20 2>/dev/null &\n    sleep 1\n    exit 0")
+
+	c := New(config.Target{Mode: "directory", Path: repo})
+	scope, err := c.fileScope()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A short deadline standing in for gitOpTimeout, which the operation's own
+	// timeout is derived from: what matters is that SOME deadline ends the scan, not
+	// that this one is ten minutes. Asserted on listGitFiles rather than Collect so
+	// the deadline bounds the listing alone and not the git commands leading up to it.
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.listGitFiles(ctx, scope)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("listGitFiles() = nil, want the expired deadline to surface as an error")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("listGitFiles hung on a detached descendant holding stdout; the scan has no deadline escape")
+	}
+}
+
 // gitScanNUL hand-copies c.git's hardening (the gitSafeConfig -c overrides and the
 // hardened environment) because it runs git itself. core.fsmonitor names a program
 // git spawns while listing files, and a target's own .git/config can set it -- so a

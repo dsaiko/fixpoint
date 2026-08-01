@@ -387,13 +387,39 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 		_ = agent.KillProcessGroup(cmd)
 		waited <- err
 	}()
-	sc := bufio.NewScanner(pr)
-	sc.Buffer(make([]byte, 0, 64<<10), maxGitPath)
-	sc.Split(scanNUL)
-	for sc.Scan() {
-		fn(sc.Text())
+	// The scan runs on its own goroutine so this function is never at the mercy of
+	// the read. EOF arrives only once EVERY holder of the write end is gone, and a
+	// descendant that left our process group -- setsid, or a git that daemonizes --
+	// survives the kill above and can hold it open for as long as it likes. Nothing
+	// else can interrupt a blocked pr.Read: the operation timeout reaches the leader
+	// and no further, so a scan waiting on that pipe would outlive git indefinitely,
+	// hanging the whole collection. Closing the read end out from under it is the
+	// only way to end it, exactly as OutPipe.Drain does for stderr.
+	scanned := make(chan error, 1)
+	go func() {
+		sc := bufio.NewScanner(pr)
+		sc.Buffer(make([]byte, 0, 64<<10), maxGitPath)
+		sc.Split(scanNUL)
+		for sc.Scan() {
+			fn(sc.Text())
+		}
+		scanned <- sc.Err()
+	}()
+	var scanErr error
+	select {
+	case scanErr = <-scanned:
+	case <-ctx.Done():
+		_ = pr.Close()
+		// Still join the goroutine rather than abandon it: fn writes the caller's
+		// state, so nothing may still be calling it once this returns. The close
+		// above bounds that wait -- a blocked read fails immediately.
+		scanErr = <-scanned
+		// Report why the listing ended, not the mechanism that ended it. A scan that
+		// had already finished (nil) or failed on its own keeps its own outcome.
+		if errors.Is(scanErr, os.ErrClosed) {
+			scanErr = ctx.Err()
+		}
 	}
-	scanErr := sc.Err()
 	// Stop reading on every exit path. A scan that stopped early would otherwise
 	// leave git blocked on a full pipe; closing the read end fails its next write
 	// instead, and the scan error below outranks the exit status that produces.
