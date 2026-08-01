@@ -113,8 +113,8 @@ type JournalRunStarted struct {
 // information: the process died before it could finish.
 type JournalRunFinished struct {
 	Termination string `json:"termination"`
-	// LoopTermination is how the loop itself ended when a failure in the closing
-	// round afterwards turned Termination into "error". See RunSummary.
+	// LoopTermination is how the loop itself ended when the closing round afterwards
+	// turned Termination into "error" (it failed) or "interrupted". See RunSummary.
 	LoopTermination string `json:"loop_termination,omitempty"`
 	Rounds          int    `json:"rounds"`
 	Error           string `json:"error,omitempty"`

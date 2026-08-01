@@ -499,6 +499,26 @@ func TestSummaryRendersTheLoopTerminationWhenTheClosingRoundFailed(t *testing.T)
 	}
 }
 
+// The closing round can also be INTERRUPTED rather than fail, which preserves the
+// loop's outcome the same way. The line has to say which of the two happened: a
+// summary telling the operator their closing round "failed" when they stopped it
+// themselves sends them looking for a failure that never occurred.
+func TestSummaryNamesAnInterruptedClosingRound(t *testing.T) {
+	s, dir := newStore(t, "md")
+	sum := &model.RunSummary{
+		Termination:     model.TermInterrupted,
+		LoopTermination: model.TermConverged,
+		Rounds:          []model.RoundRecord{{Round: 1}},
+	}
+	if _, err := s.Summary(sum); err != nil {
+		t.Fatal(err)
+	}
+	md := filesIn(t, singleRunDir(t, dir))["summary.md"]
+	if !strings.Contains(md, "loop termination (before the closing round was interrupted): converged") {
+		t.Errorf("summary md does not report the closing round as interrupted:\n%s", md)
+	}
+}
+
 // The run summary is a durable artifact that embeds finding descriptions and
 // coder verdict details -- both derived from agent output that may quote a
 // discovered secret. It must be redacted like the per-step logs, in BOTH the

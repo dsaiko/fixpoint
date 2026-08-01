@@ -266,10 +266,11 @@ type RunSummary struct {
 	Rounds              []RoundRecord `json:"rounds"`
 	Termination         string        `json:"termination"`
 	// LoopTermination preserves how the LOOP ended when the closing round then
-	// failed and rewrote Termination to error. The two facts are different -- the
-	// loop can genuinely have converged while the final round's reviewer or coder
-	// failed afterwards -- and collapsing them would either hide the failure or
-	// discard the loop's outcome.
+	// failed (Termination becomes error) or was interrupted (interrupted). The two
+	// facts are different -- the loop can genuinely have converged while the final
+	// round's reviewer or coder failed afterwards, or while the operator stopped it
+	// -- and collapsing them would either hide how the run really ended or discard
+	// the loop's outcome.
 	LoopTermination string `json:"loop_termination,omitempty"`
 	Error           string `json:"error,omitempty"`
 }

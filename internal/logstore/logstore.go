@@ -276,9 +276,7 @@ func renderSummaryMD(sum *model.RunSummary) string {
 	fmt.Fprintf(&sb, "- strategy: %s, review_only: %v\n", sum.Strategy, sum.ReviewOnly)
 	fmt.Fprintf(&sb, "- rounds: %d\n", len(sum.Rounds))
 	fmt.Fprintf(&sb, "- termination: **%s**\n", sum.Termination)
-	if sum.LoopTermination != "" {
-		fmt.Fprintf(&sb, "- loop termination (before the closing round failed): %s\n", sum.LoopTermination)
-	}
+	renderLoopTermination(&sb, sum)
 	if sum.Error != "" {
 		fmt.Fprintf(&sb, "- error: %s\n", sum.Error)
 	}
@@ -439,6 +437,23 @@ func renderVerify(sb *strings.Builder, rec model.RoundRecord) {
 		}
 		fmt.Fprintf(sb, "- %s: %s — `%s` in %s\n", v.Name, status, strings.Join(v.Argv, " "), v.Duration.Round(time.Millisecond))
 	}
+}
+
+// renderLoopTermination reports how the LOOP ended when the run then ended some
+// other way, and says which of the two things the closing round did. That round is
+// the only thing that runs after the loop has decided, so it is what the preserved
+// outcome is "before" -- but it can either fail or be interrupted, and telling an
+// operator who stopped the run themselves that it "failed" sends them looking for
+// a failure that never happened.
+func renderLoopTermination(sb *strings.Builder, sum *model.RunSummary) {
+	if sum.LoopTermination == "" {
+		return
+	}
+	why := "failed"
+	if sum.Termination == model.TermInterrupted {
+		why = "was interrupted"
+	}
+	fmt.Fprintf(sb, "- loop termination (before the closing round %s): %s\n", why, sum.LoopTermination)
 }
 
 func renderSources(sb *strings.Builder, src model.RunSources) {

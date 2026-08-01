@@ -3666,6 +3666,78 @@ func TestFinalRoundReviewerFailureFailsTheRun(t *testing.T) {
 	}
 }
 
+// An interruption of the CLOSING phase is an interruption of the run. The loop has
+// already recorded its own outcome by then, so a Ctrl-C there used to leave
+// "converged" standing: the CLI printed a clean finish and exited 0 (its contract
+// is 1 for any interruption) while configured closing work was left undone. The
+// loop's verdict is still preserved -- in LoopTermination, the same place a failed
+// closing round puts it.
+func TestClosingPhaseInterruptionIsReportedAsAnInterruption(t *testing.T) {
+	// Ctrl-C while the closing reviewer is running: the agent is killed, so the
+	// cancellation reaches Run as that step's error.
+	t.Run("during the closing round", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+		f.finalLens()
+		f.respond(1, reviewResponse(t)) // round 1: clean -> converged
+		// The closing reviewer signals that it started, then blocks until it is killed.
+		ready := filepath.Join(f.respDir, "closing-started")
+		testfixture.WriteSide(t, f.respDir, 2, fmt.Sprintf("#!/bin/sh\ntouch '%s'\nsleep 30\n", ready))
+		f.respond(2, reviewResponse(t))
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go func() {
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(ready); err == nil {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			cancel()
+		}()
+
+		sum, err := f.orchestrator().Run(ctx)
+		if err != nil {
+			t.Fatalf("Run() err = %v, want nil: an interruption is a clean stop, not a run failure", err)
+		}
+		assertInterruptedAfterConverging(t, sum)
+	})
+
+	// The same when the cancellation lands before the phase starts: the work is
+	// skipped rather than cut off, which is equally not the finish the loop reached.
+	t.Run("before the closing round starts", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+		f.finalLens()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		sum := &model.RunSummary{Termination: model.TermConverged}
+		if err := f.orchestrator().runFinalPhase(ctx, sum); err != nil {
+			t.Fatalf("runFinalPhase() err = %v, want nil: skipping the phase is not a run failure", err)
+		}
+		if f.invocations() != 0 {
+			t.Errorf("the closing phase ran %d agent invocation(s) on a canceled context", f.invocations())
+		}
+		assertInterruptedAfterConverging(t, sum)
+	})
+}
+
+// assertInterruptedAfterConverging checks the outcome both halves of the test
+// above want: the RUN is an interruption (exit 1), the LOOP's converged is kept.
+func assertInterruptedAfterConverging(t *testing.T, sum *model.RunSummary) {
+	t.Helper()
+	if sum.Termination != model.TermInterrupted {
+		t.Errorf("termination = %q, want %q: closing work was left undone", sum.Termination, model.TermInterrupted)
+	}
+	if sum.LoopTermination != model.TermConverged {
+		t.Errorf("loop termination = %q, want the loop's own converged preserved", sum.LoopTermination)
+	}
+	if got := model.ExitCode(sum.Termination); got != 1 {
+		t.Errorf("exit code = %d, want 1: the CLI reports every interruption as a failure", got)
+	}
+}
+
 // The same for anything else the closing round does: an error raised after the
 // loop set its termination must still reach the summary and the journal.
 func TestFinalRoundFailureIsRecordedOverTheLoopTermination(t *testing.T) {

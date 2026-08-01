@@ -220,7 +220,10 @@ Per-lens modifiers:
   It runs after **every** normal termination — converged, all-rejected, and
   max-iterations alike — since the loop is done editing in all three, but not after
   an error or interruption, when the tree is in a state nobody vouched for. It does
-  not change the run's termination: it is extra work on an already-decided run.
+  not change the run's termination: it is extra work on an already-decided run. The
+  exception is being interrupted itself — closing work is then left undone, so the
+  run ends as `interrupted` (exit 1) with the loop's own outcome kept in the
+  summary's `loop termination` line, exactly as a failed closing round does.
   `final` and `once` are mutually exclusive, and a review-only run has no closing
   round (there is no coder), so a final lens simply runs in its single round.
 

@@ -311,11 +311,11 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 // the run stopped cleanly while unreconciled edits sit in the tree.
 func recordRunError(ctx context.Context, sum *model.RunSummary, err error) error {
 	if ctx.Err() != nil && !errors.Is(err, errInterruptedTreeDirty) {
-		// A cancellation during the closing round leaves the loop's own outcome
-		// standing, exactly as runFinalRound's own ctx checks do.
-		if sum.Termination == "" {
-			sum.Termination = model.TermInterrupted
-		}
+		// A cancellation during the closing round is still an interruption of the
+		// RUN, so markInterrupted demotes the loop's own outcome to LoopTermination
+		// rather than letting "converged" stand and exit 0 over closing work the
+		// operator stopped part-way.
+		markInterrupted(sum)
 		return nil
 	}
 	// Keep the loop's own outcome visible: "the loop converged but the closing
@@ -327,6 +327,26 @@ func recordRunError(ctx context.Context, sum *model.RunSummary, err error) error
 	sum.Termination = model.TermError
 	sum.Error = err.Error()
 	return err
+}
+
+// markInterrupted records that the operator stopped the run, keeping whatever the
+// LOOP had already decided visible in LoopTermination.
+//
+// The closing phase runs after the loop has set its termination, so a Ctrl-C there
+// used to leave "converged" standing: the run reported a clean finish and exited 0
+// (model.ExitCode) while configured closing work was left undone -- against the
+// CLI's contract that an interruption exits 1. "The loop converged but the operator
+// stopped the closing phase" is the same shape as "the loop converged but the
+// closing round failed", so it is recorded the same way.
+//
+// An outcome that is already interrupted or error is left alone: it is not the
+// loop's own verdict to preserve, and copying it into LoopTermination would make
+// the summary print the same word twice.
+func markInterrupted(sum *model.RunSummary) {
+	if sum.Termination != "" && sum.Termination != model.TermInterrupted && sum.Termination != model.TermError {
+		sum.LoopTermination = sum.Termination
+	}
+	sum.Termination = model.TermInterrupted
 }
 
 func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
@@ -786,22 +806,38 @@ func (o *Orchestrator) squashTo(ctx context.Context, rec *model.RoundRecord, bas
 // The loop's termination is preserved throughout. The closing phase is extra work
 // on an already-decided run, not a new verdict on it, and letting it rewrite
 // "converged" into "all-rejected" would report the loop's outcome as something it
-// was not.
+// was not. A cancellation is the one thing that does change the run's termination
+// -- to interrupted, with the loop's outcome moved to LoopTermination -- because
+// that is a statement about the RUN rather than a verdict on the code: see
+// markInterrupted.
 func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary) error {
 	actionable, advisory := o.finalAssignments()
+	// Nothing configured for this phase: the run is over exactly as the loop left it.
+	if len(actionable)+len(advisory) == 0 || o.cfg.Loop.ReviewOnly {
+		return nil
+	}
 	// A canceled context means the operator asked to stop, so the closing phase is
 	// simply not started. Returning nil rather than the cancellation is deliberate:
-	// the LOOP already finished and recorded its own outcome, and skipping optional
-	// extra work must not rewrite a run that genuinely converged into a failure.
-	if len(actionable)+len(advisory) == 0 || o.cfg.Loop.ReviewOnly || ctx.Err() != nil {
-		return nil //nolint:nilerr // see above: skipping optional work is not a run failure
+	// the LOOP already finished, and skipping this work is not a run FAILURE. It is
+	// still an interruption, though -- configured closing work was left undone -- so
+	// the run is reported as one, with the loop's own outcome kept in
+	// LoopTermination. Reporting the loop's "converged" instead would exit 0 on a
+	// run the operator cut short.
+	if ctx.Err() != nil {
+		markInterrupted(sum)
+		return nil //nolint:nilerr // see above: an interruption is a termination, not a run failure
 	}
 	if err := o.runFinalFixPasses(ctx, sum, actionable); err != nil {
 		return err
 	}
 	// The report goes last, over the tree as it finally stands. Skipped on a
-	// cancellation: the operator asked to stop, and a report is not worth a session.
-	if len(advisory) > 0 && ctx.Err() == nil {
+	// cancellation: the operator asked to stop, and a report is not worth a session
+	// -- but the run is then an interruption, for the reason above.
+	if len(advisory) > 0 {
+		if ctx.Err() != nil {
+			markInterrupted(sum)
+			return nil //nolint:nilerr // as above
+		}
 		if _, err := o.runFinalPass(ctx, sum, advisory, "report"); err != nil {
 			return err
 		}
@@ -924,10 +960,17 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	if len(recP.ReviewErrors) > 0 {
 		return false, roundReviewErr(recP)
 	}
-	// Nothing to fix, or the operator stopped us between the review and the fix --
-	// in both cases the phase is over and the loop's outcome stands unchanged.
-	if len(recP.Findings) == 0 || ctx.Err() != nil {
-		return true, nil //nolint:nilerr // a cancellation here leaves the loop's own termination intact
+	// The operator stopped us between the review and the fix: the phase is over, and
+	// the findings this pass just reported are left unfixed, so the RUN is an
+	// interruption (the loop's own outcome stays visible in LoopTermination). Ending
+	// on the loop's "converged" here would exit 0 over closing work that was cut off.
+	if ctx.Err() != nil {
+		markInterrupted(sum)
+		return true, nil //nolint:nilerr // an interruption is a termination, not a pass failure
+	}
+	// Nothing to fix: the phase is over and the loop's outcome stands unchanged.
+	if len(recP.Findings) == 0 {
+		return true, nil
 	}
 
 	// The cap still bounds each PASS, because the coder's timeout still bounds each
