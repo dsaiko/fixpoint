@@ -1254,7 +1254,7 @@ func (c *Collector) SquashSince(ctx context.Context, base, header, body string, 
 		return "", fmt.Errorf("git commit-tree: %w: %s", err, out)
 	}
 	sha = strings.TrimSpace(out)
-	// Capture HEAD before the ref move so a cancellation landing between the update
+	// Capture HEAD before the ref move so an interruption landing between the update
 	// and git's exit can still be recognized as a squash that happened -- the same
 	// recovery commitStaged does around `git commit`.
 	before, err := c.git(ctx, "rev-parse", "HEAD")
@@ -1265,7 +1265,14 @@ func (c *Collector) SquashSince(ctx context.Context, base, header, body string, 
 	// --soft moves the branch and leaves the index and worktree exactly as they
 	// are; the index is already the tree just committed, so nothing changes on disk.
 	if out, err := c.git(ctx, "reset", "--soft", sha); err != nil {
-		if ctx.Err() != nil && c.committedSHA(before) == sha { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: ctx is canceled but a landed squash must still be recorded
+		// The ref update may have landed anyway and only the command's teardown been
+		// cut short -- by ctx cancellation, or by c.git's OWN gitOpTimeout, which
+		// fires while the caller's ctx is still live and so cannot be detected from
+		// ctx.Err(). Re-read HEAD on a fresh context on ANY failure and accept the
+		// squash only if HEAD is the commit just built, so a landed squash is never
+		// dropped from the round/run summary while a genuinely failed reset still
+		// surfaces its error.
+		if c.committedSHA(before) == sha { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: this one may be canceled or timed out, but a landed squash must still be recorded
 			return sha, nil
 		}
 		return "", fmt.Errorf("git reset --soft %s: %w: %s", sha, err, out)
@@ -1314,25 +1321,27 @@ func (c *Collector) commitStaged(ctx context.Context, header, body string) (stri
 	if err == nil {
 		return strings.TrimSpace(sha), nil
 	}
-	// A non-cancellation lookup failure is a genuine error to surface.
-	if ctx.Err() == nil {
-		return "", err
-	}
-	// The commit above already advanced HEAD, but ctx was canceled in the window
-	// before the lookup, failing rev-parse on the dead context. Recover the landed
-	// commit's SHA on a fresh context rather than reporting a bare failed commit.
-	if recovered := c.committedSHA(before); recovered != "" { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: ctx is canceled but a landed commit must still be recorded
+	// The commit above SUCCEEDED, so HEAD has already advanced and whatever killed
+	// this lookup says nothing about it: ctx canceled in the window before the
+	// lookup, or c.git's OWN gitOpTimeout, which fires while the caller's ctx is
+	// still live and so is invisible to ctx.Err(). Recover the landed commit's SHA
+	// on a fresh context on ANY lookup failure rather than reporting a bare failed
+	// commit -- which would drop the SHA from the run summary and send interruption
+	// reconciliation looking for edits that are already committed. A lookup failing
+	// because the repository itself is broken recovers nothing and still errors.
+	if recovered := c.committedSHA(before); recovered != "" { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: this one may be canceled or timed out, but a landed commit must still be recorded
 		return recovered, nil
 	}
 	return "", err
 }
 
 // committedSHA re-reads HEAD on a fresh (still git-op-bounded) context after a
-// commit command was interrupted by ctx cancellation, returning the new SHA if
-// HEAD advanced past before (the commit landed) or "" if it did not. It exists
-// so both the commit command's error path and the following rev-parse's error
-// path recover a commit that landed just before the SIGKILL, instead of dropping
-// its SHA and misreporting the round as a failed/interrupted commit.
+// commit command was interrupted -- by ctx cancellation or by the per-operation
+// gitOpTimeout -- returning the new SHA if HEAD advanced past before (the commit
+// landed) or "" if it did not. It exists so both the commit command's error path
+// and the following rev-parse's error path recover a commit that landed just
+// before the kill, instead of dropping its SHA and misreporting the round as a
+// failed/interrupted commit.
 func (c *Collector) committedSHA(before string) string {
 	after, err := c.git(context.Background(), "rev-parse", "HEAD")
 	if err == nil && strings.TrimSpace(after) != before {

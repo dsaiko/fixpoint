@@ -813,6 +813,94 @@ func TestCommitRecoversLandedCommitOnCancelDuringRevParse(t *testing.T) {
 	}
 }
 
+// Same recovery again, but with the caller's context still LIVE: c.git wraps
+// every command in its own gitOpTimeout, so that timeout kills the post-commit
+// rev-parse without ctx.Err() ever becoming non-nil. A recovery gated on
+// cancellation would report a landed commit as a failure and drop its SHA from
+// the run summary. The shim stands in for the timeout kill by failing the
+// post-commit rev-parse outright -- indistinguishable from here, and it does not
+// cost the test ten minutes.
+func TestCommitRecoversLandedCommitWhenRevParseFailsWithLiveContext(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh not found: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	repo := gitRepo(t)
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "commit-done")
+	// commit runs normally and drops a marker; the FIRST rev-parse seen after the
+	// marker exists (the post-commit SHA lookup) removes the marker and fails, so
+	// committedSHA's own rev-parse passes straight through afterwards.
+	shim := "#!/bin/sh\n" +
+		`op=""; for a in "$@"; do case "$a" in commit) op=commit;; rev-parse) op=revparse;; esac; done` + "\n" +
+		`if [ "$op" = commit ]; then "` + realGit + `" "$@"; st=$?; touch "` + marker + `"; exit $st; fi` + "\n" +
+		`if [ "$op" = revparse ] && [ -f "` + marker + `" ]; then rm -f "` + marker + `"; exit 1; fi` + "\n" +
+		`exec "` + realGit + `" "$@"` + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(shim), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFile(t, repo, "fixed.go", "package main\n")
+
+	c := New(config.Target{Path: repo})
+	sha, err := c.Commit(t.Context(), "fixpoint: round 1", "body")
+	if err != nil {
+		t.Fatalf("Commit() = %v, want the landed commit recovered", err)
+	}
+	head := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	if sha == "" || sha != head {
+		t.Fatalf("Commit() SHA = %q, want landed HEAD %q", sha, head)
+	}
+}
+
+// SquashSince's closing `reset --soft` has the same exposure: the ref update can
+// land and the command still be cut short -- by gitOpTimeout, with the caller's
+// context live. The squash must be reported with its SHA, not lost. The shim runs
+// the real reset and then fails, standing in for the kill after the ref moved.
+func TestSquashSinceRecoversLandedResetWhenItFailsWithLiveContext(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh not found: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	repo := gitRepo(t)
+	c := New(config.Target{Path: repo})
+	base := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	writeFile(t, repo, "one.go", "package main\n")
+	if _, err := c.Commit(t.Context(), "fix one.go", "body"); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	// Only the closing `reset --soft` is intercepted; the per-exclude `reset -q
+	// HEAD -- path` calls and everything else run untouched.
+	shim := "#!/bin/sh\n" +
+		`soft=0; for a in "$@"; do if [ "$a" = "--soft" ]; then soft=1; fi; done` + "\n" +
+		`if [ "$soft" = 1 ]; then "` + realGit + `" "$@" || exit $?; exit 1; fi` + "\n" +
+		`exec "` + realGit + `" "$@"` + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(shim), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	sha, err := c.SquashSince(t.Context(), base, "fixpoint: run", "Fixed:\n- one")
+	if err != nil {
+		t.Fatalf("SquashSince() = %v, want the landed squash recovered", err)
+	}
+	head := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	if sha == "" || sha != head {
+		t.Fatalf("SquashSince() SHA = %q, want landed HEAD %q", sha, head)
+	}
+	if count := strings.TrimSpace(git(t, repo, "rev-list", "--count", base+"..HEAD")); count != "1" {
+		t.Errorf("commits since base = %s, want the single squashed commit", count)
+	}
+}
+
 // gitSafeConfig points core.hooksPath at /dev/null so a hook shipped in an
 // untrusted target's .git never runs with fixpoint's privileges. Regression
 // guard for that mitigation: a pre-commit hook (also blocked by --no-verify) and
