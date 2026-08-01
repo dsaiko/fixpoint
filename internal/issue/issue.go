@@ -38,6 +38,10 @@ import (
 // title agreement below is what carries the decision -- three unrelated defects in
 // one file are three issues, because their titles do not agree. Only the line
 // window is gone.
+//
+// Nor does an EXACT line get to skip that agreement: two defects sharing a
+// statement is the ordinary case, not a corner one, and one issue can carry only
+// one verdict.
 
 // Ledger accumulates issues over a run. It is not safe for concurrent use: the
 // parallel part of a round is the reviewers, and aggregation happens after their
@@ -66,8 +70,9 @@ func (l *Ledger) Issues() []model.Issue { return l.issues }
 //   - An observation whose Issue field names a known issue joins it. Only the
 //     reviewer, which can see the history, can recognize its own reworded
 //     re-report of a problem whose line has since moved.
-//   - Otherwise the fingerprint decides: same file and a nearby line, or -- when
-//     no line is given -- same file and the same normalized title.
+//   - Otherwise the same file plus agreeing titles decide, at any distance. A
+//     shared location is where two reports MAY be about one defect; the titles
+//     are what say they are.
 //
 // Note what is NOT part of identity: the category. Two lenses found the same
 // racy-ordinal defect in the same file and line under different categories
@@ -159,10 +164,26 @@ func (l *Ledger) match(obs *model.Finding) int {
 		// identity -- fall through to the fingerprint rather than trusting it.
 	}
 	fp := Fingerprint(*obs)
+	located := locationKeyed(*obs)
 	for idx := range l.issues {
-		if l.issues[idx].Fingerprint == fp {
-			return idx
+		if l.issues[idx].Fingerprint != fp {
+			continue
 		}
+		// An exact location is where two reports MAY be about one defect, not proof
+		// that they are. One statement routinely holds two: the nil deref and the
+		// unchecked error it came from, the racy read and the test that never
+		// asserts it. Both reviewers cite that line, and merging them hands the
+		// coder ONE title, description and suggestion for two problems -- then one
+		// verdict closes both, so fixing or rejecting the defect the issue happens
+		// to describe silently buries the other for the rest of the run. That is the
+		// failure this package prices as strictly worse than a surviving duplicate,
+		// so a located observation must clear the same title agreement the same-file
+		// case below demands. A reviewer that can see past the wording says so with
+		// Issue, handled above.
+		if located && !titlesAgree(l.issues[idx].Title, obs.Title) {
+			continue
+		}
+		return idx
 	}
 	// Same file, agreeing titles: one issue, at any distance. This is what carries a
 	// re-report across rounds once a fix has moved the code -- see the note on
@@ -187,21 +208,61 @@ func (l *Ledger) match(obs *model.Finding) int {
 // The threshold is deliberately above half: "low prio" and "high prio" share
 // exactly half their words and are NOT the same issue, while "nil deref on the
 // config pointer" and "config pointer can be nil here" share three of four and
-// are. This only has to separate neighbors in one file -- an exact line match is
-// already handled by the fingerprint, and a genuine cross-round reword is the
-// reviewer's job to declare.
+// are. This decides every merge -- neighbors in one file, and two lenses naming
+// the same statement -- so a genuine cross-round reword that clears no lexical
+// bar at all remains the reviewer's job to declare.
+//
+// Counting runs over the SHORTER title, so one word cannot be matched twice and
+// push the overlap past the length it is measured against.
 func titlesAgree(a, b string) bool {
-	ta, tb := titleTokens(a), titleTokens(b)
-	if len(ta) == 0 || len(tb) == 0 {
+	short, long := titleTokens(a), titleTokens(b)
+	if len(short) == 0 || len(long) == 0 {
 		return false
 	}
+	if len(long) < len(short) {
+		short, long = long, short
+	}
 	shared := 0
-	for w := range ta {
-		if tb[w] {
+	for w := range short {
+		if long[w] || hasInflection(long, w) {
 			shared++
 		}
 	}
-	return float64(shared) > 0.5*float64(min(len(ta), len(tb)))
+	return float64(shared) > 0.5*float64(len(short))
+}
+
+// hasInflection reports whether a set holds a word that is the same word as w in
+// another form.
+//
+// Reviewers describe one defect in whatever voice the sentence wants -- "racy
+// ordinal allocation" from one lens, "ordinals allocated racily" from another, for
+// the same read-modify-write. Comparing tokens exactly reads those as sharing no
+// vocabulary whatsoever, which would split the very duplicate this package exists
+// to merge. Matching on a common prefix instead folds ordinal/ordinals,
+// allocated/allocation and deref/dereferenced together.
+func hasInflection(set map[string]bool, w string) bool {
+	for other := range set {
+		if commonPrefixLen(w, other) >= stemPrefix {
+			return true
+		}
+	}
+	return false
+}
+
+// stemPrefix is the shortest shared opening that is evidence of one word rather
+// than coincidence: it folds config/configuration together while leaving
+// severity/several (four) apart.
+const stemPrefix = 5
+
+// commonPrefixLen counts the leading bytes two words share. Tokens are lowercase
+// ASCII letters and digits by construction -- notAlphanumeric drops everything
+// else -- so bytes are characters here.
+func commonPrefixLen(a, b string) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	return n
 }
 
 func titleTokens(t string) map[string]bool {
@@ -343,9 +404,13 @@ func (l *Ledger) Get(id string) (model.Issue, bool) {
 // not looking at the same code, and keying on the bare line would fold them into
 // one issue whose title, description and suggestion come from a single reading,
 // hiding the other problem from the coder entirely.
+//
+// For the same reason a location-keyed fingerprint is necessary but NOT sufficient
+// for identity -- two defects can share a statement. Ledger.match pairs it with
+// title agreement, so several issues may legitimately carry one fingerprint.
 func Fingerprint(f model.Finding) string {
 	path := normalizePath(f.File)
-	if path != "" && f.Line > 0 {
+	if locationKeyed(f) {
 		return fmt.Sprintf("%s#L%d", path, f.Line)
 	}
 	title := normalizeTitle(f.Title)
@@ -356,6 +421,14 @@ func Fingerprint(f model.Finding) string {
 		title = strings.ToLower(strings.TrimSpace(f.Title))
 	}
 	return path + "#" + title
+}
+
+// locationKeyed reports whether an observation names a place precisely enough for
+// the fingerprint to be built from it rather than from the title. It is the one
+// definition of "this fingerprint means a location", so match knows when an equal
+// fingerprint still needs the titles to agree.
+func locationKeyed(f model.Finding) bool {
+	return normalizePath(f.File) != "" && f.Line > 0
 }
 
 // normalizePath makes paths comparable across reviewers that spell them

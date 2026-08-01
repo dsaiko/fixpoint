@@ -354,16 +354,73 @@ func TestAbsorbKeepsUnrelatedNeighboursApart(t *testing.T) {
 	}
 }
 
-// An exact line match is identity on its own -- that is the fingerprint, and it is
-// what merged the real-world duplicate whose titles were only loosely similar.
-func TestAbsorbMergesExactLineRegardlessOfTitle(t *testing.T) {
+// An exact line merges reports whose titles are only LOOSELY similar -- that is the
+// fingerprint doing its job, and it is what merged the real-world duplicate above.
+func TestAbsorbMergesExactLineWithLooselySimilarTitles(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "low", "main.go", 42, "config pointer can be nil"),
+		obs("b", "y", "tests", "low", "main.go", 42, "the config pointer is nil here"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1: one defect described twice at one line", len(got))
+	}
+}
+
+// Two lenses describe one defect in whatever voice their sentence wants, and an
+// exact token comparison reads these as sharing no vocabulary at all. If that
+// split them, the corroborated duplicate this package exists to merge would cost
+// two cap slots again.
+func TestAbsorbMergesTitlesThatDifferOnlyByInflection(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "concurrency", "concurrency", "high", "main.go", 33, "racy ordinal allocation"),
+		obs("b", "tests", "tests", "high", "main.go", 33, "ordinals allocated racily"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1: ordinal/ordinals and allocation/allocated are the same words", len(got))
+	}
+}
+
+// ...but the line alone is not identity. One statement holds two defects often
+// enough that this is the ordinary case: the nil deref and the unchecked error it
+// came from, cited at the same line by two lenses. Merging them gives the coder one
+// title, one description and ONE verdict for two problems, so fixing or rejecting
+// the one the issue describes silently buries the other for the rest of the run --
+// strictly worse than a duplicate, which only costs a cap slot.
+func TestAbsorbKeepsUnrelatedDefectsOnOneLineApart(t *testing.T) {
 	l := NewLedger()
 	got := l.Absorb(1, []model.Finding{
 		obs("a", "x", "bug", "low", "main.go", 42, "completely different words here"),
 		obs("b", "y", "tests", "low", "main.go", 42, "nothing alike whatsoever"),
 	})
-	if len(got) != 1 {
-		t.Fatalf("got %d issues, want 1: the same line is the same place", len(got))
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: one line can hold two defects, and one issue carries one verdict", len(got))
+	}
+}
+
+// The split above must survive the round it was created in: a third report of the
+// SECOND defect at that same line joins that defect's issue, not the first one that
+// happens to share the fingerprint.
+func TestAbsorbMatchesTheRightIssueWhenOneLineHoldsTwo(t *testing.T) {
+	l := NewLedger()
+	l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "low", "main.go", 42, "config pointer is dereferenced without a check"),
+		obs("b", "y", "tests", "low", "main.go", 42, "the returned error is discarded"),
+	})
+	if n := len(l.Issues()); n != 2 {
+		t.Fatalf("got %d issues, want 2 before the re-report", n)
+	}
+	wantID := l.Issues()[1].ID
+
+	second := l.Absorb(2, []model.Finding{
+		obs("c", "z", "bug", "high", "main.go", 42, "returned error is still discarded"),
+	})
+	if len(second) != 1 || second[0].ID != wantID {
+		t.Fatalf("re-report joined %+v, want issue %s: the fingerprint alone must not pick the wrong defect", second, wantID)
+	}
+	if n := len(l.Issues()); n != 2 {
+		t.Errorf("ledger holds %d issues, want 2: the re-report must not mint a third", n)
 	}
 }
 

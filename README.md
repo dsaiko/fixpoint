@@ -256,11 +256,14 @@ Grouping works in two stages, because matching within a round and matching acros
 rounds are different problems:
 
 - **Fingerprint** — normalized path plus the exact line, or a normalized title when
-  no line is given. Nearby lines (within 5) merge only when the titles also agree,
-  since three unrelated defects on consecutive lines are three issues: merging them
-  would tell the coder to fix one thing when there are three, which is worse than
-  leaving a duplicate that merely costs a slot. The category is deliberately **not**
-  part of identity — the real duplicate above arrived under two different ones.
+  no line is given. A shared location is where two reports *may* be about one
+  defect; agreeing titles are what say they are, so reports in one file merge at any
+  distance when their titles agree and stay apart when they do not — even on the
+  same line, since one statement routinely holds two defects and one issue carries
+  one verdict. Merging them would tell the coder to fix one thing when there are
+  two, which is worse than leaving a duplicate that merely costs a slot. The
+  category is deliberately **not** part of identity — the real duplicate above
+  arrived under two different ones.
 - **Across rounds** — a reviewer may set `"issue": "<id>"` on a report to declare it
   is the same problem as an entry in the history it was shown. No lexical rule gets
   from *"Severity vocabulary has two independent declarations"* to *"duplicated
