@@ -2538,6 +2538,63 @@ func TestVerifyCorrectionRevertingEverythingReopensTheIssues(t *testing.T) {
 	}
 }
 
+// Reverting one fix must not withdraw the verdicts of fixes already committed in
+// the same round. Each fix is its own commit, so an earlier issue's work is in the
+// history; reopening it because a LATER issue's correction reverted itself would
+// tell the ledger, the summary, and the next round's reviewers that a defect is
+// still open while the commit that fixed it stands.
+func TestVerifyCorrectionRevertingOneFixKeepsEarlierFixes(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	before := f.commitCount()
+
+	second := aFinding("a different bug elsewhere")
+	second.File, second.Line = "other.go", 42 // distinct, or grouping folds it into i1
+	f.respond(1, reviewResponse(t, aFinding("first bug"), second))
+	// i1: a real edit that passes the gate, so it commits on its own.
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+	// i2: breaks the gate, and its correction throws away everything still
+	// uncommitted -- which is i2's work only, since i1 is already in the history.
+	f.breakBuildOn(3, "broken.txt")
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "done"}))
+	testfixture.WriteSide(f.t, f.respDir, 4, fmt.Sprintf("#!/bin/sh\nrm -f '%s'\ngit -C '%s' checkout -- .\n",
+		filepath.Join(f.repo, "broken.txt"), f.repo))
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "reverted it all"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() = %v, want the round to end without an error", err)
+	}
+	if got := f.commitCount(); got != before+1 {
+		t.Errorf("commit count = %d, want %d: i1 committed, i2 reverted", got, before+1)
+	}
+	r1 := sum.Rounds[0]
+	if r1.Fixed != 1 {
+		t.Errorf("round 1 fixed = %d, want 1: only i2's fix was withdrawn", r1.Fixed)
+	}
+	for _, it := range r1.Issues {
+		switch it.ID {
+		case "i1":
+			if it.Verdict != model.VerdictFixed {
+				t.Errorf("issue i1 = %q, want it still FIXED: its commit stands", it.Verdict)
+			}
+		case "i2":
+			if it.Verdict == model.VerdictFixed || it.StatusOrDefault() != model.StatusOpen {
+				t.Errorf("issue i2 = %q/%q, want it reopened", it.Verdict, it.StatusOrDefault())
+			}
+		}
+	}
+	for _, fnd := range r1.Findings {
+		if fnd.IssueID == "i1" && fnd.Verdict != model.VerdictFixed {
+			t.Errorf("observation %s = %q, want the history to keep i1's FIXED", fnd.ID, fnd.Verdict)
+		}
+		if fnd.IssueID == "i2" && fnd.Verdict == model.VerdictFixed {
+			t.Errorf("observation %s still claims FIXED for the reverted i2", fnd.ID)
+		}
+	}
+}
+
 // A SHA shorter than the abbreviation is logged whole rather than sliced: an
 // unguarded [:12] would panic while reporting a commit that just landed, turning a
 // successful round into a lost run.

@@ -573,8 +573,8 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 	// verification passed. The verdict is already recorded, so put the issue back
 	// rather than let the summary claim a fix no commit contains.
 	if clean, cerr := o.collector.GitClean(ctx, o.gitExclude...); cerr == nil && clean {
-		reopened := o.reopenFixedIssues(rec)
-		o.logf("round %d: %s left nothing to commit -- the verification correction reverted it; %d finding(s) reopened", rec.Round, it.ID, reopened)
+		o.reopenFixedIssue(rec, it.ID)
+		o.logf("round %d: %s left nothing to commit -- the verification correction reverted it; the finding is reopened", rec.Round, it.ID)
 		return false, nil
 	}
 	header := strings.NewReplacer(
@@ -1259,22 +1259,26 @@ func (o *Orchestrator) setIssueVerdict(rec *model.RoundRecord, i int, verdict, d
 	}
 }
 
-// reopenFixedIssues withdraws this round's fixed verdicts and returns how many it
-// withdrew, for the one case where a recorded fix did not land: the verification
-// correction reverted every edit, so there is nothing to commit. The verdict is
+// reopenFixedIssue withdraws ONE fixed verdict and reports whether it found one to
+// withdraw, for the one case where a recorded fix did not land: the verification
+// correction reverted the edits, so there is nothing to commit. The verdict is
 // cleared everywhere setIssueVerdict wrote it -- the round's issue, the ledger, and
-// every observation that reported it -- and rec.Fixed is reset, so the summary, the
-// commit-less round, and the history the next reviewers read agree that the issue is
-// still open. An empty verdict renders as UNRESOLVED, which is exactly the
-// instruction reviewers need: report it again if it is still there.
+// every observation that reported it -- and rec.Fixed is decremented, so the
+// summary, the commit-less fix, and the history the next reviewers read agree that
+// the issue is still open. An empty verdict renders as UNRESOLVED, which is exactly
+// the instruction reviewers need: report it again if it is still there.
+//
+// Only the issue whose fix was reverted is reopened. Fixes are committed one issue
+// at a time, so earlier issues in the round are already in the history; withdrawing
+// their verdicts too would mark them open in the ledger and the summary while their
+// commits still stand.
 //
 // Rejections are left alone: a rejection is a judgement, not an edit, so reverting
 // edits does not withdraw it.
-func (o *Orchestrator) reopenFixedIssues(rec *model.RoundRecord) int {
-	reopened := 0
+func (o *Orchestrator) reopenFixedIssue(rec *model.RoundRecord, id string) bool {
 	for i := range rec.Issues {
 		it := &rec.Issues[i]
-		if it.Verdict != model.VerdictFixed {
+		if it.ID != id || it.Verdict != model.VerdictFixed {
 			continue
 		}
 		it.Verdict = ""
@@ -1287,10 +1291,12 @@ func (o *Orchestrator) reopenFixedIssues(rec *model.RoundRecord) int {
 				rec.Findings[j].VerdictDetail = ""
 			}
 		}
-		reopened++
+		if rec.Fixed > 0 {
+			rec.Fixed--
+		}
+		return true
 	}
-	rec.Fixed = 0
-	return reopened
+	return false
 }
 
 // coderWork reports whether one of the round's issues is work for THIS round's
