@@ -21,6 +21,16 @@ whole, so keep a flag and its value in ONE token ("--model {{model}}") and
 enforced read-only modes (`can_edit: false`); only an agent whose command allows
 writing files may be assigned as `roles.coder`, and validation enforces that.
 
+A read-only claim the command contradicts is rejected: `can_edit: false` fails
+validation when the command passes a permission-bypass flag
+(`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`,
+`--yolo`, `--permission-mode bypassPermissions`), since those auto-approve every
+tool request including the write tools. Earn read-only from the command itself —
+omit the flag, or use an enforced sandbox like `codex --sandbox read-only` — or
+declare `can_edit: true`, which keeps the agent out of reviewer pools. A mode
+flag alone (`--mode plan`) is not enough: fixpoint cannot verify it, and a
+reviewer reading untrusted code is exactly where an unenforced claim fails.
+
 ## effort (claude)
 
 Reasoning budget per request; all five levels verified with `claude -p`:

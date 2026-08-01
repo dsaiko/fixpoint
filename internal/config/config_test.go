@@ -201,6 +201,47 @@ func TestValidate(t *testing.T) {
 			a.CanEdit = true
 			c.Agents["rev"] = a
 		}, "must be read-only"},
+		// A reviewer's can_edit: false is the only barrier between a prompt
+		// injection in the reviewed code and the write tools, so the command must
+		// not contradict it. Each spelling below is one way to switch the
+		// permission system off while still declaring read-only.
+		{"read-only reviewer passing a permission-skip flag rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--dangerously-skip-permissions", "-p"}
+			c.Agents["rev"] = a
+		}, "--dangerously-skip-permissions"},
+		{"read-only reviewer passing codex's bypass flag rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--dangerously-bypass-approvals-and-sandbox"}
+			c.Agents["rev"] = a
+		}, "auto-approves every tool request"},
+		{"read-only reviewer passing --yolo rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--yolo"}
+			c.Agents["rev"] = a
+		}, "--yolo"},
+		{"read-only reviewer passing bypassPermissions as a mode value rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--permission-mode bypassPermissions"}
+			c.Agents["rev"] = a
+		}, "--permission-mode bypassPermissions"},
+		{"read-only reviewer passing bypassPermissions with = rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--permission-mode=bypassPermissions"}
+			c.Agents["rev"] = a
+		}, "--permission-mode bypassPermissions"},
+		// A mode value that is not the bypass one is ordinary configuration, and a
+		// bypass flag on the write-capable coder is exactly what it is there for.
+		{"read-only reviewer in a non-bypass permission mode accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--permission-mode plan"}
+			c.Agents["rev"] = a
+		}, ""},
+		{"coder passing a permission-skip flag accepted", func(c *Config) {
+			a := c.Agents["coder"]
+			a.Command = []string{"echo", "--dangerously-skip-permissions"}
+			c.Agents["coder"] = a
+		}, ""},
 		{"missing coder prompt", func(c *Config) { c.Roles.Coder.Prompt = "" }, "must reference a prompt file"},
 		{"unreadable prompt file", func(c *Config) { c.Roles.Coder.Prompt = "/nonexistent/prompt.md" }, "prompt file"},
 		{"unknown log format", func(c *Config) { c.Logs.Formats = []string{"xml"} }, "unknown format"},

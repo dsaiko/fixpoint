@@ -142,7 +142,7 @@ Read this before pointing fixpoint at code you didn't write.
 
 **Reviewers can read anything, even in review-only mode.** The read-only flags in
 `agents/*.yaml` (`claude -p` without the permission-skip flag, `codex --sandbox
-read-only`, `agy --mode plan`) block *edits* but do not confine *reads*: fixpoint
+read-only`) block *edits* but do not confine *reads*: fixpoint
 sets only the working directory, with no filesystem sandbox. A reviewer fed
 untrusted content can be prompt-injected into reading a host secret
 (`~/.ssh/id_rsa`, `~/.aws/credentials`, a `.env`) and quoting it into a finding.

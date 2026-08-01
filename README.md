@@ -365,7 +365,13 @@ so `effort` simply disappears for providers that don't support it.
 
 `can_edit` must reflect what the command actually permits: reviewer agents run
 in enforced read-only modes (`can_edit: false`); only agents whose command
-allows writing files (`can_edit: true`) may be assigned as `roles.coder`.
+allows writing files (`can_edit: true`) may be assigned as `roles.coder`. Part
+of that is machine-checked: `can_edit: false` is rejected outright for a command
+carrying a permission-bypass flag (`--dangerously-skip-permissions`,
+`--dangerously-bypass-approvals-and-sandbox`, `--yolo`,
+`--permission-mode bypassPermissions`), because such a command auto-approves the
+write tools too and a reviewer's read-only claim is the only barrier left when
+the code under review turns out to be prompt-injected.
 
 ### Borrowing an agentic harness for a model that has no CLI
 

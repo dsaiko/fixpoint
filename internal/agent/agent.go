@@ -149,8 +149,8 @@ func RedactSecrets(s string) string { return redactSecrets(s) }
 //
 // SECURITY (reads are NOT confined to dir): Run only sets cmd.Dir and kills the
 // process group; it applies no filesystem sandbox. The per-agent read-only
-// flags (claude -p without yolo, codex --sandbox read-only, agy --mode plan)
-// deny EDITS but still let the agent READ any path on the host. A reviewer fed
+// flags (claude -p without yolo, codex --sandbox read-only) deny EDITS but
+// still let the agent READ any path on the host. A reviewer fed
 // untrusted content (e.g. a malicious PR) can therefore be prompt-injected into
 // reading a host secret (~/.ssh/id_rsa, ~/.aws/credentials, .env) and quoting
 // it into a finding, even in a review-only run. Point reviewers at untrusted

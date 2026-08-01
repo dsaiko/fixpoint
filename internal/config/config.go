@@ -246,7 +246,13 @@ type Agent struct {
 	// Prefer "stdin" for any material that may contain secrets.
 	PromptVia string   `yaml:"prompt_via"` // stdin | arg
 	Timeout   Duration `yaml:"timeout"`
-	CanEdit   bool     `yaml:"can_edit"`
+	// CanEdit is a claim about what the COMMAND permits, and everything
+	// downstream believes it: Validate keeps write-capable agents out of the
+	// reviewer pool, and the fix-round trust gate exists precisely because the
+	// coder edits with permission checks off. permissionBypassFlag below refuses
+	// the one contradiction fixpoint can see from here -- a read-only claim made
+	// by a command that switches the permission system off.
+	CanEdit bool `yaml:"can_edit"`
 
 	// Env controls what this agent's process can see of fixpoint's environment.
 	Env AgentEnv `yaml:"env"`
@@ -425,6 +431,43 @@ func expandToken(tok string, values map[string]string) (sub string, keep bool) {
 		tok = strings.ReplaceAll(tok, ph, v)
 	}
 	return tok, true
+}
+
+// permissionBypassFlags are the flags whose whole purpose is to switch a coding
+// CLI's permission system off, so that every tool request -- reads, shell, and
+// writes alike -- is auto-approved. The list is short and literal on purpose: it
+// names the flags fixpoint's own agent files use or could plausibly grow, and a
+// CLI it does not know about simply is not checked. Missing one costs nothing
+// that is not already the status quo; a false positive would reject a working
+// config, so nothing goes in here on suspicion.
+var permissionBypassFlags = map[string]string{
+	"--dangerously-skip-permissions":             "claude, agy",
+	"--dangerously-bypass-approvals-and-sandbox": "codex",
+	"--yolo": "gemini-cli, qwen-code",
+}
+
+// permissionBypassFlag returns the permission-bypass token in argv, or "" when
+// there is none. Flags are matched in both spellings a CLI may accept
+// (--flag=value and --flag value), because the check is worth nothing if it can
+// be evaded by writing the same argument differently.
+func permissionBypassFlag(argv []string) string {
+	for i, tok := range argv {
+		key, val, hasVal := strings.Cut(tok, "=")
+		if _, ok := permissionBypassFlags[key]; ok {
+			return key
+		}
+		// claude spells the same switch as a mode value, which is the flag form
+		// most likely to be reached for once the --dangerously- one is rejected.
+		if key == "--permission-mode" {
+			if !hasVal && i+1 < len(argv) {
+				val = argv[i+1]
+			}
+			if strings.EqualFold(val, "bypassPermissions") {
+				return "--permission-mode bypassPermissions"
+			}
+		}
+	}
+	return ""
 }
 
 // Commit policies: how a round's per-fix commits are grouped. The coder always
@@ -916,6 +959,19 @@ func (c *Config) Validate() error {
 		}
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("agents.%s: binary %q not found on PATH", name, argv[0])
+		}
+		// A read-only claim contradicted by the command's own argv. Reviewers are
+		// the agents that carry can_edit: false, they read untrusted content, they
+		// run concurrently against the shared worktree, and a review-only run
+		// asserts no trust flag at all -- so this declaration is the only thing
+		// standing between a prompt injection and the write tools. Do not take it
+		// on faith when the command auto-approves every tool request: whatever
+		// remains (a --mode/--plan style flag) is the CLI's business to enforce,
+		// not something fixpoint can check or has verified.
+		if !a.CanEdit {
+			if flag := permissionBypassFlag(argv); flag != "" {
+				return fmt.Errorf("agents.%s: can_edit: false, but the command passes %s, which auto-approves every tool request -- writes included; a read-only claim must be backed by the command itself (drop the flag, or use the CLI's enforced read-only sandbox such as codex --sandbox read-only), otherwise declare can_edit: true so the agent is kept out of roles.review", name, flag)
+			}
 		}
 		if err := a.Usage.validate(name); err != nil {
 			return err
