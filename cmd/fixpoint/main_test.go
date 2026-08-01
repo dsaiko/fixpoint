@@ -346,59 +346,81 @@ func TestNotifySignalsSecondSignalForceQuits(t *testing.T) {
 // and close(done) lives inside notifySignals' stop func, so from the outside the
 // two can only be raced -- a test that loses the race asserts nothing and still
 // passes.
+//
+// Both arms of the watch's outer select are ready when it wakes, and Go picks
+// among ready cases at random, so a single scenario reaches the tie-break -- the
+// only place the guard under test runs -- about half the time; the other half
+// every assertion holds vacuously. So retry until the queued-signal arm is
+// actually taken and fail if it never is: the test cannot pass without visiting
+// the window it names.
 func TestWatchSignalsTeardownIgnoresQueuedSignal(t *testing.T) {
 	quit := make(chan struct{}, 1)
 	orig := forceQuit
 	forceQuit = func() { quit <- struct{}{} }
 	t.Cleanup(func() { forceQuit = orig })
 
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	ch := make(chan os.Signal, 2)
-	done := make(chan struct{})
+	// attempt runs the scenario once and reports whether the watch took its
+	// queued-signal arm: that arm is the one that receives from ch, so a drained ch
+	// means the tie-break ran, while a still-buffered signal means the watch
+	// returned straight out of its teardown arm and pinned nothing.
+	attempt := func() bool {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		ch := make(chan os.Signal, 2)
+		done := make(chan struct{})
 
-	// Pin the watch inside the first signal's log call so the second one has to wait
-	// in the buffered channel -- the window the race lives in.
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		watchSignals(ch, done, func(string, ...any) {
-			once.Do(func() {
-				close(entered)
-				<-release
-			})
-		}, cancel)
-	}()
+		// Pin the watch inside the first signal's log call so the second one has to wait
+		// in the buffered channel -- the window the race lives in.
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			watchSignals(ch, done, func(string, ...any) {
+				once.Do(func() {
+					close(entered)
+					<-release
+				})
+			}, cancel)
+		}()
 
-	ch <- syscall.SIGTERM
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the watch never took the first signal; nothing can queue behind an unpinned handler")
+		ch <- syscall.SIGTERM
+		select {
+		case <-entered:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the watch never took the first signal; nothing can queue behind an unpinned handler")
+		}
+
+		// Queue the second signal and begin teardown while the watch is still parked, so
+		// when it wakes both arms of its select are ready -- the tie teardown must win.
+		ch <- syscall.SIGTERM
+		close(done)
+		close(release)
+
+		select {
+		case <-stopped:
+		case <-time.After(10 * time.Second):
+			t.Fatal("watchSignals never returned; teardown must not deadlock on a queued signal")
+		}
+		select {
+		case <-quit:
+			t.Fatal("a signal queued at teardown force-quit the process; a completed run would exit 1")
+		default:
+		}
+		if ctx.Err() == nil {
+			t.Error("the first interrupt should have canceled the run context")
+		}
+		return len(ch) == 0
 	}
 
-	// Queue the second signal and begin teardown while the watch is still parked, so
-	// when it wakes both arms of its select are ready -- the tie teardown must win.
-	ch <- syscall.SIGTERM
-	close(done)
-	close(release)
-
-	select {
-	case <-stopped:
-	case <-time.After(10 * time.Second):
-		t.Fatal("watchSignals never returned; teardown must not deadlock on a queued signal")
+	// 100 coin flips: missing the arm every time is not something a run can do.
+	for range 100 {
+		if attempt() {
+			return
+		}
 	}
-	select {
-	case <-quit:
-		t.Fatal("a signal queued at teardown force-quit the process; a completed run would exit 1")
-	default:
-	}
-	if ctx.Err() == nil {
-		t.Error("the first interrupt should have canceled the run context")
-	}
+	t.Fatal("the watch never took its queued-signal arm, so the teardown tie-break this test exists to pin never ran")
 }
 
 // The wiring around watchSignals: stop() must return rather than deadlock on its
