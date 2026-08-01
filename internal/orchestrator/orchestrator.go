@@ -850,8 +850,19 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	}
 	o.logf("closing %s: coder fixed %d, rejected %d", label, recP.Fixed, recP.Rejected)
 	if committed == 0 {
-		// Nothing was committed, so there is nothing for another pass to see: it
-		// would re-review identical code and get an identical answer.
+		// Nothing was committed, so normally there is nothing for another pass to see:
+		// it would re-review identical code and get an identical answer. The exception
+		// is a capped pass, where the coder was only ever handed the active issues: if
+		// it rejected all of them, the deferred remainder still never reached it, and
+		// stopping here would drop exactly the work this repeating phase exists to
+		// pick up -- silently, since warnFinalPhaseCapped only fires on the pass cap.
+		// The re-review is not wasted on them either: deferral aging promotes what was
+		// skipped, so the next pass hands it over first. Same reasoning as
+		// finalizeRound's deferred check in the loop.
+		if deferred := deferredFindings(recP); deferred > 0 {
+			o.logf("closing %s: coder rejected every active issue, but %d finding(s) held back by the cap never reached it; continuing", label, deferred)
+			return false, nil
+		}
 		return true, nil
 	}
 	if err := o.squashRound(ctx, recP, base, committed); err != nil {

@@ -3255,6 +3255,57 @@ func TestFinalPhaseProcessesMoreThanTheCapAcrossPasses(t *testing.T) {
 	}
 }
 
+// A capped closing pass hands the coder only its active issues. If the coder
+// rejects every one of them, nothing is committed -- but the deferred remainder
+// never reached the coder at all, so the phase is not done: without another pass
+// those findings are dropped without even the cap warning, which is exactly the
+// silent partial closing round this phase exists to prevent.
+func TestFinalPhaseContinuesForDeferredWhenActiveAllRejected(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged immediately
+
+	gapA := model.ReviewFinding{Category: "tests", Severity: "high", File: "a.go", Line: 10, Title: "a has no test"}
+	gapB := model.ReviewFinding{Category: "tests", Severity: "low", File: "b.go", Line: 20, Title: "b has no test"}
+	// Closing pass 1: two gaps, cap 1 -> gapA active, gapB deferred.
+	f.respond(2, reviewResponse(t, gapA, gapB))
+	// The one active issue is rejected, so the pass commits nothing.
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "covered elsewhere"}))
+	// Pass 2 must happen: the deferred gap is reported again and now fits.
+	f.respond(4, reviewResponse(t, gapB))
+	f.editRepoOn(5)
+	f.respond(5, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "test for b"}))
+	f.respond(6, reviewResponse(t)) // pass 3: clean -> phase ends
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Errorf("termination = %q, want the loop's converged to be preserved", sum.Termination)
+	}
+	fixed, passes := 0, 0
+	for _, r := range sum.Rounds {
+		if r.Final {
+			fixed += r.Fixed
+			passes++
+		}
+	}
+	if passes < 2 {
+		t.Fatalf("closing passes = %d, want at least 2: the deferred gap never reached the coder in pass 1", passes)
+	}
+	if fixed != 1 {
+		t.Errorf("closing phase fixed %d issue(s), want 1: rejecting the active issue must not drop the deferred one", fixed)
+	}
+	first := sum.Rounds[1]
+	if !first.Final || first.Rejected != 1 || first.CommitSHA != "" {
+		t.Fatalf("first closing pass = %+v, want a final pass that rejected 1 and committed nothing", first)
+	}
+	if got := deferredFindings(&first); got != 1 {
+		t.Errorf("first closing pass deferred %d finding(s), want 1", got)
+	}
+}
+
 // The closing round runs after max-iterations too: the loop is equally done
 // editing, whether it converged or ran out of rounds.
 func TestFinalLensRunsAfterMaxIterations(t *testing.T) {
