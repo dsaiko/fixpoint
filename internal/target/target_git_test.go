@@ -653,6 +653,60 @@ func TestRunEnvDisablesWorktreeHooks(t *testing.T) {
 	}
 }
 
+// The ext:: transport's URL IS a command git runs, so a remote pointed at one
+// turns any fetch into code execution with fixpoint's inherited environment.
+// git itself defaults protocol.ext.allow to "never", but that default is
+// CONFIGURABLE: a crafted .git/config that sets protocol.ext.allow=always turns
+// it back on, and remote.<name>.url is not a key unsafeConfigKey refuses. The
+// gitSafeConfig pin is what beats the repo's own value -- on both paths, since
+// gh's internal git never sees the -c overrides and gets them from
+// GIT_CONFIG_* instead.
+func TestFetchDoesNotRunAnExtTransportHelper(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable to run the transport helper")
+	}
+	for _, tc := range []struct {
+		name  string
+		fetch func(*Collector, string) (string, error)
+	}{
+		// c.git prepends gitSafeConfig as -c overrides AND sets the hardened env.
+		{"git", func(c *Collector, remote string) (string, error) {
+			return c.git(t.Context(), "fetch", "--no-tags", remote)
+		}},
+		// c.run invokes git with NO -c overrides -- the conditions gh's nested git
+		// runs under, where only GIT_CONFIG_* from gitHardenedEnv can protect it.
+		{"run", func(c *Collector, remote string) (string, error) {
+			return c.run(t.Context(), "git", "fetch", "--no-tags", remote)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := gitRepo(t)
+			sentinel := filepath.Join(t.TempDir(), "ext-helper-ran")
+			helper := filepath.Join(repo, "evil-remote-helper.sh")
+			// The helper touches the sentinel and then fails: reaching it at all is
+			// the compromise, whether or not it can speak the remote-helper protocol.
+			if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch '"+sentinel+"'\nexit 1\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			git(t, repo, "config", "remote.evil.url", "ext::"+helper)
+			// The repo re-enables the transport git disables by default. Without the
+			// pin the fetch below runs the helper; with it, git refuses the transport.
+			git(t, repo, "config", "protocol.ext.allow", "always")
+
+			out, err := tc.fetch(New(config.Target{Path: repo}), "evil")
+			if err == nil {
+				t.Fatalf("fetch through an ext:: remote succeeded: %s", out)
+			}
+			if !strings.Contains(err.Error(), "transport 'ext' not allowed") {
+				t.Errorf("want git's ext-transport refusal, got: %v", err)
+			}
+			if _, serr := os.Stat(sentinel); serr == nil {
+				t.Error("the ext:: helper executed; protocol.ext.allow=never is not reaching this git invocation")
+			}
+		})
+	}
+}
+
 // writeHook installs an executable git hook that touches sentinel when run.
 func writeHook(t *testing.T, hooksDir, name, sentinel string) {
 	t.Helper()

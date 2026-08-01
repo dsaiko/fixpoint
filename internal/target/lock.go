@@ -94,6 +94,14 @@ func checkLockFile(f *os.File, path string) error {
 	if err != nil {
 		return fmt.Errorf("inspect repository lock %s: %w", path, err)
 	}
+	return checkLockStat(info, path, os.Getuid())
+}
+
+// checkLockStat holds checkLockFile's predicates, with the caller's own uid
+// passed in rather than looked up: the foreign-owner refusal is otherwise
+// unreachable in a test, since a test process has exactly one uid and cannot
+// create a file owned by another.
+func checkLockStat(info os.FileInfo, path string, uid int) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("refusing to run: the repository lock path %s is not a regular file (%s); fixpoint truncates and rewrites that file, and a genuine lock is a plain file. Treat this checkout as untrusted", path, info.Mode().Type())
 	}
@@ -104,7 +112,7 @@ func checkLockFile(f *os.File, path string) error {
 	if st.Nlink > 1 {
 		return fmt.Errorf("refusing to run: the repository lock %s has %d hard links, so it is also some other path; fixpoint truncates and rewrites it, which would destroy that file. Treat this checkout as untrusted", path, st.Nlink)
 	}
-	if uid := os.Getuid(); uid >= 0 && int(st.Uid) != uid {
+	if uid >= 0 && int(st.Uid) != uid {
 		return fmt.Errorf("refusing to run: the repository lock %s is owned by uid %d, not by the user running fixpoint (uid %d); fixpoint truncates and rewrites that file. Treat this checkout as untrusted", path, st.Uid, uid)
 	}
 	return nil

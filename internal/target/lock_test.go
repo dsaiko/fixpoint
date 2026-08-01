@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/dsaiko/fixpoint/internal/config"
@@ -122,6 +123,68 @@ func TestLockRepoRefusesAHardLinkedLockFile(t *testing.T) {
 	}
 	if string(got) != content {
 		t.Errorf("the hard-link target was modified: %q, want %q", got, content)
+	}
+}
+
+// The third shape a crafted .git can plant: a fifo. O_NOFOLLOW does not see it,
+// it has one link so the hard-link check passes, and LockRepo would go on to
+// Truncate(0) and write to it -- in a run that passes no trust gate. Nothing
+// else in the suite reaches the non-regular-file refusal, so without this test
+// dropping the IsRegular check would leave every other lock test green.
+func TestLockRepoRefusesAFifoLockFile(t *testing.T) {
+	repo := gitRepo(t)
+	path := filepath.Join(repo, ".git", lockName)
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Skipf("fifos unavailable here: %v", err)
+	}
+
+	release, err := New(config.Target{Path: repo}).LockRepo(t.Context())
+	if err == nil {
+		release()
+		t.Fatal("LockRepo() accepted a fifo lock path; it truncates and writes that file")
+	}
+	if !strings.Contains(err.Error(), lockName) || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("refusal must name the path and say why, got: %v", err)
+	}
+	// The refusal must be the shape check, not an incidental open/flock failure:
+	// the fifo is still there, untouched.
+	info, serr := os.Lstat(path)
+	if serr != nil {
+		t.Fatalf("stat the fifo after the refusal: %v", serr)
+	}
+	if info.Mode().Type()&os.ModeNamedPipe == 0 {
+		t.Errorf("the lock path is no longer a fifo (mode %s); it was replaced or rewritten", info.Mode())
+	}
+}
+
+// A lock file owned by another user is one fixpoint must not truncate, and the
+// branch cannot be reached through LockRepo: a test process has a single uid and
+// cannot create a file owned by anyone else. checkLockStat takes the caller's uid
+// as an argument for exactly this reason, so the predicate is still covered.
+func TestCheckLockStatRefusesAForeignOwnedLockFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), lockName)
+	if err := os.WriteFile(path, []byte("pid 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Our own uid: a plain file we own is the only accepted shape.
+	if err := checkLockStat(info, path, os.Getuid()); err != nil {
+		t.Fatalf("checkLockStat rejected a regular file owned by the caller: %v", err)
+	}
+	// The same file seen by a different user: refused, naming both uids so the
+	// operator can tell who owns it.
+	foreign := os.Getuid() + 1
+	err = checkLockStat(info, path, foreign)
+	if err == nil {
+		t.Fatal("checkLockStat accepted a lock file owned by another uid; fixpoint truncates and rewrites it")
+	}
+	for _, want := range []string{path, strconv.Itoa(foreign)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal must contain %q, got: %v", want, err)
+		}
 	}
 }
 

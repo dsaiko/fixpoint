@@ -977,12 +977,15 @@ func (c *Collector) pathInTree(ctx context.Context, tree, p string) (bool, error
 // truly untrusted .git should still be reviewed under an external sandbox.
 //
 // protocol.ext.allow=never kills the ext:: helper protocol, whose URL IS a shell
-// command git runs. git's default for it is "user", i.e. permitted for exactly the
-// user-initiated fetches fixpoint performs (`gh pr checkout`, the base-object
-// fetch), and a repo-local url.<ext-url>.insteadOf can route an ordinary-looking
-// remote URL into it. unsafeConfigKey refuses such a rewrite, but this closes the
-// whole class rather than one key at a time -- including the shapes that reach git
-// through gh's internal calls, since gitHardenedEnv exports these as GIT_CONFIG_*.
+// command git runs. git's own default for it is already "never", but that default
+// is CONFIGURABLE: a crafted .git/config setting protocol.ext.allow=always turns
+// the transport back on for exactly the user-initiated fetches fixpoint performs
+// (`gh pr checkout`, the base-object fetch), and remote.<name>.url or a repo-local
+// url.<ext-url>.insteadOf then routes an ordinary-looking remote into it.
+// unsafeConfigKey refuses such a rewrite but does not flag remote.<name>.url; this
+// pin beats the repo's value outright and closes the whole class rather than one
+// key at a time -- including the shapes that reach git through gh's internal
+// calls, since gitHardenedEnv exports these as GIT_CONFIG_*.
 var gitSafeConfig = []string{
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",

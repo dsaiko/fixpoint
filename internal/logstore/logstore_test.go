@@ -420,6 +420,42 @@ func TestSummaryRendersAllRoundSections(t *testing.T) {
 	}
 }
 
+// When the closing round fails, the run's termination becomes "error" and the
+// loop's own outcome is preserved separately -- the difference between a run that
+// never converged and one that converged and then tripped on its last step. The
+// summary markdown is the durable artifact a human reads to learn that, so the
+// line has to be rendered, and it must be absent when there is nothing to
+// distinguish (LoopTermination empty) rather than printing an empty outcome.
+func TestSummaryRendersTheLoopTerminationWhenTheClosingRoundFailed(t *testing.T) {
+	render := func(t *testing.T, loopTerm string) string {
+		t.Helper()
+		s, dir := newStore(t, "md")
+		sum := &model.RunSummary{
+			Termination:     model.TermError,
+			LoopTermination: loopTerm,
+			Error:           "closing round 3: coder failed",
+			Rounds:          []model.RoundRecord{{Round: 1}},
+		}
+		if _, err := s.Summary(sum); err != nil {
+			t.Fatal(err)
+		}
+		return filesIn(t, singleRunDir(t, dir))["summary.md"]
+	}
+
+	md := render(t, model.TermConverged)
+	if !strings.Contains(md, "termination: **error**") {
+		t.Errorf("summary md missing the run's termination:\n%s", md)
+	}
+	if !strings.Contains(md, "loop termination (before the closing round failed): converged") {
+		t.Errorf("summary md missing the loop's own outcome:\n%s", md)
+	}
+
+	// A run whose loop outcome IS the run outcome has nothing extra to say.
+	if md := render(t, ""); strings.Contains(md, "loop termination") {
+		t.Errorf("summary md reports a loop termination that was never recorded:\n%s", md)
+	}
+}
+
 // The run summary is a durable artifact that embeds finding descriptions and
 // coder verdict details -- both derived from agent output that may quote a
 // discovered secret. It must be redacted like the per-step logs, in BOTH the

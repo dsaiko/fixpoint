@@ -197,6 +197,57 @@ func TestRunTableHasNoTrailingWhitespace(t *testing.T) {
 	}
 }
 
+// A config resolved from <project>/config is a FILENAME the repository under
+// review chose, and so are the extends path and the target path. All three are
+// printed in the scoreboard the operator reads at the end of a run -- including a
+// FAILED one, where what was actually reviewed is the question -- so raw ESC/CSI
+// there could erase or redraw the rows around them, and a bidi override could
+// reverse a path. The escaping is applied per FIELD rather than to the whole
+// table so the column layout survives, which means the layout has to be asserted
+// too: escaping that broke the table would be its own misreport.
+func TestRunTableEscapesTerminalControlsInRepoSuppliedPaths(t *testing.T) {
+	sum := twoAgentRun()
+	// CSI erase-line + cursor-up: enough to overwrite the row printed above.
+	sum.Sources.Config = "/p/config/ev\x1b[2K\x1b[Ail.yaml"
+	// An OSC that retitles the operator's terminal, plus a stray newline that
+	// would otherwise split the row in two.
+	sum.Sources.Extends = "/p/config/def\x1b]0;pwned\x07au\nlts.yaml"
+	// A bidi override, which needs no ESC at all to make a path read backwards.
+	sum.Path = "/p/repo\u202egpj.exe"
+
+	got := RenderRunTable(sum)
+
+	for _, raw := range []string{"\x1b", "\x07", "\u202e"} {
+		if strings.Contains(got, raw) {
+			t.Errorf("run table still contains the raw control %q:\n%q", raw, got)
+		}
+	}
+	for _, want := range []string{
+		`ev\x1b[2K\x1b[Ail`,         // the title's bundle name
+		`def\x1b]0;pwned\x07au\x0a`, // the extends path, newline included
+		`/p/repo\u202egpj.exe`,      // the target path's bidi override
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("run table is missing the escaped form %q:\n%s", want, got)
+		}
+	}
+	// The layout still holds: the escaped fields stay one row each, in their
+	// column, and the table has as many lines as the benign one.
+	if a, b := len(strings.Split(got, "\n")), len(strings.Split(RenderRunTable(twoAgentRun()), "\n")); a != b {
+		t.Errorf("the escaped table has %d lines, the benign one %d: a hostile path broke the layout:\n%s", a, b, got)
+	}
+	for _, label := range []string{" config     ", " target     "} {
+		if !strings.Contains(got, label) {
+			t.Errorf("the %q column is no longer aligned:\n%s", strings.TrimSpace(label), got)
+		}
+	}
+	for i, line := range strings.Split(got, "\n") {
+		if line != strings.TrimRight(line, " \t") {
+			t.Errorf("line %d has trailing whitespace: %q", i+1, line)
+		}
+	}
+}
+
 // An empty or failed-before-any-round run still gets a table: that is exactly when
 // the operator needs to see what did and did not happen.
 func TestRunTableHandlesARunWithNoRounds(t *testing.T) {

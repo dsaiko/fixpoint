@@ -3204,6 +3204,56 @@ func TestFinalRoundDoesNotSalvageAFailedCoder(t *testing.T) {
 	}
 }
 
+// The discard's stash is the part that can itself fail, and that is the outcome
+// that matters most: the closing round's edits are still sitting in the worktree,
+// under a run whose loop had already converged. The operator has to be told --
+// the next run's clean-tree check will refuse to start over dirt they never made.
+// An index.lock fails the stash.
+func TestFinalRoundFailedCoderStashFails(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t)) // round 1: clean -> converged
+	f.respond(2, reviewResponse(t, model.ReviewFinding{
+		Category: "tests", Severity: "medium", File: "helper.go", Line: 42, Title: "no test here",
+	}))
+	// The closing round's coder dirties the tree and plants an index.lock, so the
+	// discarding `git stash` cannot lock the index.
+	lock := filepath.Join(f.repo, ".git", "index.lock")
+	testfixture.WriteSide(t, f.respDir, 3, fmt.Sprintf("#!/bin/sh\necho 'closing edit' >> '%s'\n: > '%s'\n",
+		filepath.Join(f.repo, "main.go"), lock))
+	f.respond(3, "I changed files but forgot the <fix> envelope.") // fails parsing
+
+	before := f.commitCount()
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() err = nil, want the coder failure combined with the reconcile failure")
+	}
+	for _, want := range []string{"closing round", "coder failed", "could not be reconciled", "left dirty"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run() err = %v, want it to contain %q", err, want)
+		}
+	}
+	// The tidy outcome must NOT be claimed: nothing was stashed.
+	if strings.Contains(err.Error(), "git stash pop") {
+		t.Errorf("Run() err = %v, but nothing was stashed; offering recovery would misdirect the operator", err)
+	}
+	if got := f.commitCount(); got != before {
+		t.Errorf("repo has %d commits, want %d: an unreconcilable closing round must still not be committed", got, before)
+	}
+	if sum.Termination != model.TermError || sum.Error == "" {
+		t.Errorf("termination = %q, error = %q; want the failure recorded", sum.Termination, sum.Error)
+	}
+	if d := f.discarded(model.DiscardFinalCoderFailed); d.Stashed || !strings.Contains(d.Error, "tree left dirty") {
+		t.Errorf("round_discarded = %+v, want stashed=false and the dirty tree named", d)
+	}
+	// Remove the lock so git works again, then confirm the edits are still there
+	// rather than lost by a botched reconcile.
+	os.Remove(lock)
+	if status := gitRun(t, f.repo, "status", "--porcelain"); !strings.Contains(status, "main.go") {
+		t.Errorf("the unreconcilable closing-round edits should remain in the worktree, got status %q", status)
+	}
+}
+
 // The closing round's coder is the same write-capable agent as any other round's,
 // so it can reject everything after having edited files. Those edits are accounted
 // for by no verdict: leaving them would report a successful run over a dirty tree
