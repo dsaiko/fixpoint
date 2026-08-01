@@ -179,6 +179,158 @@ func TestResolverShadowsPerFile(t *testing.T) {
 	}
 }
 
+// A bundle reference is a bare name. The names are chosen by a task config, and
+// the first bundle searched is <project>/config -- which the repository under
+// review may ship -- so a name carrying "../" would otherwise hand an agent any
+// file on the host as its instruction stream.
+func TestResolverRejectsNameThatEscapesTheBundle(t *testing.T) {
+	root := t.TempDir()
+	dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{"task": runnableBody}, []string{"fix", "review-bugs"}, []string{"mock"})
+	// The traversal lands on a file that really exists, so an unchecked lookup
+	// succeeds rather than falling through to a not-found.
+	if err := os.WriteFile(filepath.Join(root, "secret.md"), []byte("host secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secret.yaml"), []byte("description: host secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &Resolver{Bundles: []string{dir}}
+
+	if got, err := r.Prompt("../../secret"); err == nil {
+		t.Errorf("Prompt(../../secret) resolved to %s; a traversing name must be refused", got)
+	}
+	if got, err := r.Agent("../../secret"); err == nil {
+		t.Errorf("Agent(../../secret) resolved to %s; a traversing name must be refused", got)
+	}
+	// `extends` is a name a config from the repository under review supplies, so it
+	// gets no path escape hatch either -- the base is read, and fragments of it can
+	// surface through the decoder's error, before the trust gate can refuse the run.
+	if err := os.WriteFile(filepath.Join(dir, "task"+configExt), []byte("extends: ../../secret\n"+taskBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadBundle(r, "task", root, Overrides{})
+	if err == nil {
+		t.Fatal("extends naming a path outside the bundle must be refused")
+	}
+	if !strings.Contains(err.Error(), "separator") {
+		t.Errorf("the refusal should say why the name is not usable:\n%v", err)
+	}
+}
+
+// A bundle file that is a symlink pointing OUT of its bundle is refused. The
+// project's bundle is searched first, so following one would let the repository
+// under review nominate any file on the host as fixpoint's policy -- and the
+// listing is printed before any trust gate can object.
+func TestResolverRefusesSymlinkOutOfBundle(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"secret.md":   "host secret",
+		"secret.yaml": "description: host secret\n",
+	} {
+		if err := os.WriteFile(filepath.Join(outside, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	high := bundle(t, filepath.Join(root, "project"), nil, nil, nil)
+	low := bundle(t, filepath.Join(root, "system"), map[string]string{"task": runnableBody}, []string{"fix"}, nil)
+	link(t, filepath.Join(outside, "secret.md"), filepath.Join(high, promptsDir, "fix"+promptExt))
+	link(t, filepath.Join(outside, "secret.yaml"), filepath.Join(high, "task"+configExt))
+	r := &Resolver{Bundles: []string{high, low}}
+
+	got, err := r.Prompt("fix")
+	if err == nil {
+		t.Fatalf("Prompt(fix) resolved to %s, which is a symlink out of the bundle", got)
+	}
+	if !strings.Contains(err.Error(), "outside its bundle") {
+		t.Errorf("the refusal should name the reason:\n%v", err)
+	}
+	// The listing skips it instead of failing: it walks every bundle, so one
+	// hostile entry must not take `--list` down for all of them -- and the
+	// description of a file elsewhere on the host must not appear in it either.
+	entries, err := r.ListConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != filepath.Join(low, "task"+configExt) {
+		t.Fatalf("--list must show the bundle's own copy, not the escaping symlink: %+v", entries)
+	}
+	if entries[0].Description != "" {
+		t.Errorf("a description leaked from outside the bundle: %q", entries[0].Description)
+	}
+}
+
+// A bundle entry that is not an ordinary file is not a match. A device or a fifo
+// planted through a symlink is worse than a miss: reading /dev/zero never
+// returns, and this lookup runs before the trust gate could refuse the target's
+// bundle at all.
+func TestResolverSkipsNonRegularBundleFile(t *testing.T) {
+	root := t.TempDir()
+	high := bundle(t, filepath.Join(root, "project"), nil, nil, nil)
+	low := bundle(t, filepath.Join(root, "system"), nil, []string{"fix"}, nil)
+	link(t, os.DevNull, filepath.Join(high, promptsDir, "fix"+promptExt))
+
+	got, err := (&Resolver{Bundles: []string{high, low}}).Prompt("fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(low, promptsDir, "fix"+promptExt); got != want {
+		t.Errorf("Prompt(fix) = %s, want the real file %s: a device must never be opened as a bundle file", got, want)
+	}
+}
+
+// Every read of a bundle file is bounded. `fixpoint --list` reads every config in
+// <project>/config to describe it, before any trust gate applies, so an enormous
+// file there must not be able to exhaust memory just because someone looked.
+func TestBundleFileReadIsCapped(t *testing.T) {
+	root := t.TempDir()
+	dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{"task": runnableBody}, []string{"fix", "review-bugs"}, []string{"mock"})
+	huge := append([]byte("description: huge\n"), make([]byte, maxBundleFile)...)
+	if err := os.WriteFile(filepath.Join(dir, "huge"+configExt), huge, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &Resolver{Bundles: []string{dir}}
+
+	_, err := LoadBundle(r, "huge", root, Overrides{})
+	if err == nil {
+		t.Fatal("an oversized config must be refused rather than read")
+	}
+	if !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("the refusal should say the file is too large:\n%v", err)
+	}
+	// Listing survives it: an unreadable config is left for the loader to reject,
+	// and the configs beside it stay discoverable.
+	entries, err := r.ListConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want both configs listed: %+v", len(entries), entries)
+	}
+	for _, e := range entries {
+		if e.Name == "huge" && e.Description != "" {
+			t.Errorf("nothing should have been read from the oversized config: %q", e.Description)
+		}
+	}
+}
+
+// link creates a symlink at name pointing at target, replacing whatever is there.
+func link(t *testing.T, target, name string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, name); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+}
+
 // ListConfigs backs both --list and shell completion, so it must report the file a
 // run would actually use -- not every copy on the path -- and must say which
 // configs are runnable.

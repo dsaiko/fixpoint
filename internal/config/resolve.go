@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +33,17 @@ const (
 	// appName is the subdirectory used under the OS config dir and the system
 	// data dir.
 	appName = "fixpoint"
+
+	// maxBundleFile caps how much of a bundle file is read. Bundle files are
+	// hand-written YAML and Markdown -- the largest in the shipped bundle is under
+	// 2 KB -- so a megabyte is room the real files will never need.
+	//
+	// The cap exists because the FIRST bundle searched is <project>/config, inside
+	// the repository under review, and these reads happen BEFORE the
+	// project-supplied-policy gate can refuse the run: `fixpoint --list` reads every
+	// config it finds there just to describe it. Without a ceiling, a target that
+	// ships one enormous file makes merely looking at what it offers exhaust memory.
+	maxBundleFile = 1 << 20
 )
 
 // systemBundleDirs returns the read-only, package-installed bundle locations.
@@ -208,17 +220,67 @@ func (r *Resolver) Config(nameOrPath string) (string, error) {
 		}
 		return nameOrPath, nil
 	}
-	return r.find("config", "", nameOrPath+configExt)
+	return r.configByName(nameOrPath)
+}
+
+// configByName resolves a task config by bare name only, without Config's
+// path-like escape hatch.
+//
+// `extends` resolves through this rather than through Config: the base is named
+// by a config file that may itself have come from the repository under review,
+// and a path there would let that file nominate any file on the host -- read, and
+// fragments of it echoed back through the YAML decoder's error message, before
+// the project-supplied-policy gate can refuse the run. A path is the OPERATOR's
+// convenience for an ad-hoc config, so it stays on the command-line entry point.
+func (r *Resolver) configByName(name string) (string, error) {
+	if err := checkBundleName("config", name); err != nil {
+		return "", err
+	}
+	return r.find("config", "", withExt(name, configExt))
 }
 
 // Prompt resolves a prompt by bare name to <bundle>/prompts/<name>.md.
 func (r *Resolver) Prompt(name string) (string, error) {
+	if err := checkBundleName("prompt", name); err != nil {
+		return "", err
+	}
 	return r.find("prompt", promptsDir, withExt(name, promptExt))
 }
 
 // Agent resolves an agent by bare name to <bundle>/agents/<name>.yaml.
 func (r *Resolver) Agent(name string) (string, error) {
+	if err := checkBundleName("agent", name); err != nil {
+		return "", err
+	}
 	return r.find("agent", agentsDir, withExt(name, configExt))
+}
+
+// checkBundleName rejects a reference that would resolve outside its bundle.
+//
+// The name is joined onto a bundle directory, so a separator or a dot segment
+// walks the lookup OUT of the bundle: a task config asking for prompt
+// "../../../../etc/passwd" would otherwise be handed that file's contents as an
+// agent's instruction stream. The names are chosen by the task config, and the
+// first bundle searched is <project>/config, which the repository under review
+// may ship -- so this is untrusted input, not a typo check.
+//
+// It constrains only what containment needs. A name is otherwise free text that
+// reaches an operator's terminal, and keeping THAT safe is the escaping layer's
+// job (see agent.EscapeTerminal); duplicating the judgment here would leave two
+// places to disagree about which names exist.
+func checkBundleName(kind, name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("%s name is empty; a bundle reference names a file inside the bundle", kind)
+	// ':' along with the separators: on Windows it introduces a drive-relative
+	// path, which Join does not clean away either.
+	case strings.ContainsAny(name, `/\:`):
+		return fmt.Errorf("%s %q must not contain a path separator: it is joined onto the bundle directory, so the lookup would resolve outside the bundle -- "+
+			"and the first bundle searched is the one the repository under review may ship", kind, name)
+	case name == "." || name == "..":
+		return fmt.Errorf("%s %q must not be a dot segment: it is joined onto the bundle directory, and the joined path is cleaned before it is used, so the lookup would resolve outside the bundle", kind, name)
+	}
+	return nil
 }
 
 func (r *Resolver) find(kind, sub, file string) (string, error) {
@@ -226,11 +288,77 @@ func (r *Resolver) find(kind, sub, file string) (string, error) {
 	for _, b := range r.Bundles {
 		p := filepath.Join(b, sub, file)
 		tried = append(tried, p)
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p, nil
+		// Regular files only. A directory was never a match, and a device or a fifo
+		// is worse than a non-match: reading /dev/zero through a planted symlink
+		// never returns, and this lookup runs before the project-supplied-policy
+		// gate has had a chance to refuse the target's bundle at all.
+		st, err := os.Stat(p)
+		if err != nil || !st.Mode().IsRegular() {
+			continue
 		}
+		if !withinBundle(b, p) {
+			return "", fmt.Errorf("%s %q resolves to %s, which lies outside its bundle %s: a bundle file must not be a symlink pointing out of the bundle. "+
+				"The project's own bundle is searched first, so following one would let the repository under review nominate any file on the host as fixpoint's policy",
+				kind, strings.TrimSuffix(file, filepath.Ext(file)), p, b)
+		}
+		return p, nil
 	}
 	return "", &NotFoundError{Kind: kind, Name: strings.TrimSuffix(file, filepath.Ext(file)), Tried: tried}
+}
+
+// withinBundle reports whether path, with every symlink along it resolved, still
+// lies inside bundle -- itself resolved, so a bundle that IS a symlink (a
+// ~/.fixpoint pointing into a dotfiles checkout, a Homebrew prefix) is compared
+// against where it really lives and keeps working.
+//
+// What it rejects is the per-file escape: a single entry inside the bundle
+// pointing somewhere else entirely. Only the resolved target can be checked here;
+// a lexical test would see nothing wrong with a symlink at all.
+func withinBundle(bundle, path string) bool {
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	realBundle, err := filepath.EvalSymlinks(bundle)
+	if err != nil {
+		return false
+	}
+	return within(realPath, realBundle)
+}
+
+// readBundleFile reads a bundle file under the two limits every read of one
+// needs: it must be an ordinary file, and it must be bounded.
+//
+// Both matter because <project>/config is searched first and belongs to the
+// repository under review, and because the reads happen BEFORE the
+// project-supplied-policy gate can refuse the run. A config that is a symlink to
+// /dev/zero or to a fifo would otherwise hang `fixpoint --list` forever, and an
+// enormous one would exhaust memory -- a target could deny the operator even the
+// ability to look at what it ships. Stat before open, because opening a fifo is
+// itself what blocks.
+func readBundleFile(path string) ([]byte, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file (%s); a bundle file must be an ordinary file", path, st.Mode().Type())
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }() // read-only: nothing to report on close
+	// One byte past the cap, so hitting the limit is distinguishable from a file
+	// that happens to be exactly maxBundleFile long.
+	data, err := io.ReadAll(io.LimitReader(f, maxBundleFile+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if len(data) > maxBundleFile {
+		return nil, fmt.Errorf("%s: bundle file is larger than %d bytes; configs, agents and prompts are hand-written files and this cap is what keeps reading an untrusted bundle bounded", path, maxBundleFile)
+	}
+	return data, nil
 }
 
 // Entry is one task config visible on the search path.
@@ -270,8 +398,17 @@ func (r *Resolver) ListConfigs() ([]Entry, error) {
 			if seen[name] {
 				continue
 			}
-			seen[name] = true
 			path := filepath.Join(b, e.Name())
+			// Same containment rule the by-name lookup applies, so the listing shows
+			// what a run would actually resolve -- and so a symlink out of the bundle
+			// cannot leak the description line of a file elsewhere on the host into a
+			// listing printed before any trust gate. Skipped rather than fatal, unlike
+			// the named lookup: listing walks every bundle, so one hostile entry must
+			// not be able to take `--list` down for all of them.
+			if !withinBundle(b, path) {
+				continue
+			}
+			seen[name] = true
 			runnable, desc := probe(path)
 			out = append(out, Entry{Name: name, Path: path, Description: desc, Runnable: runnable})
 		}
@@ -288,9 +425,9 @@ func (r *Resolver) ListConfigs() ([]Entry, error) {
 // must not make a config vanish from the listing. Listing is discovery; the loader
 // is where correctness is enforced, with a message that says what is wrong.
 func probe(path string) (runnable bool, description string) {
-	data, err := os.ReadFile(path)
+	data, err := readBundleFile(path)
 	if err != nil {
-		return true, "" // unreadable: let the loader report it properly
+		return true, "" // unreadable, oversized, or not a regular file: the loader reports it properly
 	}
 	var p struct {
 		Description string `yaml:"description"`

@@ -32,6 +32,18 @@ fixpoint refuses to run and prints every location it searched.
 Every run logs the file each name resolved to, and records it in the run summary.
 Read that first when behavior surprises you — a shadowing copy is the usual cause.
 
+A name resolves **inside** a bundle, and that is enforced rather than assumed:
+every reference (`extends`, a lens's `prompt`, an `agent`) must be a bare name
+with no path separator or `..` segment, a bundle entry must be an ordinary file,
+and one that is a symlink pointing out of its bundle is refused rather than
+followed. The project's bundle is searched first and may have been shipped by the
+repository under review, so without this a config there could nominate any file
+on the host as a prompt — and `fixpoint --list` reads that directory before any
+trust gate applies. For the same reason bundle files are read with a 1 MiB
+ceiling. A path instead of a name is still accepted for the config you name on
+the command line (`fixpoint ./ad-hoc.yaml`), which is your assertion, not the
+target's.
+
 Customize by **copying**, never by editing the installed bundle: package upgrades
 replace `/usr/share/fixpoint` wholesale. A copy in `~/.fixpoint/` or the project
 shadows it and survives upgrades — but note that it also pins you to the schema of

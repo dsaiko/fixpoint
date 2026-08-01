@@ -3,7 +3,6 @@ package config
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -176,7 +175,7 @@ func loadWithExtends(r *Resolver, path string) (*Config, string, error) {
 	if cfg.Extends == "" {
 		return cfg, "", nil
 	}
-	basePath, err := r.Config(cfg.Extends)
+	basePath, err := r.configByName(cfg.Extends)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: extends: %w", path, err)
 	}
@@ -227,7 +226,7 @@ var trustKeys = []struct {
 // let the code under review authorize executing its own agent definitions and
 // running the write-capable coder against itself.
 func rejectTrustKeys(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := readBundleFile(path)
 	if err != nil {
 		return err
 	}
@@ -268,7 +267,10 @@ func decodeFile(path string) (*Config, error) {
 // the child omits untouched. Unknown keys are errors, so a typo in any bundle
 // file fails at startup instead of being silently ignored.
 func decodeInto(path string, target any) error {
-	data, err := os.ReadFile(path)
+	// readBundleFile rather than os.ReadFile: `extends` names a config the file
+	// under review chose, and this decode happens before the trust gate, so the
+	// same regular-file and size limits every other bundle read has apply here too.
+	data, err := readBundleFile(path)
 	if err != nil {
 		return err
 	}
