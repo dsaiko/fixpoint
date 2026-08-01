@@ -252,6 +252,72 @@ func TestRunTableEscapesTerminalControlsInRepoSuppliedPaths(t *testing.T) {
 	}
 }
 
+// The exit row quotes sum.Error, which routinely wraps a subprocess's stderr
+// verbatim -- in pr mode a `git fetch` failure carries `remote:` lines whose bytes
+// the server chooses -- and the contributor tables print agent and lens names,
+// which come from a config the repository under review may own. Both reach the
+// operator's terminal at the end of a run, below the rows that say what was
+// actually reviewed, so neither may be able to redraw them.
+func TestRunTableEscapesTerminalControlsInErrorsAndContributorNames(t *testing.T) {
+	sum := twoAgentRun()
+	sum.Termination = model.TermError
+	// CSI erase-line + cursor-up, as a hostile git remote could emit.
+	sum.Error = "git fetch: remote: \x1b[2K\x1b[Aall clear"
+	// A bidi override in an agent name and an OSC in a lens name.
+	sum.Rounds[0].Findings[0].Agent = "co\u202edex"
+	sum.Rounds[0].Findings[0].Lens = "review-b\x1b]0;pwned\x07ugs"
+
+	got := RenderRunTable(sum)
+
+	for _, raw := range []string{"\x1b", "\x07", "\u202e"} {
+		if strings.Contains(got, raw) {
+			t.Errorf("run table still contains the raw control %q:\n%q", raw, got)
+		}
+	}
+	for _, want := range []string{
+		`remote: \x1b[2K\x1b[Aall clear`, // the exit row's wrapped stderr
+		`co\u202edex`,                    // the REVIEWER row's name
+		`review-b\x1b]0;pwned\x07ugs`,    // the LENS row's name
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("run table is missing the escaped form %q:\n%s", want, got)
+		}
+	}
+	// Escaping is per field so the columns survive it: the escaped table must be
+	// the same shape as one whose extra agent and lens are benign, and still free
+	// of trailing padding.
+	benign := twoAgentRun()
+	benign.Termination = model.TermError
+	benign.Error = "git fetch: remote: all clear"
+	benign.Rounds[0].Findings[0].Agent = "codex-alt"
+	benign.Rounds[0].Findings[0].Lens = "review-bugs-alt"
+	if a, b := len(strings.Split(got, "\n")), len(strings.Split(RenderRunTable(benign), "\n")); a != b {
+		t.Errorf("the escaped table has %d lines, the benign one %d:\n%s", a, b, got)
+	}
+	for i, line := range strings.Split(got, "\n") {
+		if line != strings.TrimRight(line, " \t") {
+			t.Errorf("line %d has trailing whitespace: %q", i+1, line)
+		}
+	}
+}
+
+// A multi-line error is cut to its first line BEFORE escaping: escaping first
+// would turn the newline into a printable "\x0a" that firstLine could no longer
+// find, and the whole of a subprocess's stderr would land in the exit row.
+func TestRunTableTruncatesAMultiLineErrorBeforeEscapingIt(t *testing.T) {
+	sum := twoAgentRun()
+	sum.Termination = model.TermError
+	sum.Error = "git fetch failed\nremote: second line"
+
+	got := RenderRunTable(sum)
+	if !strings.Contains(got, "git fetch failed") {
+		t.Errorf("want the failure reason:\n%s", got)
+	}
+	if strings.Contains(got, "second line") || strings.Contains(got, `\x0a`) {
+		t.Errorf("the outcome line must stay one line:\n%s", got)
+	}
+}
+
 // An empty or failed-before-any-round run still gets a table: that is exactly when
 // the operator needs to see what did and did not happen.
 func TestRunTableHandlesARunWithNoRounds(t *testing.T) {

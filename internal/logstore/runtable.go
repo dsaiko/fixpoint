@@ -252,8 +252,11 @@ func writeContributorTable(b *strings.Builder, heading string, order []string, m
 				deferred++
 			}
 		}
+		// Escaped for the same reason the config and target rows are: an agent or
+		// lens name comes from a config the repository under review may own, and a
+		// cell that can emit ESC/CSI would redraw the rows around it.
 		rows = append(rows, []string{
-			name, itoa(len(c.issues)), itoa(fixed), itoa(rejected), itoa(deferred),
+			agent.EscapeTerminal(name), itoa(len(c.issues)), itoa(fixed), itoa(rejected), itoa(deferred),
 			itoa(c.advisory), itoa(c.errors), tokenCount(c.usage.Tokens()), costUSD(c.usage), humanDuration(c.dur),
 		})
 	}
@@ -425,7 +428,12 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 	}
 	exit := fmt.Sprintf("%s (exit %d)", sum.Termination, model.ExitCode(sum.Termination))
 	if sum.Error != "" {
-		exit += " · " + firstLine(sum.Error)
+		// A run error routinely wraps a subprocess's stderr verbatim -- including,
+		// in pr mode, `remote:` lines whose bytes an attacker-controlled server
+		// picks. Truncate to the first line first, so escaping cannot hide a
+		// newline behind a "\x0a" and spill the rest of the output into the table,
+		// then escape what is left for the same reason the config row is escaped.
+		exit += " · " + agent.EscapeTerminal(firstLine(sum.Error))
 	}
 	out = append(out, [2]string{"exit", exit})
 	return out
