@@ -639,24 +639,7 @@ func (c *Collector) Commit(ctx context.Context, header, body string, exclude ...
 	// that landed. Restore on a fresh context then, still bounded per operation by
 	// gitOpTimeout, exactly as committedSHA re-reads HEAD.
 	defer func() {
-		rctx := ctx //nolint:contextcheck // deliberate fresh context below: ctx may be canceled, but the excluded paths' index entries must still be put back
-		if rctx.Err() != nil {
-			rctx = context.Background()
-		}
-		rerr := c.restoreStagedExcluded(rctx, exclude, staged)
-		if rerr == nil {
-			return
-		}
-		switch {
-		case err != nil:
-			sha, err = "", fmt.Errorf("%w; and the staged state of the excluded path(s) could not be restored: %w", err, rerr)
-		case sha != "":
-			// The commit landed: name it, because the returned error means the caller
-			// cannot report the SHA itself.
-			err = fmt.Errorf("commit %s landed but the staged state of the excluded path(s) could not be restored: %w", shortSHA(sha), rerr)
-		default:
-			err = fmt.Errorf("the staged state of the excluded path(s) could not be restored: %w", rerr)
-		}
+		sha, err = c.restoreExcludedOnExit(ctx, exclude, staged, sha, err)
 	}()
 	// Stage everything under the repo root, then unstage the excluded paths.
 	// Passing excludes to `git add` is not viable: it refuses a pathspec that
@@ -767,6 +750,36 @@ func (c *Collector) restoreStagedExcluded(ctx context.Context, exclude []string,
 	return nil
 }
 
+// restoreExcludedOnExit puts the excluded paths' index entries back on the way out
+// of a commit-building operation and folds a failed restoration into that
+// operation's own result. Commit and SquashSince both defer it on their named
+// results: both have to take the excluded entries out of the index to keep them out
+// of the commit they build, and neither may leave them collapsed afterwards.
+//
+// Cancellation must not be why the entries stay collapsed: on a dead context every
+// git command fails instantly, and the commit may well have landed anyway. Restore
+// on a fresh context then, still bounded per operation by gitOpTimeout, exactly as
+// committedSHA re-reads HEAD.
+func (c *Collector) restoreExcludedOnExit(ctx context.Context, exclude []string, staged stagedIndex, sha string, err error) (string, error) {
+	rctx := ctx //nolint:contextcheck // deliberate fresh context below: ctx may be canceled, but the excluded paths' index entries must still be put back
+	if rctx.Err() != nil {
+		rctx = context.Background()
+	}
+	rerr := c.restoreStagedExcluded(rctx, exclude, staged)
+	switch {
+	case rerr == nil:
+		return sha, err
+	case err != nil:
+		return "", fmt.Errorf("%w; and the staged state of the excluded path(s) could not be restored: %w", err, rerr)
+	case sha != "":
+		// The commit landed: name it, because the returned error means the caller
+		// cannot report the SHA itself.
+		return sha, fmt.Errorf("commit %s landed but the staged state of the excluded path(s) could not be restored: %w", shortSHA(sha), rerr)
+	default:
+		return "", fmt.Errorf("the staged state of the excluded path(s) could not be restored: %w", rerr)
+	}
+}
+
 // nullOID is git's all-zero object name, the placeholder --index-info wants
 // beside a mode of 0 (which is what actually removes the path).
 const nullOID = "0000000000000000000000000000000000000000"
@@ -827,11 +840,34 @@ func (c *Collector) HeadSHA(ctx context.Context) (string, error) {
 // base == "" squashes back to an unborn branch, which is why HeadSHA reports that
 // state as an empty string rather than an error; the replacement is then a root
 // commit rather than a child of base.
-func (c *Collector) SquashSince(ctx context.Context, base, header, body string) (string, error) {
-	// The index already holds everything the squashed commits staged, so turn it
-	// into a tree directly rather than re-running Commit's add/exclude dance:
-	// re-staging would pick up anything that arrived in the worktree since, which
-	// no verify pass has seen.
+//
+// The excluded paths are kept out of the squashed commit and left exactly as they
+// were in the index, the same guarantee Commit gives.
+func (c *Collector) SquashSince(ctx context.Context, base, header, body string, exclude ...string) (sha string, err error) {
+	// Commit deliberately puts the excluded paths' staged entries BACK into the index
+	// after each per-fix commit, so the live index is not a tree any of those commits
+	// produced: it also carries whatever was staged under the exclusion. Collapse
+	// those entries to their HEAD version first -- exactly what Commit's reset does --
+	// or the squash would publish staged changes under an excluded path (the run's own
+	// logs, a credential-bearing **/*.env) that every commit it replaces left out.
+	staged, err := c.stagedExcluded(ctx, exclude)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		sha, err = c.restoreExcludedOnExit(ctx, exclude, staged, sha, err)
+	}()
+	for _, e := range exclude {
+		// :(literal) so a metacharacter-bearing exclude path (e.g. "logs[1]") is reset
+		// as that exact path, not a glob -- matching the exclusion pathspec.
+		if out, err := c.git(ctx, "reset", "-q", "HEAD", "--", ":(literal)"+e); err != nil {
+			return "", fmt.Errorf("git reset excluded %s: %w: %s", e, err, out)
+		}
+	}
+	// The index now holds everything the squashed commits staged and nothing else, so
+	// turn it into a tree directly rather than re-running Commit's add: re-staging
+	// would pick up anything that arrived in the worktree since, which no verify pass
+	// has seen.
 	tree, err := c.git(ctx, "write-tree")
 	if err != nil {
 		return "", fmt.Errorf("git write-tree: %w: %s", err, tree)
@@ -856,7 +892,7 @@ func (c *Collector) SquashSince(ctx context.Context, base, header, body string) 
 	if err != nil {
 		return "", fmt.Errorf("git commit-tree: %w: %s", err, out)
 	}
-	sha := strings.TrimSpace(out)
+	sha = strings.TrimSpace(out)
 	// Capture HEAD before the ref move so a cancellation landing between the update
 	// and git's exit can still be recognized as a squash that happened -- the same
 	// recovery commitStaged does around `git commit`.

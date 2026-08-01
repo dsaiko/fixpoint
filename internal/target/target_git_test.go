@@ -511,6 +511,56 @@ func TestSquashSince(t *testing.T) {
 	}
 }
 
+// The squash must keep the excluded paths out of its tree, exactly as the per-fix
+// commits it replaces did. Commit deliberately restores the excluded paths' staged
+// index entries after each commit, so by squash time the live index carries staged
+// changes under the exclusion that no commit contained -- and a write-tree over that
+// index would publish them (the run's own logs, a credential-bearing .env).
+func TestSquashSinceExcludesStagedExcludedPaths(t *testing.T) {
+	repo := gitRepo(t)
+	writeFile(t, repo, "logs/run.log", "committed\n")
+	git(t, repo, "add", "logs/run.log")
+	git(t, repo, "commit", "-q", "-m", "a tracked log")
+	base := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+
+	// Staged under the exclusion, then modified further in the worktree: neither side
+	// belongs in the squash, and both have to survive it.
+	writeFile(t, repo, "logs/run.log", "staged\n")
+	git(t, repo, "add", "logs/run.log")
+	stagedBlob := strings.Fields(git(t, repo, "ls-files", "--stage", "--", "logs/run.log"))[1]
+	writeFile(t, repo, "logs/run.log", "worktree\n")
+
+	c := New(config.Target{Path: repo})
+	for _, name := range []string{"one.go", "two.go"} {
+		writeFile(t, repo, name, "package main\n")
+		if _, err := c.Commit(t.Context(), "fix "+name, "body", "logs"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sha, err := c.SquashSince(t.Context(), base, "fixpoint: round 1", "Fixed:\n- one\n- two", "logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := git(t, repo, "show", "--name-only", "--format=", sha)
+	if strings.Contains(files, "logs/run.log") {
+		t.Errorf("the squashed commit carried an excluded path:\n%s", files)
+	}
+	if !strings.Contains(files, "one.go") || !strings.Contains(files, "two.go") {
+		t.Errorf("squashed commit files = %q, want both fixes", files)
+	}
+	if got := git(t, repo, "show", sha+":logs/run.log"); got != "committed\n" {
+		t.Errorf("logs/run.log in the squashed tree = %q, want the pre-run committed version", got)
+	}
+	// The excluded path is left exactly as it was, in the index AND the worktree.
+	if got := strings.Fields(git(t, repo, "ls-files", "--stage", "--", "logs/run.log"))[1]; got != stagedBlob {
+		t.Errorf("staged blob = %s, want %s: the squash destroyed the staged version of an excluded path", got, stagedBlob)
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "logs", "run.log")); err != nil || string(b) != "worktree\n" {
+		t.Errorf("worktree content = %q (%v), want it untouched", b, err)
+	}
+}
+
 // base == "" squashes back to an unborn branch: the replacement is a root commit.
 func TestSquashSinceUnbornBase(t *testing.T) {
 	dir := t.TempDir()

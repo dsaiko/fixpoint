@@ -677,7 +677,10 @@ func (o *Orchestrator) squashTo(ctx context.Context, rec *model.RoundRecord, bas
 	// which may quote the very secret under review. Unlike the logs, the commit is
 	// meant to be pushed and shared, so redact it too (the logstore path does the
 	// same for its on-disk artifacts).
-	return o.collector.SquashSince(ctx, base, header, agent.RedactSecrets(body.String()))
+	// The same exclusions the per-fix commits used: Commit restores the excluded
+	// paths' staged entries into the index after each one, so the squash has to keep
+	// them out of its tree just as those commits did.
+	return o.collector.SquashSince(ctx, base, header, agent.RedactSecrets(body.String()), o.gitExclude...)
 }
 
 // runFinalPhase runs the closing round for `final: true` lenses, after the loop has
