@@ -844,6 +844,9 @@ func (c *Config) Validate() error {
 		if !ok {
 			return fmt.Errorf("%s: agent %q is not defined in the agents section", ctx, name)
 		}
+		if err := validPathIdent("agent", name); err != nil {
+			return fmt.Errorf("%s: %w", ctx, err)
+		}
 		argv := a.Argv()
 		if len(argv) == 0 {
 			return fmt.Errorf("agents.%s: empty command", name)
@@ -953,6 +956,12 @@ func (c *Config) Validate() error {
 		if _, err := os.Stat(ref.file); err != nil {
 			return fmt.Errorf("prompt file %s (%s): %w", ref.name, ref.file, err)
 		}
+		// The lens name is what logs.pattern substitutes for {prompt}. Checked here
+		// rather than in the uniqueness loop above so a missing or unreadable prompt
+		// still reports as exactly that.
+		if err := validPathIdent("lens log", LensName(ref.name)); err != nil {
+			return fmt.Errorf("prompt %s: %w", ref.name, err)
+		}
 	}
 
 	for _, f := range c.Logs.Formats {
@@ -986,13 +995,23 @@ func (c *Config) Validate() error {
 		// run can produce -- holding {round}/{timestamp}/{ext} fixed, as they are
 		// equal for the concurrent same-round writes that race -- and reject any two
 		// distinct identities that collide onto one path.
+		//
+		// Compare the path the logstore actually writes, not the raw rendering: it
+		// writes filepath.Join(roundDir, StepPath(...)), and Join cleans slash and
+		// dot segments, so "a/../b.md" and "b.md" are one file that a string compare
+		// of the renderings would call distinct. Cleaning against a probe root also
+		// catches a pattern whose own literals climb out of the round directory.
 		seenPath := map[string][3]string{}
 		for _, id := range c.logIdentities() {
 			p := c.renderLogPattern(id)
-			if prev, dup := seenPath[p]; dup && prev != id {
+			full := filepath.Clean(filepath.Join(logProbeRoot, p))
+			if !strings.HasPrefix(full, logProbeRoot+string(filepath.Separator)) {
+				return fmt.Errorf("logs.pattern %q renders identity %v to %q, which normalizes outside its round directory; step logs must stay beneath the round directory, else a run scatters artifacts over the tree it is reviewing -- remove the leading .. segments from the pattern", c.Logs.Pattern, id, p)
+			}
+			if prev, dup := seenPath[full]; dup && prev != id {
 				return fmt.Errorf("logs.pattern %q maps distinct log identities %v and %v to the same path %q; under strategy all their step/prompt writes run concurrently and would race onto it, silently overwriting one reviewer's or the coder's record -- add a separator between (or reorder) the {role}/{agent}/{prompt} placeholders so every identity renders a distinct path", c.Logs.Pattern, prev, id, p)
 			}
-			seenPath[p] = id
+			seenPath[full] = id
 		}
 	}
 	if c.Logs.SummaryPattern != "" && !strings.Contains(c.Logs.SummaryPattern, "{ext}") {
@@ -1067,6 +1086,32 @@ func (c *Config) logIdentities() [][3]string {
 // paths actually produced.
 func (c *Config) renderLogPattern(id [3]string) string {
 	return c.Logs.StepPath(id[0], id[1], id[2], 1, "", "")
+}
+
+// logProbeRoot stands in for the round directory when validation normalizes a
+// rendered logs.pattern. Any absolute directory works: only the shape of what
+// filepath.Clean does to the pattern relative to it is being measured.
+var logProbeRoot = string(filepath.Separator) + "round"
+
+// validPathIdent rejects an identifier that logs.pattern substitutes into a file
+// path. The logstore writes filepath.Join(roundDir, StepPath(...)), and Join
+// cleans slash and dot segments away, so an agent named "x/../review-b" and one
+// named "review-b" render to two strings that the collision validator sees as
+// distinct but that name ONE file: their parallel Prompt and Step writes then
+// truncate each other's artifacts nondeterministically. A leading ".." is worse
+// -- it walks the artifact out of the round directory into the tree under
+// review. Keeping separators and dot segments out of the identifiers is what
+// makes comparing the normalized rendered paths sound.
+func validPathIdent(kind, name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("%s name is empty; it is substituted into logs.pattern and every identity must render a distinct path", kind)
+	case strings.ContainsAny(name, `/\`):
+		return fmt.Errorf("%s name %q must not contain a path separator: it is substituted into logs.pattern, and the joined path is cleaned before it is written, so the artifact silently lands on another identity's file or outside the round directory", kind, name)
+	case name == "." || name == "..":
+		return fmt.Errorf("%s name %q must not be a dot segment: it is substituted into logs.pattern, and the joined path is cleaned before it is written, so the artifact silently lands on another identity's file or outside the round directory", kind, name)
+	}
+	return nil
 }
 
 // applyDefaults fills an agent's optional fields. It is a method on Agent rather

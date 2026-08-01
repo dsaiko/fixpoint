@@ -53,7 +53,14 @@ func TestArgv(t *testing.T) {
 // writePrompt creates a readable prompt file and returns its path.
 func writePrompt(t *testing.T) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "prompt.md")
+	return writeNamedPrompt(t, "prompt.md")
+}
+
+// writeNamedPrompt is writePrompt with control over the basename, which is what
+// LensName derives the {prompt} log token from.
+func writeNamedPrompt(t *testing.T, base string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), base)
 	if err := os.WriteFile(p, []byte("review {{.Target}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +226,36 @@ func TestValidate(t *testing.T) {
 			c.Logs.Pattern = "{role}/{agent}/{prompt}-{round}.{ext}"
 			c.Logs.SummaryPattern = "run-summary.{ext}"
 		}, ""},
+		// The logstore joins the rendered pattern onto the round directory, and
+		// filepath.Join cleans it -- so identifiers carrying path syntax, and
+		// patterns whose own literals do, must be rejected rather than compared as
+		// raw strings that look distinct but name one file.
+		{"agent name with a path separator rejected", func(c *Config) {
+			// Renders "review-x/../rev-..." , which cleans onto plain "rev"'s path.
+			c.Agents["x/../rev"] = c.Agents["rev"]
+			c.Roles.Review.Agents = []string{"rev", "x/../rev"}
+		}, "must not contain a path separator"},
+		{"agent name that is a dot segment rejected", func(c *Config) {
+			c.Agents[".."] = c.Agents["coder"]
+			c.Roles.Coder.Agent = ".."
+		}, "must not be a dot segment"},
+		{"lens name that is a dot segment rejected", func(c *Config) {
+			c.Roles.Review.Prompts = []ReviewLens{{Prompt: writeNamedPrompt(t, "...md")}} // LensName -> ".."
+		}, "must not be a dot segment"},
+		{"empty lens name rejected", func(c *Config) {
+			c.Roles.Review.Prompts = []ReviewLens{{Prompt: writeNamedPrompt(t, ".md")}} // LensName -> ""
+		}, "name is empty"},
+		{"logs.pattern collision only visible after path cleaning", func(c *Config) {
+			// Both reviewers render ".../review/<agent>/../prompt.<ext>", which
+			// cleans to one file even though the raw renderings differ.
+			c.Logs.Pattern = "{role}/{agent}/../{prompt}.{ext}"
+			c.Agents["rev2"] = c.Agents["rev"]
+			c.Roles.Review.Strategy = "all"
+			c.Roles.Review.Agents = []string{"rev", "rev2"}
+		}, "same path"},
+		{"logs.pattern climbing out of the round directory rejected", func(c *Config) {
+			c.Logs.Pattern = "../{role}-{agent}-{prompt}.{ext}"
+		}, "outside its round directory"},
 		{"summary_pattern without {ext}", func(c *Config) {
 			c.Logs.SummaryPattern = "summary.md"
 		}, "must contain {ext}"},
