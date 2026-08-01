@@ -69,8 +69,9 @@ be dropped live in fixpoint's code instead of in `target.exclude`.
 A `roles.review.prompts` entry may be a bare prompt name or a mapping carrying
 `agent`, `advisory: true` (reported for a human, never fixed, never gates
 convergence), `once: true` (round 1 only), or `final: true` (held out of the loop
-and run once at the end, on every agent, with its findings still fixed —
-`review-tests` uses this). `once` and `final` are mutually exclusive. See the
+and run in a closing round after it — on every agent unless pinned, with its
+findings still fixed, repeating until nothing is left to fix — `review-tests` uses
+this). `once` and `final` are mutually exclusive. See the
 per-lens modifiers section in the [root README](../README.md) for when to reach for
 each.
 

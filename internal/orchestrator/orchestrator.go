@@ -415,42 +415,91 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 			return err
 		}
 		if done {
-			return o.runFinalRound(ctx, sum)
+			return o.runFinalPhase(ctx, sum)
 		}
 	}
 	sum.Termination = model.TermMaxIterations
-	return o.runFinalRound(ctx, sum)
+	return o.runFinalPhase(ctx, sum)
 }
 
-// runFinalRound runs the closing round for `final: true` lenses, once, after the
-// loop has stopped changing the code. See config.ReviewLens.Final for why a lens
-// wants this: it asks its question about the FINISHED tree instead of about work
-// the next round will rewrite.
+// runFinalPhase runs the closing round for `final: true` lenses REPEATEDLY, until
+// it has nothing left to fix. See config.ReviewLens.Final for why such a lens waits
+// for the finished tree.
+//
+// It repeats because loop.max_findings_per_round is a limit on ONE CODER SESSION,
+// not a budget for a phase: it exists because ~17 issues blew the coder's 30m
+// timeout and ~8 fit. Inside the loop that distinction does not matter, since the
+// next round picks up whatever was deferred. Here there IS no next round, so a
+// single capped pass would report the excess and then drop it -- the closing round
+// would fix 8 of 26 coverage gaps and the run would read as complete. The way to
+// process more than one session's worth is more sessions, not a bigger session.
+//
+// Re-reviewing between passes is not waste. Pass 2 sees the tests pass 1 wrote, so
+// it reports what is genuinely still missing rather than working from a list
+// computed before the code changed -- which is also what makes the phase terminate
+// on its own instead of needing to be counted out.
 //
 // It runs after every normal termination -- converged, all-rejected, and
 // max-iterations alike -- because in all three the loop is done editing. It does
 // NOT run after an error or an interruption: the tree is then in a state nobody
 // vouched for, and the honest move is to stop rather than start new work on it.
 //
-// The loop's termination is preserved across it. The closing round is extra work
+// The loop's termination is preserved throughout. The closing phase is extra work
 // on an already-decided run, not a new verdict on it, and letting it rewrite
 // "converged" into "all-rejected" would report the loop's outcome as something it
 // was not.
-func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary) error {
+func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary) error {
 	asgs := o.finalAssignments()
-	// A canceled context means the operator asked to stop, so the closing round is
+	// A canceled context means the operator asked to stop, so the closing phase is
 	// simply not started. Returning nil rather than the cancellation is deliberate:
 	// the LOOP already finished and recorded its own outcome, and skipping optional
 	// extra work must not rewrite a run that genuinely converged into a failure.
 	if len(asgs) == 0 || o.cfg.Loop.ReviewOnly || ctx.Err() != nil {
 		return nil //nolint:nilerr // see above: skipping optional work is not a run failure
 	}
+	// Bounded by the same safety valve as the loop rather than a knob of its own:
+	// the phase stops on its own as soon as a pass finds nothing or fixes nothing,
+	// and this only catches a lens that never runs out of things to say.
+	for pass := 1; pass <= o.cfg.Loop.MaxIterations; pass++ {
+		done, err := o.runFinalPass(ctx, sum, asgs, pass)
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+	}
+	o.warnFinalPhaseCapped(sum)
+	return nil
+}
+
+// warnFinalPhaseCapped reports what the closing phase ran out of passes before
+// fixing. Staying quiet is exactly the failure this phase exists to avoid: a run
+// that fixed some of its coverage gaps and said nothing about the rest reads as
+// complete.
+func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary) {
+	open := 0
+	if n := len(sum.Rounds); n > 0 {
+		for _, it := range sum.Rounds[n-1].Issues {
+			if it.StatusOrDefault() != model.VerdictFixed {
+				open++
+			}
+		}
+	}
+	o.logf("WARNING: the closing round stopped after %d pass(es) (loop.max_iterations) with %d issue(s) still open; they are recorded in the summary and were NOT fixed",
+		o.cfg.Loop.MaxIterations, open)
+}
+
+// runFinalPass is one closing round: review the finished tree, hand the coder up to
+// one session's worth, verify, commit. done=true when nothing changed, so another
+// pass would ask the same question of the same code.
+func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, asgs []model.Assignment, pass int) (done bool, err error) {
 	round := len(sum.Rounds) + 1
-	o.logf("=== final round (%d): %d closing reviewer(s) over the finished tree ===", round, len(asgs))
+	o.logf("=== closing round, pass %d (round %d): %d reviewer(s) over the finished tree ===", pass, round, len(asgs))
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	rec := model.RoundRecord{Round: round, Assignments: asgs, Final: true}
 	o.journal(model.EvRoundStarted, round, model.JournalRoundStarted{
@@ -476,44 +525,48 @@ func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary)
 		Issues:       len(recP.Issues),
 		Corroborated: corroboratedCount(recP.Issues),
 	})
-	o.logf("final round: %d finding(s), %d advisory, %d reviewer error(s)",
-		len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
-	// A failed closing reviewer is a failed closing round, checked BEFORE an empty
+	o.logf("closing pass %d: %d finding(s), %d advisory, %d reviewer error(s)",
+		pass, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
+	// A failed closing reviewer is a failed closing pass, checked BEFORE an empty
 	// finding set is read as a completed final review. Nothing follows to catch what
 	// a dead reviewer never looked at, so "no findings" from a review that did not
 	// finish is not the same statement as "no findings", and proceeding to fix the
 	// findings the survivors did report would act on a knowingly partial last look.
+	// Repeating the phase does not soften this: a later pass re-reviews the same
+	// tree, so it would inherit the same blind spot rather than close it.
 	if len(recP.ReviewErrors) > 0 {
-		return roundReviewErr(recP)
+		return false, roundReviewErr(recP)
 	}
 	// Nothing to fix, or the operator stopped us between the review and the fix --
-	// in both cases the round is over and the loop's outcome stands unchanged.
+	// in both cases the phase is over and the loop's outcome stands unchanged.
 	if len(recP.Findings) == 0 || ctx.Err() != nil {
-		return nil //nolint:nilerr // a cancellation here leaves the loop's own termination intact
+		return true, nil //nolint:nilerr // a cancellation here leaves the loop's own termination intact
 	}
 
-	// The per-round cap still applies: it exists because one coder session has a
-	// timeout, and that is no less true here. Nothing follows to pick up the
-	// remainder, so anything deferred is reported for a human -- which is the same
-	// deal the cap has always offered, minus the promise of a next round.
+	// The cap still bounds each PASS, because the coder's timeout still bounds each
+	// session. What it defers is picked up by the next pass, which is the whole
+	// reason this phase repeats -- and deferral aging means a skipped issue outranks
+	// fresh ones on the way round, so the tail cannot be starved here either.
 	o.deferOverCap(recP)
 	// Same guard as runRound: everything the closing reviewers reported was already
 	// decided in an earlier round, so there is no work to hand over. Invoking the
 	// coder on an empty list would spend a session asking about nothing -- and here
 	// it is worse than a wasted session: with allowSalvage=false, any verdict it
 	// volunteers for an id it was not given fails applyVerdicts, which would rewrite
-	// a run whose loop genuinely converged into an error.
+	// a run whose loop genuinely converged into an error. Nothing for a later pass
+	// either: those verdicts stand, so the phase is done.
 	if len(activeIssues(recP)) == 0 {
-		o.logf("final round: all %d issue(s) were already decided in an earlier round; nothing left to fix", len(recP.Issues))
-		return nil
+		o.logf("closing pass %d: all %d issue(s) were already decided in an earlier round; nothing left to fix", pass, len(recP.Issues))
+		return true, nil
 	}
 	// allowSalvage=false: a failed coder's partial edits must not be committed here.
-	// Salvage is a promise that the next round re-reviews the commit, and there is
-	// no next round -- see discardFailedFix.
+	// Salvage is a promise that the round's commit gets re-reviewed, and the passes
+	// here only re-review what the LENS reports -- a half-finished edit it does not
+	// mention would ride along unexamined. See discardFailedFix.
 	if _, err := o.fix(ctx, recP, sum.Rounds[:len(sum.Rounds)-1], false); err != nil {
-		return err
+		return false, err
 	}
-	o.logf("final round: coder fixed %d, rejected %d", recP.Fixed, recP.Rejected)
+	o.logf("closing pass %d: coder fixed %d, rejected %d", pass, recP.Fixed, recP.Rejected)
 	// Whether to commit is decided from the TREE, not from the Fixed count, exactly
 	// as finalizeFix decides it for a loop round. The closing round runs the same
 	// write-capable coder, so it can just as well reject everything after having
@@ -522,20 +575,28 @@ func (o *Orchestrator) runFinalRound(ctx context.Context, sum *model.RunSummary)
 	// at preflight with a dirty tree the operator never made.
 	clean, err := o.collector.GitClean(ctx, o.gitExclude...)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if recP.Fixed > 0 && clean {
-		return fmt.Errorf("round %d: coder reported %d fix(es) but left the working tree unchanged", round, recP.Fixed)
+		return false, fmt.Errorf("round %d: coder reported %d fix(es) but left the working tree unchanged", round, recP.Fixed)
 	}
 	if recP.Fixed == 0 {
 		if !clean {
-			return o.reconcileRejectedEdits(ctx, round)
+			return false, o.reconcileRejectedEdits(ctx, round)
 		}
-		return nil // nothing to commit; the gate and commit below would no-op
+		// Nothing was fixed and nothing is in the tree, so there is nothing to commit
+		// and nothing for another pass to see: it would re-review identical code and
+		// get an identical answer.
+		return true, nil
 	}
 	// Same gate and same commit as any other round: a closing round must not be the
 	// one that lands unverified edits.
-	return o.verifyAndCommit(ctx, recP, round)
+	if err := o.verifyAndCommit(ctx, recP, round); err != nil {
+		return false, err
+	}
+	// Something changed, so ask again: the cap may have held more back, and the next
+	// pass judges what is left against the code as it now stands.
+	return false, nil
 }
 
 // claimRepo takes the repository for a run that will write to it and returns the

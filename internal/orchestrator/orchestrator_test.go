@@ -3009,9 +3009,10 @@ func (f *fixture) finalLens() {
 }
 
 // A final lens must not run during the loop -- that is the whole point, since its
-// subject is the finished code -- and must run once after it, with its findings
-// fixed like any other.
-func TestFinalLensRunsOnceAfterTheLoop(t *testing.T) {
+// subject is the finished code -- and must run after it, with its findings fixed.
+// The phase then repeats while it keeps fixing, so it ends on the pass that finds
+// nothing rather than after a fixed number of rounds.
+func TestFinalLensRunsAfterTheLoopAndStopsWhenClean(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.finalLens()
 	f.respond(1, reviewResponse(t, aFinding("off by one"))) // round 1 reviewer
@@ -3024,18 +3025,19 @@ func TestFinalLensRunsOnceAfterTheLoop(t *testing.T) {
 	}))
 	f.editRepoOn(5)
 	f.respond(5, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "test added"}))
+	f.respond(6, reviewResponse(t)) // closing pass 2: nothing left -> phase ends
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The loop's verdict survives: the closing round is extra work on an already
+	// The loop's verdict survives: the closing phase is extra work on an already
 	// decided run, not a new verdict on it.
 	if sum.Termination != model.TermConverged {
 		t.Errorf("termination = %q, want the loop's converged to be preserved", sum.Termination)
 	}
-	if len(sum.Rounds) != 3 {
-		t.Fatalf("got %d rounds, want 3 (two loop rounds + the closing round)", len(sum.Rounds))
+	if len(sum.Rounds) != 4 {
+		t.Fatalf("got %d rounds, want 4 (2 loop + 2 closing passes)", len(sum.Rounds))
 	}
 	// The loop rounds saw ONLY the recurring lens; the final lens was held back.
 	for i, r := range sum.Rounds[:2] {
@@ -3048,18 +3050,60 @@ func TestFinalLensRunsOnceAfterTheLoop(t *testing.T) {
 			t.Errorf("round %d is marked final", i+1)
 		}
 	}
-	last := sum.Rounds[2]
-	if !last.Final {
-		t.Error("the closing round must be marked Final so a reader can tell it from a loop round")
+	for i, r := range sum.Rounds[2:] {
+		if !r.Final {
+			t.Errorf("closing pass %d is not marked Final; a reader could not tell it from a loop round", i+1)
+		}
+		if len(r.Assignments) != 1 || r.Assignments[0].Agent != "mock2" {
+			t.Errorf("closing pass %d assignments = %+v, want only the final lens", i+1, r.Assignments)
+		}
 	}
-	if len(last.Assignments) != 1 || last.Assignments[0].Agent != "mock2" {
-		t.Errorf("closing round assignments = %+v, want only the final lens", last.Assignments)
+	if first := sum.Rounds[2]; first.Fixed != 1 {
+		t.Errorf("first closing pass fixed = %d, want 1: a final lens's findings are fixed, not just reported", first.Fixed)
+	} else if first.CommitSHA == "" {
+		t.Error("the first closing pass's fix was not committed")
 	}
-	if last.Fixed != 1 {
-		t.Errorf("closing round fixed = %d, want 1: a final lens's findings are fixed, not just reported", last.Fixed)
+	if last := sum.Rounds[3]; last.Fixed != 0 || last.CommitSHA != "" {
+		t.Errorf("the clean closing pass committed something: fixed=%d sha=%q", last.Fixed, last.CommitSHA)
 	}
-	if last.CommitSHA == "" {
-		t.Error("the closing round's fix was not committed")
+}
+
+// The point of iterating: max_findings_per_round caps ONE CODER SESSION, and with no
+// round following the closing one, a single capped pass would fix the cap's worth
+// and silently drop the rest. Two gaps arrive under a cap of one, and both get fixed.
+func TestFinalPhaseProcessesMoreThanTheCapAcrossPasses(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged immediately
+
+	gapA := model.ReviewFinding{Category: "tests", Severity: "high", File: "a.go", Line: 10, Title: "a has no test"}
+	gapB := model.ReviewFinding{Category: "tests", Severity: "low", File: "b.go", Line: 20, Title: "b has no test"}
+	// Closing pass 1: two distinct gaps, but the cap admits one.
+	f.respond(2, reviewResponse(t, gapA, gapB))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "test for a"}))
+	// Pass 2: the deferred gap is still reported, and now fits.
+	f.respond(4, reviewResponse(t, gapB))
+	f.editRepoOn(5)
+	f.respond(5, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "test for b"}))
+	f.respond(6, reviewResponse(t)) // pass 3: clean -> phase ends
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed, passes := 0, 0
+	for _, r := range sum.Rounds {
+		if r.Final {
+			fixed += r.Fixed
+			passes++
+		}
+	}
+	if fixed != 2 {
+		t.Errorf("closing phase fixed %d issue(s), want 2: a cap of 1 must not mean 1 of 2 gaps gets fixed", fixed)
+	}
+	if passes < 2 {
+		t.Errorf("closing passes = %d, want at least 2: one pass cannot exceed the cap", passes)
 	}
 }
 

@@ -148,13 +148,25 @@ Per-lens modifiers:
   test code. Asked once, at the end, by the whole panel, the question is answered
   about code that has stopped changing and nothing follows it to starve.
 
-  The closing round runs after **every** normal termination — converged,
-  all-rejected, and max-iterations alike — since the loop is done editing in all
-  three, but not after an error or interruption, when the tree is in a state
-  nobody vouched for. It does not change the run's termination: it is extra work on
-  an already-decided run. `final` and `once` are mutually exclusive, and a
-  review-only run has no closing round (there is no coder), so a final lens simply
-  runs in its single round.
+  The closing round **repeats until it has nothing left to fix**, because
+  `max_findings_per_round` caps one *coder session* (17 issues blew the coder's 30m
+  timeout; ~8 fit) and is not a budget for the phase. Inside the loop that
+  distinction doesn't matter — the next round picks up whatever was deferred. Here
+  there is no next round, so a single capped pass would fix 8 of 26 coverage gaps
+  and let the run read as complete. More than one session's worth means more
+  sessions, not a bigger session. Re-reviewing between passes isn't waste either:
+  pass 2 sees the tests pass 1 wrote, so it reports what's genuinely still missing
+  instead of working from a list computed before the code changed — which is also
+  what makes the phase stop on its own. `loop.max_iterations` bounds it as a last
+  resort, and if it runs out with issues still open the run says so loudly rather
+  than dropping them silently.
+
+  It runs after **every** normal termination — converged, all-rejected, and
+  max-iterations alike — since the loop is done editing in all three, but not after
+  an error or interruption, when the tree is in a state nobody vouched for. It does
+  not change the run's termination: it is extra work on an already-decided run.
+  `final` and `once` are mutually exclusive, and a review-only run has no closing
+  round (there is no coder), so a final lens simply runs in its single round.
 
   **Pin a final lens whose findings are advisory.** Unpinned means the whole panel,
   which is right when the findings get fixed — nothing follows to catch what one

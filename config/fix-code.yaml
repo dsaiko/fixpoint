@@ -24,15 +24,20 @@ roles:
       - review-security # security
       - review-concurrency # concurrency
 
-      # The CLOSING ROUND assesses the finished code -- see `final: true` in the
-      # root README. Coverage is a question about code that has stopped changing:
-      # asked inside the loop it assessed work later rounds rewrote, so it demanded
-      # tests for intermediate states and re-reported the gap each time the code
-      # moved. In a five-round run that made it the largest producer (30 of 68
-      # reports) and the largest waster (18 deferred), and 65% of everything the run
-      # wrote was test code. Unpinned, so the whole panel takes the last look:
-      # nothing follows to catch what one model missed, and these findings are
-      # FIXED, so breadth is worth more than rotation.
+      # The CLOSING ROUND assesses the finished code -- see `final: true` in the root
+      # README. Coverage is a question about code that has stopped changing: asked
+      # inside the loop it assessed work later rounds rewrote, so it demanded tests
+      # for intermediate states and re-reported the gap each time the code moved. In
+      # a five-round run that made it the largest producer (30 of 68 reports) and the
+      # largest waster (18 deferred), and 65% of everything the run wrote was test
+      # code.
+      #
+      # Unpinned, so the whole panel takes the last look: nothing follows to catch
+      # what one model missed, and these findings are FIXED, so breadth beats
+      # rotation. And the closing round REPEATS until nothing is left to fix, because
+      # max_findings_per_round caps one CODER SESSION rather than the phase -- with no
+      # round following this one, a single capped pass would fix 8 of 26 gaps and let
+      # the run read as complete.
       - { prompt: review-tests, final: true } # coverage of what the run changed
 
       # advisory: reported for a human, never handed to the coder, and excluded from
