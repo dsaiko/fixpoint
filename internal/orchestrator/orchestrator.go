@@ -1365,10 +1365,26 @@ func (o *Orchestrator) checkCleanStreak(rec *model.RoundRecord, round int, sum *
 	return false
 }
 
+// unrejectedIssues counts the round's issues that reached the coder and did NOT
+// come back rejected. Unlike coderWork it is asked AFTER the coder answered, so
+// anything it counts is still open work: a fixed issue whose verification
+// correction reverted the edits arrives here with no verdict at all, because
+// reopenFixedIssue withdrew it.
+func unrejectedIssues(rec *model.RoundRecord) int {
+	n := 0
+	for _, it := range rec.Issues {
+		if it.Verdict != model.VerdictDeferred && it.Verdict != model.VerdictRejected {
+			n++
+		}
+	}
+	return n
+}
+
 // finalizeRound recognizes a round's terminal state once every fix in it has been
 // verified and committed individually by runFixSessions. Nothing committed means
 // the coder rejected everything it was handed -- a successful terminal state, but
-// only when the round's review was complete and nothing was held back.
+// only when the round's review was complete, nothing was held back, and every
+// issue really does carry a rejection.
 func (o *Orchestrator) finalizeRound(rec *model.RoundRecord, round int, sum *model.RunSummary, committed int) (done bool, err error) {
 	if committed > 0 {
 		return false, nil
@@ -1378,6 +1394,15 @@ func (o *Orchestrator) finalizeRound(rec *model.RoundRecord, round int, sum *mod
 	// just mean the failed reviewers' findings never arrived.
 	if len(rec.ReviewErrors) > 0 {
 		return false, roundReviewErr(rec)
+	}
+	// Nothing committed is not proof of a rejection. A verification correction can
+	// revert a reported fix outright, and verifyAndCommitFix then withdraws the
+	// verdict and reopens the issue without producing a commit. Ending the run as
+	// all-rejected there would report a decision nobody made, over a defect still
+	// sitting in the tree -- so keep looping while any issue is still open.
+	if open := unrejectedIssues(rec); open > 0 {
+		o.logf("round %d: nothing committed, but %d issue(s) are still open (a reverted fix, not a rejection); continuing", round, open)
+		return false, nil
 	}
 	// Deferred findings never reached the coder, so "everything was rejected"
 	// does not hold for the round as a whole -- keep looping so they get

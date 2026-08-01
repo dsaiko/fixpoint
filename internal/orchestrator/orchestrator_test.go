@@ -2595,6 +2595,48 @@ func TestVerifyCorrectionRevertingOneFixKeepsEarlierFixes(t *testing.T) {
 	}
 }
 
+// A round whose only fix was reverted by its verification correction commits
+// nothing -- but that is not the coder rejecting the finding. Stopping there would
+// report all-rejected (a decision nobody made) and leave the defect in the tree, so
+// the reopened issue has to get another review round.
+func TestRevertedFixContinuesInsteadOfReportingAllRejected(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	before := f.commitCount()
+
+	f.respond(1, reviewResponse(t, aFinding("nil map write")))
+	// Round 1's fix breaks the gate, and its correction throws away everything --
+	// the breakage and the edit -- so nothing is left to commit and i1 is reopened.
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+	testfixture.WriteSide(f.t, f.respDir, 3, fmt.Sprintf("#!/bin/sh\nrm -f '%s'\ngit -C '%s' checkout -- .\n",
+		filepath.Join(f.repo, "broken.txt"), f.repo))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "reverted it all"}))
+	// Round 2: the reviewer re-reports the still-open issue and this time the fix
+	// survives, which is exactly the progress the premature stop would have lost.
+	f.respond(4, reviewResponse(t, aFinding("nil map write")))
+	f.editRepoOn(5)
+	f.respond(5, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded the write"}))
+	f.respond(6, reviewResponse(t)) // round 3: clean
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want %q: a reverted fix is not an all-rejected round", sum.Termination, model.TermConverged)
+	}
+	if len(sum.Rounds) != 3 {
+		t.Fatalf("rounds = %d, want 3: the reopened issue must get another review round", len(sum.Rounds))
+	}
+	if got := f.commitCount(); got != before+1 {
+		t.Errorf("commit count = %d, want %d: round 2's fix must land", got, before+1)
+	}
+	if got := issueByID(sum.Rounds[1])["i1"].Verdict; got != model.VerdictFixed {
+		t.Errorf("round 2 issue i1 verdict = %q, want it fixed on the second attempt", got)
+	}
+}
+
 // A SHA shorter than the abbreviation is logged whole rather than sliced: an
 // unguarded [:12] would panic while reporting a commit that just landed, turning a
 // successful round into a lost run.
