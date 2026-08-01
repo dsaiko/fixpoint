@@ -17,7 +17,7 @@ roles:
     # fixed = pin every lens; all = every lens on every agent (max coverage,
     # pool-size x the cost).
     strategy: rotate
-    agents: [codex, claude, gemma4, glm]
+    agents: [codex, claude, kimi, glm]
     prompts:
       # The LOOP hunts what has to reach zero for the run to converge.
       - review-bugs # correctness

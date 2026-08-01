@@ -1,6 +1,14 @@
-# GLM via ollama, same claude-harness wrapping as kimi. The panel's general
-# reasoner to kimi's code specialist, and the slower of the two.
-model: glm-5.2:cloud
+# Kimi via ollama, same claude-harness wrapping as glm. A code-specialized
+# reasoning model: it replaced gemma4 on the review panel, which was the panel's
+# weakest producer (9 issues across a 5-round run, against claude's 27) and its
+# slowest per turn. On an identical trivial probe through this same wrapper kimi
+# answered in 4.2s to gemma4's 8.3s, on 17% fewer input tokens.
+#
+# Chosen over deepseek-v4-flash:cloud, which probed marginally faster still: a
+# flash tier trades depth for latency, and depth is exactly what gemma4 lacked.
+# Kimi also keeps the panel diverse -- glm is the general reasoner, kimi the code
+# specialist, so their findings overlap less than two general models' would.
+model: kimi-k2.7-code:cloud
 command:
   - ollama
   - launch
@@ -15,13 +23,9 @@ command:
 # the WHOLE session; the top-level `usage` object is only the final turn.
 # NO cost_usd: kimi/glm are served by ollama, not Anthropic, and the wrapped
 # claude harness has no idea what ollama charges -- it labels them provider
-# "firstParty" and applies Anthropic's rate card. Measured on a real run: the cost
-# it reported for these two matched Opus-5 published rates to a ratio of 1.000
-# ($55.70 for glm's 10.5M input tokens), while the genuinely-Anthropic agents came
-# in at 1.09-1.20 because their real billing includes cache-TTL tiers. That number
-# is a rate-card calculation, not a bill, so it is not read: the scoreboard shows
-# "-" for these agents rather than $70 of money nobody was charged. Tokens ARE
-# real and still counted.
+# "firstParty" and applies Anthropic's rate card. That number is a rate-card
+# calculation, not a bill, so it is not read: the scoreboard shows "-" for these
+# agents rather than money nobody was charged. Tokens ARE real and still counted.
 usage:
   format: json
   text: result
@@ -31,7 +35,7 @@ usage:
   cache_write_tokens: modelUsage.*.cacheCreationInputTokens
 
 prompt_via: stdin
-timeout: 15m # local models are slower; give them headroom
+timeout: 15m # cloud-served models are slower; give them headroom
 can_edit: false
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,
@@ -41,5 +45,5 @@ can_edit: false
 # cannot see. See config/README.md.
 env:
   pass:
-  # See kimi.yaml.
+  # ollama needs to find its server; the wrapped claude harness needs nothing more.
     - OLLAMA_HOST

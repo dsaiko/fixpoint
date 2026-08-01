@@ -12,8 +12,9 @@ reached when a full reviewer panel reports nothing left to fix.
 
 Any agentic CLI works as a reviewer or coder: an agent is just a command that
 receives a prompt and prints text to stdout. The shipped configuration mixes
-Claude Code, Codex, and local models served via ollama (Gemma, GLM), but
-nothing in the code is provider-specific.
+Claude Code, Codex, models served via ollama (Kimi, GLM), and — in an agent file
+you can enable — anything on OpenRouter, but nothing in the code is
+provider-specific.
 
 ## How it works
 
@@ -309,6 +310,44 @@ so `effort` simply disappears for providers that don't support it.
 `can_edit` must reflect what the command actually permits: reviewer agents run
 in enforced read-only modes (`can_edit: false`); only agents whose command
 allows writing files (`can_edit: true`) may be assigned as `roles.coder`.
+
+### Borrowing an agentic harness for a model that has no CLI
+
+A reviewer has to *explore* the repository, not just answer from a prompt, so a
+raw chat endpoint is not enough on its own. Most models don't ship a CLI of their
+own — but any Anthropic-compatible endpoint can borrow Claude Code's harness,
+which is how the shipped ollama agents work (`ollama launch claude`) and how
+`config/agents/qwen.yaml` reaches OpenRouter with nothing but a base URL:
+
+```yaml
+command: [claude, --model {{model}}, --output-format json, -p]
+env:
+  pass: [ANTHROPIC_AUTH_TOKEN]                  # must hold your OpenRouter key
+  set:  {ANTHROPIC_BASE_URL: https://openrouter.ai/api}
+```
+
+Three things that cost an afternoon to learn:
+
+- **The base URL must not end in `/v1`.** The harness appends `/v1/messages`
+  itself, so `.../api/v1` becomes `.../api/v1/v1/messages` and every call 404s
+  with *"the selected model may not exist or you may not have access to it"* —
+  which reads like a model or entitlement problem and is neither.
+- **The credential goes in `ANTHROPIC_AUTH_TOKEN`,** because `env.set` takes
+  literal values and cannot forward one variable into another. `ANTHROPIC_API_KEY`
+  must *not* be passed: it takes precedence, and the run then quietly bills
+  Anthropic for a model you meant to buy elsewhere. Not declaring it is enough —
+  the environment filter above keeps it out of the process.
+- **Don't read the cost these agents report.** The harness prices every model it
+  serves against Anthropic's rate card and labels the provider `firstParty`,
+  so the number is a rate-card calculation rather than a bill. Measured on the
+  probe that added the OpenRouter agent: the harness claimed $0.599 for two
+  sessions that cost $0.0064 on the OpenRouter key, overstating by ~93×. Leave
+  `cost_usd` unset and the scoreboard prints `-` instead of money nobody was
+  charged; tokens are real either way and still counted.
+
+`codex` is not a second route to OpenRouter: codex 0.146 dropped
+`wire_api = "chat"` in favour of the Responses API, which OpenRouter does not
+serve.
 
 ### The agent environment is filtered
 
