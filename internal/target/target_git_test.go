@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2582,28 +2583,60 @@ func TestListGitFilesDetachedChildHoldingStdoutIsBounded(t *testing.T) {
 // gitScanNUL's scan runs on its own goroutine and calls fn, which writes the
 // caller's state (listGitFiles' count and builder). On the cancellation path it
 // must JOIN that goroutine rather than abandon it: a caller that returned while fn
-// was mid-call would be racing a goroutine still filling state it owns. fn here
-// outlives the deadline, so the join is the only thing that can make the scan
-// quiet by the time gitScanNUL returns.
+// was mid-call would be racing a goroutine still filling state it owns.
+//
+// The handshake below is what pins that guarantee rather than assuming it: fn
+// signals that it is genuinely in flight and then blocks, so the cancel provably
+// lands mid-call. A test that merely raced a short deadline against a sleeping fn
+// would pass on a worker where the deadline expired before git delivered its first
+// entry -- nothing to join, no fn call to race, and an abandoned goroutine would
+// look identical.
 func TestGitScanNULJoinsScanGoroutineOnCancel(t *testing.T) {
 	repo := gitRepo(t)
 	c := New(config.Target{Mode: "directory", Path: repo})
-	// Deliberately far shorter than fn's own work, so the deadline fires while fn is
-	// still running and the ctx.Done arm of the select is the one taken.
-	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
 	var inFlight atomic.Int32
-	err := c.gitScanNUL(ctx, func(string) {
-		inFlight.Add(1)
-		defer inFlight.Add(-1)
-		time.Sleep(1500 * time.Millisecond)
-	}, "ls-files", "--cached", "-z")
-	if n := inFlight.Load(); n != 0 {
-		t.Errorf("gitScanNUL returned with %d fn call(s) still in flight; the scan goroutine was not joined", n)
+	done := make(chan error, 1)
+	go func() {
+		done <- c.gitScanNUL(ctx, func(string) {
+			inFlight.Add(1)
+			defer inFlight.Add(-1)
+			once.Do(func() { close(entered) })
+			<-release
+		}, "ls-files", "--cached", "-z")
+	}()
+
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("gitScanNUL returned before delivering a listing entry: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("git never delivered a listing entry to fn")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("gitScanNUL() err = %v, want it to wrap context.DeadlineExceeded", err)
+	cancel()
+	// The join is the claim under test: with fn still in flight, gitScanNUL must stay
+	// blocked no matter that its context is already done.
+	select {
+	case err := <-done:
+		t.Fatalf("gitScanNUL returned with fn still in flight; the scan goroutine was abandoned: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(release)
+
+	select {
+	case err := <-done:
+		if n := inFlight.Load(); n != 0 {
+			t.Errorf("gitScanNUL returned with %d fn call(s) still in flight; the scan goroutine was not joined", n)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("gitScanNUL() err = %v, want it to wrap context.Canceled", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("gitScanNUL did not return once fn was released")
 	}
 }
 
