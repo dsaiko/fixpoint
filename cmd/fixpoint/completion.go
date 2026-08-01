@@ -32,7 +32,7 @@ var completionScripts = map[string]string{"bash": bashCompletion, "zsh": zshComp
 // from the FlagSet because the script is generated once and sourced thereafter:
 // deriving them would only be accurate until the next upgrade, which is a worse
 // kind of wrong than a list a reader can see and check.
-const completionFlags = "--list --porcelain --config --review-only --max-iterations " +
+const completionFlags = "--list --porcelain --config --review-only --max-iterations --base-ref " +
 	"--trusted-target --allow-untrusted-fix --check --check-live"
 
 const bashCompletion = `# fixpoint completion for bash. Install with:

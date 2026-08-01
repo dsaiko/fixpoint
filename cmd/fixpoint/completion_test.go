@@ -47,6 +47,57 @@ func TestWriteCompletionSupportedShells(t *testing.T) {
 	}
 }
 
+// completionFlags is written by hand on purpose (see its comment: a generated
+// script is sourced for months, so deriving the list would only be right until the
+// next upgrade). The cost of that choice is that it silently falls behind, which is
+// exactly what happened when -base-ref was added: the flag worked, and completion
+// never offered it. Deriving it AT TEST TIME keeps the deliberate hand-written list
+// and still fails the build when someone adds a flag without it.
+//
+// The source of truth is --help, because that is what the FlagSet itself prints:
+// a flag missing from both is a flag nobody can discover.
+func TestCompletionFlagsCoverEveryRealFlag(t *testing.T) {
+	var out bytes.Buffer
+	run([]string{"-h"}, &out, &out) // usage goes to the writer, exit code is not the subject
+
+	declared := map[string]bool{}
+	for _, f := range strings.Fields(completionFlags) {
+		declared[strings.TrimLeft(f, "-")] = true
+	}
+
+	var missing, stale []string
+	actual := map[string]bool{}
+	for _, line := range strings.Split(out.String(), "\n") {
+		// PrintDefaults indents each flag as "  -name" with its description below.
+		name, ok := strings.CutPrefix(line, "  -")
+		if !ok {
+			continue
+		}
+		name, _, _ = strings.Cut(name, " ") // drop the value placeholder ("-config string")
+		if name == "" {
+			continue
+		}
+		actual[name] = true
+		if !declared[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(actual) == 0 {
+		t.Fatalf("parsed no flags out of --help; the test cannot detect drift:\n%s", out.String())
+	}
+	for name := range declared {
+		if !actual[name] {
+			stale = append(stale, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("flags exist but completion never offers them: %v\nadd them to completionFlags in completion.go", missing)
+	}
+	if len(stale) > 0 {
+		t.Errorf("completion offers flags that no longer exist: %v\nremove them from completionFlags in completion.go", stale)
+	}
+}
+
 // An unknown or missing shell must fail with usage, not emit a script for some
 // default shell the caller did not ask for.
 func TestWriteCompletionRejectsBadArgs(t *testing.T) {
