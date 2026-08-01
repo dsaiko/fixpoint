@@ -1171,6 +1171,17 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	// an aborted run. SIGKILL the whole group on every exit path; it is a no-op once
 	// the group is empty, which is the common case.
 	_ = agent.KillProcessGroup(cmd)
+	// That kill comes too late to shorten the wait it follows, so a git/gh that
+	// exited 0 after leaving a descendant on the output pipe (a credential-cache
+	// daemon from a fetch, a hook's child) still returns exec.ErrWaitDelay. The
+	// leader's exit status is authoritative: a `git commit` that landed must not be
+	// reported as failed -- that ends the run with no CommitSHA while the commit sits
+	// in history, and sends reconciliation looking for edits that are already
+	// committed. Callers parse stdout, so a capture cut short surfaces as a parse
+	// error on its own rather than as a silently wrong value.
+	if agent.SucceededDespiteLeakedPipe(cmd, err) {
+		err = nil
+	}
 	stdout := outBuf.String()
 	if err != nil {
 		return stdout, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(errBuf.String()))

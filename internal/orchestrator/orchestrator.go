@@ -1487,6 +1487,33 @@ func toFindings(in []model.ReviewFinding, asg model.Assignment, lensName string,
 // salvage path's own reconcile-failure handling.
 var errInterruptedTreeDirty = errors.New("working tree left dirty after interruption")
 
+// stashForReconcile performs the stash every abnormal-exit path uses to return
+// the tree to a clean state, with the two adjustments a cancellation demands.
+//
+// Cancellation can land at any instant, including between a caller's ctx.Err()
+// check and this call. Passing an already-canceled ctx to StashDirty would fail
+// its first git operation instantly, so nothing gets stashed and the tree stays
+// dirty -- hence the fresh context, exactly as reconcileInterrupt uses (each git
+// operation is still bounded by target's own deadline). And a stash failure at
+// that moment must carry errInterruptedTreeDirty, or recordRunError softens it
+// into a clean interruption: in a loop round that hides a dirty tree behind
+// TermInterrupted, and in the CLOSING round -- where a termination like
+// "converged" is already set -- it reports a successful run while the coder's
+// unreconciled edits sit in the repository and block the next run's preflight.
+//
+//nolint:contextcheck // deliberate fresh context: the run's context is already canceled and would fail every git operation in the stash
+func (o *Orchestrator) stashForReconcile(ctx context.Context, msg string) (bool, error) {
+	canceled := ctx.Err() != nil
+	if canceled {
+		ctx = context.Background()
+	}
+	stashed, err := o.collector.StashDirty(ctx, msg, o.gitExclude...)
+	if err != nil && canceled {
+		err = fmt.Errorf("%w: %w", err, errInterruptedTreeDirty)
+	}
+	return stashed, err
+}
+
 // fix hands the round's active findings to the coder and applies its
 // verdicts. When the coder fails mid-round (timeout, session limit, malformed
 // output) but already edited files, the partial work is committed and
@@ -1580,7 +1607,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 func (o *Orchestrator) discardFailedFix(ctx context.Context, round int, runErr error) error {
 	base := fmt.Errorf("closing round %d: coder failed: %w; no round follows to re-review partial work, so its edits were not committed", round, runErr)
 	stashMsg := fmt.Sprintf("fixpoint: closing round %d discarded (coder failed)", round)
-	stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...)
+	stashed, serr := o.stashForReconcile(ctx, stashMsg)
 	ev := model.JournalRoundDiscarded{
 		Reason:  model.DiscardFinalCoderFailed,
 		Stashed: stashed,
@@ -1632,7 +1659,7 @@ func (o *Orchestrator) reconcileInterrupt(round int, cause error) error {
 // original commit error to surface, or a combined error if the stash also fails.
 func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, commitErr error) error {
 	stashMsg := fmt.Sprintf("fixpoint: recovered edits from failed commit in round %d", round)
-	stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...)
+	stashed, serr := o.stashForReconcile(ctx, stashMsg)
 	ev := model.JournalRoundDiscarded{
 		Reason:  model.DiscardCommitFailed,
 		Stashed: stashed,
@@ -1659,7 +1686,7 @@ func (o *Orchestrator) reconcileFailedCommit(ctx context.Context, round int, com
 func (o *Orchestrator) reconcileRejectedEdits(ctx context.Context, round int) error {
 	base := fmt.Errorf("round %d: coder rejected every finding yet modified the working tree; refusing to commit edits no verdict accounts for", round)
 	stashMsg := fmt.Sprintf("fixpoint: round %d discarded (rejected verdicts with edits)", round)
-	stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...)
+	stashed, serr := o.stashForReconcile(ctx, stashMsg)
 	ev := model.JournalRoundDiscarded{
 		Reason:  model.DiscardRejectedWithEdits,
 		Stashed: stashed,
@@ -1729,7 +1756,7 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 		// omitting the actual reason nothing landed (a failing commit signature, say).
 		base := fmt.Errorf("coder round %d failed: %w; and the partial work it left could not be committed: %w", rec.Round, runErr, cerr)
 		stashMsg := fmt.Sprintf("fixpoint: recovered edits from failed round %d", rec.Round)
-		stashed, serr := o.collector.StashDirty(ctx, stashMsg, o.gitExclude...)
+		stashed, serr := o.stashForReconcile(ctx, stashMsg)
 		ev := model.JournalRoundDiscarded{
 			Reason:  model.DiscardSalvageCommitFailed,
 			Stashed: stashed,
@@ -2021,7 +2048,7 @@ func (o *Orchestrator) rejectUnverifiedRound(ctx context.Context, rec *model.Rou
 			failed = append(failed, r.Name)
 		}
 	}
-	stashed, serr := o.collector.StashDirty(ctx, fmt.Sprintf("fixpoint: round %d discarded (verification failed)", rec.Round), o.gitExclude...)
+	stashed, serr := o.stashForReconcile(ctx, fmt.Sprintf("fixpoint: round %d discarded (verification failed)", rec.Round))
 	base := fmt.Errorf("round %d: verification failed after a correction attempt (%s); the round was not committed",
 		rec.Round, strings.Join(failed, ", "))
 	o.journal(model.EvRoundDiscarded, rec.Round, model.JournalRoundDiscarded{
@@ -2054,7 +2081,7 @@ func (o *Orchestrator) rejectUnverifiedSalvage(ctx context.Context, rec *model.R
 	}
 	base := fmt.Errorf("coder round %d failed (%w) and the partial work it left does not pass verification (%s); it was not committed",
 		rec.Round, runErr, strings.Join(names, ", "))
-	stashed, serr := o.collector.StashDirty(ctx, fmt.Sprintf("fixpoint: unverified partial work from failed round %d", rec.Round), o.gitExclude...)
+	stashed, serr := o.stashForReconcile(ctx, fmt.Sprintf("fixpoint: unverified partial work from failed round %d", rec.Round))
 	o.journal(model.EvRoundDiscarded, rec.Round, model.JournalRoundDiscarded{
 		Reason:  model.DiscardSalvageFailed,
 		Stashed: stashed,

@@ -139,6 +139,36 @@ func TestRunKillsSurvivingDescendantsOnSuccess(t *testing.T) {
 	}
 }
 
+// The same interleaving as above, with the child's `>/dev/null 2>&1` removed --
+// which is what a backgrounded child actually does unless it explicitly
+// redirects. It inherits stdout, so cmd.Run cannot see EOF and returns
+// exec.ErrWaitDelay even though the leader wrote its whole reply and exited 0.
+// Run must report that success and keep the reply: treating the drain timeout as
+// a failure throws away a complete review or fix.
+func TestRunSucceedsWhenDescendantHoldsOutputPipe(t *testing.T) {
+	a := config.Agent{
+		Command:   []string{script(t, "sleep 30 &\necho '<fix>ok</fix>'\nexit 0")},
+		PromptVia: "stdin",
+		Timeout:   config.Duration(time.Minute),
+	}
+	done := make(chan Result, 1)
+	go func() { done <- Run(t.Context(), a, "", t.TempDir()) }()
+	select {
+	case res := <-done:
+		if res.Err != nil {
+			t.Fatalf("Run() err = %v, want success: the leader exited 0, only a descendant held the pipe", res.Err)
+		}
+		if !strings.Contains(res.Stdout, "<fix>ok</fix>") {
+			t.Errorf("stdout = %q, want the leader's reply preserved", res.Stdout)
+		}
+		if !strings.Contains(res.Stderr, "held the output pipe open") {
+			t.Errorf("stderr = %q, want a note recording the leaked pipe", res.Stderr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run hung well past WaitDelay with a descendant on the output pipe")
+	}
+}
+
 func TestRunContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

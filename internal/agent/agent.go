@@ -223,6 +223,18 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	// SIGKILL the whole group on every exit path; it is a no-op once the group is
 	// empty (the common case where the agent spawned nothing).
 	_ = KillProcessGroup(cmd)
+	// The group kill above cannot rescue the wait it follows: cmd.Run only returns
+	// once the pipe-copy goroutines see EOF or WaitDelay expires. So an agent that
+	// wrote its whole reply and exited 0 still comes back as ErrWaitDelay whenever
+	// some descendant it spawned (an MCP server, a language server, a credential
+	// daemon, a plain `child &` in a wrapper script) inherited stdout and outlived
+	// it. The leader's exit status is authoritative: report the success and keep the
+	// captured reply, instead of discarding a complete review or fix -- which resets
+	// the clean streak, or commits the coder's edits as an unverified partial round.
+	leakedPipe := ctx.Err() == nil && SucceededDespiteLeakedPipe(cmd, err)
+	if leakedPipe {
+		err = nil
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		err = fmt.Errorf("timed out after %s", a.Timeout.Std())
 	}
@@ -230,9 +242,16 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	// Unwrap here rather than at the call sites: every consumer of Stdout wants
 	// the agent's reply, and only this function knows which agent produced it.
 	text, usage := ParseUsage(a.Usage, raw)
+	errText := stderr.String()
+	if leakedPipe {
+		// Say so in the .raw log: the capture is complete in every case seen so far
+		// (the leader writes its reply before exiting), but it is cut at the moment
+		// exec closed the pipes, so a short reply has an explanation on record.
+		errText += "\n[fixpoint: a descendant process held the output pipe open past the agent's successful exit; the capture ends where fixpoint closed the pipe]\n"
+	}
 	return Result{
 		Stdout:    text,
-		Stderr:    stderr.String(),
+		Stderr:    errText,
 		Duration:  time.Since(start),
 		Err:       err,
 		Usage:     usage,
@@ -253,6 +272,23 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 	}
 	// negative pid = the whole process group
 	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}
+
+// SucceededDespiteLeakedPipe reports whether err is cmd.Run's WaitDelay expiry
+// for a command whose LEADER exited successfully. It is shared by every runner in
+// this program (agent.Run, verify.runOne, target's git/gh runner) because they all
+// hit the same interleaving: the leader writes its output and exits 0, a
+// descendant that inherited the output pipe keeps it open, no EOF arrives, and
+// after WaitDelay exec returns exec.ErrWaitDelay "instead of nil".
+//
+// That error says the pipe drain timed out, NOT that the command failed -- the
+// process state carries the leader's real exit status. Treating the two the same
+// turns a successful invocation into a reported failure, which is a far more
+// damaging outcome here than a possibly-short capture: a passing check reads as
+// unrunnable, a complete review is thrown away, a commit that landed is reported
+// as failed. Callers keep the captured output and note that it may be cut.
+func SucceededDespiteLeakedPipe(cmd *exec.Cmd, err error) bool {
+	return errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success()
 }
 
 // maxOutput caps captured process output so a misbehaving agent cannot

@@ -1593,6 +1593,54 @@ func TestRunInterruptedDuringSalvageCommit(t *testing.T) {
 	}
 }
 
+// Cancellation can land between a caller's ctx.Err() check and the stash that
+// follows it, so every reconciliation path goes through stashForReconcile. It
+// must stash on a FRESH context (the run's is canceled and would fail each git
+// operation instantly, leaving the tree dirty), and must flag a stash failure
+// with errInterruptedTreeDirty -- otherwise recordRunError softens it into a
+// clean interruption, which in the CLOSING round leaves the loop's success
+// termination and its exit code 0 standing over uncommitted edits.
+func TestStashForReconcileUnderCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	t.Run("stashes on a fresh context", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+		if err := os.WriteFile(filepath.Join(f.repo, "main.go"), []byte("edited\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stashed, err := f.orchestrator().stashForReconcile(ctx, "fixpoint: test reconcile")
+		if err != nil {
+			t.Fatalf("stashForReconcile on a canceled ctx = %v, want the stash to run anyway", err)
+		}
+		if !stashed {
+			t.Error("stashed = false; the dirty tree was left unreconciled")
+		}
+		if got := strings.TrimSpace(gitRun(t, f.repo, "status", "--porcelain")); got != "" {
+			t.Errorf("tree still dirty after reconciliation: %q", got)
+		}
+	})
+
+	t.Run("a failed stash is a hard failure, not a clean interruption", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+		f.cfg.Target.Path = t.TempDir() // not a git repository: every stash step fails
+		_, err := f.orchestrator().stashForReconcile(ctx, "fixpoint: test reconcile")
+		if err == nil {
+			t.Fatal("stashForReconcile on a non-repository = nil, want the stash failure")
+		}
+		// The sentinel is only meaningful through recordRunError: assert the outcome
+		// it exists to force, on the closing round's shape (a success already set).
+		sum := &model.RunSummary{Termination: model.TermConverged}
+		got := recordRunError(ctx, sum, fmt.Errorf("closing round: %w", err))
+		if got == nil {
+			t.Error("Run would return nil for a canceled round that left the tree dirty")
+		}
+		if sum.Termination != model.TermError {
+			t.Errorf("termination = %q, want %q: a dirty tree must not be reported as a converged run", sum.Termination, model.TermError)
+		}
+	})
+}
+
 // requireCleanTree is true for a PR run even when review-only: gh pr checkout
 // can preserve unrelated tracked edits and untracked files, which Collect would
 // otherwise fold into the PR diff and misattribute to the PR. A dirty tree must

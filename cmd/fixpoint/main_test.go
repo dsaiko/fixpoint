@@ -271,7 +271,7 @@ func TestRunInterruptedExits1(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 		// Only signal on the path that observed readiness. A process-directed
-		// SIGTERM is safe solely while run()'s signal.NotifyContext handler is
+		// SIGTERM is safe solely while run()'s notifySignals handler is
 		// installed (run() blocked in the reviewer). If the reviewer never started,
 		// run() may have already returned and removed the handler, so a blind
 		// SIGTERM would hit the default disposition and kill the whole test binary
@@ -280,7 +280,7 @@ func TestRunInterruptedExits1(t *testing.T) {
 		if !seen {
 			return
 		}
-		// run() has registered its signal.NotifyContext handler well before the
+		// run() has registered its notifySignals handler well before the
 		// reviewer started, so this cancels the run's context rather than killing
 		// the test binary.
 		_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
@@ -292,6 +292,43 @@ func TestRunInterruptedExits1(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "interrupted") {
 		t.Errorf("stderr should report the interruption termination:\n%s", buf.String())
+	}
+}
+
+// The first interrupt cancels the run; a SECOND one must still be acted on.
+// signal.NotifyContext's relay goroutine returns after canceling while its
+// registration stays installed, which disables the default die-on-SIGINT
+// disposition and silently swallows every later SIGINT and SIGTERM -- exactly
+// during interruption reconciliation, which runs on a fresh context and can take
+// a while. notifySignals keeps the handler live so the second signal quits.
+func TestNotifySignalsSecondSignalForceQuits(t *testing.T) {
+	quit := make(chan struct{})
+	orig := forceQuit
+	forceQuit = func() { close(quit) }
+	t.Cleanup(func() { forceQuit = orig })
+
+	// The handler is installed synchronously by notifySignals, so these
+	// process-directed signals reach it rather than the default disposition (which
+	// would kill the test binary).
+	ctx, stop := notifySignals(func(string, ...any) {})
+	defer stop()
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first signal did not cancel the run context")
+	}
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-quit:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second signal was swallowed; an operator waiting on reconciliation has no way to stop the run")
 	}
 }
 

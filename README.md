@@ -309,7 +309,9 @@ Or directly:
 Exit codes: `0` converged or review-only completed, `2` hit `max_iterations`
 without converging (or a usage error), `3` the coder rejected every issue so
 nothing changed — deliberately *not* `0`, since "nobody agreed there was a
-problem" is not "the code is clean", `1` any other failure or interruption. `SIGINT`/`SIGTERM` stop the run cleanly.
+problem" is not "the code is clean", `1` any other failure or interruption. `SIGINT`/`SIGTERM` stop the run cleanly: the current step is abandoned and any edits
+in the tree are stashed, so nothing half-finished is left behind. Signal a second time to quit
+immediately without that reconciliation — which can leave the working tree dirty.
 
 ## Configuration
 

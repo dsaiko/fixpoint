@@ -144,7 +144,7 @@ Flags:
 		return 0
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := notifySignals(logf)
 	defer stop()
 
 	if *checkLive {
@@ -194,6 +194,56 @@ Flags:
 		logf("no changes were made: the coder rejected every finding this round")
 	}
 	return model.ExitCode(sum.Termination)
+}
+
+// forceQuit ends the process on a second interrupt, with the interrupted run's
+// exit status. It is a variable so the second-signal path can be tested at all:
+// an in-process os.Exit would take the test binary with it.
+var forceQuit = func() { os.Exit(1) }
+
+// notifySignals returns a context canceled by the first SIGINT/SIGTERM, and
+// keeps a SECOND one fatal. It replaces signal.NotifyContext, whose relay
+// goroutine cancels once and then RETURNS while its signal.Notify registration
+// stays installed: Go's default die-on-SIGINT behavior is disabled for the rest
+// of the process, so every later Ctrl-C -- and SIGTERM, so plain `kill` too -- is
+// buffered and dropped, leaving only SIGKILL.
+//
+// That matters precisely in the window the first signal opens. Interruption
+// reconciliation deliberately runs on a FRESH context (the run's is canceled) and
+// is bounded only per git operation, several operations deep; on a large
+// repository, or if one of them wedges, the operator has asked to stop and must
+// still be able to ask again. The returned stop func unregisters the handler and
+// releases the goroutine.
+func notifySignals(logf func(string, ...any)) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Buffered: signal delivery never blocks, and a second signal arriving while
+	// the first is being handled must not be dropped.
+	ch := make(chan os.Signal, 2)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-ch:
+				if ctx.Err() == nil {
+					// Name what the pause is: the run does not stop the instant the signal
+					// lands, it stops the current step and then reconciles the tree.
+					logf("interrupted: stopping after the current step, then stashing any edits so the tree is left clean -- interrupt again to quit immediately")
+					cancel()
+					continue
+				}
+				logf("interrupted again: quitting now; the working tree may be left dirty (check `git status` and `git stash list`)")
+				forceQuit()
+			}
+		}
+	}()
+	return ctx, func() {
+		signal.Stop(ch)
+		close(done)
+		cancel()
+	}
 }
 
 // configName picks the config to run from the positional argument or -config.

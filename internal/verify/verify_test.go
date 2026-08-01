@@ -301,6 +301,39 @@ func TestRunKillsBackgroundedChildrenOnSuccess(t *testing.T) {
 	}
 }
 
+// The same interleaving with the child's redirection removed -- what a
+// backgrounded child does unless it explicitly redirects. It inherits the output
+// pipe, so cmd.Run returns exec.ErrWaitDelay after the drain times out even
+// though the check itself exited 0. Reporting that as "could not run" would fail
+// a passing check under must_pass, and (an Err-bearing baseline entry counts as
+// having no baseline) under no_regressions too.
+func TestRunPassesWhenDescendantHoldsOutputPipe(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "leader.sh")
+	body := "#!/bin/sh\nsleep 30 &\necho leader done\nexit 0\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan Report, 1)
+	go func() {
+		done <- Run(t.Context(), cfg(time.Minute,
+			config.VerifyCommand{Name: "leader", Run: []string{script}},
+		), dir, nil)
+	}()
+	select {
+	case rep := <-done:
+		r := rep.Results[0]
+		if !r.Passed || r.Err != "" {
+			t.Fatalf("a check that exited 0 must pass even when a descendant held its pipe: %+v", r)
+		}
+		if !strings.Contains(r.Output, "leader done") {
+			t.Errorf("output = %q, want the check's own output kept", r.Output)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run hung well past WaitDelay with a descendant on the output pipe")
+	}
+}
+
 // boundedBuffer's mutex exists for the WaitDelay case: cmd.Run can return while
 // the copy goroutine still drains a pipe a leaked grandchild holds open, so
 // String() overlaps a Write. Every other test in this file drives commands

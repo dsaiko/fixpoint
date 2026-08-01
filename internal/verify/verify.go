@@ -189,6 +189,15 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 		res.Err = fmt.Sprintf("timed out after %s", timeout)
 	case err == nil:
 		res.Passed = true
+	case ctx.Err() == nil && agent.SucceededDespiteLeakedPipe(cmd, err):
+		// The check itself exited 0; a descendant it left behind (a test daemon, a
+		// build watcher, a language server) held the output pipe past that exit, so
+		// exec reported the drain timeout rather than the success. Classifying that as
+		// "could not run" would block the round under must_pass, and -- because a
+		// baseline entry carrying an Err counts as having no baseline -- under
+		// no_regressions too, for a check that passed.
+		res.Passed = true
+		res.Output += "\n[fixpoint: the command exited 0 but a descendant held its output pipe open; the capture ends where fixpoint closed the pipe]\n"
 	default:
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

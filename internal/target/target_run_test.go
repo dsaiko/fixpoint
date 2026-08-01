@@ -93,6 +93,39 @@ func TestRunKillsBackgroundedChildOnSuccess(t *testing.T) {
 	}
 }
 
+// The same interleaving with the child's redirection removed -- what a
+// backgrounded child (a credential-cache daemon left by a fetch, a hook's child)
+// does unless it explicitly redirects. It inherits the output pipe, so cmd.Run
+// returns exec.ErrWaitDelay after the drain times out even though git/gh exited
+// 0. run must report the success: a `git commit` that landed reported as failed
+// ends the run with no CommitSHA while the commit sits in history.
+func TestRunSucceedsWhenDescendantHoldsOutputPipe(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable to spawn a child process")
+	}
+	c := New(config.Target{Path: t.TempDir()})
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := c.run(t.Context(), "sh", "-c", "sleep 30 &\necho MACHINE_VALUE\nexit 0")
+		done <- result{out, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("run() = %v, want success: the leader exited 0, only a descendant held the pipe", got.err)
+		}
+		if strings.TrimSpace(got.out) != "MACHINE_VALUE" {
+			t.Errorf("run() = %q, want the leader's stdout", got.out)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run hung well past WaitDelay with a descendant on the output pipe")
+	}
+}
+
 // run honors context cancellation and kills the whole process group: a canceled
 // command with a backgrounded child (which inherits the stdout pipe) must return
 // promptly rather than blocking on the child until it exits ~60s later.
