@@ -2077,6 +2077,20 @@ func symlinkTree(t *testing.T, dir string) (want, unwanted []string) {
 	return append(want, "pkg/a.go"), append(unwanted, "config/.env")
 }
 
+// aliasPath returns a symlink pointing at dir, standing in for the ordinary case
+// of a target.path reached through a symlinked parent: /tmp -> /private/tmp on
+// macOS, or an operator whose checkout lives under a symlinked home or mount.
+// The link sits in its own temp dir, so it is not itself part of the tree under
+// review.
+func aliasPath(t *testing.T, dir string) string {
+	t.Helper()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Fatal(err)
+	}
+	return alias
+}
+
 // A symlink's NAME says nothing about what opening it yields, so filtering the
 // pathname alone lets a committed `context.txt -> ~/.ssh/id_rsa` walk straight
 // past the mandatory credential patterns into the reviewer's file list -- and the
@@ -2120,6 +2134,48 @@ func TestCollectDirectorySkipsSymlinksLeavingTheTarget(t *testing.T) {
 		}
 		assert(t, material, want, unwanted)
 	})
+	// The same two trees, reached through a symlinked target.path. Destinations
+	// are compared fully resolved, so the ROOT has to be resolved too: measure a
+	// resolved destination against an unresolved root and filepath.Rel reports
+	// every link in the tree as ".."-prefixed, so inside.txt -- a legitimate,
+	// in-scope alias -- disappears along with the escapes, silently narrowing the
+	// listing that listFiles' denylist-only design exists to keep whole. Both
+	// cases above run on a real t.TempDir() path, where resolving the root is a
+	// no-op and cannot tell the difference.
+	t.Run("git symlinked root", func(t *testing.T) {
+		repo := gitRepo(t)
+		want, unwanted := symlinkTree(t, repo)
+		git(t, repo, "add", "-A")
+		material, err := New(config.Target{Mode: "directory", Path: aliasPath(t, repo)}).Collect(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert(t, material, want, unwanted)
+	})
+	t.Run("walk symlinked root", func(t *testing.T) {
+		dir := t.TempDir()
+		want, unwanted := symlinkTree(t, dir)
+		material, err := New(config.Target{Mode: "directory", Path: aliasPath(t, dir)}).Collect(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert(t, material, want, unwanted)
+	})
+}
+
+// A target.path that cannot be resolved must fail the collection rather than
+// produce a listing: with no canonical root there is nothing to judge symlink
+// destinations against, and "Files in scope (0)" reads to every later reader as
+// a tree that was reviewed and found empty.
+func TestCollectDirectoryUnresolvableTargetPath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing")
+	material, err := New(config.Target{Mode: "directory", Path: dir}).Collect(t.Context())
+	if err == nil {
+		t.Fatalf("Collect() succeeded for a nonexistent target.path:\n%s", material)
+	}
+	if !strings.Contains(err.Error(), "resolve target.path") {
+		t.Errorf("Collect() error = %v, want it to name the unresolvable target.path", err)
+	}
 }
 
 // target.exclude still applies on top of .gitignore, for committed material that

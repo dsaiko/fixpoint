@@ -507,7 +507,14 @@ func (c *Collector) walkFiles(ctx context.Context, scope fileScope) (int, string
 	count := 0
 	var sb strings.Builder
 	excludes := scope.excludes
-	root := c.cfg.Path
+	// Walk the CANONICAL root, not target.path as written. WalkDir never descends
+	// through a symlink -- including the one it is handed -- so a target.path that
+	// is itself a link to the checkout (an operator's ~/work -> /mnt/src alias)
+	// would yield a single entry for the root and a listing of "Files in scope
+	// (0)", which reads like a tree that was reviewed and found empty. Resolving
+	// it changes nothing for an ordinary path, and the relative paths this
+	// produces are identical either way.
+	root := scope.root
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
