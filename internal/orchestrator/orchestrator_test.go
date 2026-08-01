@@ -1114,6 +1114,31 @@ func TestRunRefusesNonGitRepoForFixRounds(t *testing.T) {
 	}
 }
 
+// The mirror of the refusal above: a review-only directory run is the documented
+// way to review a tree that is not a repository at all (Collect falls back to a
+// filesystem walk), so it must reach the reviewers. Every git probe on this path
+// fails soft on "not a repository" for that reason, and nothing a review-only run
+// does needs a HEAD -- it never commits, so it never squashes.
+func TestRunReviewOnlyAllowsNonGitDirectory(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.cfg.Target.Path = t.TempDir() // not a git repo
+	if err := os.WriteFile(filepath.Join(f.cfg.Target.Path, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want a review-only run against a non-git directory to succeed", err)
+	}
+	if sum.Termination != model.TermReviewOnly {
+		t.Fatalf("termination = %q, want review-only", sum.Termination)
+	}
+	if got := f.invocations(); got != 1 {
+		t.Errorf("agent invocations = %d, want 1 (the reviewer must have run)", got)
+	}
+}
+
 func TestRunRefusesUntrustedPRFixRounds(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.cfg.Target.Mode = "pr"

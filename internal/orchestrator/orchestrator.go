@@ -424,7 +424,7 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// Where the run's commits begin, for a per_run squash at the end. Captured on the
 	// same pristine tree as the verification baseline: everything after this point is
 	// the run's own work and nothing of the operator's.
-	runBase, err := o.collector.HeadSHA(ctx)
+	runBase, err := o.resolveRunBase(ctx)
 	if err != nil {
 		return err
 	}
@@ -441,6 +441,27 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	}
 	sum.Termination = model.TermMaxIterations
 	return o.finishRun(ctx, sum, runBase)
+}
+
+// resolveRunBase reports the commit the run starts from, for the per_run squash
+// in squashRun -- or "" for a run that cannot commit at all.
+//
+// Only a run that commits has a base worth resolving. A review-only run never
+// does, so squashRun has nothing to squash -- and asking for HEAD would break the
+// one target that has no HEAD to give: a directory that is not a repository. That
+// target is supported on purpose (Collect falls back to a filesystem walk), which
+// is why every git probe run() makes before this point -- IsGitRepo,
+// WorktreeOutOfScope, guardUntrustedGitConfig -- fails soft on "not a repository"
+// rather than aborting. HeadSHA rightly does not: outside a repository git exits
+// 128, and reading that as an unborn branch would hand SquashSince an empty base
+// and rewrite history as a root commit. So the call is skipped instead. Fix runs
+// still resolve it, and run() has already refused them unless the target is a
+// repository.
+func (o *Orchestrator) resolveRunBase(ctx context.Context) (string, error) {
+	if o.cfg.Loop.ReviewOnly {
+		return "", nil
+	}
+	return o.collector.HeadSHA(ctx)
 }
 
 // finishRun runs the closing phase and then applies a per_run squash over
