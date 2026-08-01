@@ -586,7 +586,7 @@ func remoteIdentity(raw string) string {
 // index. A non-nil error with a non-empty SHA means the commit landed but that
 // restoration did not; the error names the SHA, since callers treat an error as
 // "no commit".
-func (c *Collector) Commit(ctx context.Context, header, body string, exclude ...string) (string, error) {
+func (c *Collector) Commit(ctx context.Context, header, body string, exclude ...string) (sha string, err error) {
 	if clean, err := c.GitClean(ctx, exclude...); err != nil {
 		return "", err
 	} else if clean {
@@ -603,6 +603,38 @@ func (c *Collector) Commit(ctx context.Context, header, body string, exclude ...
 	if err != nil {
 		return "", err
 	}
+	// Put the excluded paths' pre-run index entries back on EVERY path out of here,
+	// whether or not the commit itself succeeded and whether or not staging even got
+	// that far. The add below is what replaces a staged-only excluded version with the
+	// worktree one, so once it may have run, a bare return would leave that version
+	// lost -- and interruption reconciliation excludes the path too, so nothing else
+	// puts it back. On the ordinary path the commit carried the excluded paths' HEAD
+	// version, so restoring the entries reproduces exactly the staged diff the run
+	// started with, without ever committing an excluded path.
+	// Cancellation must not be why the entries stay collapsed: on a dead context every
+	// git command fails instantly, and commitStaged may well have recovered a commit
+	// that landed. Restore on a fresh context then, still bounded per operation by
+	// gitOpTimeout, exactly as committedSHA re-reads HEAD.
+	defer func() {
+		rctx := ctx //nolint:contextcheck // deliberate fresh context below: ctx may be canceled, but the excluded paths' index entries must still be put back
+		if rctx.Err() != nil {
+			rctx = context.Background()
+		}
+		rerr := c.restoreStagedExcluded(rctx, exclude, staged)
+		if rerr == nil {
+			return
+		}
+		switch {
+		case err != nil:
+			sha, err = "", fmt.Errorf("%w; and the staged state of the excluded path(s) could not be restored: %w", err, rerr)
+		case sha != "":
+			// The commit landed: name it, because the returned error means the caller
+			// cannot report the SHA itself.
+			err = fmt.Errorf("commit %s landed but the staged state of the excluded path(s) could not be restored: %w", shortSHA(sha), rerr)
+		default:
+			err = fmt.Errorf("the staged state of the excluded path(s) could not be restored: %w", rerr)
+		}
+	}()
 	// Stage everything under the repo root, then unstage the excluded paths.
 	// Passing excludes to `git add` is not viable: it refuses a pathspec that
 	// names a .gitignore'd path even in :(exclude) form, yet a bare `git add -A`
@@ -620,28 +652,7 @@ func (c *Collector) Commit(ctx context.Context, header, body string, exclude ...
 			return "", fmt.Errorf("git reset excluded %s: %w: %s", e, err, out)
 		}
 	}
-	sha, cerr := c.commitStaged(ctx, header, body)
-	// Put the excluded paths' pre-run index entries back, whether or not the commit
-	// itself succeeded. The commit above carried their HEAD version, so restoring the
-	// entries afterwards reproduces exactly the staged diff the run started with,
-	// without ever committing an excluded path.
-	// Cancellation must not be why the entries stay collapsed: on a dead context every
-	// git command fails instantly, and commitStaged may well have recovered a commit
-	// that landed. Restore on a fresh context then, still bounded per operation by
-	// gitOpTimeout, exactly as committedSHA re-reads HEAD.
-	rctx := ctx //nolint:contextcheck // deliberate fresh context below: ctx may be canceled, but the excluded paths' index entries must still be put back
-	if rctx.Err() != nil {
-		rctx = context.Background()
-	}
-	if rerr := c.restoreStagedExcluded(rctx, exclude, staged); rerr != nil {
-		if cerr != nil {
-			return "", fmt.Errorf("%w; and the staged state of the excluded path(s) could not be restored: %w", cerr, rerr)
-		}
-		// The commit landed: name it, because the returned error means the caller
-		// cannot report the SHA itself.
-		return sha, fmt.Errorf("commit %s landed but the staged state of the excluded path(s) could not be restored: %w", shortSHA(sha), rerr)
-	}
-	return sha, cerr
+	return c.commitStaged(ctx, header, body)
 }
 
 // stagedIndex is stagedExcluded's snapshot of the index under the excluded

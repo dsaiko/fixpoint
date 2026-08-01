@@ -1051,6 +1051,44 @@ func TestCommitPreservesStagedStateUnderExcludedPaths(t *testing.T) {
 	}
 }
 
+// The same guarantee when staging fails PART WAY through: `git add -A` has already
+// replaced the staged-only version of an excluded path with the worktree version, so
+// a bare return from the failing reset would leave that version unreachable -- and
+// interruption reconciliation excludes the path too, so nothing else puts it back.
+// Restoration therefore has to run on every path out of Commit, not just after a
+// completed commit.
+func TestCommitRestoresExcludedIndexWhenStagingFails(t *testing.T) {
+	repo := gitRepo(t)
+	writeFile(t, repo, "logs/run.log", "committed\n")
+	git(t, repo, "add", "logs/run.log")
+	git(t, repo, "commit", "-q", "-m", "a tracked log")
+
+	writeFile(t, repo, "logs/run.log", "staged\n")
+	git(t, repo, "add", "logs/run.log")
+	stagedBlob := strings.Fields(git(t, repo, "ls-files", "--stage", "--", "logs/run.log"))[1]
+	writeFile(t, repo, "logs/run.log", "worktree\n")
+	writeFile(t, repo, "fixed.go", "package main\n") // the round's own work
+
+	// Fail the unstaging step only: the add before it runs for real, so the index
+	// genuinely holds the worktree version by the time Commit gives up.
+	shimGit(t, "reset", "    echo 'boom' >&2\n    exit 1")
+
+	c := New(config.Target{Path: repo})
+	sha, err := c.Commit(t.Context(), "fixpoint: round 1", "body", "logs")
+	if err == nil {
+		t.Fatal("Commit() = nil, want the failed reset to surface")
+	}
+	if sha != "" {
+		t.Errorf("Commit() sha = %q, want none: no commit was made", sha)
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("Commit() err = %v, want it to carry git's stderr", err)
+	}
+	if got := strings.Fields(git(t, repo, "ls-files", "--stage", "--", "logs/run.log"))[1]; got != stagedBlob {
+		t.Errorf("staged blob = %s, want %s: the failed round destroyed the staged version of an excluded path", got, stagedBlob)
+	}
+}
+
 // The same guarantee for an excluded path staged as an ADDITION: it is absent from
 // HEAD, so restoring it means re-adding an entry the reset removed outright.
 func TestCommitPreservesStagedAdditionUnderExcludedPaths(t *testing.T) {
