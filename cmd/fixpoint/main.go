@@ -18,8 +18,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
@@ -75,7 +73,15 @@ Flags:
 		// verbatim, and a prompt-injected agent can smuggle a credential into one
 		// (e.g. inside an invalid severity that validateReviewFindings echoes back).
 		// Persisted logs already mask these; stderr and CI console logs must too.
-		msg := agent.RedactSecrets(fmt.Sprintf(format, args...))
+		//
+		// Then escape, so every line is display-only. The same target-controlled text
+		// reaches here as reaches the listing: agent/prompt names and the bundle paths
+		// they resolved to (logSource), the ProjectSuppliedPolicy listing the operator
+		// reads before asserting -trusted-target, and git/agent output quoted into an
+		// error. Escaping last means the redaction mask itself is never split by an
+		// escape, and that a name embedding ESC/CSI cannot scroll the other entries of
+		// a refusal off the screen and get trust asserted on a listing it drew.
+		msg := agent.EscapeTerminal(agent.RedactSecrets(fmt.Sprintf(format, args...)))
 		fmt.Fprintf(stderr, "%s %s\n", time.Now().Format("15:04:05"), msg)
 	}
 
@@ -387,43 +393,13 @@ func sanitizeField(s string) string {
 }
 
 // escapeTerminal renders repository-controlled text as something a terminal only
-// DISPLAYS. Collapsing whitespace is not enough: ESC, BEL, the C1 controls, and
-// the Unicode bidi/formatting characters all survive strings.Fields, and a
+// DISPLAYS -- see agent.EscapeTerminal for what it escapes and why. A
 // description is free text from a YAML file in the repository under review (the
-// project bundle is searched first, so it shadows the installed one).
-//
-// Both consumers print it before any trust gate applies. `fixpoint --list` writes
-// it to the operator's terminal, and the porcelain form is what zsh/fish show as
-// the completion description when TAB is pressed -- so an OSC 52 payload in a
-// description could write the operator's clipboard, cursor controls could redraw
-// the listing to misattribute a config, and a bidi override could make a name
-// read as something other than what would run. Escaping keeps the text visible
-// (and reviewable) instead of silently dropping it.
-func escapeTerminal(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			// Invalid encoding: a terminal can resynchronize mid-sequence and render
-			// bytes that were never a character, so show the byte itself.
-			fmt.Fprintf(&b, "\\x%02x", s[i])
-		case unicode.IsControl(r), unicode.Is(unicode.Cf, r):
-			// Cc (C0, DEL, C1 -- ESC and friends) plus Cf, which is where the bidi
-			// overrides and other invisible formatting controls live.
-			if r < 0x100 {
-				fmt.Fprintf(&b, "\\x%02x", r)
-			} else {
-				fmt.Fprintf(&b, "\\u%04x", r)
-			}
-		default:
-			b.WriteRune(r)
-		}
-		i += size
-	}
-	return b.String()
-}
+// project bundle is searched first, so it shadows the installed one), and both
+// consumers print it before any trust gate applies: `fixpoint --list` writes it
+// to the operator's terminal, and the porcelain form is what zsh/fish show as the
+// completion description when TAB is pressed.
+func escapeTerminal(s string) string { return agent.EscapeTerminal(s) }
 
 // allowProjectSuppliedPolicy gates bundle files that were resolved from inside the
 // project under review. Those are policy, not data: an agent command (from its own

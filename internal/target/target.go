@@ -1029,8 +1029,12 @@ func gitHardenedEnv() []string {
 // unsafeConfigKey reports whether a repo-local git config key names a setting
 // that makes a later git command execute a repo-controlled program: a per-name
 // content filter (filter.<name>.clean/smudge/process) runs when `git diff`
-// normalizes a worktree file, core.sshCommand / a credential helper run during a
-// fetch, and a signing program (gpg.program, gpg.<format>.program, gpg.ssh.program)
+// normalizes a worktree file, core.sshCommand / a credential helper / core.askPass
+// run during a fetch (git resolves a credential prompt as GIT_ASKPASS, then
+// core.askPass, then SSH_ASKPASS, then the terminal -- so core.askPass is the one
+// that fires in the non-interactive context fixpoint runs Prepare's
+// `git fetch <remote> <baseOid>` in), and a signing program (gpg.program,
+// gpg.<format>.program, gpg.ssh.program)
 // runs when a fix round's `git commit` signs. On an untrusted checkout that
 // shipped its own .git/config these turn a git pass into code execution with
 // fixpoint's inherited environment, so callers refuse rather than run git against
@@ -1061,7 +1065,7 @@ func unsafeConfigKey(key string) bool {
 	case strings.HasPrefix(key, "filter.") &&
 		(strings.HasSuffix(key, ".clean") || strings.HasSuffix(key, ".smudge") || strings.HasSuffix(key, ".process")):
 		return true
-	case key == "core.sshcommand" || key == "core.gitproxy":
+	case key == "core.sshcommand" || key == "core.gitproxy" || key == "core.askpass":
 		return true
 	case strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"):
 		return true
@@ -1077,21 +1081,48 @@ func unsafeConfigKey(key string) bool {
 	return false
 }
 
-// UnsafeConfig returns the sorted, de-duplicated repo-local config keys present
-// in the target that unsafeConfigKey flags -- the execution-capable settings
-// fixpoint cannot neutralize. It reads only .git/config (--local), which runs no
-// filter or hook, so it is safe to call before any worktree-touching command.
+// UnsafeConfig returns the sorted, de-duplicated repo-supplied config keys
+// present in the target that unsafeConfigKey flags -- the execution-capable
+// settings fixpoint cannot neutralize. It only PARSES config files (no filter,
+// no hook, no worktree write), so it is safe to call before any
+// worktree-touching command.
+//
+// It must see every key a real git command would honor from inside .git, which
+// rules out the obvious `git config --local --list`:
+//
+//   - INCLUDES. git-config(1) defaults --includes to off "when a specific file is
+//     given (e.g. using --file, --global, etc.)", and --local selects a specific
+//     file -- so `git config --local --list` does NOT expand includes. A
+//     .git/config whose entire content is `[include] path = hooks/cfg` then reports
+//     nothing, while git diff/add/status and gh pr checkout all apply whatever the
+//     included file defines.
+//   - WORKTREE SCOPE. With extensions.worktreeConfig set, .git/config.worktree
+//     applies to every git command in that worktree but lives in the `worktree`
+//     scope, which --local does not read.
+//
+// So it lists ALL scopes with includes expanded and keeps only the two scopes the
+// repository itself can write. The scope filter is the point: without it the
+// operator's own global credential.helper -- which they configured, and which is
+// not repo-controlled -- would be reported as a reason to refuse the target.
+// (--show-scope needs git >= 2.26; older git makes every entry unattributable, so
+// this fails closed rather than degrading to the --local blind spot above.)
 func (c *Collector) UnsafeConfig(ctx context.Context) ([]string, error) {
-	// -z: NUL-separated entries, each "key\nvalue"; a real repo always has at
+	// -z with --show-scope: NUL-separated fields alternating "scope" then
+	// "key\nvalue" (a valueless key is just "key"). A real repo always has at
 	// least the default core.* entries, so a git repo yields a non-error result.
-	out, err := c.git(ctx, "config", "--local", "--list", "-z")
+	out, err := c.git(ctx, "config", "--list", "-z", "--show-scope", "--includes")
 	if err != nil {
-		return nil, fmt.Errorf("inspect target repo-local git config: %w", err)
+		return nil, fmt.Errorf("inspect target git config: %w", err)
 	}
+	fields := strings.Split(out, "\x00")
 	seen := map[string]bool{}
 	var keys []string
-	for _, entry := range strings.Split(out, "\x00") {
-		if entry == "" {
+	for i := 0; i+1 < len(fields); i += 2 {
+		scope, entry := fields[i], fields[i+1]
+		// Everything else (global, system, command -- our own gitSafeConfig -c
+		// overrides land in `command`) is the operator's configuration, not the
+		// target's, and refusing on it would be a false refusal.
+		if scope != "local" && scope != "worktree" {
 			continue
 		}
 		key := entry

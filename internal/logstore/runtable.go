@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
@@ -28,7 +29,9 @@ func RenderRunTable(sum *model.RunSummary) string {
 	var b strings.Builder
 	st := computeRunStats(sum)
 
-	title := fmt.Sprintf("fixpoint · %s · %s", configName(sum), sum.Termination)
+	// The bundle name comes from a filename that may live inside the target, so it
+	// is escaped here as it is in the row below and in `--list`.
+	title := fmt.Sprintf("fixpoint · %s · %s", agent.EscapeTerminal(configName(sum)), sum.Termination)
 	if n := len(sum.Rounds) - st.finalRounds; n > 0 {
 		title += fmt.Sprintf(" after %d round(s)", n)
 	}
@@ -325,9 +328,14 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 	if sum.Sources.Extends != "" {
 		cfg += "  (extends " + configBase(sum.Sources.Extends) + ")"
 	}
+	// Escaped: both are paths, and a config resolved from <project>/config is a
+	// FILENAME the repository under review chose, so it can carry ESC/CSI or a bidi
+	// override. The table is printed to the operator's terminal at the end of a run
+	// (and after a FAILED one, where what was actually reviewed is the question),
+	// and a row that can redraw the rows around it misreports exactly that.
 	out = append(out,
-		[2]string{"config", cfg},
-		[2]string{"target", strings.TrimSpace(sum.Mode + " · " + sum.Path)},
+		[2]string{"config", agent.EscapeTerminal(cfg)},
+		[2]string{"target", agent.EscapeTerminal(strings.TrimSpace(sum.Mode + " · " + sum.Path))},
 	)
 
 	mode := "review+fix"

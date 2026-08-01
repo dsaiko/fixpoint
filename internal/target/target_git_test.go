@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1166,6 +1167,10 @@ func TestUnsafeConfig(t *testing.T) {
 		git(t, repo, "config", "filter.evil.process", "sh -c 'id'")
 		git(t, repo, "config", "core.sshCommand", "sh -c 'id'")
 		git(t, repo, "config", "credential.helper", "!sh -c 'id'")
+		// core.askPass is the credential prompt git reaches for after GIT_ASKPASS
+		// and before SSH_ASKPASS, i.e. the one that fires in the non-interactive
+		// context Prepare's `git fetch <remote> <baseOid>` runs in on the pr path.
+		git(t, repo, "config", "core.askPass", "./payload")
 		// A signing program runs when a fix round's `git commit` signs, so a
 		// crafted .git/config pointing gpg.program (or a format-specific signing
 		// program) at a payload is a commit-time code-execution path too.
@@ -1177,7 +1182,7 @@ func TestUnsafeConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := strings.Join(keys, ",")
-		for _, want := range []string{"filter.evil.clean", "filter.evil.smudge", "filter.evil.process", "core.sshcommand", "credential.helper", "gpg.program", "gpg.ssh.program"} {
+		for _, want := range []string{"filter.evil.clean", "filter.evil.smudge", "filter.evil.process", "core.sshcommand", "core.askpass", "credential.helper", "gpg.program", "gpg.ssh.program"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("UnsafeConfig() = %v, want it to include %q", keys, want)
 			}
@@ -1210,6 +1215,70 @@ func TestUnsafeConfig(t *testing.T) {
 			if !strings.Contains(got, want) {
 				t.Errorf("UnsafeConfig() = %v, want it to include %q", keys, want)
 			}
+		}
+	})
+
+	// An `[include] path` in .git/config is expanded by every real git command but
+	// NOT by `git config --local --list`: --local names a specific file, and
+	// git-config defaults --includes to off in that case. A .git/config whose only
+	// content is an include would otherwise look completely clean while
+	// diff/add/status/checkout run the filter it pulls in.
+	t.Run("flags settings reached through an include", func(t *testing.T) {
+		repo := gitRepo(t)
+		writeFile(t, repo, ".git/included", "[filter \"evil\"]\n\tclean = sh -c 'id'\n")
+		f, err := os.OpenFile(filepath.Join(repo, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("[include]\n\tpath = included\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		keys, err := New(config.Target{Path: repo}).UnsafeConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(keys, "filter.evil.clean") {
+			t.Errorf("UnsafeConfig() = %v, want it to include filter.evil.clean from the included file", keys)
+		}
+	})
+
+	// .git/config.worktree applies to every git command in the worktree once
+	// extensions.worktreeConfig is set, but it lives in the `worktree` scope, which
+	// --local does not read -- a second place inside .git to hide a filter.
+	t.Run("flags worktree-scoped settings", func(t *testing.T) {
+		repo := gitRepo(t)
+		git(t, repo, "config", "extensions.worktreeConfig", "true")
+		git(t, repo, "config", "--worktree", "filter.evil.clean", "sh -c 'id'")
+		keys, err := New(config.Target{Path: repo}).UnsafeConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(keys, "filter.evil.clean") {
+			t.Errorf("UnsafeConfig() = %v, want it to include filter.evil.clean from .git/config.worktree", keys)
+		}
+	})
+
+	// Reading every scope to catch the two above must not start refusing targets
+	// over the OPERATOR's own configuration: a global credential.helper is theirs,
+	// not the repository's, and flagging it would refuse every target on the host.
+	t.Run("ignores settings from the operator's global config", func(t *testing.T) {
+		repo := gitRepo(t)
+		global := filepath.Join(t.TempDir(), "gitconfig")
+		if err := os.WriteFile(global, []byte("[credential]\n\thelper = store\n[core]\n\tsshCommand = ssh -i ~/.ssh/id_ed25519\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// The collector runs git with fixpoint's own environment, so pointing
+		// GIT_CONFIG_GLOBAL at the file is what puts it in the `global` scope.
+		t.Setenv("GIT_CONFIG_GLOBAL", global)
+		keys, err := New(config.Target{Path: repo}).UnsafeConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(keys) != 0 {
+			t.Fatalf("UnsafeConfig() = %v, want none: global-scope settings are the operator's, not the target's", keys)
 		}
 	})
 }

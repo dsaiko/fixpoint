@@ -640,6 +640,76 @@ func TestListEscapesTerminalControlsInProjectMetadata(t *testing.T) {
 	})
 }
 
+// The log stream is a decision surface too, and one the repository under review
+// helps draw: agent and prompt names come from a task config it can ship, and the
+// paths they resolve to are FILENAMES inside <project>/config. Both are printed
+// before the trust gate -- as the provenance listing, and again inside the refusal
+// that asks the operator to read those files and pass -trusted-target. A name
+// carrying CSI could scroll the other entries of that listing away, so the
+// operator would assert trust over a listing the target drew.
+func TestRunEscapesTargetSuppliedNamesInLogs(t *testing.T) {
+	f := newFixture(t)
+	// Erase-line plus cursor-up: the pair that rewrites what is already on screen.
+	// Built here rather than inside the filepath.Join call below, where a "\x1b"
+	// literal reads to gocritic as a Windows path separator.
+	hostile := "ev" + "\x1b" + "[2K" + "\x1b" + "[Ail"
+	planted := f.planted(filepath.Join("agents", hostile+".yaml"),
+		fmt.Sprintf("command: [%q]\nprompt_via: stdin\ntimeout: 1m\ncan_edit: false\n", f.script))
+
+	// The task config itself lives OUTSIDE the repository, so the only
+	// target-supplied file -- and the only source of the escape sequence -- is the
+	// agent the repository shipped.
+	content := fmt.Sprintf(`target:
+  mode: directory
+  path: %q
+roles:
+  coder:
+    agent: mock
+    prompt: %q
+  review:
+    strategy: fixed
+    prompts:
+      - {agent: %q, prompt: %q}
+agents:
+  mock:
+    command: [%q]
+    prompt_via: stdin
+    timeout: 1m
+    can_edit: true
+loop:
+  review_only: true
+  max_iterations: 1
+logs:
+  dir: %q
+ping_agents: false
+`, f.repo, f.fixPrompt, hostile, f.reviewPrompt, f.script, f.logsDir)
+	cfg := filepath.Join(t.TempDir(), "fixpoint.yaml")
+	if err := os.WriteFile(cfg, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", cfg}, &buf, &buf); got != 1 {
+		t.Fatalf("run() = %d, want 1: the target-supplied agent file must be refused; stderr:\n%s", got, buf.String())
+	}
+	got := buf.String()
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("stderr carries a raw ESC from a target-supplied agent name to the terminal:\n%q", got)
+	}
+	// Escaped, not dropped: the operator has to be able to see WHY the name looks odd.
+	if !strings.Contains(got, `\x1b`) {
+		t.Errorf("the control character was dropped instead of escaped visibly:\n%q", got)
+	}
+	// Both printers are covered by this one run -- the provenance line names the
+	// agent, the refusal names the file it resolved to.
+	if !strings.Contains(got, "agent ev") {
+		t.Errorf("the provenance listing must still name the agent:\n%s", got)
+	}
+	if !strings.Contains(got, escapeTerminal(planted)) {
+		t.Errorf("the refusal must name the target-supplied file (escaped):\n%s", got)
+	}
+}
+
 // planted writes body into <repo>/config/<rel> -- the bundle location the
 // repository under review controls, searched FIRST -- and returns its path.
 func (f *fixture) planted(rel, body string) string {
