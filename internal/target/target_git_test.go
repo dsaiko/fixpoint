@@ -1645,6 +1645,50 @@ func TestGhRemote(t *testing.T) {
 			t.Fatalf("ghRemote() = %q, %v; want first-remote fallback", r, err)
 		}
 	})
+
+	// A remote NAME is a repo-controlled config subsection, so an untrusted
+	// checkout can ship one that looks like a git option. It must never be
+	// returned as the remote to fetch from -- neither as the first-remote
+	// fallback (git sorts it before ordinary names) nor via the URL match.
+	t.Run("option-like remote name is skipped", func(t *testing.T) {
+		installGh(t, "echo acme/widget\n")
+		repo := gitRepo(t)
+		git(t, repo, "remote", "add", "--", "--upload-pack=/tmp/payload", "https://github.com/acme/widget.git")
+		git(t, repo, "remote", "add", "upstream", "https://github.com/acme/widget.git")
+		if r, err := New(config.Target{Path: repo}).ghRemote(t.Context()); err != nil || r != "upstream" {
+			t.Fatalf("ghRemote() = %q, %v; want upstream (option-like name skipped)", r, err)
+		}
+	})
+
+	t.Run("only option-like remotes errors", func(t *testing.T) {
+		installGh(t, "echo acme/widget\n")
+		repo := gitRepo(t)
+		git(t, repo, "remote", "add", "--", "--upload-pack=/tmp/payload", "https://github.com/acme/widget.git")
+		_, err := New(config.Target{Path: repo}).ghRemote(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "option-like names") {
+			t.Fatalf("ghRemote() = %v, want option-like-name refusal", err)
+		}
+	})
+}
+
+// Prepare must refuse a pr-mode run whose only remote has an option-like name
+// rather than hand the name to `git fetch`, where git would parse it as an
+// option (--upload-pack=<program> is executed by the local transport).
+func TestPreparePROptionLikeRemoteRefused(t *testing.T) {
+	repo := gitRepo(t)
+	git(t, repo, "remote", "add", "--", "--upload-pack=/tmp/payload", "https://github.com/acme/widget.git")
+	binDir := t.TempDir()
+	// A base oid that is not a local object, so Prepare reaches the fetch.
+	const absentOid = "0123456789012345678901234567890123456789"
+	stub := "#!/bin/sh\ncase \"$1 $2\" in\n\"pr checkout\") : ;;\n\"pr view\") echo " + absentOid + " ;;\n*) exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err := New(config.Target{Mode: "pr", Path: repo, PR: 7}).Prepare(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "option-like names") {
+		t.Fatalf("Prepare() = %v, want option-like-name refusal", err)
+	}
 }
 
 func TestPreparePREmptyBaseOid(t *testing.T) {

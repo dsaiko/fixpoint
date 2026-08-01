@@ -96,7 +96,11 @@ func (c *Collector) Prepare(ctx context.Context) error {
 			if rerr != nil {
 				return rerr
 			}
-			if fout, ferr := c.git(ctx, "fetch", "--no-tags", remote, baseOid); ferr != nil {
+			// --end-of-options: the remote name is a repo-controlled config
+			// subsection, so without the terminator a name like
+			// `--upload-pack=/tmp/payload` would be parsed by git as an option
+			// on fixpoint's own fetch rather than as the repository argument.
+			if fout, ferr := c.git(ctx, "fetch", "--no-tags", "--end-of-options", remote, baseOid); ferr != nil {
 				return fmt.Errorf("fetch PR base %s from %s: %w: %s", baseOid, remote, ferr, fout)
 			}
 		}
@@ -515,7 +519,8 @@ const remoteOrigin = "origin"
 // as this checkout's base, so PR base objects are fetched from the right place
 // without assuming the remote is named "origin". It matches the base repo's
 // nameWithOwner against configured remote URLs, falling back to origin and then
-// the sole/first remote.
+// the sole/first remote. Remotes whose name looks like a git option are refused
+// (see below).
 func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 	out, err := c.git(ctx, "remote")
 	if err != nil {
@@ -525,10 +530,28 @@ func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 	if len(remotes) == 0 {
 		return "", errors.New("no git remotes configured to fetch the PR base from")
 	}
+	// A remote NAME is a repo-controlled config subsection that ends up as a
+	// positional argument to git. Callers pass --end-of-options so such a name
+	// cannot be parsed as an option, but a legitimate remote name never starts
+	// with "-", so an untrusted checkout that ships one is refused outright
+	// rather than fetched from.
+	kept := make([]string, 0, len(remotes))
+	var optionLike []string
+	for _, r := range remotes {
+		if strings.HasPrefix(r, "-") {
+			optionLike = append(optionLike, r)
+			continue
+		}
+		kept = append(kept, r)
+	}
+	if len(kept) == 0 {
+		return "", fmt.Errorf("refusing to fetch the PR base: the only git remotes have option-like names: %s", strings.Join(optionLike, " "))
+	}
+	remotes = kept
 	if nwo, err := c.run(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"); err == nil {
 		if want := strings.ToLower(strings.TrimSpace(nwo)); want != "" {
 			for _, r := range remotes {
-				if u, err := c.git(ctx, "remote", "get-url", r); err == nil &&
+				if u, err := c.git(ctx, "remote", "get-url", "--end-of-options", r); err == nil &&
 					remoteIdentity(u) == want {
 					return r, nil
 				}
