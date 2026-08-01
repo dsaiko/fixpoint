@@ -10,8 +10,16 @@ command:
   - --mode plan # ...and plan mode is meant to hold back the edits it just allowed
   - --print-timeout 10m # agy's own non-interactive wait (default 5m)
   - -p # -p consumes the NEXT arg as the prompt -- MUST stay last
-# arg mode exposes the prompt on argv and triggers a run-start warning. Check
-# whether agy can read the prompt from stdin before re-enabling this agent.
+# SECURITY: arg mode appends the WHOLE prompt to agy's argv, where any local user
+# reads it via `ps` or /proc/<pid>/cmdline for as long as the invocation lives --
+# the reviewed material (in git-diff/pr mode the diff, which often IS the
+# credential under review), the prior rounds' findings, and the verification
+# output, none of it covered by the 0600 log permissions or the on-disk redaction
+# pass. fixpoint warns at run start, but a warning is not a control: use this
+# agent only on a single-user host and only against a target whose material
+# carries no secrets. `-p` is the sole prompt entry point agy documents as of this
+# writing; check whether your version can take the prompt on stdin, and switch to
+# prompt_via: stdin the moment it can.
 prompt_via: arg
 timeout: 10m
 # can_edit: true, even though this agent was written for reviewer duty. Its

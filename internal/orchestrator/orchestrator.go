@@ -1740,13 +1740,6 @@ func roundReviewErr(rec *model.RoundRecord) error {
 		rec.Round, len(rec.ReviewErrors), strings.Join(rec.ReviewErrors, "; "))
 }
 
-// warnArgModePrompts logs a warning for every agent this run will use that is
-// configured prompt_via: arg. Such an agent receives the full prompt on its
-// process argument list, where the embedded review material (in git-diff/pr
-// mode the diff -- which often IS the credential under review) and any secret a
-// reviewer quotes into a finding are world-readable via ps / /proc for the
-// invocation's lifetime, bypassing the 0600 log permissions and on-disk
-// redaction. The exposure is not silent; stdin is the secure default.
 // warnInheritedEnv reports agents that opted out of environment filtering. Worth a
 // warning rather than silence: the filtered default is what keeps an exported
 // secret out of a prompt-injectable reviewer, and inherit_all gives that up for
@@ -1760,6 +1753,13 @@ func (o *Orchestrator) warnInheritedEnv() {
 	}
 }
 
+// warnArgModePrompts logs a warning for every agent this run will use that is
+// configured prompt_via: arg. Such an agent receives the full prompt on its
+// process argument list, where the embedded review material (in git-diff/pr
+// mode the diff -- which often IS the credential under review) and any secret a
+// reviewer quotes into a finding are world-readable via ps / /proc for the
+// invocation's lifetime, bypassing the 0600 log permissions and on-disk
+// redaction. The exposure is not silent; stdin is the secure default.
 func (o *Orchestrator) warnArgModePrompts() {
 	for _, n := range o.activeAgentNames() {
 		if o.cfg.Agents[n].PromptVia != config.PromptViaArg {
