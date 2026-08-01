@@ -181,6 +181,47 @@ type StepStat struct {
 	OutputBytes int    `json:"output_bytes"`
 	DurationMS  int64  `json:"duration_ms"`
 	Failed      bool   `json:"failed,omitempty"`
+	// Usage is what the CLI itself reported for this invocation, when it reports
+	// anything. It is not derived from the byte counts above and is usually far
+	// larger than they suggest -- those measure only what crossed fixpoint's
+	// boundary, while the agent's session reads files and calls tools in between.
+	Usage Usage `json:"usage,omitempty"`
+}
+
+// Usage is one agent invocation's cost, as reported by the agent's own CLI.
+//
+// Every field is what the CLI said, never a fixpoint estimate. CostKnown
+// distinguishes "this CLI reported $0" (a local model) from "this CLI reports no
+// cost at all" (subscription auth) -- a zero that means two different things would
+// make a run's total silently wrong, so the scoreboard shows nothing rather than
+// zero for the second case.
+type Usage struct {
+	InputTokens      int     `json:"input_tokens,omitempty"`
+	OutputTokens     int     `json:"output_tokens,omitempty"`
+	CacheReadTokens  int     `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int     `json:"cache_write_tokens,omitempty"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
+	CostKnown        bool    `json:"cost_known,omitempty"`
+}
+
+// Tokens is every token the agent reported processing, cache included. Cache
+// reads are cheaper than fresh input rather than free, and on a warm agentic
+// session they dominate the total -- excluding them would understate the work by
+// most of it.
+func (u Usage) Tokens() int {
+	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
+}
+
+// Add accumulates another invocation's usage. Cost stays unknown until some
+// invocation reports one, so a panel mixing reporting and non-reporting CLIs
+// totals what it actually knows.
+func (u *Usage) Add(o Usage) {
+	u.InputTokens += o.InputTokens
+	u.OutputTokens += o.OutputTokens
+	u.CacheReadTokens += o.CacheReadTokens
+	u.CacheWriteTokens += o.CacheWriteTokens
+	u.CostUSD += o.CostUSD
+	u.CostKnown = u.CostKnown || o.CostKnown
 }
 
 // RunSummary is the artifact written when a run ends, however it ends.

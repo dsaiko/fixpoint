@@ -1267,6 +1267,7 @@ func stepStat(role, agentName, lensName string, promptLen int, res agent.Result,
 		OutputBytes: len(res.Stdout) + len(res.Stderr),
 		DurationMS:  res.Duration.Milliseconds(),
 		Failed:      failed,
+		Usage:       res.Usage,
 	}
 }
 

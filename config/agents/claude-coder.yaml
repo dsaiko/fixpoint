@@ -7,10 +7,24 @@ model: claude-opus-5
 effort: high # xhigh runs ~2x slower for marginal gain on typical findings
 command:
   - claude
+  - --output-format json # machine-readable envelope: carries usage + cost
   - -p
   - --dangerously-skip-permissions # required to edit; see can_edit below
   - --model {{model}}
   - --effort {{effort}}
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  cost_usd: modelUsage.*.costUSD
+
 prompt_via: stdin
 timeout: 30m # fixing rounds run longer than a single review pass
 can_edit: true

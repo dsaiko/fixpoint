@@ -7,7 +7,21 @@ command:
   - claude
   - --model {{model}}
   - --
+  - --output-format json # machine-readable envelope: carries usage + cost
   - -p # no permission-skip flag: reads work, edit tools are denied
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  cost_usd: modelUsage.*.costUSD
+
 prompt_via: stdin
 timeout: 15m # local models are slower; give them headroom
 can_edit: false

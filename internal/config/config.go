@@ -250,7 +250,92 @@ type Agent struct {
 
 	// Env controls what this agent's process can see of fixpoint's environment.
 	Env AgentEnv `yaml:"env"`
+
+	// Usage tells fixpoint how to read what this invocation actually cost, from
+	// the CLI's own machine-readable output.
+	Usage AgentUsage `yaml:"usage"`
 }
+
+// AgentUsage describes where a CLI reports its token usage and cost, so fixpoint
+// can account for a run without knowing anything about the CLI.
+//
+// Measuring at fixpoint's own boundary does not work, and not by a small margin.
+// The bytes fixpoint hands over and gets back are the two ends of an agentic
+// session that reads files, calls tools, and takes many model turns in between --
+// none of which crosses this process. A one-word probe whose boundary I/O was ~30
+// bytes reported 21,072 tokens and $0.06: a bytes/4 estimate would have called it
+// zero. Only the CLI knows, and every CLI worth using will say if asked.
+//
+// So fixpoint asks, and the ASKING is configuration rather than code: which flag
+// switches a CLI to machine-readable output, and where the numbers sit in it, is
+// exactly the knowledge this file already exists to hold. A provider-agnostic tool
+// cannot enumerate that centrally without growing a per-vendor table that goes
+// stale; whoever wrote `command` knows it today.
+//
+// Cost is reported when the CLI computes it and left empty otherwise -- a
+// subscription-authenticated CLI has no per-request price to report, and inventing
+// one from a hardcoded price list would be a guess presented as an audit figure.
+// There is no pricing API to consult; published rates change, differ per auth mode,
+// and say nothing about how much of a prompt was served from cache. A number the
+// CLI computed from its own billing is worth more than one fixpoint derived.
+type AgentUsage struct {
+	// Format is how to read stdout: "json" (one object) or "jsonl" (one object
+	// per line -- the LAST value found for each path wins, which is how a
+	// streaming CLI's final totals are picked up). Empty disables usage parsing.
+	Format string `yaml:"format"`
+
+	// Text is the dotted path to the agent's actual reply inside the envelope.
+	// Required with a format: fixpoint replaces the raw stdout with this before
+	// the output contract is extracted, so machine-readable mode stays invisible
+	// to everything downstream. Without it the envelope itself would reach the
+	// extractor and every round would fail to parse.
+	Text string `yaml:"text"`
+
+	// Dotted paths to the numbers. Each is optional: a CLI that reports tokens
+	// but not cost simply leaves cost_usd unset, and the scoreboard shows no cost
+	// for it rather than a fabricated one.
+	InputTokens      string `yaml:"input_tokens"`
+	OutputTokens     string `yaml:"output_tokens"`
+	CacheReadTokens  string `yaml:"cache_read_tokens"`
+	CacheWriteTokens string `yaml:"cache_write_tokens"`
+	CostUSD          string `yaml:"cost_usd"`
+}
+
+// Enabled reports whether this agent's output carries usage fixpoint can read.
+func (u AgentUsage) Enabled() bool { return u.Format != "" }
+
+// validate rejects a usage block that would silently do nothing, or worse. The
+// missing-text case is the dangerous one: the CLI would be switched to
+// machine-readable output while fixpoint kept extracting the contract from the
+// raw envelope, so EVERY round would fail to parse -- an error whose cause is two
+// files away from its symptom. Catch it at startup instead.
+func (u AgentUsage) validate(name string) error {
+	if u.Format == "" {
+		// No usage block. A stray path without a format is a typo worth naming,
+		// since it reads as configured and does nothing.
+		if u.Text != "" || u.InputTokens != "" || u.OutputTokens != "" ||
+			u.CacheReadTokens != "" || u.CacheWriteTokens != "" || u.CostUSD != "" {
+			return fmt.Errorf("agents.%s: usage paths are set but usage.format is empty, so none of them are read; set format to %s",
+				name, strings.Join(usageFormats, " or "))
+		}
+		return nil
+	}
+	if !slices.Contains(usageFormats, u.Format) {
+		return fmt.Errorf("agents.%s: unknown usage.format %q (want %s)", name, u.Format, strings.Join(usageFormats, " | "))
+	}
+	if u.Text == "" {
+		return fmt.Errorf("agents.%s: usage.format is set but usage.text is not; fixpoint would hand the raw envelope to the output-contract extractor and every round would fail to parse", name)
+	}
+	return nil
+}
+
+// Usage output formats.
+const (
+	UsageFormatJSON  = "json"
+	UsageFormatJSONL = "jsonl"
+)
+
+var usageFormats = []string{UsageFormatJSON, UsageFormatJSONL}
 
 // AgentEnv declares the environment an agent runs with. Everything not covered
 // here is absent from the process.
@@ -736,6 +821,9 @@ func (c *Config) Validate() error {
 		}
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("agents.%s: binary %q not found on PATH", name, argv[0])
+		}
+		if err := a.Usage.validate(name); err != nil {
+			return err
 		}
 		// envName, not name: shadowing the agent name here put the offending
 		// VARIABLE in the agents.<name> position, pointing at an agent that does

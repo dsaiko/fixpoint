@@ -75,6 +75,7 @@ type contributor struct {
 	advisory int             // advisory observations, which never reach the coder
 	errors   int             // invocations that failed or timed out
 	dur      time.Duration
+	usage    model.Usage // what the agent's own CLI reported spending
 }
 
 type runStats struct {
@@ -91,6 +92,11 @@ type runStats struct {
 	coderFixed   int
 	coderReject  int
 	coderDur     time.Duration
+	coderUsage   model.Usage
+	// total is every invocation's reported usage, reviewers and coder alike. It
+	// is summed independently rather than added up from the rows, so the run
+	// total stays right even for a step no row claims.
+	total        model.Usage
 	commits      []string
 	verifyNames  []string
 	verifyPassed int
@@ -176,12 +182,18 @@ func (st *runStats) absorbAttribution(r model.RoundRecord, get getFn) {
 func (st *runStats) absorbCosts(r model.RoundRecord, get getFn) {
 	for _, s := range r.Steps {
 		d := time.Duration(s.DurationMS) * time.Millisecond
+		st.total.Add(s.Usage)
 		if s.Role == "fix" {
 			st.coderDur += d
+			st.coderUsage.Add(s.Usage)
 			continue
 		}
-		get(st.agents, &st.agentOrder, s.Agent).dur += d
-		get(st.lenses, &st.lensOrder, config.LensName(s.Lens)).dur += d
+		a := get(st.agents, &st.agentOrder, s.Agent)
+		a.dur += d
+		a.usage.Add(s.Usage)
+		l := get(st.lenses, &st.lensOrder, config.LensName(s.Lens))
+		l.dur += d
+		l.usage.Add(s.Usage)
 	}
 	st.coderFixed += r.Fixed
 	st.coderReject += r.Rejected
@@ -219,7 +231,7 @@ func (st *runStats) absorbVerify(r model.RoundRecord) {
 // writeContributorTable renders one attribution table. totals adds the TOTAL row,
 // which is the DISTINCT issue count rather than the column sum; pass nil to omit it.
 func writeContributorTable(b *strings.Builder, heading string, order []string, m map[string]*contributor, verdicts map[string]string, st *runStats) {
-	head := []string{heading, "issues", "fixed", "rejected", "deferred", "advisory", "errors", "time"}
+	head := []string{heading, "issues", "fixed", "rejected", "deferred", "advisory", "errors", "tokens", "cost", "time"}
 	rows := [][]string{head}
 	for _, name := range order {
 		c := m[name]
@@ -236,7 +248,7 @@ func writeContributorTable(b *strings.Builder, heading string, order []string, m
 		}
 		rows = append(rows, []string{
 			name, itoa(len(c.issues)), itoa(fixed), itoa(rejected), itoa(deferred),
-			itoa(c.advisory), itoa(c.errors), humanDuration(c.dur),
+			itoa(c.advisory), itoa(c.errors), tokenCount(c.usage.Tokens()), costUSD(c.usage), humanDuration(c.dur),
 		})
 	}
 	if st != nil {
@@ -251,8 +263,11 @@ func writeContributorTable(b *strings.Builder, heading string, order []string, m
 				deferred++
 			}
 		}
+		// The token and cost totals cover the WHOLE run, coder included, so they
+		// are the run's bill rather than the sum of the reviewer rows above.
 		rows = append(rows, []string{
-			"TOTAL", itoa(len(st.finalVerdict)), itoa(fixed), itoa(rejected), itoa(deferred), "", "", "",
+			"TOTAL", itoa(len(st.finalVerdict)), itoa(fixed), itoa(rejected), itoa(deferred), "", "",
+			tokenCount(st.total.Tokens()), costUSD(st.total), "",
 		})
 	}
 	writeAligned(b, rows, st != nil)
@@ -350,8 +365,15 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 	if sum.ReviewOnly {
 		out = append(out, [2]string{"coder", "not invoked (review-only run)"})
 	} else {
-		out = append(out, [2]string{"coder", fmt.Sprintf("%s · %d fixed · %d rejected · %s",
-			coder, st.coderFixed, st.coderReject, humanDuration(st.coderDur))})
+		line := fmt.Sprintf("%s · %d fixed · %d rejected · %s",
+			coder, st.coderFixed, st.coderReject, humanDuration(st.coderDur))
+		if n := st.coderUsage.Tokens(); n > 0 {
+			line += " · " + tokenCount(n) + " tok"
+		}
+		if st.coderUsage.CostKnown {
+			line += " · " + costUSD(st.coderUsage)
+		}
+		out = append(out, [2]string{"coder", line})
 	}
 	if len(st.commits) > 0 {
 		out = append(out, [2]string{"commits", fmt.Sprintf("%d · %s", len(st.commits), strings.Join(st.commits, " "))})
@@ -404,6 +426,36 @@ func shortSHA(sha string) string {
 		return sha[:12]
 	}
 	return sha
+}
+
+// tokenCount abbreviates a token total so a column of them stays scannable:
+// 1.2M, 340k, 812. A dash for zero, which here means the CLI reported nothing
+// rather than that it did no work.
+func tokenCount(n int) string {
+	switch {
+	case n <= 0:
+		return "-"
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.0fk", float64(n)/1e3)
+	default:
+		return itoa(n)
+	}
+}
+
+// costUSD renders what a CLI reported spending, and NOTHING when it reports no
+// cost at all. Printing $0.00 there would be a claim fixpoint cannot support: a
+// subscription-authenticated CLI has a real cost, it just is not per-request, and
+// showing zero would quietly understate a run's total.
+func costUSD(u model.Usage) string {
+	if !u.CostKnown {
+		return "-"
+	}
+	if u.CostUSD > 0 && u.CostUSD < 0.01 {
+		return "<$0.01"
+	}
+	return fmt.Sprintf("$%.2f", u.CostUSD)
 }
 
 // humanDuration renders a duration at one useful unit, so a column of them lines up

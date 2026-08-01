@@ -197,3 +197,60 @@ func TestRunTableHandlesARunWithNoRounds(t *testing.T) {
 		t.Errorf("the outcome line must stay one line:\n%s", got)
 	}
 }
+
+// Tokens and cost come from the agents' own CLIs. The table must total them for
+// the whole run — coder included — and must not invent a cost for a CLI that
+// reports none.
+func TestRunTableReportsReportedUsageAndOmitsUnreportedCost(t *testing.T) {
+	sum := twoAgentRun()
+	steps := &sum.Rounds[0].Steps
+	*steps = []model.StepStat{
+		{Role: "review", Agent: "codex", Lens: "review-bugs", DurationMS: 1000,
+			Usage: model.Usage{InputTokens: 12000, OutputTokens: 900, CacheReadTokens: 140000}},
+		{Role: "review", Agent: "claude", Lens: "review-security", DurationMS: 1000,
+			Usage: model.Usage{InputTokens: 8000, OutputTokens: 600, CostUSD: 0.42, CostKnown: true}},
+		{Role: "fix", Agent: "claude-coder", DurationMS: 1000,
+			Usage: model.Usage{InputTokens: 30000, OutputTokens: 5000, CostUSD: 1.08, CostKnown: true}},
+	}
+	got := RenderRunTable(sum)
+
+	rows := map[string]string{}
+	for _, line := range strings.Split(got, "\n") {
+		if f := strings.Fields(line); len(f) > 1 {
+			rows[f[0]] = strings.Join(f[1:], " ")
+		}
+	}
+	// codex reported tokens but no price: a "-" beats a fabricated $0.00, which
+	// would silently understate the run's real spend.
+	if !strings.Contains(rows["codex"], "153k") {
+		t.Errorf("codex row = %q, want its 152,900 reported tokens", rows["codex"])
+	}
+	if !strings.Contains(rows["codex"], "-") {
+		t.Errorf("codex row = %q, want no cost for a CLI that reports none", rows["codex"])
+	}
+	if !strings.Contains(rows["claude"], "$0.42") {
+		t.Errorf("claude row = %q, want its reported cost", rows["claude"])
+	}
+	// The total covers the coder too, so it exceeds the reviewer rows.
+	if !strings.Contains(rows["TOTAL"], "$1.50") {
+		t.Errorf("TOTAL row = %q, want $1.50 including the coder", rows["TOTAL"])
+	}
+	if !strings.Contains(got, "1.08") || !strings.Contains(got, "35k tok") {
+		t.Errorf("coder line must report its own usage:\n%s", got)
+	}
+}
+
+// A run whose agents report nothing must not grow empty token/cost noise into
+// something that looks like measured zero.
+func TestRunTableShowsDashesWhenNoUsageIsReported(t *testing.T) {
+	got := RenderRunTable(twoAgentRun()) // fixture steps carry no Usage
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "TOTAL") {
+			if strings.Contains(line, "$0.00") {
+				t.Errorf("TOTAL row = %q, want no cost rather than $0.00", line)
+			}
+			return
+		}
+	}
+	t.Error("no TOTAL row")
+}

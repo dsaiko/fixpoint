@@ -64,6 +64,53 @@ than appending. Replacement is deliberate — appending would make an inherited
 entry impossible to remove — which is why the credential patterns that must never
 be dropped live in fixpoint's code instead of in `target.exclude`.
 
+## Per-lens modifiers
+
+A `roles.review.prompts` entry may be a bare prompt name or a mapping carrying
+`agent`, `advisory: true` (reported for a human, never fixed, never gates
+convergence), `once: true` (round 1 only), or `final: true` (held out of the loop
+and run once at the end, on every agent, with its findings still fixed —
+`review-tests` uses this). `once` and `final` are mutually exclusive. See the
+per-lens modifiers section in the [root README](../README.md) for when to reach for
+each.
+
+## Reporting what a run cost
+
+An agent file may declare where its CLI reports token usage and cost, and fixpoint
+puts those numbers in the end-of-run scoreboard:
+
+```yaml
+command: [claude, -p, --output-format json, --model "{{model}}"]
+usage:
+  format: json                                   # json | jsonl
+  text: result                                   # where the agent's reply lives
+  input_tokens: modelUsage.*.inputTokens         # `*` matches every key at that
+  output_tokens: modelUsage.*.outputTokens       # level — the map is keyed by
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens   # model id, so it cannot
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens  # be written literally
+  cost_usd: modelUsage.*.costUSD                 # omit when the CLI reports none
+```
+
+`text` is **required** whenever `format` is set: fixpoint swaps the envelope for
+the reply before extracting the output contract, so machine-readable mode stays
+invisible to everything downstream. Omit it and every round fails to parse;
+validation refuses the config rather than letting you find out at runtime.
+
+Paths are dotted, with `*` matching every key at a level. Within one object a
+wildcard's matches are **summed** (a session that used two models spent both);
+across the lines of a `jsonl` stream the **last** value wins (successive lines are
+the same session's running total, so adding them would double-count).
+
+Parsing fails open — a CLI that crashed or changed its output shape yields
+unparseable output, and the round's findings matter more than its accounting, so
+the raw output passes through and usage is left empty.
+
+This is configuration rather than code because fixpoint is provider-agnostic:
+which flag switches a CLI to machine-readable output, and where the numbers sit in
+it, is exactly what this file already exists to record. Measuring at fixpoint's own
+boundary is not an alternative — the bytes it exchanges miss the agentic session in
+between by orders of magnitude.
+
 ## Security
 
 Read this before pointing fixpoint at code you didn't write.

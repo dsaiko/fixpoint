@@ -17,14 +17,24 @@ import (
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/model"
 )
 
 // Result is one agent invocation's outcome.
 type Result struct {
+	// Stdout is the agent's reply. When the agent reports usage, this is the reply
+	// UNWRAPPED from its machine-readable envelope, so callers extracting the
+	// output contract never see the envelope -- see config.AgentUsage.
 	Stdout   string
 	Stderr   string
 	Duration time.Duration
 	Err      error
+	// Usage is what the CLI reported spending, zero when it reports nothing.
+	Usage model.Usage
+	// rawStdout is the untouched process output, kept for the .raw log: the
+	// envelope carries the token counts and turn structure, which is exactly what
+	// someone reading a run back wants to see.
+	rawStdout string
 }
 
 // Raw renders the invocation for the .raw log: the exact command, then both
@@ -36,7 +46,13 @@ func (r Result) Raw(argv []string) string {
 	if r.Err != nil {
 		fmt.Fprintf(&sb, "error: %v\n", r.Err)
 	}
-	sb.WriteString("\n--- stdout ---\n" + r.Stdout)
+	// The untouched process output, envelope and all: its token counts and turn
+	// structure are the most useful thing in this file when reading a run back.
+	out := r.rawStdout
+	if out == "" {
+		out = r.Stdout
+	}
+	sb.WriteString("\n--- stdout ---\n" + out)
 	if r.Stderr != "" {
 		sb.WriteString("\n--- stderr ---\n" + r.Stderr)
 	}
@@ -210,11 +226,17 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	if ctx.Err() == context.DeadlineExceeded {
 		err = fmt.Errorf("timed out after %s", a.Timeout.Std())
 	}
+	raw := stdout.String()
+	// Unwrap here rather than at the call sites: every consumer of Stdout wants
+	// the agent's reply, and only this function knows which agent produced it.
+	text, usage := ParseUsage(a.Usage, raw)
 	return Result{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		Duration: time.Since(start),
-		Err:      err,
+		Stdout:    text,
+		Stderr:    stderr.String(),
+		Duration:  time.Since(start),
+		Err:       err,
+		Usage:     usage,
+		rawStdout: raw,
 	}
 }
 

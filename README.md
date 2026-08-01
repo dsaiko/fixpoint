@@ -450,6 +450,21 @@ varies between its members, and the table above is what a weak member looks like
 The `review-tests` row — the most reports, the most deferred, the least converted
 into fixes — is why that lens is now `final: true`.
 
+**Tokens and cost are what the agent's own CLI reported**, never a fixpoint
+estimate. Each agent file says where its CLI puts those numbers (see `usage:` in
+[config/README.md](config/README.md)); an agent that reports nothing shows `-`.
+Cost is shown only where the CLI computes it — `codex` on ChatGPT-account auth
+reports tokens but has no per-request price, and inventing one from a published
+rate card would be a guess printed as an audit figure. There is no pricing API to
+consult, and a rate card knows nothing about how much of a prompt was served from
+cache.
+
+Do not substitute the byte counts for this. The prompt fixpoint sends and the text
+it gets back are the two ends of a session that reads files and calls tools in
+between, none of which crosses this process: a one-word probe whose boundary I/O
+was ~30 bytes reported **21,072 tokens and $0.06**. `tokens` therefore counts cache
+reads and writes too — on a warm agentic session they are most of the total.
+
 Attribution is by **issue**, not by raw observation, so two agents reporting one
 defect each get credit for that one issue. The per-agent rows therefore sum to more
 than the distinct TOTAL whenever the panel agreed, and the line under the total
