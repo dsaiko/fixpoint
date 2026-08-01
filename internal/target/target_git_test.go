@@ -1564,6 +1564,7 @@ func TestCollectGitDiffAppliesExcludes(t *testing.T) {
 	}
 	// Committed inside the diff range: content would otherwise be rendered in full.
 	writeFile(t, repo, ".env", "DB_PASS=hunter2-committed\n")
+	writeFile(t, repo, "production.env", "DB_PASS=hunter2-suffix-spelling\n")
 	writeFile(t, repo, "deploy/id_rsa.pem", "-----BEGIN PRIVATE KEY-----\ncommitted-key\n")
 	writeFile(t, repo, "vendor/dep/c.go", "package dep // configured-exclude\n")
 	writeFile(t, repo, "main.go", "package main // reviewed\n")
@@ -1579,6 +1580,7 @@ func TestCollectGitDiffAppliesExcludes(t *testing.T) {
 	}
 	for _, leak := range []string{
 		"hunter2-committed", ".env",
+		"hunter2-suffix-spelling", "production.env",
 		"committed-key", "id_rsa.pem",
 		"hunter2-untracked", ".env.local",
 		"configured-exclude", "vendor/dep/c.go",
@@ -1918,11 +1920,15 @@ func TestCollectDirectoryHonorsGitignore(t *testing.T) {
 // the fix commit body.
 var credentialFiles = []string{
 	".env", ".env.local", "svc/.env.production",
+	"production.env", "svc/docker.env",
 	"key.pem", "certs/server.pem", "certs/bundle.p12", "certs/bundle.pfx",
 	"server.key", "certs/tls.key",
+	"store.jks", "certs/app.keystore", "keys/deploy.ppk",
 	"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "home/.ssh/id_ed25519",
 	".npmrc", ".netrc", ".pgpass", "home/.netrc",
+	".git-credentials", "home/.git-credentials",
 	"credentials", "home/.aws/credentials",
+	"kubeconfig", "home/.kube/kubeconfig",
 	"secrets.kdbx", "vault/secrets.kdbx",
 }
 

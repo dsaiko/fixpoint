@@ -1092,11 +1092,15 @@ func (a *Agent) applyDefaults() {
 // This bounds the damage; it is not a sandbox. The security notes in the shipped
 // configs still apply.
 var mandatoryExcludes = []string{
-	"**/.env", "**/.env.*", // .env.local, .env.production, ...
+	// Both dotenv spellings: .env.local/.env.production, and the equally common
+	// production.env/docker.env -- compose and dotenv tooling read either.
+	"**/.env", "**/.env.*", "**/*.env",
 	"**/*.pem", "**/*.p12", "**/*.pfx", "**/*.key",
+	"**/*.jks", "**/*.keystore", "**/*.ppk", // Java keystores, PuTTY keys
 	"**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
-	"**/.npmrc", "**/.netrc", "**/.pgpass",
+	"**/.npmrc", "**/.netrc", "**/.pgpass", "**/.git-credentials",
 	"**/credentials", // ~/.aws/credentials shape
+	"**/kubeconfig",
 	"**/*.kdbx",
 }
 
