@@ -67,6 +67,7 @@ func validConfig(t *testing.T) *Config {
 	p := writePrompt(t)
 	return &Config{
 		Target: Target{Mode: "directory", Path: "."},
+		Loop:   Loop{CommitPolicy: CommitPerFix},
 		Roles: Roles{
 			Coder: RoleRef{Agent: "coder", Prompt: p},
 			Review: Review{
@@ -174,6 +175,11 @@ func TestValidate(t *testing.T) {
 		{"negative max findings", func(c *Config) { c.Loop.MaxFindingsPerRound = -1 }, "must not be negative"},
 		{"negative max iterations", func(c *Config) { c.Loop.MaxIterations = -1 }, "must not be negative"},
 		{"negative clean rounds", func(c *Config) { c.Loop.CleanRoundsToStop = -1 }, "must not be negative"},
+		// commit_policy decides whether history is rewritten, so a typo must not
+		// silently fall back to a default that squashes (or does not).
+		{"unknown commit policy", func(c *Config) { c.Loop.CommitPolicy = "per-fix" }, "unknown policy"},
+		{"commit policy per_round accepted", func(c *Config) { c.Loop.CommitPolicy = CommitPerRound }, ""},
+		{"commit policy per_run accepted", func(c *Config) { c.Loop.CommitPolicy = CommitPerRun }, ""},
 		{"writable reviewer rejected", func(c *Config) {
 			// Reviewers run concurrently against the shared tree; a write-capable
 			// one could race the others (or the coder), so it must be rejected.

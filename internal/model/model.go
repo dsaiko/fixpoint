@@ -153,7 +153,12 @@ type RoundRecord struct {
 	ReviewErrors []string  `json:"review_errors,omitempty"`
 	Fixed        int       `json:"fixed"`
 	Rejected     int       `json:"rejected"`
-	CommitSHA    string    `json:"commit_sha,omitempty"`
+	// CommitSHA is the commit the round RESULTS in: the last of its per-fix commits,
+	// or the squash that replaced them. Commits holds every commit the round made,
+	// which is what the scoreboard counts -- under commit_policy: per_fix a round of
+	// eight fixes is eight commits, and reporting only the last would undercount.
+	CommitSHA string   `json:"commit_sha,omitempty"`
+	Commits   []string `json:"commits,omitempty"`
 	// CoderError is set when the coder failed mid-round but its partial edits
 	// were salvaged into CommitSHA; the loop then continued.
 	CoderError string `json:"coder_error,omitempty"`
@@ -250,6 +255,7 @@ type RunSummary struct {
 	// authorized them, since no config file may grant that.
 	MaxIterations       int           `json:"max_iterations,omitempty"`
 	MaxFindingsPerRound int           `json:"max_findings_per_round,omitempty"`
+	CommitPolicy        string        `json:"commit_policy,omitempty"`
 	Overrides           []string      `json:"overrides,omitempty"`
 	Coder               string        `json:"coder,omitempty"`
 	Rounds              []RoundRecord `json:"rounds"`

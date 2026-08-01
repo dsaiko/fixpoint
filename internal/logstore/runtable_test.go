@@ -1,9 +1,11 @@
 package logstore
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dsaiko/fixpoint/internal/model"
 )
@@ -32,6 +34,7 @@ func twoAgentRun() *model.RunSummary {
 		Strategy:            "rotate",
 		MaxIterations:       5,
 		MaxFindingsPerRound: 8,
+		CommitPolicy:        "per_fix",
 		Overrides:           []string{"trusted_target=true"},
 		Coder:               "claude-coder",
 		Termination:         model.TermMaxIterations,
@@ -52,6 +55,7 @@ func twoAgentRun() *model.RunSummary {
 			},
 			Fixed: 1, Rejected: 1,
 			CommitSHA: "abcdef0123456789",
+			Commits:   []string{"abcdef0123456789"},
 			Verify: []model.VerifyResult{
 				{Name: "test", Passed: true},
 				{Name: "lint", Passed: false, Optional: true},
@@ -325,4 +329,62 @@ func TestRunTableShowsDashesWhenNoUsageIsReported(t *testing.T) {
 		}
 	}
 	t.Error("no TOTAL row")
+}
+
+// A round makes one commit per fix under per_fix, and the scoreboard must count all
+// of them: reporting only the commit a round ended on would say "1 commit" for a
+// round that made five, which is the number an operator reconciles against `git log`.
+func TestRunTableCountsEveryCommitAndNamesThePolicy(t *testing.T) {
+	sum := twoAgentRun()
+	sum.Rounds[0].Commits = []string{"aaaaaaaaaaaa1111", "bbbbbbbbbbbb2222", "cccccccccccc3333"}
+	sum.Rounds[0].CommitSHA = "cccccccccccc3333"
+	got := RenderRunTable(sum)
+	if !strings.Contains(got, "3 · ") {
+		t.Errorf("commit count is not the number of commits made:\n%s", got)
+	}
+	for _, want := range []string{"aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("commit %s missing from the scoreboard:\n%s", want, got)
+		}
+	}
+	// "3 commits" and "1 commit" can describe the same three fixes; only the policy
+	// says which, so it belongs next to the count.
+	if !strings.Contains(got, "per_fix") {
+		t.Errorf("scoreboard does not name the commit policy:\n%s", got)
+	}
+}
+
+// A run predating the per-fix commit list (or a salvage round, which sets only
+// CommitSHA) must still be counted rather than dropped from the scoreboard.
+func TestRunTableFallsBackToTheRoundCommitSHA(t *testing.T) {
+	sum := twoAgentRun()
+	sum.Rounds[0].Commits = nil
+	sum.Rounds[0].CommitSHA = "abcdef0123456789"
+	if got := RenderRunTable(sum); !strings.Contains(got, "abcdef012345") {
+		t.Errorf("a round with only CommitSHA vanished from the scoreboard:\n%s", got)
+	}
+}
+
+// Under per_fix a long run makes dozens of commits. The count must stay exact while
+// the SHA list stops before it wraps the row and wrecks the table's alignment.
+func TestRunTableTruncatesLongCommitLists(t *testing.T) {
+	sum := twoAgentRun()
+	shas := make([]string, 0, 30)
+	for i := range 30 {
+		shas = append(shas, fmt.Sprintf("%012daaaa", i))
+	}
+	sum.Rounds[0].Commits = shas
+	got := RenderRunTable(sum)
+	if !strings.Contains(got, "30 · ") {
+		t.Errorf("the exact count must survive truncation:\n%s", got)
+	}
+	if !strings.Contains(got, "+24 more") {
+		t.Errorf("truncation must say how many it dropped:\n%s", got)
+	}
+	// Width in runes, not bytes: the rules are box-drawing characters.
+	for _, line := range strings.Split(got, "\n") {
+		if n := utf8.RuneCountInString(line); n > 120 {
+			t.Errorf("line is %d chars, too wide for a table:\n%s", n, line)
+		}
+	}
 }

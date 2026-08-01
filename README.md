@@ -57,8 +57,9 @@ repeat until a full reviewer panel reports nothing
    committed), because committing them would put later rounds on a broken base.
    Under the default `no_regressions` policy a check that was already failing
    before the run may keep failing — only newly broken checks block.
-6. **Commit.** The round's changes land as one inspectable, individually
-   revertable commit whose body lists every fixed and rejected issue.
+6. **Commit.** Each fix lands as its own commit, naming the issue it closed.
+   `loop.commit_policy` decides whether those commits stay separate (`per_fix`,
+   the default) or are squashed per round or per run.
 7. **Repeat.** Each round, reviewers receive the history of prior issues and
    coder verdicts, so a rejected issue is not re-reported forever. The loop ends
    after a configurable number of consecutive clean rounds, when the coder
@@ -148,13 +149,12 @@ Per-lens modifiers:
   test code. Asked once, at the end, by the whole panel, the question is answered
   about code that has stopped changing and nothing follows it to starve.
 
-  **Actionable final lenses repeat until nothing is left to fix**, because
-  `max_findings_per_round` caps one *coder session* (17 issues blew the coder's 30m
-  timeout; ~8 fit) and is not a budget for the phase. Inside the loop that
-  distinction doesn't matter — the next round picks up whatever was deferred. Here
-  there is no next round, so a single capped pass would fix 8 of 26 coverage gaps
-  and let the run read as complete. More than one session's worth means more
-  sessions, not a bigger session. Re-reviewing between passes isn't waste either:
+  **Actionable final lenses repeat until nothing is left to fix.** A single pass is
+  not enough whenever anything bounds what one pass hands over — and inside the loop
+  that never mattered, because the next round picked up whatever was deferred. Here
+  there is no next round, so a pass that stopped early would let a run read as
+  complete with coverage gaps still open. Re-reviewing between passes isn't waste
+  either:
   pass 2 sees the tests pass 1 wrote, so it reports what's genuinely still missing
   instead of working from a list computed before the code changed — which is also
   what makes the phase stop on its own. `loop.max_iterations` bounds it as a last
@@ -187,14 +187,16 @@ A reviewer's report is an **observation**. What the coder works from is an
 
 The distinction is not bookkeeping. When a finding was simultaneously a reviewer's
 report, the unit of work, and the thing tracked across rounds, two agents reporting
-the same problem produced two findings — each consuming a slot against
-`loop.max_findings_per_round`. Agreement between reviewers therefore *reduced* how
-many distinct problems a round could fix. In one real run two lenses reported a
-single racy-ordinal defect at the same file and line, one calling it `concurrency`
-and the other `tests`, and it cost two of that round's eight slots.
+the same problem produced two findings — and so two units of work. Agreement between
+reviewers therefore *cost* more, rather than telling the run more. In one real run
+two lenses reported a single racy-ordinal defect at the same file and line, one
+calling it `concurrency` and the other `tests`, and it was scheduled twice — twice
+against `loop.max_findings_per_round`, which was 8 at the time, and now twice as a
+coder session.
 
 Now the panel's agreement is surfaced as corroboration — to the coder ("reported
-independently by 2 agents") and in the run summary — and costs one slot.
+independently by 2 agents") and in the run summary — and is one issue, one session,
+one commit.
 
 Grouping works in two stages, because matching within a round and matching across
 rounds are different problems:
@@ -216,6 +218,65 @@ things depending on how it was closed. A **rejected** issue stays rejected and i
 not handed back — re-submitting a decided question would spend a slot every round.
 A **fixed** issue **reopens**: reviewers still seeing it is evidence the fix did not
 work, and treating it as closed would let a failed fix end the run as converged.
+
+## One fix, one commit
+
+The coder is handed **exactly one issue per session**, under every commit policy.
+`loop.commit_policy` then decides how those commits are grouped:
+
+| Policy | Result |
+|---|---|
+| `per_fix` *(default)* | One commit per issue, each verified on its own. |
+| `per_round` | Each round's commits squashed into one. |
+| `per_run` | The whole run squashed into one, after the closing round. |
+
+One issue per session is not a policy choice, because nothing downstream can undo
+batching. A session handed eight issues edits files for all eight at once, and its
+report says only *id, verdict, detail* — nothing that attributes a change to an
+issue. So a commit built from that session cannot honestly claim to contain one fix,
+however the commits are later grouped. Working one at a time buys three things a
+batch cannot:
+
+- **The verify gate names the fix that broke the build**, not the round. A round of
+  eight fixes that fails the gate is discarded entirely today; the same eight as
+  eight gated fixes lose only the one that failed.
+- **`git revert` undoes a single bad fix**, and `git bisect` lands on one change.
+- **A rejection is checkable.** A session that rejected its one issue should have
+  left the tree untouched, and a session that claimed a fix should have changed
+  something. With one issue per session both are verifiable claims rather than
+  aggregate ones — a fabricated fix now fails the run instead of hiding behind seven
+  real ones.
+
+The cost is that the verify gate runs once per fix rather than once per round, so a
+round of eight fixes runs the project's checks eight times. That is the price of
+knowing which fix broke them, and it buys back the eight-fix round that used to be
+discarded whole. Keep `verify.commands` cheapest-first, as the config already
+advises — the gate stops at the first blocking failure.
+
+Squashing is `reset --soft`, so a squashed commit's content is byte-for-byte what
+the per-fix commits already verified one at a time. It only ever removes
+information, which is why `per_fix` is the default. A failed or interrupted run is
+never squashed: its per-fix commits are how you see how far it got.
+
+`commit_message` is per-fix shaped by default (`{issue}`, `{title}`). A squashing
+policy renders a round-shaped header instead (`{round}`, `{fixed}`, `{rejected}`)
+with a body listing every fixed and rejected issue; set `commit_message` to a
+round-shaped template to control that wording yourself.
+
+### Why there is no per-round cap by default
+
+`loop.max_findings_per_round` used to default to 8. That number was one coder
+*session's* capacity — 17 issues blew the 30m timeout, ~8 fit — and with one issue
+per session it no longer bounds anything real, so it now defaults to `0`
+(unlimited).
+
+It was never free. In one five-round run a cap of 8 deferred 18 issues, and in the
+closing round — where no later round follows — it dropped 5 coverage gaps outright.
+Set it only as a **cost lever**, to bound what a single round spends, knowing the
+overflow waits for a later round (worst severity first, and every deferral promotes
+an issue one tier so the tail cannot be starved). Note that `commit_policy` is not
+a way to get the old behavior back: `per_round` groups commits, it does not batch
+work.
 
 ## Agents
 
@@ -375,16 +436,18 @@ The main sections of a task config:
 - **`roles`** — the coder (agent + prompt) and the review lens list with its
   assignment strategy and agent pool.
 - **`agents`** — the command templates described above.
-- **`loop`** — `max_iterations`, `max_findings_per_round` (caps how many **issues**
-  one coder session receives; worst severity goes first and the overflow is
-  deferred to later rounds, but every deferral promotes an issue one severity tier,
-  so nothing can be starved indefinitely by a steady supply of more-severe ones),
-  `review_only`, `commit_message` (placeholders `{round}`, `{fixed}`,
-  `{rejected}`), and `clean_rounds_to_stop` (how many consecutive clean rounds end
-  the run — `2` pairs well with `strategy: rotate`, so a differently-assigned panel
-  must confirm the clean result). The trust gates are deliberately **not** here:
-  they are command-line flags only, for the reason given under
-  [Security model](#security-model).
+- **`loop`** — `max_iterations`, `commit_policy` (see
+  [One fix, one commit](#one-fix-one-commit)), `max_findings_per_round` (caps how
+  many **issues** a round hands over, `0` = unlimited and the default; worst
+  severity goes first and the overflow is deferred to later rounds, but every
+  deferral promotes an issue one severity tier, so nothing can be starved
+  indefinitely by a steady supply of more-severe ones), `review_only`,
+  `commit_message` (placeholders `{issue}`, `{title}` for a single fix; `{round}`,
+  `{fixed}`, `{rejected}` for a squashed one), and `clean_rounds_to_stop` (how many
+  consecutive clean rounds end the run — `2` pairs well with `strategy: rotate`, so
+  a differently-assigned panel must confirm the clean result). The trust gates are
+  deliberately **not** here: they are command-line flags only, for the reason given
+  under [Security model](#security-model).
 - **`verify`** — the deterministic gate fixpoint runs itself between the coder and
   the commit: `commands` (argv, per project, cheapest first), a per-command
   `timeout`, and `policy` — `no_regressions` (the default: a check already failing
@@ -454,7 +517,7 @@ landed.
 ──────────────────────────────────────────────────────────────────────────────
  config     config/fix-code.yaml  (extends defaults)
  target     directory · /home/coder/fixpoint
- settings   review+fix · strategy rotate · cap 8 issue(s)/round · max 5 round(s)
+ settings   review+fix · strategy rotate · no per-round cap · max 5 round(s)
  flags      trusted_target=true
  verify     fmt, vet, test, lint · passed in 5/5 round(s)
 
@@ -474,7 +537,7 @@ landed.
  ...
 
  coder      claude-coder · 39 fixed · 1 rejected · 1h15m
- commits    5 · f40acbc26fbd a7361e82ecdc d8f4b9d429ea 688156ec2cb8 de3fcaadd43a
+ commits    39 · f40acbc26fbd a7361e82ecdc d8f4b9d429ea ...  (per_fix)
  exit       max-iterations (exit 2)
 ──────────────────────────────────────────────────────────────────────────────
 ```
@@ -499,6 +562,11 @@ it gets back are the two ends of a session that reads files and calls tools in
 between, none of which crosses this process: a one-word probe whose boundary I/O
 was ~30 bytes reported **21,072 tokens and $0.06**. `tokens` therefore counts cache
 reads and writes too — on a warm agentic session they are most of the total.
+
+`commits` counts every commit the run made, which under the default
+`commit_policy: per_fix` is one per fix — the number you can reconcile against
+`git log`. The policy is printed beside it because "39 commits" and "5 commits" can
+describe the same 39 fixes, and only the policy says which you are looking at.
 
 Attribution is by **issue**, not by raw observation, so two agents reporting one
 defect each get credit for that one issue. The per-agent rows therefore sum to more

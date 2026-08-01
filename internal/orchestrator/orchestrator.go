@@ -260,6 +260,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 		MaxIterations:       o.cfg.Loop.MaxIterations,
 		MaxFindingsPerRound: o.cfg.Loop.MaxFindingsPerRound,
 		Overrides:           o.overrides,
+		CommitPolicy:        o.cfg.Loop.CommitPolicy,
 		Coder:               o.cfg.Roles.Coder.Agent,
 	}
 	err := o.run(ctx, sum)
@@ -408,6 +409,14 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// a pre-existing failure is attributable to the project, not to this run).
 	o.captureVerifyBaseline(ctx)
 
+	// Where the run's commits begin, for a per_run squash at the end. Captured on the
+	// same pristine tree as the verification baseline: everything after this point is
+	// the run's own work and nothing of the operator's.
+	runBase, err := o.collector.HeadSHA(ctx)
+	if err != nil {
+		return err
+	}
+
 	cleanStreak := 0
 	for round := 1; round <= o.cfg.Loop.MaxIterations; round++ {
 		done, err := o.runRound(ctx, round, sum, &cleanStreak)
@@ -415,11 +424,248 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 			return err
 		}
 		if done {
-			return o.runFinalPhase(ctx, sum)
+			return o.finishRun(ctx, sum, runBase)
 		}
 	}
 	sum.Termination = model.TermMaxIterations
-	return o.runFinalPhase(ctx, sum)
+	return o.finishRun(ctx, sum, runBase)
+}
+
+// finishRun runs the closing phase and then applies a per_run squash over
+// everything the run committed, loop rounds and closing passes together.
+//
+// The squash goes last for the same reason the closing phase runs at all: it is the
+// point where the run is finally done editing. Squashing earlier would collapse
+// commits the closing passes then build on.
+func (o *Orchestrator) finishRun(ctx context.Context, sum *model.RunSummary, runBase string) error {
+	if err := o.runFinalPhase(ctx, sum); err != nil {
+		return err
+	}
+	return o.squashRun(ctx, sum, runBase)
+}
+
+// squashRun collapses the whole run into one commit for commit_policy: per_run.
+//
+// It runs only on a normal termination, which is all that reaches it: an error or an
+// interruption returns before finishRun, and rightly so -- rewriting history over a
+// tree nobody vouched for would destroy the per-fix commits an operator needs in
+// order to see how far the run actually got.
+func (o *Orchestrator) squashRun(ctx context.Context, sum *model.RunSummary, runBase string) error {
+	if o.cfg.Loop.CommitPolicy != config.CommitPerRun {
+		return nil
+	}
+	head, err := o.collector.HeadSHA(ctx)
+	if err != nil {
+		return err
+	}
+	if head == runBase {
+		return nil // nothing was committed
+	}
+	agg := &model.RoundRecord{Round: len(sum.Rounds)}
+	for i := range sum.Rounds {
+		agg.Fixed += sum.Rounds[i].Fixed
+		agg.Rejected += sum.Rounds[i].Rejected
+		agg.Findings = append(agg.Findings, sum.Rounds[i].Findings...)
+	}
+	sha, err := o.squashTo(ctx, agg, runBase, agg.Round)
+	if err != nil {
+		return err
+	}
+	// The per-fix commits this replaced are gone, so point the last round at what now
+	// holds its work -- otherwise the summary cites a SHA no longer in the history.
+	for i := range sum.Rounds {
+		sum.Rounds[i].Commits = nil
+	}
+	if n := len(sum.Rounds); n > 0 {
+		sum.Rounds[n-1].CommitSHA = sha
+		sum.Rounds[n-1].Commits = []string{sha}
+	}
+	o.logf("run: squashed %d round(s) of fixes into %s", agg.Round, shortSHA(sha))
+	return nil
+}
+
+// runFixSessions hands each of the round's active issues to its OWN coder session,
+// verifying and committing each one, and reports how many produced a commit.
+//
+// One issue per session is what makes a per-fix commit honest, and it is the shape
+// under every commit policy: the policy only regroups the commits afterwards. A
+// session handed eight issues edits files for all eight at once and reports verdicts
+// with no file attribution (model.FixResult carries id, verdict, detail -- nothing
+// else), so those edits cannot be split apart after the fact. Working one at a time
+// also means the verify gate names the FIX that broke the build rather than the
+// round, and each fix is revertable on its own.
+//
+// It is also why loop.max_findings_per_round now defaults to unlimited: that cap was
+// sized to one session's 30m timeout, and no session receives more than one issue.
+func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool) (salvaged bool, committed int, err error) {
+	// Snapshot the working set: setIssueVerdict mutates rec.Issues as each session
+	// reports, and activeIssues would then shrink under the loop.
+	batch := activeIssues(rec)
+	for _, it := range batch {
+		if ctx.Err() != nil {
+			// The operator asked to stop between sessions, so do not spend another one.
+			// Nothing is half-done at this point -- every fix so far is verified and
+			// committed and the tree is clean -- so there is nothing to stash, and Run
+			// softens a bare cancellation into a clean interruption.
+			return false, committed, ctx.Err()
+		}
+		fixedBefore := rec.Fixed
+		salvaged, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it})
+		if err != nil {
+			return false, committed, err
+		}
+		if salvaged {
+			// The coder died and its partial work was committed as a salvage round;
+			// verdicts for the rest are unknown, so stop and let the next round
+			// re-review everything.
+			return true, committed, nil
+		}
+		// A cancellation between the coder finishing and this commit must not leave a
+		// committed fix (or a dirty tree) sitting on top of a stop request. Recheck
+		// immediately before touching the tree and route the cancellation through the
+		// same stash-and-interrupt reconciliation, on a fresh context.
+		if ctx.Err() != nil {
+			return false, committed, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+		}
+		// Reconcile the verdict against the TREE before trusting it. The coder's
+		// report is a model's claim about its work, and one issue per session makes
+		// the claim checkable: whether these edits exist is not a question about the
+		// round as a whole any more, it is a question about this fix.
+		clean, err := o.collector.GitClean(ctx, o.gitExclude...)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, committed, o.reconcileInterrupt(rec.Round, err) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+			}
+			return false, committed, err
+		}
+		if rec.Fixed == fixedBefore {
+			// Rejected. A session that rejected its one issue should have changed
+			// nothing; if it edited anyway, those edits belong to no verdict.
+			if !clean {
+				return false, committed, o.reconcileRejectedEdits(ctx, rec.Round)
+			}
+			continue
+		}
+		if clean {
+			return false, committed, fmt.Errorf("round %d: coder reported a fix for %s but left the working tree unchanged", rec.Round, it.ID)
+		}
+		did, err := o.verifyAndCommitFix(ctx, rec, it)
+		if err != nil {
+			return false, committed, err
+		}
+		if did {
+			committed++
+		}
+	}
+	return false, committed, nil
+}
+
+// verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
+// a round commit -- nothing lands unverified -- with the granularity moved down to
+// the fix, so a failing check names the change that caused it.
+func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundRecord, it model.Issue) (committed bool, err error) {
+	if blocked, err := o.verifyRound(ctx, rec, it); err != nil {
+		return false, err
+	} else if blocked {
+		return false, o.rejectUnverifiedRound(ctx, rec)
+	}
+	// A correction attempt can revert the edits entirely, leaving a clean tree after
+	// verification passed. The verdict is already recorded, so put the issue back
+	// rather than let the summary claim a fix no commit contains.
+	if clean, cerr := o.collector.GitClean(ctx, o.gitExclude...); cerr == nil && clean {
+		reopened := o.reopenFixedIssues(rec)
+		o.logf("round %d: %s left nothing to commit -- the verification correction reverted it; %d finding(s) reopened", rec.Round, it.ID, reopened)
+		return false, nil
+	}
+	header := strings.NewReplacer(
+		"{round}", strconv.Itoa(rec.Round),
+		"{fixed}", "1",
+		"{rejected}", "0",
+		"{issue}", it.ID,
+		"{title}", it.Title,
+	).Replace(o.fixCommitMessage())
+	var body strings.Builder
+	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, it.Category, it.Severity, it.Loc())
+	if it.VerdictDetail != "" {
+		body.WriteString("\n" + it.VerdictDetail + "\n")
+	}
+	sha, err := o.collector.Commit(ctx, header, agent.RedactSecrets(body.String()), o.gitExclude...)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, o.reconcileInterrupt(rec.Round, err) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+		}
+		return false, o.reconcileFailedCommit(ctx, rec.Round, err)
+	}
+	rec.CommitSHA = sha // the round's last commit; a squash replaces it
+	rec.Commits = append(rec.Commits, sha)
+	o.logf("round %d: fixed %s, committed %s", rec.Round, it.ID, shortSHA(sha))
+	o.journal(model.EvRoundCommitted, rec.Round, model.JournalRoundCommitted{SHA: sha, Fixed: 1})
+	return true, nil
+}
+
+// fixCommitMessage is the header for a per-fix commit. The configured
+// commit_message describes a ROUND, so under per_fix -- where each commit is one
+// issue -- a message reading "3 fixed" on a single-fix commit would be wrong. A
+// caller who wants their own wording puts {issue}/{title} in commit_message.
+func (o *Orchestrator) fixCommitMessage() string {
+	m := o.cfg.Loop.CommitMessage
+	if strings.Contains(m, "{issue}") || strings.Contains(m, "{title}") {
+		return m
+	}
+	return "fixpoint: {issue} — {title}"
+}
+
+// squashRound regroups the round's per-fix commits per loop.commit_policy. per_fix
+// keeps them; per_round collapses the round into the single commit fixpoint has
+// always produced; per_run leaves them for the end of the run.
+//
+// The squash is a pure regrouping -- `reset --soft` leaves the index and worktree
+// untouched -- so the content is byte-for-byte what the per-fix commits already put
+// through the gate one at a time.
+func (o *Orchestrator) squashRound(ctx context.Context, rec *model.RoundRecord, base string, committed int) error {
+	if committed == 0 || o.cfg.Loop.CommitPolicy != config.CommitPerRound {
+		return nil
+	}
+	sha, err := o.squashTo(ctx, rec, base, rec.Round)
+	if err != nil {
+		return err
+	}
+	rec.CommitSHA = sha
+	rec.Commits = []string{sha} // the per-fix commits it replaced no longer exist
+	o.logf("round %d: squashed %d fix commit(s) into %s", rec.Round, committed, shortSHA(sha))
+	return nil
+}
+
+// roundCommitMessage is the header for a squashed commit. commit_message defaults
+// to a per-FIX template now that per_fix is the default policy, and rendering that
+// over a squash would produce a header naming one issue for a commit holding many
+// (or an empty one). A caller who squashes writes a round-shaped commit_message.
+func (o *Orchestrator) roundCommitMessage() string {
+	m := o.cfg.Loop.CommitMessage
+	if strings.Contains(m, "{issue}") || strings.Contains(m, "{title}") {
+		return "fixpoint: round {round} ({fixed} fixed, {rejected} rejected)"
+	}
+	return m
+}
+
+// squashTo collapses everything after base into one commit describing rec.
+func (o *Orchestrator) squashTo(ctx context.Context, rec *model.RoundRecord, base string, round int) (string, error) {
+	header := strings.NewReplacer(
+		"{round}", strconv.Itoa(round),
+		"{fixed}", strconv.Itoa(rec.Fixed),
+		"{rejected}", strconv.Itoa(rec.Rejected),
+	).Replace(o.roundCommitMessage())
+	var body strings.Builder
+	writeVerdictSection(&body, "Fixed", rec.Findings, model.VerdictFixed)
+	if rec.Rejected > 0 {
+		body.WriteString("\n")
+		writeVerdictSection(&body, "Rejected", rec.Findings, model.VerdictRejected)
+	}
+	// The body embeds reviewer-authored titles and coder-authored verdict details,
+	// which may quote the very secret under review. Unlike the logs, the commit is
+	// meant to be pushed and shared, so redact it too (the logstore path does the
+	// same for its on-disk artifacts).
+	return o.collector.SquashSince(ctx, base, header, agent.RedactSecrets(body.String()))
 }
 
 // runFinalPhase runs the closing round for `final: true` lenses, after the loop has
@@ -593,39 +839,25 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	// Salvage is a promise that the round's commit gets re-reviewed, and the passes
 	// here only re-review what the LENS reports -- a half-finished edit it does not
 	// mention would ride along unexamined. See discardFailedFix.
-	if _, err := o.fix(ctx, recP, sum.Rounds[:len(sum.Rounds)-1], false); err != nil {
-		return false, err
-	}
-	o.logf("closing %s: coder fixed %d, rejected %d", label, recP.Fixed, recP.Rejected)
-	// Whether to commit is decided from the TREE, not from the Fixed count, exactly
-	// as finalizeFix decides it for a loop round. The closing round runs the same
-	// write-capable coder, so it can just as well reject everything after having
-	// edited files -- and returning then would leave edits no verdict accounts for
-	// in the worktree, under a run reported as successful, and refuse the next run
-	// at preflight with a dirty tree the operator never made.
-	clean, err := o.collector.GitClean(ctx, o.gitExclude...)
+	base, err := o.collector.HeadSHA(ctx)
 	if err != nil {
 		return false, err
 	}
-	if recP.Fixed > 0 && clean {
-		return false, fmt.Errorf("round %d: coder reported %d fix(es) but left the working tree unchanged", round, recP.Fixed)
-	}
-	if recP.Fixed == 0 {
-		if !clean {
-			return false, o.reconcileRejectedEdits(ctx, round)
-		}
-		// Nothing was fixed and nothing is in the tree, so there is nothing to commit
-		// and nothing for another pass to see: it would re-review identical code and
-		// get an identical answer.
-		return true, nil
-	}
-	// Same gate and same commit as any other round: a closing round must not be the
-	// one that lands unverified edits.
-	if err := o.verifyAndCommit(ctx, recP, round); err != nil {
+	_, committed, err := o.runFixSessions(ctx, recP, sum.Rounds[:len(sum.Rounds)-1], false)
+	if err != nil {
 		return false, err
 	}
-	// Something changed, so ask again: the cap may have held more back, and the next
-	// pass judges what is left against the code as it now stands.
+	o.logf("closing %s: coder fixed %d, rejected %d", label, recP.Fixed, recP.Rejected)
+	if committed == 0 {
+		// Nothing was committed, so there is nothing for another pass to see: it
+		// would re-review identical code and get an identical answer.
+		return true, nil
+	}
+	if err := o.squashRound(ctx, recP, base, committed); err != nil {
+		return false, err
+	}
+	// Something changed, so ask again: the next pass judges what is left against the
+	// code as it now stands.
 	return false, nil
 }
 
@@ -863,7 +1095,12 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 
 	// recP is the round just appended, so prior rounds are everything before it.
 	prior := sum.Rounds[:len(sum.Rounds)-1]
-	salvaged, err := o.fix(ctx, recP, prior, true)
+	// Where the round's commits begin, so commit_policy can regroup them afterwards.
+	base, err := o.collector.HeadSHA(ctx)
+	if err != nil {
+		return false, err
+	}
+	salvaged, committed, err := o.runFixSessions(ctx, recP, prior, true)
 	if err != nil {
 		return false, err
 	}
@@ -873,8 +1110,10 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		return false, nil
 	}
 	o.logf("round %d: coder fixed %d, rejected %d", round, recP.Fixed, recP.Rejected)
-
-	return o.finalizeFix(ctx, recP, round, sum)
+	if err := o.squashRound(ctx, recP, base, committed); err != nil {
+		return false, err
+	}
+	return o.finalizeRound(recP, round, sum, committed)
 }
 
 // finalAssignments builds the closing round's work, SPLIT by whether the findings
@@ -1120,48 +1359,17 @@ func (o *Orchestrator) checkCleanStreak(rec *model.RoundRecord, round int, sum *
 	return false
 }
 
-// finalizeFix reconciles the coder's reported verdicts with the actual working
-// tree after a fix, then either commits the round or recognizes a genuine
-// all-rejected terminal state. Whether to commit is decided from the tree, not
-// from the Fixed count alone: a disagreement is a hard error rather than a
-// warning, because fixes with no edits mean nothing was really done, and edits
-// under an all-rejected verdict would otherwise leave the "all-rejected"
-// success termination sitting on top of an uncommitted, dirty tree.
-func (o *Orchestrator) finalizeFix(ctx context.Context, rec *model.RoundRecord, round int, sum *model.RunSummary) (done bool, err error) {
-	// A cancellation between the coder finishing and this commit must not leave a
-	// committed round (or a dirty tree) sitting on top of a stop request. Recheck
-	// immediately before touching the tree and route any cancellation through the
-	// same stash-and-interrupt reconciliation the fix path uses.
-	if ctx.Err() != nil {
-		return false, o.reconcileInterrupt(rec.Round, ctx.Err()) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+// finalizeRound recognizes a round's terminal state once every fix in it has been
+// verified and committed individually by runFixSessions. Nothing committed means
+// the coder rejected everything it was handed -- a successful terminal state, but
+// only when the round's review was complete and nothing was held back.
+func (o *Orchestrator) finalizeRound(rec *model.RoundRecord, round int, sum *model.RunSummary, committed int) (done bool, err error) {
+	if committed > 0 {
+		return false, nil
 	}
-	clean, err := o.collector.GitClean(ctx, o.gitExclude...)
-	if err != nil {
-		// Cancellation can land WHILE GitClean runs, after the check above passed
-		// (a TOCTOU window). Route the resulting context error through the same
-		// interrupt reconciliation, on a fresh context, so a tree left dirty by a
-		// canceled coder is stashed (or flagged errInterruptedTreeDirty) rather
-		// than returned bare and softened into a clean interruption by Run.
-		if ctx.Err() != nil {
-			return false, o.reconcileInterrupt(rec.Round, err) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
-		}
-		return false, err
-	}
-	if rec.Fixed > 0 && clean {
-		return false, fmt.Errorf("round %d: coder reported %d fix(es) but left the working tree unchanged", round, rec.Fixed)
-	}
-	if rec.Fixed == 0 && !clean {
-		return false, o.reconcileRejectedEdits(ctx, round)
-	}
-
-	if rec.Fixed > 0 {
-		return false, o.verifyAndCommit(ctx, rec, round)
-	}
-
-	// rec.Fixed == 0 with a clean tree: a genuine all-rejected round. It is a
-	// successful terminal state only when the round's review was complete; with
-	// reviewer errors it may just mean the failed reviewers' findings never
-	// arrived.
+	// Nothing committed: a genuine all-rejected round. It is a successful terminal
+	// state only when the round's review was complete; with reviewer errors it may
+	// just mean the failed reviewers' findings never arrived.
 	if len(rec.ReviewErrors) > 0 {
 		return false, roundReviewErr(rec)
 	}
@@ -1690,11 +1898,25 @@ func (o *Orchestrator) discardRound(ctx context.Context, d discard) error {
 // allowSalvage is what makes that bargain explicit. It holds only while a LATER
 // round will re-review the salvaged commit; the closing round passes false, and a
 // failed coder there discards its edits instead (see discardFailedFix).
-func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool) (salvaged bool, err error) {
+//
+// batch is the issues THIS session handles -- one, under every commit policy. The
+// caller decides, so a commit can honestly claim to contain a single fix: a session
+// handed eight issues edits files for all eight at once, and nothing in its report
+// says which change served which issue.
+func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue) (salvaged bool, err error) {
 	coder := o.cfg.Roles.Coder
 	promptName := config.LensName(coder.Prompt)
 	label := "fix: " + coder.Agent
-	active := activeIssues(rec)
+	active := batch
+	if len(active) == 1 {
+		// Qualify the artifact identity by issue. logs.pattern renders one path per
+		// (role, agent, prompt, round, timestamp), and timestamp_format is
+		// second-granularity by default -- so several fix sessions in one round would
+		// otherwise write the same prompt/output files and silently overwrite each
+		// other. This is the same axis the review role uses to keep its lenses apart.
+		promptName += "-" + active[0].ID
+		label += " on " + active[0].ID
+	}
 	d := prompt.FixData{
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
@@ -1719,7 +1941,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	// verdict; anything else fails the round rather than being silently
 	// miscounted (an empty result set must not read as "all rejected").
 	if runErr == nil {
-		runErr = o.applyVerdicts(rec, out.Results)
+		runErr = o.applyVerdicts(rec, out.Results, active)
 	}
 
 	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, promptName, len(text), res, runErr != nil))
@@ -1913,6 +2135,7 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 	}
 	rec.CoderError = runErr.Error()
 	rec.CommitSHA = sha
+	rec.Commits = append(rec.Commits, sha)
 	o.logf("round %d: coder failed (%v) but had modified the tree; partial work committed as %s -- continuing, next round re-reviews", rec.Round, runErr, shortSHA(sha))
 	// Partial: committed with UNKNOWN verdicts, because the coder died before
 	// reporting them. A reader must be able to tell this commit apart from a normal
@@ -1944,13 +2167,21 @@ func shortSHA(sha string) string {
 // Verdicts land on the issue and are mirrored onto every observation that reported
 // it, so the summary and the reviewers' history keep speaking in the terms the
 // reviewers used.
-func (o *Orchestrator) applyVerdicts(rec *model.RoundRecord, results []model.FixResult) error {
-	// Issues that were never handed to the coder -- deferred by the cap, or rejected
-	// in an earlier round -- neither expect nor accept a verdict.
+// batch is what this session was actually handed: a verdict is expected for each of
+// those and accepted for nothing else. Deriving the set from the record instead
+// would demand verdicts for issues the session never saw, which is what every other
+// issue in the round now is.
+func (o *Orchestrator) applyVerdicts(rec *model.RoundRecord, results []model.FixResult, batch []model.Issue) error {
+	inBatch := make(map[string]bool, len(batch))
+	for _, it := range batch {
+		inBatch[it.ID] = true
+	}
+	// Issues that were never handed to the coder -- outside this batch, deferred by
+	// the cap, or rejected in an earlier round -- neither expect nor accept a verdict.
 	index := map[string]int{}
 	expected := 0
 	for i := range rec.Issues {
-		if !coderWork(rec.Issues[i]) {
+		if !coderWork(rec.Issues[i]) || !inBatch[rec.Issues[i].ID] {
 			continue
 		}
 		index[rec.Issues[i].ID] = i
@@ -1974,7 +2205,7 @@ func (o *Orchestrator) applyVerdicts(rec *model.RoundRecord, results []model.Fix
 		// their order and the error text is deterministic.
 		var missing []string
 		for _, it := range rec.Issues {
-			if coderWork(it) && !seen[it.ID] {
+			if coderWork(it) && inBatch[it.ID] && !seen[it.ID] {
 				missing = append(missing, it.ID)
 			}
 		}
@@ -1989,28 +2220,6 @@ func (o *Orchestrator) applyVerdicts(rec *model.RoundRecord, results []model.Fix
 		}
 	}
 	return nil
-}
-
-// commit stages and commits the coder's changes with the configured header
-// and a body composed from the coder's own verdicts.
-func (o *Orchestrator) commit(ctx context.Context, rec *model.RoundRecord) (string, error) {
-	header := strings.NewReplacer(
-		"{round}", strconv.Itoa(rec.Round),
-		"{fixed}", strconv.Itoa(rec.Fixed),
-		"{rejected}", strconv.Itoa(rec.Rejected),
-	).Replace(o.cfg.Loop.CommitMessage)
-
-	var body strings.Builder
-	writeVerdictSection(&body, "Fixed", rec.Findings, model.VerdictFixed)
-	if rec.Rejected > 0 {
-		body.WriteString("\n")
-		writeVerdictSection(&body, "Rejected", rec.Findings, model.VerdictRejected)
-	}
-	// The body embeds reviewer-authored titles and coder-authored verdict
-	// details, which may quote the very secret under review. Unlike the logs,
-	// the commit is meant to be pushed and shared, so redact it too (the
-	// logstore path does the same for its on-disk artifacts).
-	return o.collector.Commit(ctx, header, agent.RedactSecrets(body.String()), o.gitExclude...)
 }
 
 // writeVerdictSection writes a "<title>:" header followed by one line per
@@ -2076,14 +2285,14 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 // One retry, not a loop: a coder that cannot make the project's own checks pass
 // with the failure output in hand is unlikely to succeed on the third attempt, and
 // an unbounded repair loop is how a run silently burns an entire budget.
-func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord) (blocked bool, err error) {
+func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord, fixed model.Issue) (blocked bool, err error) {
 	blocking, err := o.verifyPass(ctx, rec, model.VerifyAttemptInitial)
 	if err != nil || len(blocking) == 0 {
 		return false, err
 	}
 
-	o.logf("round %d verify: %d blocking failure(s); asking the coder to correct them", rec.Round, len(blocking))
-	if err := o.fixVerification(ctx, rec, blocking); err != nil {
+	o.logf("round %d verify: %d blocking failure(s) after fixing %s; asking the coder to correct them", rec.Round, len(blocking), fixed.ID)
+	if err := o.fixVerification(ctx, rec, blocking, fixed); err != nil {
 		return false, err
 	}
 	rec.VerifyRetried = true
@@ -2219,17 +2428,18 @@ func (o *Orchestrator) rejectUnverifiedSalvage(ctx context.Context, rec *model.R
 // fixVerification invokes the coder a second time with the verification failures
 // in hand. It reuses the coder's own prompt template so the instructions,
 // contract, and history stay identical; only the extra Verification block differs.
-func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundRecord, blocking []verify.Result) error {
+func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundRecord, blocking []verify.Result, fixed model.Issue) error {
 	coder := o.cfg.Roles.Coder
 	a := o.cfg.Agents[coder.Agent]
 	d := prompt.FixData{
 		Mode:  o.cfg.Target.Mode,
 		Path:  o.cfg.Target.Path,
 		Round: rec.Round,
-		// This runs AFTER the round's verdicts are applied, so activeIssues here is the
-		// work whose edits are in the tree -- the issues the coder reported fixing. The
-		// ones it rejected changed nothing and cannot be why a check now fails.
-		Findings:       prompt.FormatIssues(activeIssues(rec)),
+		// The gate runs per fix, so the only edits in the tree are the ones the coder
+		// just made for this issue -- everything earlier is already committed and
+		// verified, and the issues it has not been given yet changed nothing. Naming
+		// anything else would ask it to correct a check using work it cannot see.
+		Findings:       prompt.FormatIssues([]model.Issue{fixed}),
 		Verification:   verify.FormatForCoder(blocking),
 		OutputContract: prompt.FixContract,
 	}
@@ -2238,8 +2448,9 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 		return fmt.Errorf("render coder prompt for the verification correction: %w", err)
 	}
 	// Logged under its own prompt name so the correction attempt is a distinct,
-	// inspectable artifact rather than overwriting the round's first fix log.
-	const lens = "fix-verify"
+	// inspectable artifact rather than overwriting the fix log it follows -- and
+	// qualified by issue, since a round now gates (and can correct) each fix in turn.
+	lens := "fix-verify-" + fixed.ID
 	if err := o.logs.Prompt("fix", coder.Agent, lens, rec.Round, text); err != nil {
 		o.logf("WARNING: failed to write the verification-correction prompt: %v", err)
 	}
@@ -2258,58 +2469,5 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 	} else if parseErr != nil {
 		o.logf("round %d: verification-correction output was unparseable: %v", rec.Round, parseErr)
 	}
-	return nil
-}
-
-// verifyAndCommit runs the deterministic gate over the coder's edits and, if they
-// hold up, commits the round. Split out of finalizeFix so the round's terminal
-// bookkeeping stays readable next to a phase that has three distinct failure
-// exits: blocked by the gate, reverted by the correction, and commit failure.
-func (o *Orchestrator) verifyAndCommit(ctx context.Context, rec *model.RoundRecord, round int) error {
-	// Verify BEFORE committing. The coder's own report is a model's claim about
-	// its work; this is the only check in the loop that is not. A round whose
-	// edits break the project must not become a commit that later rounds build
-	// on -- and must not count toward convergence.
-	if blocked, err := o.verifyRound(ctx, rec); err != nil {
-		return err
-	} else if blocked {
-		return o.rejectUnverifiedRound(ctx, rec)
-	}
-	// A correction attempt can revert the round's edits entirely, leaving a clean
-	// tree after verification passed. Commit would then no-op and the round would
-	// report fixes that never landed, so say so rather than passing silently.
-	if postClean, cerr := o.collector.GitClean(ctx, o.gitExclude...); cerr == nil && postClean {
-		// The findings only STAY open if they are put back: the coder's fixed verdicts
-		// are already recorded on the round, mirrored onto its observations and applied
-		// to the ledger, so leaving them would make the summary and the next round's
-		// reviewer history claim fixes that no commit contains -- contradicting the log
-		// line below and letting the run converge on work that was reverted.
-		reopened := o.reopenFixedIssues(rec)
-		o.logf("round %d: nothing left to commit -- the verification correction reverted the round's edits; %d finding(s) reopened", rec.Round, reopened)
-		rec.CoderError = "verification correction reverted the round's edits; nothing was committed"
-		return nil
-	}
-	sha, err := o.commit(ctx, rec)
-	if err != nil {
-		// Same TOCTOU window: cancellation can interrupt the commit's git add /
-		// commit after staging the coder's edits. Reconcile so the staged tree
-		// is stashed instead of left staged under a softened interruption.
-		if ctx.Err() != nil {
-			return o.reconcileInterrupt(rec.Round, err) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
-		}
-		// A non-cancellation commit failure (e.g. commit signing failed) leaves
-		// the coder's edits staged by Commit's `git add -A`. Left as-is, the
-		// dirty/staged tree violates the clean-tree invariant and the next run
-		// refuses to start. Stash the edits so the tree is clean again.
-		return o.reconcileFailedCommit(ctx, rec.Round, err)
-	}
-	rec.CommitSHA = sha
-	if sha != "" {
-		o.logf("round %d committed: %s", round, shortSHA(sha))
-	}
-	o.journal(model.EvRoundCommitted, rec.Round, model.JournalRoundCommitted{
-		SHA:   sha,
-		Fixed: rec.Fixed,
-	})
 	return nil
 }

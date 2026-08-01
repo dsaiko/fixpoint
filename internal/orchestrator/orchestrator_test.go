@@ -157,9 +157,10 @@ func TestRunConverges(t *testing.T) {
 	if got := f.commitCount(); got != 2 {
 		t.Errorf("repo has %d commits, want 2 (initial + fix round)", got)
 	}
+	// Default commit_policy is per_fix, so the commit names the issue it fixed.
 	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
-	if !strings.Contains(msg, "round 1 (1 fixed, 0 rejected)") {
-		t.Errorf("round commit message = %q", msg)
+	if !strings.Contains(msg, "i1") || !strings.Contains(msg, "off by one") {
+		t.Errorf("fix commit message = %q, want it to name the issue and its title", msg)
 	}
 	if got := f.invocations(); got != 3 {
 		t.Errorf("agent invocations = %d, want 3", got)
@@ -928,11 +929,10 @@ func TestRunDefersFindingsOverCap(t *testing.T) {
 	// worst, so the coder is asked about i2 and i3 only.
 	f.respond(1, reviewResponse(t, low, high, med))
 	f.editRepoOn(2)
-	f.respond(2, fixResponse(t,
-		model.FixResult{ID: "i2", Verdict: "fixed", Detail: "fixed"},
-		model.FixResult{ID: "i3", Verdict: "fixed", Detail: "fixed"},
-	))
-	f.respond(3, reviewResponse(t)) // round 2: clean
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "fixed"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i3", Verdict: "fixed", Detail: "fixed"}))
+	f.respond(4, reviewResponse(t)) // round 2: clean
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -957,20 +957,16 @@ func TestRunDefersFindingsOverCap(t *testing.T) {
 	if byID["r1.2"].Verdict != "fixed" || byID["r1.3"].Verdict != "fixed" {
 		t.Errorf("active findings not fixed: %+v", r1.Findings)
 	}
-	// The coder prompt must carry only the active subset.
-	prompts, _ := filepath.Glob(filepath.Join(f.cfg.Logs.StaticBase(), "*", "round-1", "fix-*.prompt"))
-	if len(prompts) != 1 {
-		t.Fatalf("expected one coder prompt file, got %v", prompts)
+	// One session per active issue, and the deferred one gets none.
+	if n := f.coderSessions(1); n != 2 {
+		t.Fatalf("round 1 spent %d coder session(s), want 2 (one per active issue)", n)
 	}
-	b, err := os.ReadFile(prompts[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(b), "[i1]") {
+	prompts := f.coderPrompt(1)
+	if strings.Contains(prompts, "[i1]") {
 		t.Error("deferred issue leaked into the coder prompt")
 	}
-	if !strings.Contains(string(b), "[i2]") || !strings.Contains(string(b), "[i3]") {
-		t.Error("active issues missing from the coder prompt")
+	if !strings.Contains(prompts, "[i2]") || !strings.Contains(prompts, "[i3]") {
+		t.Error("active issues missing from the coder prompts")
 	}
 }
 
@@ -1360,7 +1356,8 @@ func TestRunInterruptedAfterSuccessfulCoderDoesNotCommit(t *testing.T) {
 		t.Log(msg)
 		// The coder has fully returned (runErr == nil) by the time its fix step
 		// logs "done"; canceling here is observed by fix()'s later ctx.Err() check.
-		if strings.Contains(msg, "fix: mock done") {
+		// The label names the issue the session was given ("fix: mock on i1 done").
+		if strings.HasPrefix(msg, "fix: mock") && strings.Contains(msg, " done") {
 			cancel()
 		}
 	}
@@ -1750,17 +1747,17 @@ func TestRunRoundNoReviewerBackstop(t *testing.T) {
 // all-fixed round omits the Rejected section, so only a mixed round exercises
 // the Rejected-section formatting.
 func TestCommitBodyIncludesFixedAndRejectedSections(t *testing.T) {
-	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	// The Fixed/Rejected body describes a ROUND, so it is what a squashing policy
+	// produces. Under per_fix each commit is one issue and needs no sections.
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRound})
 	f.respond(1, reviewResponse(t,
 		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 1, Title: "real bug"},
 		model.ReviewFinding{Category: "style", Severity: "low", File: "main.go", Line: 2, Title: "a nit"},
 	))
 	f.editRepoOn(2) // the coder makes a real edit for the fixed finding
-	f.respond(2, fixResponse(t,
-		model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched the bug"},
-		model.FixResult{ID: "i2", Verdict: "rejected", Detail: "intentional by design"},
-	))
-	f.respond(3, reviewResponse(t)) // round 2: clean -> converge
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched the bug"}))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "rejected", Detail: "intentional by design"}))
+	f.respond(4, reviewResponse(t)) // round 2: clean -> converge
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -2104,7 +2101,7 @@ func TestApplyVerdicts(t *testing.T) {
 		if err := o.applyVerdicts(rec, []model.FixResult{
 			{ID: id1, Verdict: "fixed", Detail: "d"},
 			{ID: id2, Verdict: "rejected", Detail: "d"},
-		}); err != nil {
+		}, rec.Issues); err != nil {
 			t.Fatalf("applyVerdicts() = %v", err)
 		}
 		if rec.Fixed != 1 || rec.Rejected != 1 {
@@ -2141,7 +2138,7 @@ func TestApplyVerdicts(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o, rec, id1, id2 := setup(t)
-			err := o.applyVerdicts(rec, tc.results(id1, id2))
+			err := o.applyVerdicts(rec, tc.results(id1, id2), rec.Issues)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("applyVerdicts() = %v, want error containing %q", err, tc.wantErr)
 			}
@@ -2606,14 +2603,16 @@ func TestVerifyCorrectionPromptCarriesFailures(t *testing.T) {
 	if _, err := f.orchestrator().Run(t.Context()); err != nil {
 		t.Fatalf("Run() = %v, want the corrected round to commit", err)
 	}
-	got := f.artifact(1, "fix-mock-fix-verify-round-1.prompt")
+	// The correction artifact is qualified by the issue whose fix is being corrected:
+	// the gate runs per fix, so a round can produce several corrections.
+	got := f.artifact(1, "fix-mock-fix-verify-i1-round-1.prompt")
 	for _, want := range []string{
 		"## Verification failed",          // the block's header
 		"### build",                       // which check failed, by its configured name
 		"exit status 1",                   // how it failed
 		"check failed: build is broken",   // and what it printed, so the coder can act
 		"Do not disable, skip, or weaken", // the instruction that keeps a "fix" honest
-		"off by one",                      // the round's issues, still in hand
+		"off by one",                      // the issue whose fix is in the tree
 		"Round 1",                         // the template's own data
 		"<fix>",                           // the output contract
 	} {
@@ -2704,23 +2703,40 @@ func TestCorroboratedReportsCostOneCapSlot(t *testing.T) {
 // coderPrompt returns the coder prompt the run wrote for a round, or "" when the
 // coder was never invoked in it. The prompt file is the only artifact that shows
 // what was actually HANDED to the coder, as opposed to what the round recorded.
-func (f *fixture) coderPrompt(round int) string {
+// coderSessions counts the coder invocations a round made -- one per issue it was
+// given work for, so 0 proves the round never spent a session at all.
+func (f *fixture) coderSessions(round int) int {
+	f.t.Helper()
+	return len(f.coderPromptFiles(round))
+}
+
+func (f *fixture) coderPromptFiles(round int) []string {
 	f.t.Helper()
 	prompts, err := filepath.Glob(filepath.Join(f.cfg.Logs.StaticBase(), "*", fmt.Sprintf("round-%d", round), "fix-*.prompt"))
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	return prompts
+}
+
+// coderPrompt returns every coder prompt the round wrote, concatenated. The round
+// now spends one session per issue, so a caller asking "was i1 handed back?" wants
+// the round's whole workload, not one session's.
+func (f *fixture) coderPrompt(round int) string {
+	f.t.Helper()
+	prompts := f.coderPromptFiles(round)
 	if len(prompts) == 0 {
 		return ""
 	}
-	if len(prompts) > 1 {
-		f.t.Fatalf("round %d wrote %d coder prompts, want one: %v", round, len(prompts), prompts)
+	var all strings.Builder
+	for _, name := range prompts {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		all.Write(b)
 	}
-	b, err := os.ReadFile(prompts[0])
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	return string(b)
+	return all.String()
 }
 
 // issueByID indexes a round's issues, so an assertion can name the issue it means
@@ -2795,24 +2811,21 @@ func TestRunDoesNotResubmitRejectedIssues(t *testing.T) {
 	// Round 1: two issues, both within the cap. The coder rejects i1 and fixes i2,
 	// so the round commits and the loop continues.
 	f.respond(1, reviewResponse(t, rejected, fixable))
-	f.editRepoOn(2)
-	f.respond(2, fixResponse(t,
-		model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"},
-		model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"},
-	))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"}))
 	// Round 2: the rejected issue comes back unchanged, plus two genuinely new ones.
 	// With a cap of 2 the new pair must BOTH be active: the decided issue is not
 	// work, so it cannot displace one of them.
-	f.respond(3, reviewResponse(t, rejected,
+	f.respond(4, reviewResponse(t, rejected,
 		model.ReviewFinding{Category: "tests", Severity: "medium", File: "main.go", Line: 20, Title: "no coverage for the error path"},
 		model.ReviewFinding{Category: "docs", Severity: "low", File: "main.go", Line: 30, Title: "stale comment on the exported helper"},
 	))
-	f.editRepoOn(4)
-	f.respond(4, fixResponse(t,
-		model.FixResult{ID: "i3", Verdict: "fixed", Detail: "added a case"},
-		model.FixResult{ID: "i4", Verdict: "fixed", Detail: "rewrote the comment"},
-	))
-	f.respond(5, reviewResponse(t)) // round 3: clean -> converge
+	f.editRepoOn(5)
+	f.respond(5, fixResponse(t, model.FixResult{ID: "i3", Verdict: "fixed", Detail: "added a case"}))
+	f.editRepoOn(6)
+	f.respond(6, fixResponse(t, model.FixResult{ID: "i4", Verdict: "fixed", Detail: "rewrote the comment"}))
+	f.respond(7, reviewResponse(t)) // round 3: clean -> converge
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -2895,12 +2908,11 @@ func TestRunTerminatesWhenOnlyRejectedIssuesRemain(t *testing.T) {
 	rejected := model.ReviewFinding{Category: "design", Severity: "high", File: "main.go", Line: 1, Title: "unexported field should be exported"}
 	fixable := model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 10, Title: "nil map write"}
 	f.respond(1, reviewResponse(t, rejected, fixable))
-	f.editRepoOn(2)
-	f.respond(2, fixResponse(t,
-		model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"},
-		model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"},
-	))
-	f.respond(3, reviewResponse(t, rejected)) // round 2: only the decided issue is left
+	// One coder session per issue, in worst-first order: i1 then i2.
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"}))
+	f.respond(4, reviewResponse(t, rejected)) // round 2: only the decided issue is left
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -2912,11 +2924,11 @@ func TestRunTerminatesWhenOnlyRejectedIssuesRemain(t *testing.T) {
 	if len(sum.Rounds) != 2 {
 		t.Fatalf("rounds = %d, want 2", len(sum.Rounds))
 	}
-	if got := f.invocations(); got != 3 {
-		t.Errorf("agent invocations = %d, want 3 (two reviews and one fix; round 2 must not invoke the coder)", got)
+	if got := f.invocations(); got != 4 {
+		t.Errorf("agent invocations = %d, want 4 (two reviews and one fix session per issue; round 2 must not invoke the coder)", got)
 	}
-	if p := f.coderPrompt(2); p != "" {
-		t.Errorf("round 2 invoked the coder with no work to do:\n%s", p)
+	if n := f.coderSessions(2); n != 0 {
+		t.Errorf("round 2 invoked the coder %d time(s) with no work to do", n)
 	}
 	if got := issueByID(sum.Rounds[1])["i1"].Verdict; got != model.VerdictRejected {
 		t.Errorf("round 2 issue i1 verdict = %q, want the rejection reported", got)
@@ -2940,12 +2952,10 @@ func TestRunTerminatesWhenOnlyRejectedIssuesRemainWithReviewerErrorFails(t *test
 	rejected := model.ReviewFinding{Category: "design", Severity: "high", File: "main.go", Line: 1, Title: "unexported field should be exported"}
 	fixable := model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 10, Title: "nil map write"}
 	f.respond(1, reviewResponse(t, rejected, fixable))
-	f.editRepoOn(2)
-	f.respond(2, fixResponse(t,
-		model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"},
-		model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"},
-	))
-	f.respond(3, reviewResponse(t, rejected)) // round 2: only the decided issue is left
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"}))
+	f.respond(4, reviewResponse(t, rejected)) // round 2: only the decided issue is left
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "reviewer(s) failed") {
@@ -2959,8 +2969,8 @@ func TestRunTerminatesWhenOnlyRejectedIssuesRemainWithReviewerErrorFails(t *test
 	}
 	// Still no wasted coder session: the guard fires instead of the termination, and
 	// neither invokes the coder on an empty workload.
-	if p := f.coderPrompt(2); p != "" {
-		t.Errorf("round 2 invoked the coder with no work to do:\n%s", p)
+	if n := f.coderSessions(2); n != 0 {
+		t.Errorf("round 2 invoked the coder %d time(s) with no work to do", n)
 	}
 }
 
@@ -3393,5 +3403,232 @@ func TestFinalLensRunsInlineForAReviewOnlyRun(t *testing.T) {
 	}
 	if !sawFinalAgent {
 		t.Errorf("the final lens must run inline in a review-only run, got %+v", sum.Rounds[0].Assignments)
+	}
+}
+
+// ---- commit policy -----------------------------------------------------------
+
+// Every fix gets its own coder session under every policy, so the round's work is
+// made and verified one issue at a time. Under per_fix those commits are also what
+// lands: one commit per issue, each naming the issue it fixed, so `git revert` can
+// undo a single bad fix and a bisect points at one change rather than a batch.
+func TestCommitPolicyPerFixCommitsEachIssueSeparately(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "nil deref"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "bounded"}))
+	f.respond(4, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if n := f.coderSessions(1); n != 2 {
+		t.Errorf("round 1 spent %d coder session(s), want one per issue", n)
+	}
+	if got := f.commitCount(); got != 3 {
+		t.Errorf("repo has %d commits, want 3 (initial + one per fix)", got)
+	}
+	// Each commit names its own issue, and neither claims the other's.
+	log := gitRun(t, f.repo, "log", "-2", "--format=%s")
+	for _, want := range []string{"i1", "nil deref", "i2", "off by one"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("commit subjects missing %q:\n%s", want, log)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+		if strings.Contains(line, "i1") && strings.Contains(line, "i2") {
+			t.Errorf("a per-fix commit subject names both issues: %q", line)
+		}
+	}
+	// Every one of those commits went through the gate on its own, so the summary's
+	// round SHA is the last of them rather than a batch nobody verified as a whole.
+	if sum.Rounds[0].CommitSHA == "" {
+		t.Error("round 1 has no commit SHA")
+	}
+}
+
+// per_round regroups the round's per-fix commits into the single commit fixpoint
+// has always produced. The squash is `reset --soft`, so the tree must be identical
+// to what the per-fix commits already verified -- and the body describes the round.
+func TestCommitPolicyPerRoundSquashesTheRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRound})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "nil deref"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "bounded"}))
+	f.respond(4, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	// Still one session per issue: the policy groups commits, it does not batch work.
+	if n := f.coderSessions(1); n != 2 {
+		t.Errorf("round 1 spent %d coder session(s), want one per issue", n)
+	}
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + one squashed round)", got)
+	}
+	// A round-shaped header, not one of the per-fix ones it replaced.
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "round 1 (2 fixed, 0 rejected)") {
+		t.Errorf("squashed commit message = %q, want a round-shaped header", msg)
+	}
+	for _, want := range []string{"nil deref", "off by one"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("squashed commit body missing %q:\n%s", want, msg)
+		}
+	}
+	// The summary must cite the squash, not a per-fix commit the squash removed.
+	head := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	if sum.Rounds[0].CommitSHA != head {
+		t.Errorf("round 1 CommitSHA = %q, want the squash %q", sum.Rounds[0].CommitSHA, head)
+	}
+	// Squashing must not change content: a `reset --soft` cannot, and a clean tree
+	// afterwards is what proves the commit holds exactly what was verified.
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("tree left dirty by the squash: %q", status)
+	}
+}
+
+// per_run collapses the whole run, loop rounds and closing passes together, into
+// one commit -- and only at the very end, so the closing round still reviews the
+// per-fix history it builds on.
+func TestCommitPolicyPerRunSquashesTheWholeRun(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRun})
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	// Round 2 finds a second problem, so the run produces commits in two rounds. Its
+	// title must share no tokens with round 1's, or the ledger matches the two as one
+	// issue (same file + titles agree) and round 2 has nothing new to fix.
+	f.respond(3, reviewResponse(t, model.ReviewFinding{
+		Category: "concurrency", Severity: "high", File: "other.go", Line: 42, Title: "unsynchronized map write",
+	}))
+	f.editRepoOn(4)
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "took the lock"}))
+	f.respond(5, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if len(sum.Rounds) < 2 {
+		t.Fatalf("rounds = %d, want at least 2 so the run has commits to collapse", len(sum.Rounds))
+	}
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + one for the whole run)", got)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	// Both rounds' work is described by the one commit that replaced them.
+	for _, want := range []string{"bug", "unsynchronized map write"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("run commit body missing %q:\n%s", want, msg)
+		}
+	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("tree left dirty by the squash: %q", status)
+	}
+	// The last round's SHA is re-pointed at the squash; citing a commit the squash
+	// removed would make the summary reference history that no longer exists.
+	head := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	last := sum.Rounds[len(sum.Rounds)-1]
+	if last.CommitSHA != "" && last.CommitSHA != head {
+		t.Errorf("last round CommitSHA = %q, want the squash %q or empty", last.CommitSHA, head)
+	}
+	if _, err := os.Stat(filepath.Join(f.repo, ".git", "HEAD")); err != nil {
+		t.Errorf("repository damaged by the squash: %v", err)
+	}
+}
+
+// A run that fails must keep its per-fix commits whatever the policy says. They are
+// how an operator sees how far it got, and rewriting history over a tree nobody
+// vouched for would destroy exactly that.
+func TestCommitPolicyPerRunKeepsCommitsWhenTheRunFails(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRun})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "real bug"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "claimed but not done"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	// The second session claims a fix without touching the tree, which fails the run
+	// after the first fix has already been committed.
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "lied"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err == nil {
+		t.Fatal("expected the run to fail on the fabricated fix")
+	}
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + the one fix that really happened)", got)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%s")
+	if !strings.Contains(msg, "i1") {
+		t.Errorf("the surviving commit should be the real fix, got %q", msg)
+	}
+}
+
+// logs.pattern renders one artifact path per (role, agent, prompt, round,
+// timestamp), and timestamp_format is second-granularity -- so several fix sessions
+// in one round would write the same files and silently overwrite each other. The
+// coder's artifact identity carries the issue for exactly that reason: losing the
+// prompt and raw output of a fix means losing the only record of what was asked.
+func TestPerFixSessionsWriteDistinctArtifacts(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "nil deref"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "bounded"}))
+	f.respond(4, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	files := f.coderPromptFiles(1)
+	if len(files) != 2 {
+		t.Fatalf("round 1 wrote %d coder prompt files, want one per fix session: %v", len(files), files)
+	}
+	// Distinct paths, and each names the issue its session was given.
+	seen := map[string]bool{}
+	for _, name := range files {
+		base := filepath.Base(name)
+		if seen[base] {
+			t.Errorf("two fix sessions wrote the same artifact %q", base)
+		}
+		seen[base] = true
+	}
+	got := make([]string, 0, len(seen))
+	for base := range seen {
+		got = append(got, base)
+	}
+	joined := strings.Join(got, " ")
+	for _, id := range []string{"i1", "i2"} {
+		if !strings.Contains(joined, id) {
+			t.Errorf("no fix artifact names issue %s: %v", id, got)
+		}
+	}
+	// The prompts must differ too: each session is asked about its own issue only.
+	for _, name := range files {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "[i1]") && strings.Contains(string(b), "[i2]") {
+			t.Errorf("%s asks about both issues; a session must get exactly one", filepath.Base(name))
+		}
 	}
 }

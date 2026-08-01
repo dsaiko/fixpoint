@@ -203,7 +203,12 @@ func (st *runStats) absorbCosts(r model.RoundRecord, get getFn) {
 	if r.Final {
 		st.finalRounds++
 	}
-	if r.CommitSHA != "" {
+	// Every commit the round made, not just the one it ended on: under
+	// commit_policy: per_fix a round of eight fixes is eight commits.
+	for _, sha := range r.Commits {
+		st.commits = append(st.commits, shortSHA(sha))
+	}
+	if len(r.Commits) == 0 && r.CommitSHA != "" {
 		st.commits = append(st.commits, shortSHA(r.CommitSHA))
 	}
 }
@@ -343,8 +348,13 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 		mode = "review only (the coder never runs)"
 	}
 	strategy := mode + " · strategy " + sum.Strategy
+	// The cap defaults to unlimited, and "17 deferred" is unreadable without knowing
+	// whether a cap deferred them -- so say which of the two applied, rather than
+	// leaving its absence to be inferred from a missing field.
 	if sum.MaxFindingsPerRound > 0 {
 		strategy += fmt.Sprintf(" · cap %d issue(s)/round", sum.MaxFindingsPerRound)
+	} else if !sum.ReviewOnly {
+		strategy += " · no per-round cap"
 	}
 	if sum.MaxIterations > 0 {
 		strategy += fmt.Sprintf(" · max %d round(s)", sum.MaxIterations)
@@ -382,7 +392,24 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 		out = append(out, [2]string{"coder", line})
 	}
 	if len(st.commits) > 0 {
-		out = append(out, [2]string{"commits", fmt.Sprintf("%d · %s", len(st.commits), strings.Join(st.commits, " "))})
+		// Under per_fix a long run makes dozens of commits, and listing them all would
+		// wrap the row and wreck the table. The count is the number that matters; the
+		// SHAs are a convenience for a short run, and `git log` has the rest.
+		const maxSHAs = 6
+		shown, extra := st.commits, 0
+		if len(shown) > maxSHAs {
+			shown, extra = shown[:maxSHAs], len(st.commits)-maxSHAs
+		}
+		line := fmt.Sprintf("%d · %s", len(st.commits), strings.Join(shown, " "))
+		if extra > 0 {
+			line += fmt.Sprintf(" +%d more", extra)
+		}
+		// Name the policy beside the count: "3 commits" for 3 fixes and "1 commit"
+		// for the same 3 fixes are both right, and only the policy says which.
+		if !sum.ReviewOnly && sum.CommitPolicy != "" {
+			line += "  (" + sum.CommitPolicy + ")"
+		}
+		out = append(out, [2]string{"commits", line})
 	}
 	exit := fmt.Sprintf("%s (exit %d)", sum.Termination, model.ExitCode(sum.Termination))
 	if sum.Error != "" {

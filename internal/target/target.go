@@ -726,9 +726,55 @@ func literalPathspec(exclude []string) []string {
 	return specs
 }
 
-// commitStaged commits whatever Commit has staged, returning the new SHA. It is
-// separate so Commit's excluded-path restoration runs on every exit from the
-// commit itself, including the cancellation-recovery paths below.
+// HeadSHA returns the current commit, or "" on an unborn branch (a repository
+// with no commits yet). The empty string is a valid answer rather than an error:
+// the caller uses it as the base to squash back to, and "nothing committed yet"
+// is a legitimate starting point.
+func (c *Collector) HeadSHA(ctx context.Context) (string, error) {
+	out, err := c.git(ctx, "rev-parse", "--verify", "-q", "HEAD")
+	if err != nil {
+		// `rev-parse --verify -q HEAD` fails ONLY because HEAD does not resolve, which
+		// on a repository fixpoint has already locked and checked means an unborn
+		// branch -- the empty-string answer documented above. A cancellation is the one
+		// other way to get here, and the caller sees it on its next ctx check.
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// SquashSince replaces every commit after base with a single commit carrying the
+// same tree, for loop.commit_policy. It is a pure regrouping: `reset --soft` moves
+// the branch and leaves the index and worktree exactly as they are, so the content
+// committed here is byte-for-byte the content the per-fix commits already put
+// through the verify gate one at a time.
+//
+// base == "" squashes back to an unborn branch, which is why HeadSHA reports that
+// state as an empty string rather than an error.
+func (c *Collector) SquashSince(ctx context.Context, base, header, body string) (string, error) {
+	if base == "" {
+		// No commit to reset onto: unstage nothing, just move the branch pointer off
+		// its commits by pointing HEAD at an empty tree's parent -- i.e. delete the
+		// ref and re-commit the index.
+		if out, err := c.git(ctx, "update-ref", "-d", "HEAD"); err != nil {
+			return "", fmt.Errorf("git update-ref -d HEAD: %w: %s", err, out)
+		}
+	} else if out, err := c.git(ctx, "reset", "--soft", base); err != nil {
+		return "", fmt.Errorf("git reset --soft %s: %w: %s", base, err, out)
+	}
+	// The index already holds everything the squashed commits staged, so commit it
+	// directly rather than re-running Commit's add/exclude dance: re-staging would
+	// pick up anything that arrived in the worktree since, which no verify pass has
+	// seen.
+	return c.commitStaged(ctx, header, body)
+}
+
+// commitStaged commits whatever is already in the index, returning the new SHA. It
+// is separate so Commit's excluded-path restoration runs on every exit from the
+// commit itself, including the cancellation-recovery paths below, and so
+// SquashSince can reuse it without re-staging.
 func (c *Collector) commitStaged(ctx context.Context, header, body string) (string, error) {
 	// Capture HEAD before committing so a cancellation landing between the commit
 	// and the SHA lookup below can still be recognized as a successful commit.

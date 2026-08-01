@@ -75,6 +75,17 @@ this). `once` and `final` are mutually exclusive. See the
 per-lens modifiers section in the [root README](../README.md) for when to reach for
 each.
 
+## Commits
+
+Every fix is made in its own coder session and committed on its own.
+`loop.commit_policy` regroups those commits — `per_fix` (the default) keeps them,
+`per_round` squashes each round into one, `per_run` squashes the whole run — and
+`loop.commit_message` supplies the header, with `{issue}`/`{title}` for a single fix
+and `{round}`/`{fixed}`/`{rejected}` for a squashed one. See
+[One fix, one commit](../README.md#one-fix-one-commit) in the root README for why the
+one-issue-per-session rule is not itself configurable, and why
+`loop.max_findings_per_round` no longer defaults to 8.
+
 ## Reporting what a run cost
 
 An agent file may declare where its CLI reports token usage and cost, and fixpoint

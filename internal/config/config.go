@@ -414,19 +414,59 @@ func expandToken(tok string, values map[string]string) (sub string, keep bool) {
 	return tok, true
 }
 
+// Commit policies: how a round's per-fix commits are grouped. The coder always
+// works one issue at a time; only the grouping differs.
+const (
+	// CommitPerFix keeps one commit per fixed issue -- each individually
+	// revertable, each with the verify gate that passed it.
+	CommitPerFix = "per_fix"
+	// CommitPerRound squashes a round's fix commits into one round commit. The
+	// default, and what fixpoint has always produced.
+	CommitPerRound = "per_round"
+	// CommitPerRun squashes every round into a single commit for the whole run.
+	CommitPerRun = "per_run"
+)
+
+var commitPolicies = []string{CommitPerFix, CommitPerRound, CommitPerRun}
+
 // Loop controls how the review->fix cycle iterates, terminates, and commits,
 // and holds the trust gates that permit fix rounds at all.
 type Loop struct {
 	MaxIterations int `yaml:"max_iterations"`
 
-	// MaxFindingsPerRound caps how many findings a single fix round hands to
-	// the coder (0 = unlimited). Findings are ordered worst-severity-first;
-	// the overflow is marked deferred and re-surfaces in later rounds. Keeps
-	// one coder session's workload inside its timeout.
-	MaxFindingsPerRound int    `yaml:"max_findings_per_round"`
-	ReviewOnly          bool   `yaml:"review_only"`
-	CommitMessage       string `yaml:"commit_message"`
-	CleanRoundsToStop   int    `yaml:"clean_rounds_to_stop"`
+	// MaxFindingsPerRound caps how many ISSUES a round hands to the coder
+	// (0 = unlimited, the default). Ordered worst-severity-first; the overflow is
+	// marked deferred and re-surfaces in later rounds, gaining a severity tier each
+	// time so the tail cannot be starved.
+	//
+	// It defaults to unlimited because the reason it existed is gone. The cap was
+	// sized to ONE coder session's timeout -- ~17 issues blew 30m, ~8 fit -- and the
+	// coder now gets exactly one issue per session, so no amount of findings can
+	// overrun a session. What is left is a cost lever: set it to bound how much a
+	// round spends, knowing the remainder waits for a later round.
+	//
+	// It was never a free bound. In one five-round run a cap of 8 deferred 18 issues,
+	// and in the CLOSING round -- where no later round follows -- it dropped 5
+	// coverage gaps outright.
+	MaxFindingsPerRound int  `yaml:"max_findings_per_round"`
+	ReviewOnly          bool `yaml:"review_only"`
+
+	// CommitPolicy groups the round's per-fix commits: per_fix keeps them, per_round
+	// squashes each round's into one, per_run squashes the whole run into one.
+	//
+	// It is only ever a GROUPING. The coder is handed one issue per session under
+	// every policy, because that is the only way a commit can honestly claim to
+	// contain one fix: a session given eight issues edits files for all eight at
+	// once, and nothing in its report says which change served which issue. Working
+	// one at a time also means the verify gate names the fix that broke the build
+	// rather than the round, and every fix is revertable on its own.
+	//
+	// per_fix is the default because it is the granularity the work happened at, and
+	// squashing is information-destroying: a round commit cannot tell you which of
+	// its eight fixes broke something. Squash afterwards if you want fewer commits.
+	CommitPolicy      string `yaml:"commit_policy"`
+	CommitMessage     string `yaml:"commit_message"`
+	CleanRoundsToStop int    `yaml:"clean_rounds_to_stop"`
 
 	// AllowUntrustedFix permits fix rounds in pr mode. A PR is
 	// externally-authored code: its content flows through reviewer findings
@@ -668,8 +708,13 @@ func (c *Config) applyDefaults() {
 	if c.Loop.CleanRoundsToStop == 0 {
 		c.Loop.CleanRoundsToStop = 1
 	}
+	if c.Loop.CommitPolicy == "" {
+		c.Loop.CommitPolicy = CommitPerFix
+	}
 	if c.Loop.CommitMessage == "" {
-		c.Loop.CommitMessage = "fixpoint: round {round} ({fixed} fixed, {rejected} rejected)"
+		// Per-fix shaped, matching the default commit_policy. roundCommitMessage
+		// substitutes a round-shaped header when a squashing policy is selected.
+		c.Loop.CommitMessage = "fixpoint: {issue} — {title}"
 	}
 	if c.Logs.Dir == "" {
 		c.Logs.Dir = ".fixpoint/{timestamp}/round-{round}"
@@ -719,6 +764,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Loop.MaxFindingsPerRound < 0 {
 		return fmt.Errorf("loop.max_findings_per_round: must not be negative, got %d", c.Loop.MaxFindingsPerRound)
+	}
+	if !slices.Contains(commitPolicies, c.Loop.CommitPolicy) {
+		return fmt.Errorf("loop.commit_policy: unknown policy %q (want %s)", c.Loop.CommitPolicy, strings.Join(commitPolicies, " | "))
 	}
 	if c.Loop.MaxIterations < 0 {
 		return fmt.Errorf("loop.max_iterations: must not be negative, got %d", c.Loop.MaxIterations)

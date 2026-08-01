@@ -28,13 +28,18 @@ target:
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
 
-  # ISSUES handed to the coder per round (0 = unlimited) -- issues, not raw
-  # reports: several reviewers reporting one problem is one unit of work, so
-  # agreement no longer eats the budget twice. Keeps one coder session inside its
-  # timeout: 17 blew a 30m cap, ~8 fits at effort high. Worst severity first, and
-  # every deferral promotes an issue one tier so the tail cannot be starved by a
-  # lens that always has more to say.
-  max_findings_per_round: 8
+  # ISSUES handed to the coder per round; 0 = unlimited, and unlimited is now the
+  # default because the reason for a cap is gone. It was sized to ONE coder
+  # session's timeout (17 issues blew 30m, ~8 fit), and the coder now gets exactly
+  # one issue per session -- see commit_policy -- so no number of findings can
+  # overrun a session.
+  #
+  # It was never free: a cap of 8 once deferred 18 issues across a run, and in the
+  # closing round -- where no later round follows -- it dropped 5 coverage gaps
+  # outright. Set it only as a cost lever, to bound what one round spends, knowing
+  # the overflow waits (worst severity first, and every deferral promotes an issue
+  # one tier so the tail cannot be starved by a lens that always has more to say).
+  max_findings_per_round: 0
 
   # Consecutive zero-issue rounds required to stop. 2 pairs with
   # strategy: rotate — a differently-assigned panel must confirm the clean result.
@@ -46,9 +51,27 @@ loop:
   # repository under review (<project>/config is searched first), and code being
   # reviewed must not be able to declare itself trustworthy.
 
-  # Commit header per fix round; {round} {fixed} {rejected}. The body is built
-  # from the coder's own report.
-  commit_message: "fixpoint: round {round} ({fixed} fixed, {rejected} rejected)"
+  # Commit header. {issue} {title} name a single fix; {round} {fixed} {rejected}
+  # describe a round, for the squashing policies below. The body is built from the
+  # coder's own report. A template mentioning {issue}/{title} is per-fix shaped, so
+  # squashed commits fall back to a round-shaped header rather than naming one issue
+  # for a commit holding many.
+  commit_message: "fixpoint: {issue} — {title}"
+
+  # How the round's commits are grouped. Every fix is made in its own coder session
+  # and committed on its own -- one issue per session is what lets the verify gate
+  # name the fix that broke the build, and what makes a fix revertable alone -- and
+  # this only decides how those commits are then regrouped:
+  #
+  #   per_fix    keep them; one commit per issue, each with its own verify (the
+  #              default: it is the granularity the work actually happened at, and
+  #              the only one where `git revert` can undo a single bad fix)
+  #   per_round  squash each round into one commit
+  #   per_run    squash the entire run into one commit
+  #
+  # Squashing is `reset --soft`, so the content is byte-for-byte what was already
+  # verified one fix at a time.
+  commit_policy: per_fix
 
 # Ping every agent with a trivial prompt before the run, in parallel, so an
 # expired login fails before tokens are spent or git is touched.
