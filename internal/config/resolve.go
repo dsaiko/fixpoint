@@ -64,13 +64,13 @@ func systemBundleDirs() []string {
 }
 
 // ProjectRoot returns the directory a run is anchored to, found by walking up
-// from dir for a marker: an existing bundle directory, or a git repository root.
-// Everything relative in a run -- the review target and the artifact directory --
-// resolves against this, NOT against the working directory, so `fixpoint
-// fix-code` behaves identically from the repository root and from three
-// directories down. Anchoring to the working directory instead would silently
-// review only the subtree you happened to stand in and scatter artifact
-// directories through the project.
+// from dir for a marker: a git repository root, the project's own config bundle,
+// or an artifact directory a previous run left behind. Everything relative in a
+// run -- the review target and the artifact directory -- resolves against this,
+// NOT against the working directory, so `fixpoint fix-code` behaves identically
+// from the repository root and from three directories down. Anchoring to the
+// working directory instead would silently review only the subtree you happened
+// to stand in and scatter artifact directories through the project.
 //
 // It falls back to dir when no marker is found, which is the correct behavior
 // for a non-git directory reviewed in place.
@@ -79,14 +79,13 @@ func ProjectRoot(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	home := ""
+	if h, err := os.UserHomeDir(); err == nil {
+		home = filepath.Clean(h)
+	}
 	for cur := abs; ; {
-		for _, marker := range rootMarkers {
-			// Existence, not directory-ness: in a git worktree or submodule ".git"
-			// is a FILE pointing at the real git dir, and requiring a directory
-			// would walk straight past the root of every worktree.
-			if _, err := os.Lstat(filepath.Join(cur, marker)); err == nil {
-				return cur, nil
-			}
+		if isProjectRoot(cur, home) {
+			return cur, nil
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur { // reached the filesystem root
@@ -96,12 +95,50 @@ func ProjectRoot(dir string) (string, error) {
 	}
 }
 
-// rootMarkers identify a project root when walking up. Deliberately NOT the
-// bundle directory name: "config" is an extremely common package and directory
+// isProjectRoot reports whether dir carries a marker that identifies it as the top
+// of a project. home, when known, is excluded from the markers that the user's own
+// files legitimately produce there.
+//
+// A marker has to be something that appears once, at the top. The bare bundle
+// directory name is not one: "config" is an extremely common package and directory
 // name (this repository has internal/config), so treating it as a marker would
-// detect internal/ as the project root and review only that subtree. A marker has
-// to be something that appears once, at the top.
-var rootMarkers = []string{".git", "." + appName}
+// detect internal/ as the project root and review only that subtree. A project
+// bundle therefore counts only when it has a bundle's shape.
+func isProjectRoot(dir, home string) bool {
+	// Existence, not directory-ness: in a git worktree or submodule ".git" is a
+	// FILE pointing at the real git dir, and requiring a directory would walk
+	// straight past the root of every worktree.
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+		return true
+	}
+	if isBundle(filepath.Join(dir, projectBundleDir)) {
+		return true
+	}
+	// The artifact directory a previous run left behind (the default logs.dir
+	// base) marks the root of a project that is not a git repository. Never in the
+	// home directory though: there "." + appName is the documented USER bundle, so
+	// honoring it would anchor every non-git project below home to the whole home
+	// directory -- pointing the review at $HOME, writing artifacts there, and
+	// classifying the user's own bundle as policy shipped by the code under review.
+	if home != "" && filepath.Clean(dir) == home {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(dir, "."+appName))
+	return err == nil
+}
+
+// isBundle reports whether dir has the shape of a config bundle: at least one of
+// the two subdirectories the layout above defines. Shape rather than name is what
+// keeps an unrelated "config" directory -- a Go package, an application's settings
+// folder -- from being mistaken for a project root.
+func isBundle(dir string) bool {
+	for _, sub := range []string{promptsDir, agentsDir} {
+		if st, err := os.Stat(filepath.Join(dir, sub)); err == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
+}
 
 // Resolver locates config bundle files by name across an ordered search path.
 // The first match wins, so a project can shadow one prompt while inheriting

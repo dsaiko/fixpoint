@@ -83,6 +83,62 @@ func TestProjectRootIgnoresNestedConfigDir(t *testing.T) {
 	}
 }
 
+// ~/.fixpoint is the documented USER bundle, so it must not mark the home
+// directory as a project root: a non-git project anywhere below home would
+// otherwise anchor to the whole home directory -- reviewing $HOME, writing
+// artifacts there, and reporting the user's own bundle as project-supplied policy.
+func TestProjectRootIgnoresUserBundleInHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, userBundleDir, promptsDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(home, "src", "thing")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProjectRoot(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != project {
+		t.Errorf("ProjectRoot(%s) = %s, want %s; the user bundle must not make $HOME a project root", project, got, project)
+	}
+	// The same directory name IS a marker outside home: it is where a previous
+	// run's artifacts land in a project that is not a git repository.
+	other := t.TempDir()
+	deep := filepath.Join(other, "sub")
+	if err := os.MkdirAll(filepath.Join(other, userBundleDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ProjectRoot(deep); err != nil || got != other {
+		t.Errorf("ProjectRoot(%s) = %s, %v; want the artifact directory to mark %s", deep, got, err, other)
+	}
+}
+
+// A project that ships its own bundle but is not a git repository still has a
+// root -- the documented <project>/config. It is recognized by the bundle's shape,
+// never by the bare name, so a nested config package cannot pose as one.
+func TestProjectRootFindsNonGitProjectBundle(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	bundle(t, filepath.Join(root, projectBundleDir), map[string]string{"fix-code": "description: x\n"}, []string{"fix"}, nil)
+	deep := filepath.Join(root, "internal", "config")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProjectRoot(deep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != root {
+		t.Errorf("ProjectRoot(%s) = %s, want %s; a non-git project's own bundle marks its root, and a config package without a bundle's shape does not", deep, got, root)
+	}
+}
+
 // A missing name must name every location searched: without that list a user
 // cannot tell a typo from a missing bundle from a shadowing surprise.
 func TestResolverNotFoundListsSearchPath(t *testing.T) {
