@@ -1706,7 +1706,13 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 	}
 	start := time.Now()
 	done := make(chan struct{})
+	// Awaited, not just signaled: a tick already inside logf would otherwise
+	// still be printing after runAgent returns, interleaving a "still running"
+	// line with whatever the caller logs next (or with the end-of-run table).
+	var hb sync.WaitGroup
+	hb.Add(1)
 	go func() {
+		defer hb.Done()
 		t := time.NewTicker(heartbeatEvery)
 		defer t.Stop()
 		for {
@@ -1720,6 +1726,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 	}()
 	res := agent.Run(ctx, o.cfg.Agents[agentName], text, o.cfg.Target.Path)
 	close(done)
+	hb.Wait()
 	return res
 }
 

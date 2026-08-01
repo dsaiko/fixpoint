@@ -84,6 +84,14 @@ Flags:
 		msg := agent.EscapeTerminal(agent.RedactSecrets(fmt.Sprintf(format, args...)))
 		fmt.Fprintf(stderr, "%s %s\n", time.Now().Format("15:04:05"), msg)
 	}
+	// logRaw writes pre-formatted, multi-line output under the same lock as logf,
+	// so a heartbeat or signal-handler line cannot land mid-table and shred the
+	// column alignment. Callers own redaction/escaping for what they pass.
+	logRaw := func(s string) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		fmt.Fprint(stderr, s)
+	}
 
 	// Anchor the run at the project root -- the git root, or the nearest directory
 	// holding a config bundle, found by walking up from the working directory. Every
@@ -166,10 +174,11 @@ Flags:
 	sum, err := o.Run(ctx)
 	// The scoreboard prints even when the run failed: a partial run still spent
 	// tokens and may have committed rounds, and that is exactly when the operator
-	// needs to see what landed. It goes straight to stderr rather than through logf,
-	// which stamps every line with a timestamp and would shred the column alignment.
+	// needs to see what landed. It goes through logRaw rather than logf, which
+	// stamps every line with a timestamp and would shred the column alignment --
+	// but still under logMu, so no concurrent log line can split the table.
 	if sum != nil {
-		fmt.Fprint(stderr, "\n"+agent.RedactSecrets(logstore.RenderRunTable(sum)))
+		logRaw("\n" + agent.RedactSecrets(logstore.RenderRunTable(sum)))
 	}
 	if err != nil {
 		logf("run failed: %v", err)
