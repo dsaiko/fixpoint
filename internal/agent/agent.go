@@ -173,8 +173,9 @@ func RedactSecrets(s string) string { return redactSecrets(s) }
 //
 // SECURITY (descendants that escape the process group): KillProcessGroup below
 // SIGKILLs the command's process group, but a descendant that calls setpgrp or
-// setsid escapes that group and keeps running after Run returns. WaitDelay
-// bounds the pipe-copy goroutine, not the detached process. Containing such
+// setsid escapes that group and keeps running after Run returns. Supervise's
+// drain grace bounds the pipe-copy goroutine, not the detached process.
+// Containing such
 // descendants requires an OS-level mechanism (a transient cgroup on Linux, a
 // job object, or a supervising container); that is not implemented here.
 func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
@@ -207,44 +208,26 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	// else. nil means the agent opted into inherit_all, which exec reads as "inherit
 	// the parent's environment".
 	cmd.Env = buildEnv(a)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return KillProcessGroup(cmd) }
-	// Bound how long Wait blocks after cancel/exit: cmd.Stdout/Stderr are
-	// non-*os.File writers, so exec copies through a pipe in a goroutine. A
-	// CLI-spawned child that inherited the write end keeps that pipe open past
-	// the process-group kill, and without WaitDelay cmd.Wait would block on the
-	// copy goroutine's EOF forever, hanging Run and leaking the goroutine.
-	cmd.WaitDelay = 2 * time.Second
 	if a.PromptVia == config.PromptViaStdin {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 	stdout := NewBoundedBuffer(maxOutput, TruncationMarker(maxOutput))
 	stderr := NewBoundedBuffer(maxOutput, TruncationMarker(maxOutput))
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
 
 	start := time.Now()
-	err := cmd.Run()
-	// Own the whole subprocess lifecycle, not just the leader. cmd.Cancel
-	// (KillProcessGroup) fires only on ctx cancellation, so a leader that exits
-	// SUCCESSFULLY after spawning a detached child leaves that child alive in our
-	// process group -- free to edit the repo concurrently with GitClean/commit/a
-	// later round (nondeterministic commits, a dirty tree) or to leak forever.
-	// SIGKILL the whole group on every exit path; it is a no-op once the group is
-	// empty (the common case where the agent spawned nothing).
-	_ = KillProcessGroup(cmd)
-	// The group kill above cannot rescue the wait it follows: cmd.Run only returns
-	// once the pipe-copy goroutines see EOF or WaitDelay expires. So an agent that
-	// wrote its whole reply and exited 0 still comes back as ErrWaitDelay whenever
-	// some descendant it spawned (an MCP server, a language server, a credential
-	// daemon, a plain `child &` in a wrapper script) inherited stdout and outlived
-	// it. The leader's exit status is authoritative: report the success and keep the
-	// captured reply, instead of discarding a complete review or fix -- which resets
-	// the clean streak, or commits the coder's edits as an unverified partial round.
-	leakedPipe := ctx.Err() == nil && SucceededDespiteLeakedPipe(cmd, err)
-	if leakedPipe {
-		err = nil
-	}
+	// Supervise, not cmd.Run: it owns the whole subprocess lifecycle rather than
+	// just the leader, and kills the process group the instant the leader exits.
+	// An agent that exits SUCCESSFULLY after spawning a child (an MCP server, a
+	// language server, a credential daemon, a plain `child &` in a wrapper script)
+	// would otherwise leave it alive -- free to edit the repo concurrently with
+	// GitClean/commit/a later round, or to leak forever -- and, if that child
+	// inherited stdout, would hold cmd.Run for the whole pipe drain first.
+	//
+	// Supervise also reports the LEADER's status when only a drain timed out: an
+	// agent that wrote its whole reply and exited 0 must not come back as a
+	// failure, which discards a complete review or fix -- resetting the clean
+	// streak, or committing the coder's edits as an unverified partial round.
+	leakedPipe, err := Supervise(ctx, cmd, stdout, stderr)
 	if ctx.Err() == context.DeadlineExceeded {
 		err = fmt.Errorf("timed out after %s", a.Timeout.Std())
 	}
@@ -254,10 +237,10 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	text, usage := ParseUsage(a.Usage, raw)
 	errText := stderr.String()
 	if leakedPipe {
-		// Say so in the .raw log: the capture is complete in every case seen so far
-		// (the leader writes its reply before exiting), but it is cut at the moment
-		// exec closed the pipes, so a short reply has an explanation on record.
-		errText += "\n[fixpoint: a descendant process held the output pipe open past the agent's successful exit; the capture ends where fixpoint closed the pipe]\n"
+		// Say so in the .raw log: a descendant that escaped the process group kept
+		// writing past the agent's exit, so the capture is cut at the moment fixpoint
+		// stopped draining and a short reply has an explanation on record.
+		errText += "\n[fixpoint: a descendant process held the output pipe open past the agent's exit; the capture ends where fixpoint closed the pipe]\n"
 	}
 	return Result{
 		Stdout:    text,
@@ -284,12 +267,13 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 }
 
-// SucceededDespiteLeakedPipe reports whether err is cmd.Run's WaitDelay expiry
-// for a command whose LEADER exited successfully. It is shared by every runner in
-// this program (agent.Run, verify.runOne, target's git/gh runner) because they all
-// hit the same interleaving: the leader writes its output and exits 0, a
-// descendant that inherited the output pipe keeps it open, no EOF arrives, and
-// after WaitDelay exec returns exec.ErrWaitDelay "instead of nil".
+// SucceededDespiteLeakedPipe reports whether err is exec's WaitDelay expiry for
+// a command whose LEADER exited successfully. Supervise applies it on behalf of
+// every runner in this program (agent.Run, verify.runOne, target's git/gh
+// runner) because they all hit the same interleaving: the leader writes its
+// output and exits 0, a descendant that inherited a pipe exec owns keeps it
+// open, no EOF arrives, and after WaitDelay exec returns exec.ErrWaitDelay
+// "instead of nil".
 //
 // That error says the pipe drain timed out, NOT that the command failed -- the
 // process state carries the leader's real exit status. Treating the two the same
@@ -335,11 +319,13 @@ func HumanSize(n int) string {
 // and marker, so the short-write and truncation semantics cannot drift apart
 // between two copies.
 //
-// It is written by exec.Cmd's background copy goroutine(s) and read via String
-// after Wait returns. Those normally do not overlap, but a WaitDelay expiry (a
-// leaked child keeping a pipe open) lets Wait return while a copy goroutine is
-// still writing, so String would race the Write on strings.Builder. The mutex
-// makes both safe under that overlap. Write always reports the full input length
+// It is written by a background copy goroutine and read via String once the
+// command is done. Supervise waits for its own copy goroutines before returning,
+// so those two no longer overlap for the runners in this program -- but the
+// mutex stays: the guarantee lives in another function, one instance may serve
+// two streams (verify's combined capture), and strings.Builder under a
+// concurrent Write/String garbles output or panics outright rather than failing
+// visibly. Write always reports the full input length
 // so os/exec's io.Copy never fails with io.ErrShortWrite once the cap is hit --
 // oversized output is truncated, not turned into a write error.
 type BoundedBuffer struct {

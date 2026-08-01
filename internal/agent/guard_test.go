@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,11 +14,11 @@ import (
 	"github.com/dsaiko/fixpoint/internal/config"
 )
 
-// reapDetachedChild kills the sleeper that TestRunWaitDelayBoundsLeakedPipe
-// deliberately detaches into its own process group (so WaitDelay returns before
-// it exits) and waits for it to disappear, so a successful run leaves nothing
-// behind. The child publishes its PID to pidFile at startup; tolerate it not
-// being written yet since Run can return (via WaitDelay) before that write.
+// reapDetachedChild kills the sleeper the leaked-pipe tests deliberately detach
+// into their own process group (so the drain grace expires before it exits) and
+// waits for it to disappear, so a successful run leaves nothing behind. The
+// child publishes its PID to pidFile at startup; tolerate it not being written
+// yet since Run can return (once the grace expires) before that write.
 func reapDetachedChild(t *testing.T, pidFile string) {
 	t.Helper()
 	var pid int
@@ -60,11 +61,32 @@ func TestKillProcessGroupGuard(t *testing.T) {
 	}
 }
 
-// The WaitDelay guard must bound how long Run blocks when a grandchild in its
-// OWN process group survives the process-group kill and keeps the stdout pipe
-// open. Without WaitDelay, cmd.Wait blocks on the copy goroutine's EOF until
-// that grandchild exits (60s here); with it, Run returns ~2s after the kill.
-func TestRunWaitDelayBoundsLeakedPipe(t *testing.T) {
+// Supervise owns the output pipes, so a caller that has already set cmd.Stdout
+// or cmd.Stderr holds a mistaken idea of where the output goes: Supervise would
+// overwrite the writer and silently drop that stream. Fail closed instead of
+// running the command.
+func TestSuperviseRejectsPresetOutputWriters(t *testing.T) {
+	var sink strings.Builder
+	preset := exec.Command("true")
+	preset.Stdout = &sink
+	if _, err := Supervise(t.Context(), preset, io.Discard, nil); err == nil {
+		t.Error("Supervise must refuse a cmd whose Stdout is already set")
+	}
+	preset = exec.Command("true")
+	preset.Stderr = &sink
+	if _, err := Supervise(t.Context(), preset, io.Discard, nil); err == nil {
+		t.Error("Supervise must refuse a cmd whose Stderr is already set")
+	}
+	if sink.Len() != 0 {
+		t.Errorf("the refused commands must not have run; sink = %q", sink.String())
+	}
+}
+
+// The drain grace must bound how long Run blocks when a grandchild in its OWN
+// process group survives the process-group kill and keeps the stdout pipe open.
+// Unbounded, the copy goroutine would wait for EOF until that grandchild exits
+// (60s here); with the grace, Run returns ~2s after the kill.
+func TestRunDrainGraceBoundsLeakedPipe(t *testing.T) {
 	if _, err := exec.LookPath("perl"); err != nil {
 		t.Skip("perl unavailable to spawn a detached pipe-holder")
 	}
@@ -89,12 +111,12 @@ func TestRunWaitDelayBoundsLeakedPipe(t *testing.T) {
 		if res.Err == nil || !strings.Contains(res.Err.Error(), "timed out") {
 			t.Fatalf("Run() err = %v, want timeout error", res.Err)
 		}
-		// WaitDelay is 2s; a generous ceiling still far below the 60s the leaked
+		// The grace is 2s; a generous ceiling still far below the 60s the leaked
 		// pipe-holder would otherwise impose.
 		if elapsed := time.Since(start); elapsed > 15*time.Second {
-			t.Fatalf("Run took %s; WaitDelay did not bound the wait on the leaked pipe", elapsed)
+			t.Fatalf("Run took %s; the drain grace did not bound the wait on the leaked pipe", elapsed)
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("Run hung well past WaitDelay; leaked-pipe guard is not working")
+		t.Fatal("Run hung well past the drain grace; leaked-pipe guard is not working")
 	}
 }

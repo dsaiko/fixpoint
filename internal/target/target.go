@@ -294,9 +294,9 @@ const maxGitPath = 1 << 20
 // fn once per entry as it arrives, so the caller can count an unbounded listing
 // without holding it in memory and without the diagnostic output cap c.run
 // applies. Everything else -- the safe-config overrides, the hardened
-// environment, the operation timeout, the process-group kill, the WaitDelay --
-// matches c.run, since the reason each of those exists does not change with how
-// stdout is consumed. stderr is still buffered, for the error message.
+// environment, the operation timeout, the process-group kill -- matches c.run,
+// since the reason each of those exists does not change with how stdout is
+// consumed. stderr is still buffered, for the error message.
 func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, gitOpTimeout)
 	defer cancel()
@@ -306,10 +306,22 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	cmd.Env = gitHardenedEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return agent.KillProcessGroup(cmd) }
+	// Backstop for a leader that ignores the cancel signal. It has no pipe drain
+	// left to bound: both output streams below are files this process owns, so exec
+	// runs no copy goroutine and cmd.Wait returns on the leader's exit alone --
+	// which is what lets the group kill follow that exit immediately.
 	cmd.WaitDelay = 2 * time.Second
-	errBuf := agent.NewBoundedBuffer(maxRunOutput, agent.TruncationMarker(maxRunOutput))
-	cmd.Stderr = errBuf
 	desc := "git " + strings.Join(args, " ")
+	// stderr through a pipe this process owns, for the same reason as stdout below:
+	// a pipe exec owned would hold cmd.Wait -- and so the process-group kill that
+	// follows it -- waiting on whoever still holds the write end, which is exactly
+	// the delay that kill exists to prevent.
+	errBuf := agent.NewBoundedBuffer(maxRunOutput, agent.TruncationMarker(maxRunOutput))
+	errPipe, err := agent.NewOutPipe(errBuf)
+	if err != nil {
+		return fmt.Errorf("%s: %w", desc, err)
+	}
+	cmd.Stderr = errPipe.ChildFile()
 	// Our own pipe rather than cmd.StdoutPipe, whose read end only cmd.Wait can
 	// close -- and Wait cannot be called until the scan finishes. A descendant git
 	// left behind holding the write end would then block the scan for the whole
@@ -317,19 +329,23 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// as the leader is gone, and lets the scan drop the pipe on any exit path.
 	pr, pw, err := os.Pipe()
 	if err != nil {
+		errPipe.CloseChild()
+		errPipe.Drain()
 		return fmt.Errorf("%s: %w", desc, err)
 	}
 	// Closing twice is harmless (os.File guards it); the defer covers the early
 	// returns, the explicit close below ends the scan.
 	defer func() { _ = pr.Close() }()
 	cmd.Stdout = pw
-	if err := cmd.Start(); err != nil {
-		_ = pw.Close()
-		return fmt.Errorf("%s: %w", desc, err)
-	}
-	// Drop the parent's write end: the child and its descendants now hold the only
+	startErr := cmd.Start()
+	// Drop the parent's write ends: the child and its descendants now hold the only
 	// ones, so EOF on pr means every process that could still write is gone.
 	_ = pw.Close()
+	errPipe.CloseChild()
+	if startErr != nil {
+		errPipe.Drain()
+		return fmt.Errorf("%s: %w", desc, startErr)
+	}
 	waited := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
@@ -355,6 +371,9 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// instead, and the scan error below outranks the exit status that produces.
 	_ = pr.Close()
 	werr := <-waited
+	// The group is dead by now, so this collects the last of stderr and guarantees
+	// nothing is still writing to errBuf when the error below reads it.
+	errPipe.Drain()
 	// A scan failure comes first: it means the listing was not read in full, which
 	// git's own exit status cannot tell us.
 	if scanErr != nil {
@@ -1358,14 +1377,6 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	// with fixpoint's inherited tokens, even in a review-only PR run before any
 	// sandbox. GIT_CONFIG_COUNT/KEY/VALUE make git treat these as -c overrides.
 	cmd.Env = gitHardenedEnv()
-	// Put the child in its own process group and SIGKILL the whole group on
-	// cancel/timeout, so a commit hook or other descendant it spawned cannot
-	// keep the operation alive after we try to stop it.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return agent.KillProcessGroup(cmd) }
-	// Bound how long Wait blocks after the group kill, so a descendant holding
-	// the output pipe open cannot wedge Wait indefinitely.
-	cmd.WaitDelay = 2 * time.Second
 	// Stream stdout and stderr into SEPARATE bounded buffers rather than one:
 	// callers parse the returned string as a machine-readable value (a SHA, a PR
 	// base OID, a remote list, a filename list), and a successful git/gh command
@@ -1373,36 +1384,26 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	// text into the parsed value -- e.g. a gh notice alongside baseRefOid makes PR
 	// preparation hand the combined string to git as an invalid object name. On
 	// success we return stdout only; stderr surfaces solely in the error. Bounding
-	// each buffer still caps memory on a large diff/listing (each exec copy
-	// goroutine writes its own buffer, so there is no Write x Write race), and
-	// BoundedBuffer locks to guard String() below against an abandoned copy
-	// goroutine after a WaitDelay expiry.
+	// each buffer still caps memory on a large diff/listing (each stream has its own
+	// copy goroutine and its own buffer, so there is no Write x Write race).
 	outBuf := agent.NewBoundedBuffer(maxRunOutput, agent.TruncationMarker(maxRunOutput))
 	errBuf := agent.NewBoundedBuffer(maxRunOutput, agent.TruncationMarker(maxRunOutput))
-	cmd.Stdout = outBuf
-	cmd.Stderr = errBuf
 	cmd.Stdin = stdin
-	err := cmd.Run()
 	// Own the whole subprocess lifecycle, not just the leader, exactly as agent.Run
-	// and verify.runOne do. cmd.Cancel (KillProcessGroup) fires only on
-	// cancellation, so a git/gh that exits SUCCESSFULLY after spawning a child --
-	// a credential helper, a hook, one of gh's internal git calls -- leaves that
-	// child alive in our process group, free to mutate the repository concurrently
-	// with the clean-tree check, verification, or the round commit, or to leak past
-	// an aborted run. SIGKILL the whole group on every exit path; it is a no-op once
-	// the group is empty, which is the common case.
-	_ = agent.KillProcessGroup(cmd)
-	// That kill comes too late to shorten the wait it follows, so a git/gh that
-	// exited 0 after leaving a descendant on the output pipe (a credential-cache
-	// daemon from a fetch, a hook's child) still returns exec.ErrWaitDelay. The
-	// leader's exit status is authoritative: a `git commit` that landed must not be
-	// reported as failed -- that ends the run with no CommitSHA while the commit sits
-	// in history, and sends reconciliation looking for edits that are already
-	// committed. Callers parse stdout, so a capture cut short surfaces as a parse
-	// error on its own rather than as a silently wrong value.
-	if agent.SucceededDespiteLeakedPipe(cmd, err) {
-		err = nil
-	}
+	// and verify.runOne do -- agent.Supervise is that shared discipline. A git/gh
+	// that exits SUCCESSFULLY after spawning a child (a credential helper, a hook,
+	// one of gh's internal git calls) must not leave it alive in our process group,
+	// free to mutate the repository concurrently with the clean-tree check,
+	// verification, or the round commit, or to leak past an aborted run: Supervise
+	// kills the group the instant the leader exits, before draining its output.
+	//
+	// It also reports the leader's own status when only a drain timed out: a
+	// `git commit` that landed must not be reported as failed -- that ends the run
+	// with no CommitSHA while the commit sits in history, and sends reconciliation
+	// looking for edits that are already committed. Callers parse stdout, so a
+	// capture cut short surfaces as a parse error on its own rather than as a
+	// silently wrong value.
+	_, err := agent.Supervise(ctx, cmd, outBuf, errBuf)
 	stdout := outBuf.String()
 	if err != nil {
 		return stdout, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(errBuf.String()))

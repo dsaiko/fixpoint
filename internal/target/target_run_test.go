@@ -93,12 +93,44 @@ func TestRunKillsBackgroundedChildOnSuccess(t *testing.T) {
 	}
 }
 
+// The process group must be killed on the LEADER's exit, not once the output
+// pipes have drained. A child that inherited the pipe keeps it open, so draining
+// first would leave it alive for the whole drain -- long enough to mutate the
+// repository after the git/gh call that spawned it has already returned, which is
+// exactly what the clean-tree check, verification and the round commit rely on
+// not happening.
+func TestRunKillsPipeHoldingChildBeforeItCanMutateTheRepo(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable to spawn a child process")
+	}
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "mutated-during-drain")
+	c := New(config.Target{Path: dir})
+	// No redirection, so the child holds the output pipe open; it mutates the
+	// directory a second later, while the leader exits 0 at once.
+	out, err := c.run(t.Context(), "sh", "-c",
+		"( sleep 1; touch '"+sentinel+"' ) &\necho leader done\nexit 0")
+	if err != nil {
+		t.Fatalf("run() = %v, want success", err)
+	}
+	if !strings.Contains(out, "leader done") {
+		t.Errorf("run() = %q, want the leader's stdout", out)
+	}
+	// Past the child's own delay: if it outlived the leader it has run by now.
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("a pipe-holding child survived a completed command and mutated the directory afterwards")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 // The same interleaving with the child's redirection removed -- what a
 // backgrounded child (a credential-cache daemon left by a fetch, a hook's child)
-// does unless it explicitly redirects. It inherits the output pipe, so cmd.Run
-// returns exec.ErrWaitDelay after the drain times out even though git/gh exited
-// 0. run must report the success: a `git commit` that landed reported as failed
-// ends the run with no CommitSHA while the commit sits in history.
+// does unless it explicitly redirects. It inherits the output pipe, so no EOF
+// arrives on its own even though git/gh exited 0. run must report the success: a
+// `git commit` that landed reported as failed ends the run with no CommitSHA
+// while the commit sits in history.
 func TestRunSucceedsWhenDescendantHoldsOutputPipe(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh unavailable to spawn a child process")
@@ -122,7 +154,7 @@ func TestRunSucceedsWhenDescendantHoldsOutputPipe(t *testing.T) {
 			t.Errorf("run() = %q, want the leader's stdout", got.out)
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("run hung well past WaitDelay with a descendant on the output pipe")
+		t.Fatal("run hung with a descendant on the output pipe")
 	}
 }
 
@@ -166,18 +198,18 @@ func TestRunContextCancelKillsProcessGroup(t *testing.T) {
 			t.Fatal("run() err = nil, want cancellation error")
 		}
 		if elapsed := time.Since(start); elapsed > 15*time.Second {
-			t.Fatalf("run took %s; process-group kill / WaitDelay did not bound the wait", elapsed)
+			t.Fatalf("run took %s; the process-group kill / drain grace did not bound the wait", elapsed)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("run hung well past cancellation; process group not killed")
 	}
 }
 
-// The WaitDelay guard must bound how long run blocks when a grandchild in its
-// OWN process group survives the process-group kill and keeps the stdout pipe
-// open. Without WaitDelay, Wait blocks on the copy goroutine's EOF until that
-// grandchild exits (60s here); with it, run returns ~2s after the kill.
-func TestRunWaitDelayBoundsLeakedPipe(t *testing.T) {
+// The drain grace must bound how long run blocks when a grandchild in its OWN
+// process group survives the process-group kill and keeps the stdout pipe open.
+// Unbounded, the copy goroutine would wait for EOF until that grandchild exits
+// (60s here); with the grace, run returns ~2s after the kill.
+func TestRunDrainGraceBoundsLeakedPipe(t *testing.T) {
 	if _, err := exec.LookPath("perl"); err != nil {
 		t.Skip("perl unavailable to spawn a detached pipe-holder")
 	}
@@ -208,18 +240,18 @@ func TestRunWaitDelayBoundsLeakedPipe(t *testing.T) {
 			t.Fatal("run() err = nil, want cancellation error")
 		}
 		if elapsed := time.Since(start); elapsed > 15*time.Second {
-			t.Fatalf("run took %s; WaitDelay did not bound the wait on the leaked pipe", elapsed)
+			t.Fatalf("run took %s; the drain grace did not bound the wait on the leaked pipe", elapsed)
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("run hung well past WaitDelay; leaked-pipe guard is not working")
+		t.Fatal("run hung well past the drain grace; leaked-pipe guard is not working")
 	}
 }
 
-// reapDetachedChild kills the sleeper that TestRunWaitDelayBoundsLeakedPipe
-// deliberately detaches into its own process group (so WaitDelay returns before
-// it exits) and waits for it to disappear, so a passing test leaves nothing
-// behind. The child publishes its PID; tolerate it not being written yet since
-// run can return (via WaitDelay) before that write.
+// reapDetachedChild kills the sleeper that TestRunDrainGraceBoundsLeakedPipe
+// deliberately detaches into its own process group (so the drain grace expires
+// before it exits) and waits for it to disappear, so a passing test leaves
+// nothing behind. The child publishes its PID; tolerate it not being written yet
+// since run can return (once the grace expires) before that write.
 func reapDetachedChild(t *testing.T, pidFile string) {
 	t.Helper()
 	var pid int

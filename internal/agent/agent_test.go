@@ -372,12 +372,15 @@ func TestBoundedBufferWriteAfterFull(t *testing.T) {
 	}
 }
 
-// The BoundedBuffer mutex exists for the exact WaitDelay scenario where a copy
-// goroutine is still writing while Run reads via String. Sequential coverage
+// The BoundedBuffer mutex guards a copy goroutine still writing while a reader
+// calls String. Supervise waits for its copy goroutines before returning, so the
+// runners in this program no longer produce that overlap -- but the buffer is
+// exported and the guarantee is not local to it, and a raced strings.Builder
+// garbles output or panics rather than failing visibly. Sequential coverage
 // (TestBoundedBuffer) never overlaps the two, so a removal of the locking would
-// still pass it; this test overlaps Write and String and must be run under
-// -race to be meaningful (the subprocess WaitDelay case is exercised by
-// TestRunWaitDelayBoundsLeakedPipe in guard_test.go).
+// still pass it; this test overlaps Write and String and must be run under -race
+// to be meaningful (the subprocess side is exercised by
+// TestRunDrainGraceBoundsLeakedPipe in guard_test.go).
 func TestBoundedBufferConcurrentWriteString(t *testing.T) {
 	b := NewBoundedBuffer(maxOutput, "\n[... truncated ...]")
 	chunk := []byte(strings.Repeat("x", 4096))

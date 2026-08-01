@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,10 +117,10 @@ func TestRunKillsSurvivingDescendantsOnSuccess(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "sentinel")
 	// The leader backgrounds a child that writes a sentinel after a delay, then
-	// exits SUCCESSFULLY. The child redirects its inherited pipes to /dev/null so
-	// it does not hold cmd.Run's stdout open (which would only trip the WaitDelay
-	// path). Run must SIGKILL the whole process group on the success exit path, so
-	// the child never survives to edit the repo after the leader is gone.
+	// exits SUCCESSFULLY. The child redirects its inherited pipes to /dev/null so it
+	// does not hold the output pipe open (the case the next test covers). Run must
+	// SIGKILL the whole process group on the success exit path, so the child never
+	// survives to edit the repo after the leader is gone.
 	a := config.Agent{
 		Command:   []string{script(t, "{ sleep 1; echo edited > '"+sentinel+"'; } >/dev/null 2>&1 &\nexit 0")},
 		PromptVia: "stdin",
@@ -141,10 +142,12 @@ func TestRunKillsSurvivingDescendantsOnSuccess(t *testing.T) {
 
 // The same interleaving as above, with the child's `>/dev/null 2>&1` removed --
 // which is what a backgrounded child actually does unless it explicitly
-// redirects. It inherits stdout, so cmd.Run cannot see EOF and returns
-// exec.ErrWaitDelay even though the leader wrote its whole reply and exited 0.
-// Run must report that success and keep the reply: treating the drain timeout as
-// a failure throws away a complete review or fix.
+// redirects. It inherits stdout, so no EOF arrives on its own even though the
+// leader wrote its whole reply and exited 0. Run must report that success and
+// keep the reply: treating a drain timeout as a failure throws away a complete
+// review or fix. And because the process group is killed the instant the leader
+// exits, the pipe closes there: the capture is COMPLETE and carries no
+// cut-short note.
 func TestRunSucceedsWhenDescendantHoldsOutputPipe(t *testing.T) {
 	a := config.Agent{
 		Command:   []string{script(t, "sleep 30 &\necho '<fix>ok</fix>'\nexit 0")},
@@ -161,11 +164,79 @@ func TestRunSucceedsWhenDescendantHoldsOutputPipe(t *testing.T) {
 		if !strings.Contains(res.Stdout, "<fix>ok</fix>") {
 			t.Errorf("stdout = %q, want the leader's reply preserved", res.Stdout)
 		}
-		if !strings.Contains(res.Stderr, "held the output pipe open") {
-			t.Errorf("stderr = %q, want a note recording the leaked pipe", res.Stderr)
+		if strings.Contains(res.Stderr, "held the output pipe open") {
+			t.Errorf("stderr = %q: a descendant inside the process group is killed at the leader's exit, so the capture is not cut short", res.Stderr)
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("Run hung well past WaitDelay with a descendant on the output pipe")
+		t.Fatal("Run hung with a descendant on the output pipe")
+	}
+}
+
+// A descendant that ESCAPED the process group (setpgrp/setsid) survives the kill
+// and can hold the output pipe open for as long as it lives. The drain grace is
+// what stops that from wedging the run; the leader still exited 0, so Run must
+// report the success, keep what it captured, and record that the capture was cut
+// where fixpoint stopped draining.
+func TestRunSucceedsWhenDetachedDescendantHoldsOutputPipe(t *testing.T) {
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("perl unavailable to spawn a detached pipe-holder")
+	}
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
+	// The leader waits for the holder to publish its PID before replying and
+	// exiting: the PID is written after setpgrp, so by then the holder really has
+	// escaped the group the exit is about to have killed.
+	a := config.Agent{
+		Command: []string{script(t, "perl -e 'setpgrp(0,0); open(F,\">\",$ARGV[0]) or die; print F $$; close F; sleep 60' "+
+			pidFile+" &\nn=0\nwhile [ ! -s '"+pidFile+"' ] && [ $n -lt 5 ]; do sleep 1; n=$((n+1)); done\necho '<fix>ok</fix>'\nexit 0")},
+		PromptVia: "stdin",
+		Timeout:   config.Duration(time.Minute),
+	}
+	done := make(chan Result, 1)
+	go func() { done <- Run(t.Context(), a, "", t.TempDir()) }()
+	select {
+	case res := <-done:
+		if res.Err != nil {
+			t.Fatalf("Run() err = %v, want success: the leader exited 0, only a detached descendant held the pipe", res.Err)
+		}
+		if !strings.Contains(res.Stdout, "<fix>ok</fix>") {
+			t.Errorf("stdout = %q, want the leader's reply preserved", res.Stdout)
+		}
+		if !strings.Contains(res.Stderr, "held the output pipe open") {
+			t.Errorf("stderr = %q, want a note recording the cut-short capture", res.Stderr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run hung well past the drain grace with a detached descendant on the output pipe")
+	}
+}
+
+// The process group must be killed on the LEADER's exit, not once the output
+// pipes have drained. A child that inherited the pipe keeps it open, so draining
+// first would leave the child running for the whole drain -- long enough to edit
+// a file after the invocation that spawned it is already recorded as finished,
+// which is how an edit no reviewer saw and no check verified reaches the round
+// commit.
+func TestRunKillsPipeHoldingChildBeforeItCanEditTheTree(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "edited-during-drain")
+	// The child holds stdout open (no redirection) and edits the tree a second
+	// later; the leader exits 0 at once. Killing the group only after the drain
+	// gives it that second.
+	a := config.Agent{
+		Command:   []string{script(t, "{ sleep 1; echo edited > '"+sentinel+"'; } &\necho done\nexit 0")},
+		PromptVia: "stdin",
+		Timeout:   config.Duration(time.Minute),
+	}
+	res := Run(t.Context(), a, "", dir)
+	if res.Err != nil {
+		t.Fatalf("Run() err = %v, want a clean success", res.Err)
+	}
+	// Past the child's own delay: if it outlived the leader it has written by now.
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("a pipe-holding child survived its leader's exit and edited the working tree")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
 }
 

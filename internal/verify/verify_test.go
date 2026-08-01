@@ -301,12 +301,43 @@ func TestRunKillsBackgroundedChildrenOnSuccess(t *testing.T) {
 	}
 }
 
+// The process group must be killed on the LEADER's exit, not once the output
+// pipes have drained. A backgrounded child that inherited the pipe keeps it open,
+// so draining first would leave the child alive for the whole drain -- long
+// enough to edit a tracked file after the check that would have caught the edit
+// has already been recorded as passing. The round then commits an edit no check
+// ever verified.
+func TestRunKillsPipeHoldingChildBeforeItCanEditTheTree(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "edited-during-drain")
+	script := filepath.Join(dir, "leader.sh")
+	// No redirection, so the child holds the check's output pipe open; it edits the
+	// tree a second later, while the leader exits 0 at once.
+	body := fmt.Sprintf("#!/bin/sh\n{ sleep 1; echo edited > '%s'; } &\necho leader done\nexit 0\n", sentinel)
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rep := Run(t.Context(), cfg(time.Minute,
+		config.VerifyCommand{Name: "leader", Run: []string{script}},
+	), dir, nil)
+	if !rep.Results[0].Passed {
+		t.Fatalf("the leader exits 0 and must be recorded as passing: %+v", rep.Results[0])
+	}
+	// Past the child's own delay: if it outlived the leader it has written by now.
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("a pipe-holding child survived a passing check and edited the working tree afterwards")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 // The same interleaving with the child's redirection removed -- what a
 // backgrounded child does unless it explicitly redirects. It inherits the output
-// pipe, so cmd.Run returns exec.ErrWaitDelay after the drain times out even
-// though the check itself exited 0. Reporting that as "could not run" would fail
-// a passing check under must_pass, and (an Err-bearing baseline entry counts as
-// having no baseline) under no_regressions too.
+// pipe, so no EOF arrives on its own even though the check itself exited 0.
+// Reporting a drain timeout as "could not run" would fail a passing check under
+// must_pass, and (an Err-bearing baseline entry counts as having no baseline)
+// under no_regressions too.
 func TestRunPassesWhenDescendantHoldsOutputPipe(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "leader.sh")
@@ -330,15 +361,17 @@ func TestRunPassesWhenDescendantHoldsOutputPipe(t *testing.T) {
 			t.Errorf("output = %q, want the check's own output kept", r.Output)
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("Run hung well past WaitDelay with a descendant on the output pipe")
+		t.Fatal("Run hung with a descendant on the output pipe")
 	}
 }
 
-// boundedBuffer's mutex exists for the WaitDelay case: cmd.Run can return while
-// the copy goroutine still drains a pipe a leaked grandchild holds open, so
-// String() overlaps a Write. Every other test in this file drives commands
-// sequentially and would pass with the locking removed; this one overlaps the two
-// and is meaningful only under -race (which `make audit` runs).
+// boundedBuffer's mutex guards a Write/String overlap. The supervisor now waits
+// for its copy goroutine before returning, so runOne itself no longer produces
+// that overlap -- but the guarantee lives in another package, and a
+// strings.Builder raced this way garbles output or panics rather than failing
+// visibly. Every other test in this file drives commands sequentially and would
+// pass with the locking removed; this one overlaps the two and is meaningful only
+// under -race (which `make audit` runs).
 func TestBoundedBufferConcurrentWriteString(t *testing.T) {
 	var b boundedBuffer
 	chunk := []byte(strings.Repeat("x", 4096))

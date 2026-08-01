@@ -2230,9 +2230,9 @@ func TestCollectDirectoryKillsBackgroundedChildOnSuccess(t *testing.T) {
 func TestCollectDirectoryChildHoldingStdoutDoesNotStallScan(t *testing.T) {
 	repo := gitRepo(t)
 	// The child inherits stdout and outlives the leader by a minute. Only its stderr
-	// is redirected: that stream is a copy-goroutine pipe, already bounded by
-	// WaitDelay, and holding it too would just report the collection as a WaitDelay
-	// expiry instead of exercising the stdout stall this test is about.
+	// is redirected, so the wait this test measures is the scan's own: holding stderr
+	// too would add that stream's drain grace instead of exercising the stdout stall
+	// the test is about.
 	shimGit(t, "ls-files", "    printf 'main.go\\0'\n    sleep 60 2>/dev/null &\n    exit 0")
 
 	type result struct {

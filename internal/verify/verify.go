@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
@@ -157,28 +156,20 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 	cmd.Dir = dir
 	// Filtered environment: fixpoint's, minus the agents' credentials. See Run.
 	cmd.Env = env
-	// Same process-group discipline as agents: a build tool spawns children (a
-	// compiler, a test binary, a watch process), and killing only the leader on
-	// timeout would leave them running and holding the output pipe open.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return agent.KillProcessGroup(cmd) }
-	cmd.WaitDelay = 2 * time.Second
 
 	var buf boundedBuffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf // combined: a failure's cause is often split across both
 
 	start := time.Now()
-	err := cmd.Run()
-	// Own the whole subprocess lifecycle, not just the leader, exactly as
-	// agent.Run does. cmd.Cancel (KillProcessGroup) fires only on cancellation, so
-	// a build tool that exits SUCCESSFULLY after backgrounding a child (a watcher,
-	// a test daemon) leaves that child alive in our process group -- free to edit
-	// the repository concurrently with the next check, the clean-tree check, or the
-	// round commit, which is how a verified round turns into a commit nobody
-	// verified. SIGKILL the whole group on every exit path; it is a no-op once the
-	// group is empty, which is the common case.
-	_ = agent.KillProcessGroup(cmd)
+	// Same process-group discipline as agents, via the shared supervisor: a build
+	// tool spawns children (a compiler, a test binary, a watcher, a test daemon),
+	// and a check that exits 0 after backgrounding one must not leave it alive to
+	// edit the repository while the next check, the clean-tree check, or the round
+	// commit runs -- which is how a verified round turns into a commit nobody
+	// verified. agent.Supervise kills the group the instant the leader exits,
+	// BEFORE draining the output, so the window in which such a child can still
+	// touch the tree does not outlast the command. A nil stderr means one combined
+	// capture: a failure's cause is often split across both streams.
+	leakedPipe, err := agent.Supervise(cmdCtx, cmd, &buf, nil)
 	res.Duration = time.Since(start)
 	// Output can quote anything the build printed, including a secret from the
 	// environment, and it is persisted and fed back to the coder.
@@ -189,15 +180,15 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 		res.Err = fmt.Sprintf("timed out after %s", timeout)
 	case err == nil:
 		res.Passed = true
-	case ctx.Err() == nil && agent.SucceededDespiteLeakedPipe(cmd, err):
-		// The check itself exited 0; a descendant it left behind (a test daemon, a
-		// build watcher, a language server) held the output pipe past that exit, so
-		// exec reported the drain timeout rather than the success. Classifying that as
-		// "could not run" would block the round under must_pass, and -- because a
-		// baseline entry carrying an Err counts as having no baseline -- under
-		// no_regressions too, for a check that passed.
-		res.Passed = true
-		res.Output += "\n[fixpoint: the command exited 0 but a descendant held its output pipe open; the capture ends where fixpoint closed the pipe]\n"
+		if leakedPipe {
+			// The check itself exited 0, but a descendant that escaped the process group
+			// held the output pipe past that exit, so the capture stops where fixpoint
+			// stopped draining. Only the capture is affected -- classifying this as
+			// "could not run" would block the round under must_pass, and (a baseline entry
+			// carrying an Err counts as having no baseline) under no_regressions too, for
+			// a check that passed.
+			res.Output += "\n[fixpoint: the command exited 0 but a descendant held its output pipe open; the capture ends where fixpoint closed the pipe]\n"
+		}
 	default:
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -256,13 +247,13 @@ func (r Report) Summary() string {
 // boundedBuffer accumulates at most maxOutput bytes and notes the truncation, so
 // a command producing gigabytes of output cannot exhaust memory.
 //
-// stdout and stderr share one instance, and exec dedups a shared writer to a
-// single copy goroutine, so Write never races Write. The mutex guards a
-// different overlap: cmd.WaitDelay lets Run return while that copy goroutine is
-// still draining a pipe a leaked grandchild holds open, so the String() below
-// can run concurrently with a Write. strings.Builder is not safe for that --
-// it can produce garbled output or panic outright -- which is the same reason
-// agent.BoundedBuffer locks.
+// stdout and stderr share one instance, and the supervisor gives a combined
+// capture a single descriptor and a single copy goroutine, so Write never races
+// Write; it also waits for that goroutine before returning, so String() does not
+// race a Write either. The mutex stays because neither guarantee is local to
+// this file, and strings.Builder under such an overlap garbles output or panics
+// outright rather than failing visibly -- the same reason agent.BoundedBuffer
+// locks.
 type boundedBuffer struct {
 	mu       sync.Mutex
 	b        strings.Builder
