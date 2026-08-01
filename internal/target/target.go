@@ -1622,10 +1622,21 @@ func (c *Collector) pathInTree(ctx context.Context, tree, p string) (bool, error
 // pin beats the repo's value outright and closes the whole class rather than one
 // key at a time -- including the shapes that reach git through gh's internal
 // calls, since gitHardenedEnv exports these as GIT_CONFIG_*.
+//
+// core.alternateRefsCommand is another value git runs THROUGH THE SHELL. Its
+// documentation describes it as server-side only, but that is not where it fires
+// for us: whenever the repo has a .git/objects/info/alternates entry, the CLIENT
+// side of a fetch enumerates the alternate's tips to seed negotiation, and runs
+// this command instead of git-for-each-ref to do it. A crafted checkout that
+// ships an alternates file plus this setting would therefore execute it during
+// pr mode's `gh pr checkout` or Prepare's base-object fetch. Pinning it to
+// `false` (the same shape as core.fsmonitor) makes the enumeration produce no
+// tips, which only costs negotiation hints, never correctness.
 var gitSafeConfig = []string{
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",
 	"-c", "protocol.ext.allow=never",
+	"-c", "core.alternateRefsCommand=false",
 }
 
 // gitHardenedEnv returns the child environment for every git/gh subprocess:

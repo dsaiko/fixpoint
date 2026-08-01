@@ -1097,6 +1097,59 @@ func TestFetchDoesNotRunAnExtTransportHelper(t *testing.T) {
 	}
 }
 
+// core.alternateRefsCommand is a value git runs through the SHELL. Its
+// documentation calls it server-side only, but a client-side fetch enumerates
+// the tips of every .git/objects/info/alternates entry to seed negotiation and
+// runs this command to do it -- so a crafted checkout that ships an alternates
+// file plus the setting turns pr mode's checkout/fetch into code execution with
+// fixpoint's inherited environment. The gitSafeConfig pin is what beats the
+// repo's own value, on both the -c path and the GIT_CONFIG_* path gh's internal
+// git takes.
+func TestFetchDoesNotRunAlternateRefsCommand(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable to run the alternate-refs command")
+	}
+	for _, tc := range []struct {
+		name  string
+		fetch func(*Collector, string) (string, error)
+	}{
+		// c.git prepends gitSafeConfig as -c overrides AND sets the hardened env.
+		{"git", func(c *Collector, remote string) (string, error) {
+			return c.git(t.Context(), "fetch", "--no-tags", remote)
+		}},
+		// c.run invokes git with NO -c overrides -- the conditions gh's nested git
+		// runs under, where only GIT_CONFIG_* from gitHardenedEnv can protect it.
+		{"run", func(c *Collector, remote string) (string, error) {
+			return c.run(t.Context(), "git", "fetch", "--no-tags", remote)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := gitRepo(t)
+			// src doubles as the fetch source and as the alternate object store the
+			// command is invoked for.
+			src := gitRepo(t)
+			sentinel := filepath.Join(t.TempDir(), "alternate-refs-command-ran")
+			evil := filepath.Join(repo, "evil-alternate-refs.sh")
+			if err := os.WriteFile(evil, []byte("#!/bin/sh\ntouch '"+sentinel+"'\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			alternates := filepath.Join(repo, ".git", "objects", "info", "alternates")
+			if err := os.WriteFile(alternates, []byte(filepath.Join(src, ".git", "objects")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git(t, repo, "config", "core.alternateRefsCommand", evil)
+			git(t, repo, "config", "remote.src.url", src)
+
+			if out, err := tc.fetch(New(config.Target{Path: repo}), "src"); err != nil {
+				t.Fatalf("fetch: %v: %s", err, out)
+			}
+			if _, serr := os.Stat(sentinel); serr == nil {
+				t.Error("the alternate-refs command executed; core.alternateRefsCommand=false is not reaching this git invocation")
+			}
+		})
+	}
+}
+
 // writeHook installs an executable git hook that touches sentinel when run.
 func writeHook(t *testing.T, hooksDir, name, sentinel string) {
 	t.Helper()
