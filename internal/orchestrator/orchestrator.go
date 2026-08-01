@@ -487,19 +487,31 @@ func (o *Orchestrator) resolveRunBase(ctx context.Context) (string, error) {
 // The squash goes last for the same reason the closing phase runs at all: it is the
 // point where the run is finally done editing. Squashing earlier would collapse
 // commits the closing passes then build on.
+//
+// A closing-phase interruption is the one way an unvouched-for tree reaches this far:
+// a failure returns the error above, but runFinalPhase deliberately reports a
+// cancellation as nil (an interruption is a termination, not a run failure), so the
+// skip has to be made here. It is checked explicitly rather than left to the first
+// git call in squashRun failing on the canceled context: that is an incidental guard
+// in another package, and a squashRun that resolved the head some other way -- from a
+// cache, or on a fresh context as the reconcile paths do -- would silently start
+// rewriting history over exactly the tree squashRun says must not be rewritten.
 func (o *Orchestrator) finishRun(ctx context.Context, sum *model.RunSummary, runBase string) error {
 	if err := o.runFinalPhase(ctx, sum); err != nil {
 		return err
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	return o.squashRun(ctx, sum, runBase)
 }
 
 // squashRun collapses the whole run into one commit for commit_policy: per_run.
 //
-// It runs only on a normal termination, which is all that reaches it: an error or an
-// interruption returns before finishRun, and rightly so -- rewriting history over a
-// tree nobody vouched for would destroy the per-fix commits an operator needs in
-// order to see how far the run actually got.
+// It runs only on a normal termination, which is all that reaches it: a failure
+// returns before it and finishRun skips it on an interruption, rightly so --
+// rewriting history over a tree nobody vouched for would destroy the per-fix commits
+// an operator needs in order to see how far the run actually got.
 func (o *Orchestrator) squashRun(ctx context.Context, sum *model.RunSummary, runBase string) error {
 	if o.cfg.Loop.CommitPolicy != config.CommitPerRun {
 		return nil

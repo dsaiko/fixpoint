@@ -4171,6 +4171,54 @@ func TestCommitPolicyPerRunLeavesTheBranchAloneInAReviewOnlyRun(t *testing.T) {
 	}
 }
 
+// An INTERRUPTION of the closing phase must keep them for the same reason -- and it
+// is the one unvouched-for tree that reaches the squash's caller, because a
+// cancellation there is deliberately reported as nil rather than as a failure. What
+// holds the line is finishRun's own ctx check, not the squash's first git call
+// happening to fail on the canceled context.
+func TestCommitPolicyPerRunKeepsCommitsWhenTheClosingPhaseIsInterrupted(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRun})
+	f.finalLens()
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean -> converged
+	// The closing reviewer signals that it started, then blocks until it is killed.
+	ready := filepath.Join(f.respDir, "closing-started")
+	testfixture.WriteSide(t, f.respDir, 4, fmt.Sprintf("#!/bin/sh\ntouch '%s'\nsleep 30\n", ready))
+	f.respond(4, reviewResponse(t))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(ready); err == nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+	}()
+
+	sum, err := f.orchestrator().Run(ctx)
+	if err != nil {
+		t.Fatalf("Run() err = %v, want nil: an interruption is a clean stop, not a run failure", err)
+	}
+	if sum.Termination != model.TermInterrupted {
+		t.Fatalf("termination = %q, want %q", sum.Termination, model.TermInterrupted)
+	}
+	// A squash of this run would also leave two commits, so only the SUBJECT says
+	// which history survived: the per-fix header carries the issue id, the squashed
+	// one is round-shaped (see roundCommitMessage).
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + the one per-fix commit)", got)
+	}
+	if subject := gitRun(t, f.repo, "log", "-1", "--format=%s"); !strings.Contains(subject, "i1") {
+		t.Errorf("HEAD subject = %q, want the per-fix commit kept intact", subject)
+	}
+}
+
 // A run that fails must keep its per-fix commits whatever the policy says. They are
 // how an operator sees how far it got, and rewriting history over a tree nobody
 // vouched for would destroy exactly that.
