@@ -338,6 +338,10 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 		return err
 	}
 
+	if err := o.guardRedirectedWorktree(ctx); err != nil {
+		return err
+	}
+
 	if err := o.guardUntrustedGitConfig(ctx); err != nil {
 		return err
 	}
@@ -929,6 +933,35 @@ func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 		return nil, err
 	}
 	return release, nil
+}
+
+// guardRedirectedWorktree refuses a target whose git work tree is not the target
+// at all. A repo-local `core.worktree` (or GIT_WORK_TREE) points git's work tree
+// somewhere else while .git stays put, so every git command fixpoint runs reads
+// and writes that other directory: git-diff/pr collection lists the redirected
+// tree's diff and files as the material under review, and a directory fix round's
+// `git add`/`git commit` stage and commit from it. See Collector.WorktreeOutOfScope
+// for why the effective root is what gets judged (a submodule checkout legitimately
+// sets core.worktree) and why nothing else on the preflight catches this.
+//
+// This runs before EVERY mode, including a review-only directory run: that path
+// still asks `git ls-files` for its scope whenever the target looks like a work
+// tree, so a redirect at an ancestor of target.path would feed it paths from
+// outside the target.
+//
+// It is NOT trust-gated. -trusted-target says "I trust what is in this checkout",
+// which is a statement about content; it is not consent to review or commit to a
+// different directory than the one named, and a redirect is never what the operator
+// asked for.
+func (o *Orchestrator) guardRedirectedWorktree(ctx context.Context) error {
+	root, err := o.collector.WorktreeOutOfScope(ctx)
+	if err != nil {
+		return err
+	}
+	if root == "" {
+		return nil
+	}
+	return fmt.Errorf("target %s is not the git work tree git would operate on: core.worktree (in .git/config, a file it includes, or .git/config.worktree) or GIT_WORK_TREE points the work tree at %s, so every git command fixpoint runs -- diff, ls-files, add, commit -- would read and write files outside the target. Remove the redirect, or set target.path to %s if that is the tree you meant to review", o.cfg.Target.Path, root, root)
 }
 
 // guardUntrustedGitConfig closes the code-execution path opened by the target's

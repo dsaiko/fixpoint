@@ -1226,6 +1226,79 @@ func TestRunRefusesUntrustedPRConfigFilter(t *testing.T) {
 	})
 }
 
+// A repo-local core.worktree redirects git's work tree away from target.path
+// while .git stays put, so target.path still looks like an ordinary checkout.
+// git-diff/pr collection is where that bites hardest: Collect runs `git diff` and
+// `git ls-files` unconditionally, so the redirected directory's files become the
+// material handed to the reviewers -- and the untrusted-config guard ahead of it
+// is skipped entirely, because `--is-inside-work-tree` answers false once the work
+// tree no longer contains target.path. Unlike the execution-capable config keys,
+// -trusted-target does not excuse this: trusting a checkout's CONTENT is not
+// consent to review and commit some other directory than the one named.
+func TestRunRefusesRedirectedWorktree(t *testing.T) {
+	t.Run("git-diff review-only is refused before collection", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		f.cfg.Target.Mode = "git-diff"
+		elsewhere := t.TempDir()
+		if err := os.WriteFile(filepath.Join(elsewhere, "secret.txt"), []byte("token\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, f.repo, "config", "core.worktree", elsewhere)
+
+		_, err := f.orchestrator().Run(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "work tree") {
+			t.Fatalf("Run() err = %v, want refusal citing the redirected work tree", err)
+		}
+		if !strings.Contains(err.Error(), elsewhere) {
+			t.Errorf("Run() err = %v, want it to name the redirected root %s", err, elsewhere)
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (must refuse before collecting)", got)
+		}
+	})
+
+	// A fix run stops on the redirect too, with the diagnostic that actually names
+	// it. Without the guard this shape does still stop -- but incidentally, on
+	// "target.path is not a git repository" (IsGitRepo reads the redirect as "no
+	// work tree here"), which sends the operator looking for a missing .git that is
+	// sitting right there.
+	t.Run("trusted directory fix run is refused too", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1}) // fixture keeps trusted_target: true
+		before := f.commitCount()
+		elsewhere := t.TempDir()
+		gitRun(t, f.repo, "config", "core.worktree", elsewhere)
+
+		_, err := f.orchestrator().Run(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "work tree") {
+			t.Fatalf("Run() err = %v, want the trust assertion NOT to bypass the work-tree check", err)
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (must refuse before the coder runs)", got)
+		}
+		if got := f.commitCount(); got != before {
+			t.Errorf("commits = %d, want %d: nothing may be committed from the redirected tree", got, before)
+		}
+	})
+
+	// The guard must not refuse ordinary targets: every other test here runs
+	// against a plain checkout, and a subdirectory target legitimately reports an
+	// ancestor as its work-tree root.
+	t.Run("subdirectory target passes the guard", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		sub := filepath.Join(f.repo, "sub")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f.cfg.Target.Path = sub
+		f.respond(1, reviewResponse(t)) // clean review
+
+		if _, err := f.orchestrator().Run(t.Context()); err != nil {
+			t.Fatalf("Run() err = %v, want a subdirectory target to pass the work-tree check", err)
+		}
+	})
+}
+
 // Two reviewers that each return a finding in the same round must receive finding
 // IDs in assignment (prompt-list) order -- r1.1 to the first lens, r1.2 to the
 // second -- regardless of which reviewer's process finishes first. review()

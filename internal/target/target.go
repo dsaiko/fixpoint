@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -630,6 +631,103 @@ func (c *Collector) AtRepoRoot(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) == "", nil
+}
+
+// WorktreeOutOfScope returns the work-tree root git would actually operate on
+// when that root does not contain target.path, and "" when it does (or when
+// there is no work tree here at all). A non-empty result means every git command
+// fixpoint runs would read and write a DIFFERENT directory than the one under
+// review.
+//
+// A repo-local `core.worktree` (and GIT_WORK_TREE, and a .git file pointing at a
+// gitdir that sets it) redirects git's work tree anywhere on the machine while
+// .git stays where it is, so target.path still looks like an ordinary checkout.
+// Nothing else catches it: unsafeConfigKey lists programs git EXECUTES, and
+// core.worktree runs nothing; `rev-parse --show-prefix` is empty at the redirected
+// root, so AtRepoRoot passes; and `--is-inside-work-tree` answers false when the
+// redirect points away from target.path, which only makes IsGitRepo's callers skip
+// their checks. The consequences are collection and writes outside the target:
+// git-diff/pr mode's `git diff` / `ls-files` report the redirected tree's contents
+// as the review material (a redirect at ~ hands a reviewer the home directory),
+// and a directory fix round's `git add`/`git commit` stage and commit files from
+// it.
+//
+// core.worktree is NOT inherently hostile -- git sets it in every submodule
+// checkout, where it names the submodule's own directory -- so this asks git for
+// the effective root and judges the RESULT rather than refusing the key outright.
+// A root that IS target.path is always fine (plain checkout, submodule, linked
+// worktree). A root ABOVE target.path is fine only when git discovered it by
+// walking up from target.path, which is the supported "target.path is a
+// subdirectory of its repository" case; the same shape produced by a repo-local
+// core.worktree is an escape, since `core.worktree = /` would quietly make the
+// whole filesystem the tree while target.path stays inside it. Anything else is
+// an escape whatever config shape produced it -- including GIT_WORK_TREE.
+//
+// Like IsGitRepo, only a CONFIRMED "no work tree here" answer -- no repository, or
+// a bare one -- is a clean empty result; an unanswered probe is an error, because
+// a security check that silently passes when git could not be run is no check.
+func (c *Collector) WorktreeOutOfScope(ctx context.Context) (string, error) {
+	out, err := c.git(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		if ctx.Err() == nil && (notARepository(err) || noWorkTree(err) || errors.Is(err, exec.ErrNotFound)) {
+			return "", nil
+		}
+		return "", fmt.Errorf("determine the work tree git would use for %s: %w", c.cfg.Path, err)
+	}
+	top := strings.TrimSpace(out)
+	if top == "" {
+		return "", nil
+	}
+	// Compare canonical paths: target.path may sit under a symlinked parent
+	// (/tmp -> /private/tmp) and git reports the root it resolved, so the raw
+	// strings can differ for the very same directory.
+	root, err := filepath.EvalSymlinks(c.cfg.Path)
+	if err != nil {
+		return "", fmt.Errorf("resolve target.path %s: %w", c.cfg.Path, err)
+	}
+	// A root that cannot even be resolved is not target.path, and stays out of
+	// scope: guessing where it points is the wrong way to be wrong.
+	canonicalTop, resolveErr := filepath.EvalSymlinks(top)
+	inScope := resolveErr == nil && canonicalTop == root
+	if resolveErr == nil && !inScope {
+		// Not the target itself, so the only remaining legitimate shape is the
+		// walked-up repository root above a subdirectory target. A repo-local
+		// core.worktree rules that reading out: with one set, the root git reports
+		// is the configured one, not a discovered one.
+		configured, err := c.hasRepoWorktreeOverride(ctx)
+		if err != nil {
+			return "", err
+		}
+		inner, relErr := filepath.Rel(canonicalTop, root)
+		inScope = !configured && relErr == nil &&
+			inner != ".." && !strings.HasPrefix(inner, ".."+string(filepath.Separator))
+	}
+	if inScope {
+		return "", nil
+	}
+	return top, nil
+}
+
+// hasRepoWorktreeOverride reports whether the repository itself sets
+// core.worktree, i.e. whether the work-tree root git reports was configured by
+// the target rather than discovered by walking up from target.path.
+func (c *Collector) hasRepoWorktreeOverride(ctx context.Context) (bool, error) {
+	keys, err := c.repoScopedConfigKeys(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(keys, "core.worktree"), nil
+}
+
+// noWorkTree reports whether a failed git command failed because the repository
+// has no work tree (a bare repository), as opposed to failing for any other
+// reason. Like notARepository, this is a confirmed answer rather than a fault.
+func noWorkTree(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 128 {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "must be run in a work tree")
 }
 
 // remoteOrigin is git's conventional default remote name, used as the
@@ -1418,6 +1516,29 @@ func unsafeConfigKey(key string) bool {
 // (--show-scope needs git >= 2.26; older git makes every entry unattributable, so
 // this fails closed rather than degrading to the --local blind spot above.)
 func (c *Collector) UnsafeConfig(ctx context.Context) ([]string, error) {
+	all, err := c.repoScopedConfigKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, key := range all {
+		if unsafeConfigKey(key) && !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
+// repoScopedConfigKeys lists the config keys the REPOSITORY itself supplies, in
+// file order and with duplicates kept (a key may be set more than once). It is
+// the shared parse behind UnsafeConfig and the core.worktree check in
+// WorktreeOutOfScope; see UnsafeConfig for why the listing must expand includes
+// and cover the worktree scope, and why the scope filter is what keeps the
+// operator's own global settings from reading as the target's.
+func (c *Collector) repoScopedConfigKeys(ctx context.Context) ([]string, error) {
 	// -z with --show-scope: NUL-separated fields alternating "scope" then
 	// "key\nvalue" (a valueless key is just "key"). A real repo always has at
 	// least the default core.* entries, so a git repo yields a non-error result.
@@ -1426,7 +1547,6 @@ func (c *Collector) UnsafeConfig(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("inspect target git config: %w", err)
 	}
 	fields := strings.Split(out, "\x00")
-	seen := map[string]bool{}
 	var keys []string
 	for i := 0; i+1 < len(fields); i += 2 {
 		scope, entry := fields[i], fields[i+1]
@@ -1440,12 +1560,8 @@ func (c *Collector) UnsafeConfig(ctx context.Context) ([]string, error) {
 		if nl := strings.IndexByte(entry, '\n'); nl >= 0 {
 			key = entry[:nl]
 		}
-		if unsafeConfigKey(key) && !seen[key] {
-			seen[key] = true
-			keys = append(keys, key)
-		}
+		keys = append(keys, key)
 	}
-	sort.Strings(keys)
 	return keys, nil
 }
 

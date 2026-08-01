@@ -1604,6 +1604,124 @@ func TestUnsafeConfig(t *testing.T) {
 	})
 }
 
+// A repo-local core.worktree points git's work tree somewhere else while .git
+// stays put, so every git command fixpoint runs -- diff and ls-files during
+// collection, add/commit during a fix round -- operates on that other directory
+// while target.path still looks like an ordinary checkout. Nothing else on the
+// preflight sees it: it executes no program (so unsafeConfigKey has no business
+// flagging it), and `rev-parse --show-prefix` is empty at the redirected root, so
+// AtRepoRoot passes. WorktreeOutOfScope is the check, and it must judge the
+// EFFECTIVE root rather than the key, because git sets core.worktree in every
+// legitimate submodule checkout.
+func TestWorktreeOutOfScope(t *testing.T) {
+	t.Run("plain repository is in scope", func(t *testing.T) {
+		repo := gitRepo(t)
+		got, err := New(config.Target{Path: repo}).WorktreeOutOfScope(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "" {
+			t.Fatalf("WorktreeOutOfScope() = %q, want \"\" for an ordinary checkout", got)
+		}
+	})
+
+	// target.path is allowed to be a subdirectory of its repository (review-only
+	// modes support it), and there the root git reports is legitimately an
+	// ancestor. Refusing that would break every subdirectory target.
+	t.Run("subdirectory of the repository is in scope", func(t *testing.T) {
+		repo := gitRepo(t)
+		writeFile(t, repo, "sub/f.go", "package sub\n")
+		got, err := New(config.Target{Path: filepath.Join(repo, "sub")}).WorktreeOutOfScope(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "" {
+			t.Fatalf("WorktreeOutOfScope() = %q, want \"\" for a subdirectory of the repository", got)
+		}
+	})
+
+	// The canonical root is what gets compared: an operator whose target.path runs
+	// through a symlinked parent (~/work -> /mnt/src, /tmp -> /private/tmp) must
+	// not be told their work tree escaped.
+	t.Run("symlinked target.path is in scope", func(t *testing.T) {
+		repo := gitRepo(t)
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(repo, link); err != nil {
+			t.Fatal(err)
+		}
+		got, err := New(config.Target{Path: link}).WorktreeOutOfScope(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "" {
+			t.Fatalf("WorktreeOutOfScope() = %q, want \"\" when target.path reaches the repository through a symlink", got)
+		}
+	})
+
+	// The attack: .git stays at target.path, the work tree is somewhere else
+	// entirely. git then reports that directory's files as the repository's.
+	t.Run("redirect to an unrelated directory is reported", func(t *testing.T) {
+		repo := gitRepo(t)
+		elsewhere := t.TempDir()
+		writeFile(t, elsewhere, "secret.txt", "token\n")
+		git(t, repo, "config", "core.worktree", elsewhere)
+
+		// Prove the redirect really does divert collection, so this test fails if
+		// the check is removed rather than passing on an inert setting.
+		if out := git(t, repo, "ls-files", "--others", "--exclude-standard"); !strings.Contains(out, "secret.txt") {
+			t.Fatalf("git ls-files = %q, want it to list the redirected tree's files", out)
+		}
+
+		got, err := New(config.Target{Path: repo}).WorktreeOutOfScope(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == "" {
+			t.Fatal("WorktreeOutOfScope() = \"\", want the redirected work tree reported")
+		}
+		if !strings.HasSuffix(got, filepath.Base(elsewhere)) {
+			t.Errorf("WorktreeOutOfScope() = %q, want the redirected root %q", got, elsewhere)
+		}
+	})
+
+	// A redirect to an ANCESTOR of target.path wears the same shape as the
+	// legitimate subdirectory case above -- target.path sits inside the reported
+	// root -- so containment alone would wave it through, while `core.worktree = /`
+	// quietly makes the whole filesystem the tree. A repo-local core.worktree is
+	// what tells the two apart: with one set, the root was configured, not
+	// discovered.
+	t.Run("redirect to an ancestor of the target is reported", func(t *testing.T) {
+		repo := gitRepo(t)
+		parent := filepath.Dir(repo)
+		git(t, repo, "config", "core.worktree", parent)
+
+		got, err := New(config.Target{Path: repo}).WorktreeOutOfScope(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == "" {
+			t.Fatalf("WorktreeOutOfScope() = \"\", want the redirect to %q reported", parent)
+		}
+	})
+
+	// Neither shape is a work tree at all, so there is nothing to escape from and
+	// the caller must not be handed a refusal (or an error) for it: a directory
+	// target that is not a repository is an ordinary review.
+	t.Run("no work tree is not an escape", func(t *testing.T) {
+		bare := t.TempDir()
+		git(t, bare, "init", "-q", "--bare")
+		for name, path := range map[string]string{"bare repository": bare, "plain directory": t.TempDir()} {
+			got, err := New(config.Target{Path: path}).WorktreeOutOfScope(t.Context())
+			if err != nil {
+				t.Fatalf("%s: WorktreeOutOfScope() err = %v", name, err)
+			}
+			if got != "" {
+				t.Errorf("%s: WorktreeOutOfScope() = %q, want \"\"", name, got)
+			}
+		}
+	})
+}
+
 // The diff embeds full file CONTENT into every reviewer prompt and into the
 // on-disk artifacts, so the mandatory credential excludes matter more here than
 // in directory mode -- which only ever emits a list of paths. A PR that adds a
