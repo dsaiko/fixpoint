@@ -204,6 +204,79 @@ func TestRunCheckReportsGitDiffScope(t *testing.T) {
 	}
 }
 
+// --check points git at the target -- `git diff` in git-diff mode, `git ls-files`
+// in directory mode -- so it must clear the same target-integrity gates a real
+// run does, even though it invokes no agent. It is the command an operator is
+// told to run FIRST against an unfamiliar checkout, and a repo-supplied
+// filter.<name>.clean is a program git runs itself while normalizing the worktree
+// for that diff: gitSafeConfig cannot neutralize it (the name is dynamic), so a
+// --check exempt from the gate would execute repo-controlled code with fixpoint's
+// inherited environment before any lock, trust gate, or agent.
+func TestRunCheckAppliesTargetGuards(t *testing.T) {
+	// gitDiff returns a fixture and a git-diff config whose base_ref resolves:
+	// GitRepo commits once, and HEAD~1 needs a second commit to point at.
+	gitDiff := func(t *testing.T) (*fixture, string) {
+		t.Helper()
+		f := newFixture(t)
+		if err := os.WriteFile(filepath.Join(f.repo, "second.go"), []byte("package main\n\nfunc second() {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		testfixture.GitRun(t, f.repo, "add", "-A")
+		testfixture.GitRun(t, f.repo, "commit", "-qm", "second")
+		cfg := f.configFile("git-diff", "  base_ref: HEAD~1\n", "")
+		return f, cfg
+	}
+
+	t.Run("repo-supplied git config refused without -trusted-target", func(t *testing.T) {
+		f, cfg := gitDiff(t)
+		testfixture.GitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+		var buf bytes.Buffer
+		if got := run([]string{"-config", cfg, "-check"}, &buf, &buf); got != 1 {
+			t.Fatalf("run(-check) = %d, want 1 for a target with repo-supplied git config; stderr:\n%s", got, buf.String())
+		}
+		for _, want := range []string{"filter.evil.clean", "-trusted-target"} {
+			if !strings.Contains(buf.String(), want) {
+				t.Errorf("stderr missing %q:\n%s", want, buf.String())
+			}
+		}
+		// The gate is only worth anything if it precedes the estimate: the estimate
+		// is what runs git diff over the worktree.
+		if strings.Contains(buf.String(), "scope:") {
+			t.Errorf("the refusal must come before the scope estimate:\n%s", buf.String())
+		}
+	})
+	t.Run("repo-supplied git config warns with -trusted-target", func(t *testing.T) {
+		f, cfg := gitDiff(t)
+		testfixture.GitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+		var buf bytes.Buffer
+		if got := run([]string{"-config", cfg, "-check", "-trusted-target"}, &buf, &buf); got != 0 {
+			t.Fatalf("run(-check -trusted-target) = %d, want 0; stderr:\n%s", got, buf.String())
+		}
+		if !strings.Contains(buf.String(), "WARNING") || !strings.Contains(buf.String(), "filter.evil.clean") {
+			t.Errorf("asserted trust must still warn which repo-supplied config git would run:\n%s", buf.String())
+		}
+		if !strings.Contains(buf.String(), "scope:") {
+			t.Errorf("the estimate must still be reported once trust is asserted:\n%s", buf.String())
+		}
+	})
+	// The redirect guard is not trust-gated: -trusted-target says "I trust this
+	// checkout's content", never "report on a different directory than the one I
+	// named".
+	t.Run("redirected work tree refused even with -trusted-target", func(t *testing.T) {
+		f := newFixture(t)
+		elsewhere := t.TempDir()
+		testfixture.GitRun(t, f.repo, "config", "core.worktree", elsewhere)
+		var buf bytes.Buffer
+		cfg := f.configFile("directory", "", "  review_only: true")
+		if got := run([]string{"-config", cfg, "-check", "-trusted-target"}, &buf, &buf); got != 1 {
+			t.Fatalf("run(-check) = %d, want 1 for a redirected work tree; stderr:\n%s", got, buf.String())
+		}
+		if !strings.Contains(buf.String(), "core.worktree") || !strings.Contains(buf.String(), elsewhere) {
+			t.Errorf("the refusal must name the redirect and the tree it points at (%s):\n%s", elsewhere, buf.String())
+		}
+	})
+}
+
 func TestRunCheckLive(t *testing.T) {
 	// -check-live pings the write-capable coder, so it must clear the same
 	// fix-round trust gate a real run does; -trusted-target satisfies it for a

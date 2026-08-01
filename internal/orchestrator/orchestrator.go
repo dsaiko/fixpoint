@@ -358,11 +358,7 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 		return err
 	}
 
-	if err := o.guardRedirectedWorktree(ctx); err != nil {
-		return err
-	}
-
-	if err := o.guardUntrustedGitConfig(ctx); err != nil {
+	if err := o.PreflightGuards(ctx); err != nil {
 		return err
 	}
 
@@ -1060,6 +1056,26 @@ func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 		return nil, err
 	}
 	return release, nil
+}
+
+// PreflightGuards runs the two target-integrity gates that must hold before
+// fixpoint points git at the target at all: the work-tree redirect check and the
+// repo-supplied-git-config trust gate. It exists as its own entry point because
+// -check reaches the target WITHOUT going through run() -- Scope runs the same
+// commands collection does (`git diff` in git-diff mode, `git ls-files` in
+// directory mode), so a repo-supplied filter.<name>.clean would run as a program,
+// with fixpoint's inherited environment, from the one command documented as
+// invoking no agent, and a core.worktree redirect would make the estimate
+// describe a tree outside the target.
+//
+// Both guards are read-only (`git rev-parse --show-toplevel`, `git config
+// --list`), take no lock and mutate nothing, so they are safe on that
+// non-mutating path.
+func (o *Orchestrator) PreflightGuards(ctx context.Context) error {
+	if err := o.guardRedirectedWorktree(ctx); err != nil {
+		return err
+	}
+	return o.guardUntrustedGitConfig(ctx)
 }
 
 // guardRedirectedWorktree refuses a target whose git work tree is not the target

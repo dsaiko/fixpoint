@@ -134,20 +134,7 @@ Flags:
 	defer stop()
 
 	if *check {
-		// The scope line is the point of running --check against a real target: a
-		// base_ref that resolves to the wrong commit is a VALID configuration, so
-		// validation alone cannot catch it and the run's first round would spend real
-		// money reviewing the wrong diff. A base that does not resolve at all fails
-		// here rather than at round 1.
-		scope, err := o.Scope(ctx)
-		if err != nil {
-			logf("target: %v", err)
-			return 1
-		}
-		logf("scope: %s", scope)
-		logf("configuration OK: %d review lens(es), coder %s, strategy %s",
-			len(cfg.Roles.Review.Prompts), cfg.Roles.Coder.Agent, cfg.Roles.Review.Strategy)
-		return 0
+		return checkOnly(ctx, o, cfg, logf)
 	}
 
 	if *checkLive {
@@ -206,6 +193,34 @@ Flags:
 		logf("no changes were made: the coder rejected every finding this round")
 	}
 	return model.ExitCode(sum.Termination)
+}
+
+// checkOnly implements --check: report how much material a run would review
+// against the real target, then exit without invoking an agent.
+func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Config, logf func(string, ...any)) int {
+	// The estimate below runs git against the target, so it needs the same
+	// target-integrity gates a real run applies before its first git command:
+	// otherwise the command documented as invoking no agent is the one that runs a
+	// repo-supplied filter.<name>.clean while git normalizes the worktree for the
+	// diff, or that reports on whatever tree a core.worktree redirect points at.
+	if err := o.PreflightGuards(ctx); err != nil {
+		logf("target: %v", err)
+		return 1
+	}
+	// The scope line is the point of running --check against a real target: a
+	// base_ref that resolves to the wrong commit is a VALID configuration, so
+	// validation alone cannot catch it and the run's first round would spend real
+	// money reviewing the wrong diff. A base that does not resolve at all fails
+	// here rather than at round 1.
+	scope, err := o.Scope(ctx)
+	if err != nil {
+		logf("target: %v", err)
+		return 1
+	}
+	logf("scope: %s", scope)
+	logf("configuration OK: %d review lens(es), coder %s, strategy %s",
+		len(cfg.Roles.Review.Prompts), cfg.Roles.Coder.Agent, cfg.Roles.Review.Strategy)
+	return 0
 }
 
 // newRunLogger is the constructor run() uses for its writers. It is a variable
