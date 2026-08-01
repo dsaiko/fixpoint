@@ -56,8 +56,15 @@ type Loaded struct {
 // itself trustworthy; a trust gate is therefore an assertion the operator makes
 // per invocation, which only a flag can express.
 type Overrides struct {
-	ReviewOnly        bool
-	MaxIterations     int
+	ReviewOnly    bool
+	MaxIterations int
+	// BaseRef overrides target.base_ref in git-diff mode. Unlike the other
+	// overrides this one names WHAT gets reviewed rather than relaxing a limit,
+	// and it exists because the base is the one setting that legitimately differs
+	// per invocation: fix-branch defaults to `@{upstream}...`, which a branch that
+	// has never been pushed does not have, and editing YAML to review a branch is
+	// not a workflow.
+	BaseRef           string
 	AllowUntrustedFix bool
 	TrustedTarget     bool
 }
@@ -82,6 +89,12 @@ func (o Overrides) apply(c *Config) {
 	if o.MaxIterations != 0 {
 		c.Loop.MaxIterations = o.MaxIterations
 	}
+	// Empty stays "use config": clearing a base_ref would silently turn a fix run
+	// into an unstaged-changes review, which Validate then rejects for a reason the
+	// operator never asked for.
+	if o.BaseRef != "" {
+		c.Target.BaseRef = o.BaseRef
+	}
 }
 
 // Applied names the overrides that changed the configuration, for the run log.
@@ -100,6 +113,11 @@ func (o Overrides) Applied() []string {
 	}
 	if o.MaxIterations != 0 {
 		out = append(out, "max_iterations="+strconv.Itoa(o.MaxIterations))
+	}
+	if o.BaseRef != "" {
+		// Worth recording above all the others: it decides WHAT was reviewed, so a
+		// summary that omitted it would describe findings without their scope.
+		out = append(out, "base_ref="+o.BaseRef)
 	}
 	return out
 }

@@ -54,6 +54,7 @@ Flags:
 	cfgPath := fs.String("config", "", "path to a config file (alternative to the positional name)")
 	reviewOnly := fs.Bool("review-only", false, "run exactly one review round; never invoke the coder")
 	maxIter := fs.Int("max-iterations", 0, "override loop.max_iterations (0 = use config)")
+	baseRef := fs.String("base-ref", "", "override target.base_ref in git-diff mode; a trailing \"...\" means the merge base with HEAD (empty = use config)")
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
@@ -103,6 +104,7 @@ Flags:
 	loaded, err := config.LoadBundle(resolver, name, projectRoot, config.Overrides{
 		ReviewOnly:        *reviewOnly,
 		MaxIterations:     *maxIter,
+		BaseRef:           *baseRef,
 		AllowUntrustedFix: *allowUntrustedFix,
 		TrustedTarget:     *trustedTarget,
 	})

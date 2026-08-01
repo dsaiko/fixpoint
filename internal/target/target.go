@@ -55,20 +55,54 @@ func New(cfg config.Target) *Collector { return &Collector{cfg: cfg} }
 // An empty rel (logs live outside the target) disables the exclusion.
 func (c *Collector) ExcludeLogs(rel string) { c.logsExclude = rel }
 
+// resolveBase turns target.base_ref into the concrete commit the whole run diffs
+// against.
+//
+// A trailing "..." asks for the MERGE BASE of that ref and HEAD, git's own
+// notation for "what this branch added". Without it the ref's TIP is used, which
+// is the same commit only while the base branch has not moved: once it gains a
+// commit this branch does not have, diffing against its tip renders that commit
+// backwards, and the panel spends a round reviewing someone else's work presented
+// as deletions this branch made.
+//
+// The suffix lives on base_ref rather than in a second key because the two are one
+// decision -- which commit is the base -- and a key that silently does nothing
+// unless another key is set is a worse thing to explain. `git rev-parse
+// origin/main...HEAD` cannot serve here either: it prints three lines, so the
+// pinned base would be a multi-line string and every later `git diff` against it
+// would fail.
+func (c *Collector) resolveBase(ctx context.Context, ref string) (string, error) {
+	base, mergeBase := strings.CutSuffix(ref, "...")
+	if mergeBase {
+		if base == "" {
+			return "", fmt.Errorf("base_ref %q names no ref before the \"...\"", ref)
+		}
+		out, err := c.git(ctx, "merge-base", base, "HEAD")
+		if err != nil {
+			return "", fmt.Errorf("resolve merge base of base_ref %q and HEAD: %w: %s", base, err, out)
+		}
+		return strings.TrimSpace(out), nil
+	}
+	sha, err := c.git(ctx, "rev-parse", ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve base_ref %q: %w", ref, err)
+	}
+	return strings.TrimSpace(sha), nil
+}
+
 // Prepare runs once at startup: resolves and pins the diff base (git-diff),
 // or checks out the PR branch and pins its merge base (pr).
 func (c *Collector) Prepare(ctx context.Context) error {
 	switch c.cfg.Mode {
 	case config.ModeGitDiff:
-		ref := c.cfg.BaseRef
-		if ref == "" {
+		if c.cfg.BaseRef == "" {
 			return nil // unstaged working changes; nothing to pin
 		}
-		sha, err := c.git(ctx, "rev-parse", ref)
+		sha, err := c.resolveBase(ctx, c.cfg.BaseRef)
 		if err != nil {
-			return fmt.Errorf("resolve base_ref %q: %w", ref, err)
+			return err
 		}
-		c.baseSHA = strings.TrimSpace(sha)
+		c.baseSHA = sha
 	case config.ModePR:
 		if _, err := c.git(ctx, "rev-parse", "--git-dir"); err != nil {
 			return fmt.Errorf("target.path is not a git repository (mode pr): %w", err)

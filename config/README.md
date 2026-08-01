@@ -64,6 +64,7 @@ and in shell completion. The scope says what is examined.
 | `review-code` | Review a whole project once, no edits. Needs `-trusted-target` if the project ships its own bundle. |
 | `review-pr` | Review a GitHub pull request; review-only by default. |
 | `fix-code` | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
+| `fix-branch` | The same loop over only what this branch changed (git-diff against the merge base with `@{upstream}`). Needs `-trusted-target`. |
 | `defaults` | Shared base — not runnable on its own; `fixpoint --list` marks it as such. Inherit it with `extends: defaults`. |
 
 Keep new configs in the scheme: `fix-tests`, `review-design`, `fix-design`. A

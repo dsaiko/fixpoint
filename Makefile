@@ -9,7 +9,7 @@ GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v
 STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live run review-code clean clean-logs help
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live run review-code fix-branch clean clean-logs help
 
 all: build
 
@@ -87,6 +87,13 @@ run: build test vet
 ## review-code: run a single review round; the coder is never invoked
 review-code: build
 	./$(BINARY) review-code --trusted-target
+
+## fix-branch: run the full cycle over only what this branch changed
+## Needs an upstream (`git push -u`); without one pass a base yourself, keeping
+## the dots that ask for the merge base:
+##   ./fixpoint fix-branch -base-ref 'origin/develop...' --trusted-target
+fix-branch: build test vet
+	./$(BINARY) fix-branch --trusted-target
 
 ## clean: remove the built binary and coverage artifacts
 clean:

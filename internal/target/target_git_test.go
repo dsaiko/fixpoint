@@ -165,6 +165,78 @@ func TestPrepareGitDiffBadRef(t *testing.T) {
 	}
 }
 
+// A trailing "..." pins the MERGE BASE of the ref and HEAD, which is the only
+// correct base for "what did this branch change" once the base branch has moved.
+// Against the branch TIP the commits this branch does not have appear REVERSED --
+// the panel would review someone else's work as deletions this branch made, which
+// with two machines pushing to one repo happens within hours.
+func TestPrepareGitDiffMergeBaseIgnoresCommitsOnlyOnTheBase(t *testing.T) {
+	repo := gitRepo(t)
+	base := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	// Whatever `git init` named it: init.defaultBranch is user config, so master
+	// and main are both possible and neither may be hard-coded here.
+	trunk := strings.TrimSpace(git(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	git(t, repo, "checkout", "-qb", "feature")
+	writeFile(t, repo, "mine.go", "package main\n\nfunc mine() {}\n")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "mine")
+	// The base branch gains a commit this branch does not have.
+	git(t, repo, "checkout", "-q", trunk)
+	writeFile(t, repo, "theirs.go", "package main\n\nfunc theirs() {}\n")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-qm", "theirs")
+	git(t, repo, "checkout", "-q", "feature")
+
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: trunk + "..."})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if c.baseSHA != base {
+		t.Fatalf("pinned base = %s, want the merge base %s", c.baseSHA, base)
+	}
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(material, "func mine()") {
+		t.Errorf("the branch's own change is missing from the diff:\n%s", material)
+	}
+	if strings.Contains(material, "theirs") {
+		t.Errorf("a commit only on the base branch reached the diff; it would be reviewed backwards:\n%s", material)
+	}
+
+	// Without the dots the same ref pins the TIP, and the base-only commit shows up
+	// as a deletion -- the behavior the suffix exists to avoid.
+	tip := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: trunk})
+	if err := tip.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if tip.baseSHA == c.baseSHA {
+		t.Fatal("tip and merge base resolved to the same commit; the fixture did not diverge")
+	}
+	tipMaterial, err := tip.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tipMaterial, "theirs") {
+		t.Errorf("tip semantics should show the base-only commit reversed, so this test is not pinning what it claims:\n%s", tipMaterial)
+	}
+}
+
+func TestPrepareGitDiffMergeBaseErrors(t *testing.T) {
+	// Nothing before the dots is operator error, not a ref lookup.
+	c := New(config.Target{Mode: "git-diff", Path: gitRepo(t), BaseRef: "..."})
+	if err := c.Prepare(t.Context()); err == nil || !strings.Contains(err.Error(), "names no ref") {
+		t.Fatalf("Prepare() = %v, want a names-no-ref error", err)
+	}
+	// An unknown ref before the dots reports the merge-base failure, not a silent
+	// fall back to reviewing the whole tree.
+	c = New(config.Target{Mode: "git-diff", Path: gitRepo(t), BaseRef: "no-such-ref..."})
+	if err := c.Prepare(t.Context()); err == nil || !strings.Contains(err.Error(), "merge base") {
+		t.Fatalf("Prepare() = %v, want a merge-base error", err)
+	}
+}
+
 func TestCollectGitDiffUnstaged(t *testing.T) {
 	repo := gitRepo(t)
 	c := New(config.Target{Mode: "git-diff", Path: repo}) // empty base_ref

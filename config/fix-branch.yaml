@@ -1,0 +1,85 @@
+# The review -> fix -> verify -> commit loop over WHAT THIS BRANCH CHANGED,
+# rather than the whole project. Same loop as fix-code, narrower material.
+#
+# The fix- prefix means this config edits your files, so it needs
+# -trusted-target for the same reason fix-code does: the coder edits with
+# permission checks disabled and is not confined to the diff, so a
+# prompt-injection payload in ANY reviewed hunk could steer it. Your own branch
+# usually qualifies; a branch you pulled from someone else does not -- use
+# review-pr for that, which is review-only by default.
+description: Review, fix, verify, and commit this branch's changes. Needs -trusted-target.
+
+extends: defaults
+
+target:
+  mode: git-diff
+
+  # The MERGE BASE of the upstream branch and HEAD -- see the trailing "...",
+  # which is git's own notation for it and is resolved once at run start.
+  #
+  # The three dots are the whole point. Against a bare `@{upstream}` the diff is
+  # taken from the upstream TIP, which is the same commit only while nobody has
+  # pushed since you branched. The moment upstream gains a commit you do not have,
+  # that commit appears in the diff BACKWARDS -- and the panel spends a round
+  # reviewing someone else's work rendered as deletions you made. With two
+  # machines pushing to one repo that is a matter of hours, not months.
+  #
+  # @{upstream} rather than a hard-coded branch name so this config is not
+  # specific to one repository's trunk. It needs the branch to have an upstream
+  # set (`git push -u`); on a branch that has never been pushed, override it on
+  # the command line with the branch you forked from, keeping the dots:
+  #
+  #     fixpoint fix-branch -base-ref 'origin/main...' -trusted-target
+  base_ref: "@{upstream}..."
+
+roles:
+  coder: { agent: claude-coder, prompt: fix }
+  review:
+    strategy: rotate
+    agents: [codex, claude, kimi, glm]
+    prompts:
+      - review-bugs
+      - review-security
+      - review-concurrency
+
+      # Coverage of what the branch changed, on the finished tree -- the same
+      # reasoning as fix-code: asked inside the loop it assesses work later rounds
+      # rewrite. It fits a branch diff better than anything else here, because
+      # "what did this branch add, and is it tested" is exactly the question.
+      - { prompt: review-tests, final: true }
+
+      # Advisory: reported for a human, never handed to the coder. Pinned and
+      # final, so it is one report on the code that shipped rather than one per
+      # round. See fix-code.yaml for the full argument.
+      - { agent: claude, prompt: review-maintainability, advisory: true, final: true }
+
+# review-design is deliberately ABSENT, unlike fix-code. It judges the
+# architecture, and a branch diff is the wrong evidence for that: it shows what
+# moved, not the shape it moved within, so the report would either restate the
+# diff or reason about a structure it was never shown. Run review-code when you
+# want that lens.
+
+# Fewer rounds than fix-code's five. A branch diff is a bounded amount of
+# material, so the panel runs out of genuine findings sooner -- and the rounds
+# after that are the expensive ones, where reviewers re-read a shrinking set of
+# real problems. Raise it with -max-iterations for a long-running branch.
+loop:
+  max_iterations: 3
+
+# The deterministic gate. Identical to fix-code on purpose: a fix is committed
+# only if the WHOLE project still builds and passes, never merely the files the
+# branch touched. A change confined to one package can break another, and a gate
+# scoped to the diff would not see it.
+verify:
+  policy: no_regressions
+  timeout: 15m
+  commands:
+    - name: fmt
+      run: [make, fmt-check]
+    - name: vet
+      run: [go, vet, ./...]
+    - name: test
+      run: [go, test, ./...]
+    - name: lint
+      run: [make, lint]
+      optional: true # informative: a pre-existing lint debt should not block a fix
