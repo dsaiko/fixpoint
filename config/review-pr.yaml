@@ -11,7 +11,7 @@ extends: defaults
 
 target:
   mode: pr
-  pr: 0 # set on the command line by copying this config, or edit here
+  pr: 0 # placeholder: pass -pr <number> on the command line, or edit here
 
 roles:
   coder: { agent: claude-coder, prompt: fix }

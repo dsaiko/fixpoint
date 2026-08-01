@@ -84,7 +84,7 @@ What gets reviewed is controlled by `target.mode`:
 |---|---|
 | `directory` | Every file under `target.path` except what `.gitignore` and the `exclude` globs remove. Scope is denylist-only — there is no allowlist option, since one has to be re-derived per language and silently hides whatever it forgets. |
 | `git-diff` | Changes relative to `target.base_ref`. The base is resolved to a concrete commit once at run start, so per-round fix commits extend the reviewed diff instead of shrinking it. A trailing `...` (`origin/main...`) pins the **merge base** with HEAD instead of the ref's tip — what this branch added, which is what `fix-branch` uses. Without it, any commit the base branch has and yours does not appears in the diff *reversed*, and the panel reviews someone else's work as deletions you made. Empty `base_ref` reviews unstaged working changes, so it is review-only: a fix run needs a base ref (it starts from a clean tree, which makes the unstaged diff empty) and is rejected at validation without one. |
-| `pr` | A GitHub pull request. The PR branch is checked out locally (`gh pr checkout`) and reviewed against its base, so fixes land in the working tree and later rounds review them too. Pushing fixes back is manual. |
+| `pr` | A GitHub pull request, named by `target.pr` or per run with `-pr`. The PR branch is checked out locally (`gh pr checkout`) and reviewed against its base, so fixes land in the working tree and later rounds review them too. Pushing fixes back is manual. |
 
 Fix rounds require `target.path` to be a git repository with a clean working
 tree at run start (in every mode); `review_only` runs anywhere.
@@ -484,6 +484,7 @@ Or directly:
 | `-review-only` | Run exactly one review round; the coder is never invoked (no edits in git-diff/directory mode; pr mode still runs `gh pr checkout`, switching the branch and working tree in Prepare). |
 | `-max-iterations n` | Override `loop.max_iterations`. |
 | `-base-ref ref` | Override `target.base_ref` in git-diff mode; a trailing `...` means the merge base with HEAD. For `fix-branch` on a branch with no upstream: `-base-ref 'origin/main...'`. |
+| `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. |
 | `-trusted-target` | Assert a directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without it). |
 | `-allow-untrusted-fix` | Permit fix rounds in `pr` mode (PR content is untrusted; see Security). |
 | `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](#choosing-a-base-in-git-diff-mode). |

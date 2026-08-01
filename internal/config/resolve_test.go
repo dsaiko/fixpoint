@@ -655,6 +655,45 @@ func TestLoadBundleNegativeMaxIterationsReachesValidate(t *testing.T) {
 	}
 }
 
+// The bundled review-pr config carries no PR number, because which pull request to
+// review is decided per invocation. Without an override that config is not runnable
+// at all -- Validate rejects a pr-mode config whose number is not positive -- so the
+// flag has to reach Target.PR before validation, not after it.
+func TestLoadBundlePROverrideMakesPRModeRunnable(t *testing.T) {
+	const prBody = "target:\n  mode: pr\n  pr: 0\nloop:\n  review_only: true\n" +
+		"roles:\n  coder: {agent: mock, prompt: fix}\n" +
+		"  review:\n    strategy: fixed\n    prompts:\n      - {agent: ro, prompt: review-bugs}\n"
+	load := func(ov Overrides) *Loaded {
+		t.Helper()
+		root := t.TempDir()
+		dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+			"review-pr": prBody,
+		}, []string{"fix", "review-bugs"}, []string{"mock"})
+		// Reviewers must be read-only, which the shared bundle helper's agents are not.
+		if err := os.WriteFile(filepath.Join(dir, agentsDir, "ro"+configExt), []byte("command: [true]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "review-pr", root, ov)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+
+	l := load(Overrides{})
+	if err := l.Validate(); err == nil || !strings.Contains(err.Error(), "target.pr") {
+		t.Fatalf("Validate() = %v, want the placeholder pr: 0 rejected", err)
+	}
+
+	l = load(Overrides{PR: 1234})
+	if l.Config.Target.PR != 1234 {
+		t.Errorf("Target.PR = %d, want the flag's 1234 to replace the placeholder", l.Config.Target.PR)
+	}
+	if err := l.Validate(); err != nil {
+		t.Errorf("Validate() = %v, want the config to be runnable once -pr supplied it a number", err)
+	}
+}
+
 // Applied is what the run log reports, so it must name every asserted override and
 // stay quiet when none were made.
 func TestOverridesApplied(t *testing.T) {
@@ -664,10 +703,11 @@ func TestOverridesApplied(t *testing.T) {
 	got := strings.Join(Overrides{
 		ReviewOnly:        true,
 		MaxIterations:     -1,
+		PR:                1234,
 		AllowUntrustedFix: true,
 		TrustedTarget:     true,
 	}.Applied(), ", ")
-	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "trusted_target=true", "max_iterations=-1"} {
+	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "trusted_target=true", "max_iterations=-1", "pr=1234"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Applied() = %q, missing %q", got, want)
 		}

@@ -32,7 +32,7 @@ var completionScripts = map[string]string{"bash": bashCompletion, "zsh": zshComp
 // from the FlagSet because the script is generated once and sourced thereafter:
 // deriving them would only be accurate until the next upgrade, which is a worse
 // kind of wrong than a list a reader can see and check.
-const completionFlags = "--list --porcelain --config --review-only --max-iterations --base-ref " +
+const completionFlags = "--list --porcelain --config --review-only --max-iterations --base-ref --pr " +
 	"--trusted-target --allow-untrusted-fix --check --check-live"
 
 const bashCompletion = `# fixpoint completion for bash. Install with:
@@ -114,6 +114,8 @@ const zshFlagPairs = `'--list:list the configs available here' ` +
 	`'--config:path to a config file instead of a bundle name' ` +
 	`'--review-only:one review round, never invoke the coder' ` +
 	`'--max-iterations:override loop.max_iterations' ` +
+	`'--base-ref:override target.base_ref in git-diff mode' ` +
+	`'--pr:override target.pr in pr mode' ` +
 	`'--trusted-target:assert the target holds trusted code, permitting fixes' ` +
 	`'--allow-untrusted-fix:permit fix rounds in pr mode' ` +
 	`'--check:validate the configuration and exit' ` +
@@ -138,6 +140,8 @@ complete -c fixpoint -l porcelain -d 'with --list, emit a tab-separated form for
 complete -c fixpoint -l config -r -d 'path to a config file instead of a bundle name'
 complete -c fixpoint -l review-only -d 'one review round, never invoke the coder'
 complete -c fixpoint -l max-iterations -r -d 'override loop.max_iterations'
+complete -c fixpoint -l base-ref -r -d 'override target.base_ref in git-diff mode'
+complete -c fixpoint -l pr -r -d 'override target.pr in pr mode'
 complete -c fixpoint -l trusted-target -d 'assert the target holds trusted code, permitting fixes'
 complete -c fixpoint -l allow-untrusted-fix -d 'permit fix rounds in pr mode'
 complete -c fixpoint -l check -d 'validate the configuration and exit'

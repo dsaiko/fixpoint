@@ -55,6 +55,7 @@ Flags:
 	reviewOnly := fs.Bool("review-only", false, "run exactly one review round; never invoke the coder")
 	maxIter := fs.Int("max-iterations", 0, "override loop.max_iterations (0 = use config)")
 	baseRef := fs.String("base-ref", "", "override target.base_ref in git-diff mode; a trailing \"...\" means the merge base with HEAD (empty = use config)")
+	pr := fs.Int("pr", 0, "override target.pr in pr mode; which PR to review is per-invocation, so review-pr ships without a number (0 = use config)")
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
@@ -105,6 +106,7 @@ Flags:
 		ReviewOnly:        *reviewOnly,
 		MaxIterations:     *maxIter,
 		BaseRef:           *baseRef,
+		PR:                *pr,
 		AllowUntrustedFix: *allowUntrustedFix,
 		TrustedTarget:     *trustedTarget,
 	})

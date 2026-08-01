@@ -64,7 +64,12 @@ type Overrides struct {
 	// per invocation: fix-branch defaults to `@{upstream}...`, which a branch that
 	// has never been pushed does not have, and editing YAML to review a branch is
 	// not a workflow.
-	BaseRef           string
+	BaseRef string
+	// PR overrides target.pr in pr mode, and exists for the same reason BaseRef
+	// does: which pull request to review is per-invocation by nature, so the
+	// bundled review-pr config carries no usable number and would otherwise have to
+	// be copied and edited once per PR.
+	PR                int
 	AllowUntrustedFix bool
 	TrustedTarget     bool
 }
@@ -95,6 +100,13 @@ func (o Overrides) apply(c *Config) {
 	if o.BaseRef != "" {
 		c.Target.BaseRef = o.BaseRef
 	}
+	// Same rule as MaxIterations: any nonzero value applies, so an explicit -pr -1
+	// is rejected by Validate rather than swallowed as "no flag supplied". Zero
+	// stays "use config", which is also the placeholder the bundled review-pr
+	// config carries.
+	if o.PR != 0 {
+		c.Target.PR = o.PR
+	}
 }
 
 // Applied names the overrides that changed the configuration, for the run log.
@@ -118,6 +130,11 @@ func (o Overrides) Applied() []string {
 		// Worth recording above all the others: it decides WHAT was reviewed, so a
 		// summary that omitted it would describe findings without their scope.
 		out = append(out, "base_ref="+o.BaseRef)
+	}
+	if o.PR != 0 {
+		// Recorded for the same reason as base_ref: in pr mode it decides WHAT was
+		// reviewed.
+		out = append(out, "pr="+strconv.Itoa(o.PR))
 	}
 	return out
 }
