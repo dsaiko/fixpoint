@@ -326,7 +326,8 @@ func (u AgentUsage) validate(name string) error {
 		// No usage block. A stray path without a format is a typo worth naming,
 		// since it reads as configured and does nothing.
 		if u.Text != "" || u.InputTokens != "" || u.OutputTokens != "" ||
-			u.CacheReadTokens != "" || u.CacheWriteTokens != "" || u.CostUSD != "" {
+			u.CacheReadTokens != "" || u.CacheWriteTokens != "" || u.CostUSD != "" ||
+			u.ErrorStatus != "" {
 			return fmt.Errorf("agents.%s: usage paths are set but usage.format is empty, so none of them are read; set format to %s",
 				name, strings.Join(usageFormats, " or "))
 		}

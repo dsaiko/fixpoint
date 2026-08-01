@@ -278,6 +278,30 @@ func TestValidate(t *testing.T) {
 			a.Env = AgentEnv{Set: map[string]string{"NOT A NAME": "x"}}
 			c.Agents["rev"] = a
 		}, "env.set"},
+		// A usage path without a format reads as configured and is never parsed,
+		// since every read of it sits behind AgentUsage.Enabled. error_status is the
+		// easy one to leave out of the check: it is the only path that feeds the
+		// provider-refusal signal rather than the token counters.
+		{"usage.error_status without format", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{ErrorStatus: "error.status"}
+			c.Agents["rev"] = a
+		}, "usage.format is empty"},
+		{"usage.input_tokens without format", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{InputTokens: "usage.input"}
+			c.Agents["rev"] = a
+		}, "usage.format is empty"},
+		{"usage.format without text", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{Format: UsageFormatJSON}
+			c.Agents["rev"] = a
+		}, "usage.text is not"},
+		{"usage block with format and text accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{Format: UsageFormatJSON, Text: "result", ErrorStatus: "error.status"}
+			c.Agents["rev"] = a
+		}, ""},
 		// A fix run in git-diff mode with no base_ref diffs only unstaged changes,
 		// and fix rounds start from a clean tree -- so that diff is always empty and
 		// every round would review nothing.
