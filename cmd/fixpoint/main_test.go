@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -329,6 +330,55 @@ func TestNotifySignalsSecondSignalForceQuits(t *testing.T) {
 	case <-quit:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the second signal was swallowed; an operator waiting on reconciliation has no way to stop the run")
+	}
+}
+
+// A signal that arrives as the run is finishing must die with the handler. stop()
+// unregisters delivery and cancels the returned context, so a handler that decided
+// "first or second interrupt?" by reading that context would see a canceled one and
+// force-quit -- turning a successful run into exit 1 for a signal the operator sent
+// once, or never (SIGTERM can arrive during ordinary shutdown).
+func TestNotifySignalsStopIgnoresQueuedSignal(t *testing.T) {
+	quit := make(chan struct{}, 1)
+	orig := forceQuit
+	forceQuit = func() { quit <- struct{}{} }
+	t.Cleanup(func() { forceQuit = orig })
+
+	// Pin the handler inside the first signal so the second one stays queued in the
+	// buffered channel until stop() has run -- the window the race lives in.
+	release := make(chan struct{})
+	var once sync.Once
+	ctx, stop := notifySignals(func(string, ...any) {
+		once.Do(func() { <-release })
+	})
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		stop()
+	}()
+	close(release)
+
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stop() never returned; teardown must not deadlock on the signal goroutine")
+	}
+	select {
+	case <-quit:
+		t.Fatal("a signal queued at teardown force-quit the process; a completed run would exit 1")
+	default:
+	}
+	// stop() may only cancel once the goroutine can no longer touch the context.
+	if ctx.Err() == nil {
+		t.Error("stop() should cancel the returned context")
 	}
 }
 

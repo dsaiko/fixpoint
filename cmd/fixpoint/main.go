@@ -227,13 +227,31 @@ func notifySignals(logf func(string, ...any)) (context.Context, func()) {
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
+		// Count the interrupts here rather than reading them back off ctx.Err(): the
+		// stop func cancels that same context, so a canceled ctx cannot tell "the
+		// operator asked twice" apart from "the run finished and tore the handler
+		// down", and mistaking the latter for a second interrupt would force-quit a
+		// successful run with exit 1.
+		handled := 0
 		for {
 			select {
 			case <-done:
 				return
 			case <-ch:
-				if ctx.Err() == nil {
+				// Teardown wins a tie. When a signal lands just as the run returns both
+				// channels are ready and select picks at random; the run is already over,
+				// so acting on that signal would either announce a pause that never
+				// happens or quit on what is really the first interrupt.
+				select {
+				case <-done:
+					return
+				default:
+				}
+				handled++
+				if handled == 1 {
 					// Name what the pause is: the run does not stop the instant the signal
 					// lands, it stops the current step and then reconciles the tree.
 					logf("interrupted: stopping after the current step, then stashing any edits so the tree is left clean -- interrupt again to quit immediately")
@@ -246,8 +264,14 @@ func notifySignals(logf func(string, ...any)) (context.Context, func()) {
 		}
 	}()
 	return ctx, func() {
+		// The order is the whole point: stop delivery, release the goroutine, and wait
+		// for it to acknowledge before canceling. Canceling while the goroutine can
+		// still run leaves it racing the caller's normal exit -- with nothing to join
+		// on, a queued signal could force-quit the process out from under a run that
+		// had already succeeded.
 		signal.Stop(ch)
 		close(done)
+		<-stopped
 		cancel()
 	}
 }
