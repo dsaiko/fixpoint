@@ -1285,20 +1285,26 @@ func (c *Collector) SquashSince(ctx context.Context, base, header, body string, 
 // commit itself, including the cancellation-recovery paths below, and so
 // SquashSince can reuse it without re-staging.
 func (c *Collector) commitStaged(ctx context.Context, header, body string) (string, error) {
-	// Capture HEAD before committing so a cancellation landing between the commit
-	// and the SHA lookup below can still be recognized as a successful commit.
-	// rev-parse fails on an unborn HEAD (an empty repo); that is a valid snapshot
-	// -- before stays "" and no prior commit exists to confuse committedSHA. But
-	// rev-parse ALSO fails if ctx is canceled mid-lookup, and then before would be
-	// "" while a prior commit DOES exist: committedSHA would compare that old HEAD
-	// against "" and misreport the pre-existing commit as newly landed. So treat a
-	// cancellation here as a real error and let the orchestrator reconcile the tree,
-	// rather than silently trusting an empty snapshot.
-	before, err := c.git(ctx, "rev-parse", "HEAD")
+	// Capture HEAD before committing so a kill landing between the commit and the
+	// SHA lookup below can still be recognized as a successful commit. The
+	// failed-commit recovery reads "HEAD is not before" as "the commit landed", so
+	// the snapshot is only usable as evidence when it is TRUSTWORTHY. HeadSHA draws
+	// exactly that line: "" with a nil error ONLY for a genuinely unborn HEAD (an
+	// empty repo), where no prior commit exists to confuse committedSHA. Every other
+	// lookup failure -- ctx canceled mid-lookup, c.git's OWN gitOpTimeout firing
+	// while the caller's ctx is still live (and so invisible to ctx.Err()), the
+	// process group killed, a broken repository -- says nothing about HEAD, and
+	// taking its empty result as a snapshot would make committedSHA compare a
+	// pre-existing HEAD against "" and misreport that old commit as newly landed.
+	before, err := c.HeadSHA(ctx)
+	// A canceled context is worth reporting as itself: the commit below cannot
+	// start, let alone land, so there is nothing to recover.
 	if err != nil && ctx.Err() != nil {
 		return "", err
 	}
-	before = strings.TrimSpace(before)
+	// Otherwise still attempt the commit -- a commit worth making must not be lost
+	// to a flaky lookup -- but remember the snapshot cannot be used as evidence.
+	usableBefore := err == nil
 	// --no-verify skips pre-commit/commit-msg hooks explicitly (gitSafeConfig
 	// already disables them via core.hooksPath, so this is belt-and-suspenders):
 	// an attacker-supplied .git/hooks must never run during a round commit.
@@ -1313,8 +1319,17 @@ func (c *Collector) commitStaged(ctx context.Context, header, body string) (stri
 		// which would drop a landed commit and let the run summary claim no commit
 		// while the commit sits in history and the tree looks clean to interruption
 		// reconciliation. A genuinely failed commit leaves HEAD put and still errors.
-		if sha := c.committedSHA(before); sha != "" { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: this one may be canceled or timed out, but a landed commit must still be recorded
-			return sha, nil
+		//
+		// Only with a usable snapshot: unlike SquashSince, which anchors its recovery
+		// on the SHA it just built, there is nothing here to compare HEAD against but
+		// before. Without a trustworthy one, "HEAD is not before" is not evidence that
+		// anything landed, and accepting it would report a PRE-EXISTING commit as this
+		// round's -- leaving the coder's staged edits in the tree and skipping
+		// reconciliation while the summary and journal claim a clean committed round.
+		if usableBefore {
+			if sha := c.committedSHA(before); sha != "" { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: this one may be canceled or timed out, but a landed commit must still be recorded
+				return sha, nil
+			}
 		}
 		return "", fmt.Errorf("git commit: %w: %s", err, out)
 	}
@@ -1330,6 +1345,11 @@ func (c *Collector) commitStaged(ctx context.Context, header, body string) (stri
 	// commit -- which would drop the SHA from the run summary and send interruption
 	// reconciliation looking for edits that are already committed. A lookup failing
 	// because the repository itself is broken recovers nothing and still errors.
+	//
+	// This path needs no usable snapshot, unlike the failed-commit one above: the
+	// commit EXITED CLEANLY, so whatever HEAD reads as now is the commit it made,
+	// and before only has to be something HEAD cannot equal (it is "" when the
+	// snapshot failed).
 	if recovered := c.committedSHA(before); recovered != "" { //nolint:contextcheck // committedSHA deliberately re-reads HEAD on a fresh context: this one may be canceled or timed out, but a landed commit must still be recorded
 		return recovered, nil
 	}

@@ -933,6 +933,52 @@ func TestCommitFailsWhenCommitFailsWithoutMovingRef(t *testing.T) {
 	}
 }
 
+// The recovery above compares HEAD against a snapshot taken BEFORE the commit, so
+// that snapshot has to be trustworthy: the pre-commit rev-parse can fail for
+// reasons that say nothing about HEAD (gitOpTimeout with the caller's ctx live, a
+// process-group kill), and reading its empty result as "no commit yet" would make
+// the PRE-EXISTING HEAD look like the commit this round just made -- a failed
+// commit reported as a landed one, with the coder's staged edits left in the tree.
+// The shim fails the snapshot lookup (exit 128, not the quiet exit 1 that means an
+// unborn branch) and then fails the commit, leaving every other lookup working.
+func TestCommitFailsWhenTheSnapshotLookupFailsAndTheCommitDoesNotLand(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh not found: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	repo := gitRepo(t)
+	binDir := t.TempDir()
+	// The pre-commit snapshot is the only `rev-parse --verify` Commit runs here;
+	// the recovery's own lookup is a plain `rev-parse HEAD` and passes through, so
+	// a recovery gated on the snapshot alone would happily return the old HEAD.
+	shim := "#!/bin/sh\n" +
+		`op=""; for a in "$@"; do case "$a" in --verify) op=verify;; commit) op=commit;; esac; done` + "\n" +
+		`if [ "$op" = verify ]; then echo "fatal: killed" >&2; exit 128; fi` + "\n" +
+		`if [ "$op" = commit ]; then echo "commit refused" >&2; exit 1; fi` + "\n" +
+		`exec "` + realGit + `" "$@"` + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(shim), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	head := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	writeFile(t, repo, "fixed.go", "package main\n")
+
+	c := New(config.Target{Path: repo})
+	sha, err := c.Commit(t.Context(), "fixpoint: round 1", "body")
+	if err == nil {
+		t.Fatalf("Commit() = %q, nil; want an error when the commit never landed", sha)
+	}
+	if sha != "" {
+		t.Errorf("Commit() SHA = %q, want empty rather than the pre-existing HEAD %q", sha, head)
+	}
+	if now := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD")); now != head {
+		t.Errorf("HEAD moved to %q, want it left at %q", now, head)
+	}
+}
+
 // SquashSince's closing `reset --soft` has the same exposure: the ref update can
 // land and the command still be cut short -- by gitOpTimeout, with the caller's
 // context live. The squash must be reported with its SHA, not lost. The shim runs
