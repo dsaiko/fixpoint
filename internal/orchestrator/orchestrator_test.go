@@ -4141,6 +4141,36 @@ func TestCommitPolicyPerRunSquashesTheWholeRun(t *testing.T) {
 	}
 }
 
+// A review-only run never commits, so per_run has nothing to collapse -- and its
+// run base is deliberately left unresolved. Squashing to that empty base would build
+// a ROOT commit from the current index and reset the branch onto it, cutting the
+// repository's history off from the branch in a run the operator asked to be
+// read-only. `-review-only` over a config that sets per_run reaches this with no YAML
+// edit at all.
+func TestCommitPolicyPerRunLeavesTheBranchAloneInAReviewOnlyRun(t *testing.T) {
+	f := newFixture(t, config.Loop{
+		MaxIterations: 3, CleanRoundsToStop: 1, ReviewOnly: true, CommitPolicy: config.CommitPerRun,
+	})
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	before := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Termination != model.TermReviewOnly {
+		t.Fatalf("termination = %q, want review-only", sum.Termination)
+	}
+	// The decisive check: a root-commit rewrite leaves the same commit COUNT, so only
+	// HEAD itself shows whether the branch was rebuilt.
+	if after := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD")); after != before {
+		t.Errorf("HEAD moved from %s to %s: a review-only run must not rewrite the branch", before, after)
+	}
+	if got := f.commitCount(); got != 1 {
+		t.Errorf("repo has %d commits, want the 1 it started with", got)
+	}
+}
+
 // A run that fails must keep its per-fix commits whatever the policy says. They are
 // how an operator sees how far it got, and rewriting history over a tree nobody
 // vouched for would destroy exactly that.

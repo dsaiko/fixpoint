@@ -463,7 +463,8 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 // in squashRun -- or "" for a run that cannot commit at all.
 //
 // Only a run that commits has a base worth resolving. A review-only run never
-// does, so squashRun has nothing to squash -- and asking for HEAD would break the
+// does, so squashRun skips itself for one rather than reading the unresolved "" as
+// an unborn branch -- and asking for HEAD would break the
 // one target that has no HEAD to give: a directory that is not a repository. That
 // target is supported on purpose (Collect falls back to a filesystem walk), which
 // is why every git probe run() makes before this point -- IsGitRepo,
@@ -501,6 +502,19 @@ func (o *Orchestrator) finishRun(ctx context.Context, sum *model.RunSummary, run
 // order to see how far the run actually got.
 func (o *Orchestrator) squashRun(ctx context.Context, sum *model.RunSummary, runBase string) error {
 	if o.cfg.Loop.CommitPolicy != config.CommitPerRun {
+		return nil
+	}
+	// A review-only run has nothing to squash, and must not reach SquashSince: it is
+	// the one case where runBase is "" for a reason other than an unborn branch, and
+	// resolveRunBase skipped resolving it precisely because such a run never commits.
+	// The head != runBase guard below cannot tell the two apart -- a run that STARTED
+	// unborn and then committed legitimately squashes onto the empty base as a root
+	// commit -- so an unguarded review-only run would rewrite the branch onto a root
+	// commit built from the current index, leaving the repository's whole history
+	// reachable only through the reflog. From a run the operator asked to be
+	// read-only. `-review-only` over a config that sets per_run is enough to get
+	// here, so the skip belongs on this side rather than in config.Validate.
+	if o.cfg.Loop.ReviewOnly {
 		return nil
 	}
 	head, err := o.collector.HeadSHA(ctx)
