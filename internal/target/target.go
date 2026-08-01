@@ -737,14 +737,22 @@ func literalPathspec(exclude []string) []string {
 func (c *Collector) HeadSHA(ctx context.Context) (string, error) {
 	out, err := c.git(ctx, "rev-parse", "--verify", "-q", "HEAD")
 	if err != nil {
-		// `rev-parse --verify -q HEAD` fails ONLY because HEAD does not resolve, which
-		// on a repository fixpoint has already locked and checked means an unborn
-		// branch -- the empty-string answer documented above. A cancellation is the one
-		// other way to get here, and the caller sees it on its next ctx check.
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		return "", nil
+		// Only the quiet not-resolvable status is an answer: under -q git exits 1 and
+		// says nothing when HEAD does not resolve, which on a repository fixpoint has
+		// already locked and checked means an unborn branch. Every other failure --
+		// a fatal (exit 128, e.g. a corrupt repository), the gitOpTimeout or a signal
+		// killing the process group (no exit status at all), git missing -- is
+		// operational and must surface. Reading one of those as "" would hand
+		// SquashSince an empty base, and it would rewrite the branch as a ROOT commit,
+		// cutting the repository's existing history off from the current branch.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("resolve HEAD: %w", err)
 	}
 	return strings.TrimSpace(out), nil
 }

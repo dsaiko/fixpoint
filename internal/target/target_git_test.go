@@ -1111,6 +1111,24 @@ func TestCommitOnUnbornBranchWithExcludedPaths(t *testing.T) {
 	}
 }
 
+// The empty base is reserved for a genuinely unborn branch: SquashSince turns it
+// into a ROOT commit, so an operational rev-parse failure reported as "" would cut
+// the repository's history off from the branch under per_round/per_run. Only git's
+// quiet exit 1 means unborn; a fatal (here, no repository at all) must surface.
+func TestHeadSHAUnbornVersusOperationalFailure(t *testing.T) {
+	unborn := t.TempDir()
+	git(t, unborn, "init", "-q")
+	sha, err := New(config.Target{Path: unborn}).HeadSHA(t.Context())
+	if err != nil || sha != "" {
+		t.Errorf("HeadSHA(unborn) = %q, %v; want \"\", nil", sha, err)
+	}
+
+	sha, err = New(config.Target{Path: t.TempDir()}).HeadSHA(t.Context())
+	if err == nil {
+		t.Errorf("HeadSHA(not a repository) = %q, nil; want an error rather than an unborn-branch answer", sha)
+	}
+}
+
 func TestStashDirty(t *testing.T) {
 	repo := gitRepo(t)
 	c := New(config.Target{Path: repo})
