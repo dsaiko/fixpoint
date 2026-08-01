@@ -109,7 +109,17 @@ var redactRules = []struct {
 	// string escape: when redaction runs over already-serialized JSON (the .json
 	// step log and the summary), a masked value must not eat the "\" of a
 	// trailing \" and leave the surrounding string quote unbalanced.
-	{regexp.MustCompile(`(?i)((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*"?)[^\s"'\\]{8,}`), "${1}" + redactionMask},
+	//
+	// The keyword and the value may each be wrapped in a quote, optionally
+	// backslash-escaped, so the JSON shapes are covered too: bare `password=v`,
+	// `"password": "v"` (a config file inside a reviewed diff), and `\"password\":
+	// \"v\"` (that same JSON once embedded in a JSON string). Without the quote
+	// after the keyword the delimiter would have to follow it directly and every
+	// quoted-key form -- the common one for an opaque password or internal token
+	// that matches none of the shape-based rules above -- would escape redaction.
+	// Only the value is masked; the captured prefix (quotes and all) is kept, so
+	// admitting the quotes here cannot unbalance anything either.
+	{regexp.MustCompile(`(?i)((?:\\?["'])?(?:api[_-]?key|secret|token|password|passwd)(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)[^\s"'\\]{8,}`), "${1}" + redactionMask},
 }
 
 // redactSecrets applies redactRules in order; later rules see already-masked

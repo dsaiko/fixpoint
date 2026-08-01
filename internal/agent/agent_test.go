@@ -181,6 +181,13 @@ func TestRawRedactsSecrets(t *testing.T) {
 		{"generic token assignment", "token=abcd1234efgh\n", "abcd1234efgh", "token="},
 		{"generic password", `password="hunter2secret"` + "\n", "hunter2secret", "password"},
 		{"generic passwd", "passwd = supersecretpw\n", "supersecretpw", "passwd"},
+		// Quoted-key (JSON) forms: a reviewed diff touching a config file carries
+		// the credential this way, and an ordinary password matches none of the
+		// shape-based rules above, so these are the only rule that can catch it.
+		{"json quoted key", `{"password": "hunter2secret"}`, "hunter2secret", `"password"`},
+		{"json quoted key no space", `{"api_key":"supersecretvalue123"}`, "supersecretvalue123", `"api_key"`},
+		{"json quoted key escaped", `"detail": "{\"password\": \"hunter2secret\"}"`, "hunter2secret", `\"password\"`},
+		{"json single quoted key", `{'secret': 'mytopsecretval'}`, "mytopsecretval", `'secret'`},
 		{"plain diagnostic untouched", "connection refused after 3 retries\n", "", "connection refused after 3 retries"},
 	}
 	for _, tc := range cases {
