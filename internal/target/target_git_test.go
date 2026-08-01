@@ -1605,6 +1605,56 @@ func TestUnsafeConfig(t *testing.T) {
 	})
 }
 
+// A content filter the OPERATOR configured globally is still a program the
+// REPOSITORY can run: .gitattributes selects a filter by name, and .gitattributes
+// is repository content (on the pr path it arrives with `gh pr checkout`, after
+// the preflight). UnsafeConfig cannot report it without refusing every target on
+// a git-lfs host, so ExternalFilterConfig reports it separately for a warning.
+func TestExternalFilterConfig(t *testing.T) {
+	t.Run("reports globally configured filters", func(t *testing.T) {
+		repo := gitRepo(t)
+		global := filepath.Join(t.TempDir(), "gitconfig")
+		// What `git lfs install` writes into ~/.gitconfig, plus a global
+		// credential.helper to show that only the attribute-selectable filters are
+		// reported -- the rest of the operator's config is genuinely theirs alone.
+		if err := os.WriteFile(global, []byte("[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n[credential]\n\thelper = store\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GIT_CONFIG_GLOBAL", global)
+		// Pin the system scope too, so a filter installed host-wide on the machine
+		// running the tests cannot make the exact-match assertion below flaky.
+		t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+		keys, err := New(config.Target{Path: repo}).ExternalFilterConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := strings.Join(keys, ","), "filter.lfs.clean,filter.lfs.process,filter.lfs.smudge"; got != want {
+			t.Errorf("ExternalFilterConfig() = %v, want exactly %q", keys, want)
+		}
+	})
+
+	// A repo-supplied filter is UnsafeConfig's business: it is refused outright,
+	// and reporting it here too would warn about a target the guard already
+	// stopped (or that the operator explicitly trusted).
+	t.Run("ignores filters the repository itself defines", func(t *testing.T) {
+		repo := gitRepo(t)
+		global := filepath.Join(t.TempDir(), "gitconfig")
+		if err := os.WriteFile(global, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GIT_CONFIG_GLOBAL", global)
+		t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+		git(t, repo, "config", "filter.evil.clean", "sh -c 'id'")
+		keys, err := New(config.Target{Path: repo}).ExternalFilterConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(keys) != 0 {
+			t.Fatalf("ExternalFilterConfig() = %v, want none: a repo-scoped filter is UnsafeConfig's to refuse", keys)
+		}
+	})
+}
+
 // A repo-local core.worktree points git's work tree somewhere else while .git
 // stays put, so every git command fixpoint runs -- diff and ls-files during
 // collection, add/commit during a fix round -- operates on that other directory

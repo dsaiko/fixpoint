@@ -1044,8 +1044,11 @@ func (o *Orchestrator) guardRedirectedWorktree(ctx context.Context) error {
 // filter during checkout. A PR cannot edit .git/config, but it does not have to:
 // it supplies the .gitattributes that SELECTS an already-configured filter, the
 // worktree script such a filter may point at, and (for git-lfs) the .lfsconfig
-// that redirects where the filter talks to. Directory review-only walks the
-// filesystem and runs no worktree-touching git command, so it has no such path.
+// that redirects where the filter talks to. That half of the path is a filter the
+// repository ACTIVATES rather than defines, so it is invisible to a repo-scoped
+// key list and is handled separately by warnActivatableFilters. Directory
+// review-only walks the filesystem and runs no worktree-touching git command, so
+// it has no such path.
 //
 // When the operator has asserted no trust we refuse; when trust IS asserted we
 // still WARN, because trusted_target/allow_untrusted_fix is documented as
@@ -1072,13 +1075,38 @@ func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(keys) == 0 {
+	if len(keys) > 0 {
+		if !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
+			return fmt.Errorf("target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that would run repo-controlled programs fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status/checkout, so this is a code-execution path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or pass -trusted-target if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
+		}
+		o.logf("WARNING: target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that runs repo-controlled programs during git diff/add/status/checkout (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", "))
+	}
+	return o.warnActivatableFilters(ctx)
+}
+
+// warnActivatableFilters reports the content filters the target can ACTIVATE but
+// does not DEFINE -- the second half of the .gitattributes path guardUntrustedGitConfig
+// exists for. UnsafeConfig only sees definitions in the repository's own scopes,
+// so on a host where the operator installed a filter globally (`git lfs install`
+// writes filter.lfs.clean/smudge/process into ~/.gitconfig) the gate above finds
+// nothing while `gh pr checkout` goes on to apply the PR's `.gitattributes` and
+// `.lfsconfig`, and git runs that filter over PR-controlled content -- before any
+// agent sandbox, in a review-only run that passes no trust gate.
+//
+// It warns rather than refuses in every trust mode: the definition is the
+// operator's own configuration, the attributes that select it are not present to
+// check against when the pr preflight runs, and refusing would refuse every
+// target on a git-lfs host. The point is that the operator learns which of their
+// programs the checkout can reach.
+func (o *Orchestrator) warnActivatableFilters(ctx context.Context) error {
+	filters, err := o.collector.ExternalFilterConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if len(filters) == 0 {
 		return nil
 	}
-	if !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
-		return fmt.Errorf("target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that would run repo-controlled programs fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status/checkout, so this is a code-execution path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or pass -trusted-target if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
-	}
-	o.logf("WARNING: target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that runs repo-controlled programs during git diff/add/status/checkout (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", "))
+	o.logf("WARNING: content filters configured outside target %s -- in your global or system git config (%s) -- are selected by REPOSITORY content: a .gitattributes naming one (in the checkout, or in a PR branch `gh pr checkout` writes) makes git run it over repo-controlled file content during checkout/add/status/diff, and a repo-supplied .lfsconfig redirects where a git-lfs filter talks. fixpoint cannot neutralize them (their names are dynamic). Review untrusted checkouts under an external sandbox.", o.cfg.Target.Path, strings.Join(filters, ", "))
 	return nil
 }
 

@@ -1507,8 +1507,7 @@ func gitHardenedEnv() []string {
 // neutralized by a -c override; refusing is the answer.
 func unsafeConfigKey(key string) bool {
 	switch {
-	case strings.HasPrefix(key, "filter.") &&
-		(strings.HasSuffix(key, ".clean") || strings.HasSuffix(key, ".smudge") || strings.HasSuffix(key, ".process")):
+	case filterConfigKey(key):
 		return true
 	case key == "core.sshcommand" || key == "core.gitproxy" || key == "core.askpass":
 		return true
@@ -1524,6 +1523,18 @@ func unsafeConfigKey(key string) bool {
 		return true
 	}
 	return false
+}
+
+// filterConfigKey reports whether key defines a per-name content filter program
+// (filter.<name>.clean on stage-in, .smudge on checkout, .process for a
+// long-running filter). What SELECTS such a filter is a `filter=<name>` entry in
+// a .gitattributes file, which is repository content -- so the definition is
+// execution-capable no matter which scope it lives in. unsafeConfigKey refuses it
+// when the REPOSITORY defines one; ExternalFilterConfig reports it when the
+// operator does and the repository can still activate it.
+func filterConfigKey(key string) bool {
+	return strings.HasPrefix(key, "filter.") &&
+		(strings.HasSuffix(key, ".clean") || strings.HasSuffix(key, ".smudge") || strings.HasSuffix(key, ".process"))
 }
 
 // UnsafeConfig returns the sorted, de-duplicated repo-supplied config keys
@@ -1568,6 +1579,48 @@ func (c *Collector) UnsafeConfig(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
+// ExternalFilterConfig returns the sorted, de-duplicated content-filter keys that
+// are defined OUTSIDE the repository's own scopes -- in the operator's global or
+// system git config (or the command scope).
+//
+// UnsafeConfig deliberately drops those scopes, because a setting the operator
+// configured is not the target's doing and refusing on it would refuse every
+// target on the host. But for a content filter that reasoning only covers half
+// the mechanism: a definition does nothing until a `filter=<name>` attribute
+// SELECTS it, and .gitattributes is repository content. So a filter the operator
+// installed globally -- `git lfs install` writes filter.lfs.clean/smudge/process
+// into ~/.gitconfig -- is still a program a hostile checkout can make git run over
+// its own file content, with fixpoint's inherited environment: `gh pr checkout`
+// applies the PR's .gitattributes (and its .lfsconfig, which redirects where a
+// git-lfs filter talks), and every later git add/status/diff re-runs the filter.
+//
+// This cannot become a refusal the way a repo-supplied definition does. The
+// definition belongs to the operator, the selecting attributes arrive WITH the
+// checkout (in pr mode they are not even in the worktree when the preflight runs,
+// so there is nothing to cross-check against), and refusing would break every
+// host with git-lfs installed. Callers report it instead, so the operator learns
+// which of their own programs the checkout is able to activate.
+func (c *Collector) ExternalFilterConfig(ctx context.Context) ([]string, error) {
+	entries, err := c.scopedConfigKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.scope == "local" || e.scope == "worktree" {
+			continue // the repository's own; UnsafeConfig judges those
+		}
+		if !filterConfigKey(e.key) || seen[e.key] {
+			continue
+		}
+		seen[e.key] = true
+		keys = append(keys, e.key)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
 // repoScopedConfigKeys lists the config keys the REPOSITORY itself supplies, in
 // file order and with duplicates kept (a key may be set more than once). It is
 // the shared parse behind UnsafeConfig and the core.worktree check in
@@ -1575,6 +1628,34 @@ func (c *Collector) UnsafeConfig(ctx context.Context) ([]string, error) {
 // and cover the worktree scope, and why the scope filter is what keeps the
 // operator's own global settings from reading as the target's.
 func (c *Collector) repoScopedConfigKeys(ctx context.Context) ([]string, error) {
+	entries, err := c.scopedConfigKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		// Everything else (global, system, command -- our own gitSafeConfig -c
+		// overrides land in `command`) is the operator's configuration, not the
+		// target's, and refusing on it would be a false refusal.
+		if e.scope != "local" && e.scope != "worktree" {
+			continue
+		}
+		keys = append(keys, e.key)
+	}
+	return keys, nil
+}
+
+// configEntry is one row of the target's effective git config: the scope git
+// attributes the setting to, and the setting's key (values are never returned --
+// the checks here judge which programs git would run, not their arguments).
+type configEntry struct{ scope, key string }
+
+// scopedConfigKeys lists every config key a git command run inside the target
+// would honor, paired with its scope, in file order and with duplicates kept (a
+// key may be set more than once). Callers pick the scopes they care about:
+// repoScopedConfigKeys keeps what the repository supplies, ExternalFilterConfig
+// keeps what the operator supplies and the repository can activate.
+func (c *Collector) scopedConfigKeys(ctx context.Context) ([]configEntry, error) {
 	// -z with --show-scope: NUL-separated fields alternating "scope" then
 	// "key\nvalue" (a valueless key is just "key"). A real repo always has at
 	// least the default core.* entries, so a git repo yields a non-error result.
@@ -1583,22 +1664,16 @@ func (c *Collector) repoScopedConfigKeys(ctx context.Context) ([]string, error) 
 		return nil, fmt.Errorf("inspect target git config: %w", err)
 	}
 	fields := strings.Split(out, "\x00")
-	var keys []string
+	var entries []configEntry
 	for i := 0; i+1 < len(fields); i += 2 {
 		scope, entry := fields[i], fields[i+1]
-		// Everything else (global, system, command -- our own gitSafeConfig -c
-		// overrides land in `command`) is the operator's configuration, not the
-		// target's, and refusing on it would be a false refusal.
-		if scope != "local" && scope != "worktree" {
-			continue
-		}
 		key := entry
 		if nl := strings.IndexByte(entry, '\n'); nl >= 0 {
 			key = entry[:nl]
 		}
-		keys = append(keys, key)
+		entries = append(entries, configEntry{scope: scope, key: key})
 	}
-	return keys, nil
+	return entries, nil
 }
 
 func (c *Collector) git(ctx context.Context, args ...string) (string, error) {
