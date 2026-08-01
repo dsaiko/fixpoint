@@ -2825,9 +2825,10 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, lens, len(text), res, res.Err != nil))
 	var out model.FixOutput
 	parseErr := agent.ExtractJSON(res.Stdout, "fix", &out)
-	if werr := o.logs.Step("fix", coder.Agent, lens, rec.Round, out, prompt.FormatFindings(nil), res.Raw(a.Argv())); werr != nil {
-		o.logf("WARNING: failed to write the verification-correction log: %v", werr)
-	}
+	// Routed through logStep so the correction attempt gets the same ok-gating as
+	// every other step: a run that failed or whose output would not parse must not
+	// persist a zero FixOutput that reads back as a clean "no results" report.
+	o.logStep("fix", coder.Agent, lens, rec.Round, res.Err == nil && parseErr == nil, out, prompt.FormatFindings(nil), res)
 	// A failed or unparseable correction attempt is not fatal here: the caller
 	// re-verifies regardless, and the gate -- not the coder's self-report -- decides
 	// whether the round proceeds.
