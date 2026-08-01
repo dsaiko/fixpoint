@@ -488,7 +488,10 @@ func TestFinalLensPinnedRunsOnOneAgentOnly(t *testing.T) {
 // over the tree as it finally stands. Running it per pass would emit one report per
 // pass -- the per-round waste `final` exists to remove, back inside the closing round.
 func TestFinalPhaseRunsAdvisoryReportOnceAfterTheFixPasses(t *testing.T) {
-	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	// MaxFinalPasses 3, above the default 2: this test is about the actionable and
+	// advisory halves having DIFFERENT schedules, and it needs the fix half to end
+	// the way it ends naturally -- on a clean pass -- rather than on the cap.
+	f := newFixture(t, config.Loop{MaxIterations: 4, MaxFinalPasses: 3, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
 	prompt := f.cfg.Roles.Review.Prompts[0].Prompt
 	for _, n := range []string{"mock2", "mock3"} {
 		f.cfg.Agents[n] = f.cfg.Agents["mock"]

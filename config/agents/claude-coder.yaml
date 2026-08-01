@@ -24,6 +24,10 @@ usage:
   cache_read_tokens: modelUsage.*.cacheReadInputTokens
   cache_write_tokens: modelUsage.*.cacheCreationInputTokens
   cost_usd: modelUsage.*.costUSD
+  # Set when the API refused the call rather than the CLI failing. This is the
+  # agent that hit it: a run ended `coder failed: exit status 1` when the envelope
+  # said 429 "You've hit your session limit · resets 8:20pm".
+  error_status: api_error_status
 
 prompt_via: stdin
 timeout: 30m # fixing rounds run longer than a single review pass

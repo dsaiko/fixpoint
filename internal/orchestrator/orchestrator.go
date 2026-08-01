@@ -513,6 +513,13 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 	// Snapshot the working set: setIssueVerdict mutates rec.Issues as each session
 	// reports, and activeIssues would then shrink under the loop.
 	batch := activeIssues(rec)
+	// Where the tree stood when this round's reviewers read it. Each session below
+	// commits, so later sessions are handed findings written against a tree that has
+	// since moved -- see staleFiles.
+	reviewedAt, err := o.collector.HeadSHA(ctx)
+	if err != nil {
+		return false, committed, err
+	}
 	for _, it := range batch {
 		if ctx.Err() != nil {
 			// The operator asked to stop between sessions, so do not spend another one.
@@ -522,7 +529,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 			return false, committed, ctx.Err()
 		}
 		fixedBefore := rec.Fixed
-		salvaged, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it})
+		salvaged, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it}, o.staleFiles(ctx, reviewedAt, it))
 		if err != nil {
 			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
@@ -576,6 +583,37 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		}
 	}
 	return false, committed, nil
+}
+
+// staleFiles reports which of the issue's files have been committed to since
+// reviewedAt -- the tree the round's reviewers actually read. Every fix session
+// commits, so the Nth session of a round opens a finding written against a tree
+// that N-1 commits have since changed.
+//
+// Best-effort by design: it only adds a caution to the prompt, so a git failure
+// here must not fail the round. On error the session simply runs without the
+// warning, exactly as it did before this existed.
+func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it model.Issue) []string {
+	if reviewedAt == "" {
+		return nil
+	}
+	changed, err := o.collector.ChangedSince(ctx, reviewedAt)
+	if err != nil || len(changed) == 0 {
+		return nil
+	}
+	// Every file the issue names, not just the headline one: corroborating
+	// observations from other reviewers routinely point at a different site of the
+	// same problem, and any of them moving is worth the same caution.
+	seen := map[string]bool{}
+	out := make([]string, 0, len(it.Observations)+1)
+	for _, f := range append([]model.Finding{{File: it.File}}, it.Observations...) {
+		if f.File == "" || seen[f.File] || !changed[f.File] {
+			continue
+		}
+		seen[f.File] = true
+		out = append(out, f.File)
+	}
+	return out
 }
 
 // verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
@@ -751,15 +789,22 @@ func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary)
 }
 
 // runFinalFixPasses repeats the actionable half of the closing round until it has
-// nothing left to fix, bounded by the same safety valve as the loop rather than a
-// knob of its own -- the phase stops on its own as soon as a pass finds nothing or
-// fixes nothing, so the bound only catches a lens that never runs out of things to
-// say.
+// nothing left to fix, bounded by loop.max_final_passes -- the phase stops on its
+// own as soon as a pass finds nothing or fixes nothing, so the bound only catches a
+// lens that never runs out of things to say. See config.Loop.MaxFinalPasses for why
+// that bound is its own knob (default 2) rather than the loop's max_iterations.
 func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSummary, actionable []model.Assignment) error {
 	if len(actionable) == 0 {
 		return nil
 	}
-	for pass := 1; pass <= o.cfg.Loop.MaxIterations; pass++ {
+	// A Loop built in code (tests, embedders) never passes through config's
+	// defaulting step, and a zero cap there would skip the phase entirely rather
+	// than run it the default number of times.
+	maxPasses := o.cfg.Loop.MaxFinalPasses
+	if maxPasses <= 0 {
+		maxPasses = config.DefaultMaxFinalPasses
+	}
+	for pass := 1; pass <= maxPasses; pass++ {
 		done, err := o.runFinalPass(ctx, sum, actionable, fmt.Sprintf("pass %d", pass))
 		if err != nil {
 			return err
@@ -768,15 +813,20 @@ func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSumm
 			return nil
 		}
 	}
-	o.warnFinalPhaseCapped(sum)
+	o.warnFinalPhaseCapped(sum, maxPasses)
 	return nil
 }
 
 // warnFinalPhaseCapped reports what the closing phase ran out of passes before
-// fixing. Staying quiet is exactly the failure this phase exists to avoid: a run
-// that fixed some of its coverage gaps and said nothing about the rest reads as
-// complete.
-func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary) {
+// fixing. Staying quiet about THAT is exactly the failure this phase exists to
+// avoid: a run that fixed some of its coverage gaps and said nothing about the rest
+// reads as complete.
+//
+// It says nothing when the last pass left nothing open, which is the ordinary way a
+// bounded phase ends: the cap is low on purpose (see config.Loop.MaxFinalPasses),
+// so a warning on every clean exhaustion would be noise on most runs -- and a
+// warning that usually means nothing is not read on the run where it does.
+func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary, passes int) {
 	open := 0
 	if n := len(sum.Rounds); n > 0 {
 		for _, it := range sum.Rounds[n-1].Issues {
@@ -785,8 +835,11 @@ func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary) {
 			}
 		}
 	}
-	o.logf("WARNING: the closing round stopped after %d pass(es) (loop.max_iterations) with %d issue(s) still open; they are recorded in the summary and were NOT fixed",
-		o.cfg.Loop.MaxIterations, open)
+	if open == 0 {
+		return
+	}
+	o.logf("WARNING: the closing round stopped after %d pass(es) (loop.max_final_passes) with %d issue(s) still open; they are recorded in the summary and were NOT fixed",
+		passes, open)
 }
 
 // runFinalPass is one closing round: review the finished tree, hand the coder up to
@@ -2063,7 +2116,10 @@ func (o *Orchestrator) discardEdits(ctx context.Context, d discard) error {
 // caller decides, so a commit can honestly claim to contain a single fix: a session
 // handed eight issues edits files for all eight at once, and nothing in its report
 // says which change served which issue.
-func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue) (salvaged bool, err error) {
+//
+// stale names files an earlier session of this same round has already committed to
+// since the reviewers read the tree; empty when nothing moved. See staleFiles.
+func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue, stale []string) (salvaged bool, err error) {
 	coder := o.cfg.Roles.Coder
 	promptName := config.LensName(coder.Prompt)
 	label := "fix: " + coder.Agent
@@ -2083,6 +2139,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		Round:          rec.Round,
 		Findings:       prompt.FormatIssues(active),
 		History:        prompt.FormatHistory(history),
+		Stale:          prompt.FormatStale(stale),
 		OutputContract: prompt.FixContract,
 	}
 	text, err := prompt.Render(o.templates[coder.Prompt], d)

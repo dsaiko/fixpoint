@@ -30,5 +30,6 @@ its own. Never silence a checker — suppression comments, disabled rules, skipp
 or deleted tests — to get past the gate. Making a check pass by removing its
 teeth is worse than leaving it failing, because the next reader believes it.
 {{.Verification}}
+{{.Stale}}
 
 {{.OutputContract}}

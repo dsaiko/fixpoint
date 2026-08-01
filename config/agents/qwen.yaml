@@ -47,6 +47,9 @@ usage:
   output_tokens: modelUsage.*.outputTokens
   cache_read_tokens: modelUsage.*.cacheReadInputTokens
   cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
 
 prompt_via: stdin
 timeout: 15m # remote-served model; give it the same headroom as kimi/glm

@@ -28,6 +28,20 @@ target:
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
 
+  # How many times the actionable half of the CLOSING round may repeat. The phase
+  # ends on its own the moment a pass finds nothing or fixes nothing, so this only
+  # catches a lens that never runs out of things to say -- and review-tests is that
+  # lens: coverage can always be wanted more of.
+  #
+  # 2, not max_iterations, which it used to borrow. In a measured run the closing
+  # phase took 51 minutes over two passes and the second still produced four NEW
+  # issues, because each pass reviews the tests the previous pass just wrote. Every
+  # repeated issue id in that run came from here -- a real bug fixed in the loop,
+  # re-opened as "the test for that fix is flaky", then as "the test for the test".
+  # One pass to fix what the finished tree needs, one to confirm it opened nothing;
+  # a third is reviewing the second pass's tests.
+  max_final_passes: 2
+
   # ISSUES handed to the coder per round; 0 = unlimited, and unlimited is now the
   # default because the reason for a cap is gone. It was sized to ONE coder
   # session's timeout (17 issues blew 30m, ~8 fit), and the coder now gets exactly

@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,6 +164,104 @@ func TestFormatHistory(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("FormatHistory missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// History is prepended to every review prompt and used to grow without bound: one
+// measured run went from 4.6 KB to 37.7 KB by round 7, against a fixed reviewer
+// timeout that then killed three reviewers mid-work. Rounds past the most recent
+// few keep only what stops a re-report -- id, location, verdict -- and lose the
+// titles and verdict details that make up the bulk.
+func TestFormatHistoryCondensesOlderRounds(t *testing.T) {
+	var rounds []model.RoundRecord
+	for i := 1; i <= historyRoundsInFull+2; i++ {
+		rounds = append(rounds, model.RoundRecord{
+			Round: i, Fixed: 1,
+			Findings: []model.Finding{{
+				ID:      fmt.Sprintf("r%d.1", i),
+				File:    fmt.Sprintf("f%d.go", i),
+				Line:    7,
+				Title:   fmt.Sprintf("title of round %d", i),
+				Verdict: "rejected", VerdictDetail: fmt.Sprintf("detail of round %d", i),
+			}},
+		})
+	}
+	got := FormatHistory(rounds)
+
+	// The two oldest rounds are condensed: the id and the verdict survive, because
+	// "do not re-report this" has to outlive the detail that justified it.
+	for _, want := range []string{"[r1.1] f1.go:7 — REJECTED", "[r2.1] f2.go:7 — REJECTED"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("condensed line %q missing:\n%s", want, got)
+		}
+	}
+	for _, gone := range []string{"title of round 1", "detail of round 1", "title of round 2", "detail of round 2"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("condensed round still carries %q, so history is still growing:\n%s", gone, got)
+		}
+	}
+	// The most recent rounds keep everything.
+	for i := 3; i <= historyRoundsInFull+2; i++ {
+		for _, want := range []string{fmt.Sprintf("title of round %d", i), fmt.Sprintf("detail of round %d", i)} {
+			if !strings.Contains(got, want) {
+				t.Errorf("recent round %d lost %q:\n%s", i, want, got)
+			}
+		}
+	}
+	// A run short enough to fit is untouched, so nothing is condensed prematurely.
+	if short := FormatHistory(rounds[:historyRoundsInFull]); !strings.Contains(short, "title of round 1") {
+		t.Errorf("a run within the window must keep full detail:\n%s", short)
+	}
+}
+
+// Verdict details are the bulk of what survives condensing: a coder argues a
+// rejection at length, and history carries one per finding to every reviewer every
+// round. Measured on the run this came from, clipping them took the round-7 history
+// from 18.4 KB to 7.0 KB (33.6 KB before older rounds were condensed too).
+func TestFormatHistoryClipsLongVerdictDetails(t *testing.T) {
+	long := strings.Repeat("because the premise is false and here is the citation trail ", 20)
+	got := FormatHistory([]model.RoundRecord{{
+		Round: 1, Rejected: 1,
+		Findings: []model.Finding{
+			{ID: "i1", File: "a.go", Title: "t", Verdict: "rejected", VerdictDetail: long},
+			{ID: "i2", File: "b.go", Title: "t2", Verdict: "fixed", VerdictDetail: "short one"},
+		},
+	}})
+	if len(got) > 1200 {
+		t.Errorf("history is %d B for two findings, want the long detail clipped:\n%s", len(got), got)
+	}
+	// The headline survives -- that is what a reviewer needs to decide whether to
+	// re-report -- and the cut is visible rather than looking like a finished thought.
+	if !strings.Contains(got, "because the premise is false") {
+		t.Errorf("clipping removed the start of the reason:\n%s", got)
+	}
+	if !strings.Contains(got, "[…]") {
+		t.Errorf("a clipped detail must be marked as cut:\n%s", got)
+	}
+	// A detail that fits is untouched, mark and all.
+	if !strings.HasSuffix(got, "FIXED: short one") {
+		t.Errorf("a short detail must pass through verbatim:\n%s", got)
+	}
+}
+
+// The reviewers of a round all read one snapshot, then per-fix sessions commit into
+// the tree one after another -- so a later session's finding can already be handled.
+// The coder is told what moved rather than being left to re-apply a landed fix.
+func TestFormatStale(t *testing.T) {
+	if got := FormatStale(nil); got != "" {
+		t.Errorf("FormatStale(nil) = %q, want empty: an unmoved tree must add nothing to the prompt", got)
+	}
+	got := FormatStale([]string{"internal/target/target.go", "cmd/fixpoint/main.go"})
+	for _, want := range []string{
+		"may already be out of date",
+		"- internal/target/target.go",
+		"- cmd/fixpoint/main.go",
+		"Read the CURRENT contents before editing",
+		"reject",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("FormatStale missing %q:\n%s", want, got)
 		}
 	}
 }

@@ -299,6 +299,18 @@ type AgentUsage struct {
 	CacheReadTokens  string `yaml:"cache_read_tokens"`
 	CacheWriteTokens string `yaml:"cache_write_tokens"`
 	CostUSD          string `yaml:"cost_usd"`
+
+	// ErrorStatus is the dotted path to the HTTP-ish status the CLI reports when
+	// its PROVIDER refused the request, rather than the CLI itself failing. Also
+	// optional: without it a provider refusal is just a non-zero exit.
+	//
+	// It exists because those two are the same exit code and mean opposite things.
+	// A real run ended with `coder failed: exit status 1`, which reads as a defect
+	// in the coder -- while the CLI's own envelope said 429 and "You've hit your
+	// session limit · resets 8:20pm". One is a bug to investigate, the other is a
+	// clock to wait on, and the summary could not tell them apart. See
+	// agent.Result.ProviderStatus.
+	ErrorStatus string `yaml:"error_status"`
 }
 
 // Enabled reports whether this agent's output carries usage fixpoint can read.
@@ -429,10 +441,35 @@ const (
 
 var commitPolicies = []string{CommitPerFix, CommitPerRound, CommitPerRun}
 
+// DefaultMaxFinalPasses bounds the repeating half of the closing round when
+// loop.max_final_passes is unset. Exported because a Loop built in code rather
+// than loaded from YAML never passes through the defaulting step, and a zero there
+// must not silently mean "run the closing phase zero times".
+const DefaultMaxFinalPasses = 2
+
 // Loop controls how the review->fix cycle iterates, terminates, and commits,
 // and holds the trust gates that permit fix rounds at all.
 type Loop struct {
 	MaxIterations int `yaml:"max_iterations"`
+
+	// MaxFinalPasses caps how many times the actionable half of the closing round
+	// repeats (0 = the default below). The phase already stops on its own the
+	// moment a pass finds nothing or fixes nothing, so this only ever catches a
+	// lens that never runs out of things to say -- and review-tests IS that lens:
+	// coverage can always be wanted more of.
+	//
+	// It used to borrow max_iterations, which conflated two unrelated budgets. A
+	// measured run shows why that is too loose: the closing phase spent 51 minutes
+	// over two passes, and pass 2 still surfaced four brand-new issues, because
+	// each pass reviewed the tests the PREVIOUS pass had just written. Every
+	// recurring issue id in that run came from this phase -- a real bug fixed in
+	// the loop, then re-opened as "the test for that fix is flaky", then as "the
+	// test for the test". The loop's own rounds did not repeat themselves at all.
+	//
+	// Two is the default: one pass to fix what the finished tree still needs, one
+	// to confirm the fix did not open something new. A third pass is reviewing the
+	// second pass's tests, which is where the yield goes negative.
+	MaxFinalPasses int `yaml:"max_final_passes"`
 
 	// MaxFindingsPerRound caps how many ISSUES a round hands to the coder
 	// (0 = unlimited, the default). Ordered worst-severity-first; the overflow is
@@ -705,6 +742,9 @@ func (c *Config) applyDefaults() {
 	if c.Loop.MaxIterations == 0 {
 		c.Loop.MaxIterations = 5
 	}
+	if c.Loop.MaxFinalPasses == 0 {
+		c.Loop.MaxFinalPasses = DefaultMaxFinalPasses
+	}
 	if c.Loop.CleanRoundsToStop == 0 {
 		c.Loop.CleanRoundsToStop = 1
 	}
@@ -770,6 +810,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Loop.MaxIterations < 0 {
 		return fmt.Errorf("loop.max_iterations: must not be negative, got %d", c.Loop.MaxIterations)
+	}
+	if c.Loop.MaxFinalPasses < 0 {
+		return fmt.Errorf("loop.max_final_passes: must not be negative, got %d", c.Loop.MaxFinalPasses)
 	}
 	if c.Loop.CleanRoundsToStop < 0 {
 		return fmt.Errorf("loop.clean_rounds_to_stop: must not be negative, got %d", c.Loop.CleanRoundsToStop)

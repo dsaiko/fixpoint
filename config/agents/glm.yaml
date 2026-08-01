@@ -29,9 +29,12 @@ usage:
   output_tokens: modelUsage.*.outputTokens
   cache_read_tokens: modelUsage.*.cacheReadInputTokens
   cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
 
 prompt_via: stdin
-timeout: 15m # local models are slower; give them headroom
+timeout: 20m # cloud-served models are slower; matched to the panel (see claude.yaml)
 can_edit: false
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,

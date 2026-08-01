@@ -31,6 +31,11 @@ type Result struct {
 	Err      error
 	// Usage is what the CLI reported spending, zero when it reports nothing.
 	Usage model.Usage
+	// ProviderStatus is the status the CLI's own envelope reported when its
+	// PROVIDER refused the call (429 rate limit, 5xx outage), zero otherwise. It
+	// separates "this agent is broken" from "the API said no", which are the same
+	// exit code and want opposite responses. See config.AgentUsage.ErrorStatus.
+	ProviderStatus int
 	// rawStdout is the untouched process output, kept for the .raw log: the
 	// envelope carries the token counts and turn structure, which is exactly what
 	// someone reading a run back wants to see.
@@ -234,7 +239,21 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	raw := stdout.String()
 	// Unwrap here rather than at the call sites: every consumer of Stdout wants
 	// the agent's reply, and only this function knows which agent produced it.
-	text, usage := ParseUsage(a.Usage, raw)
+	text, usage, providerStatus := parseEnvelope(a.Usage, raw)
+	// A failed agent that still produced an envelope explained itself in it, and
+	// that explanation is worth more than the exit code: `exit status 1` reads as a
+	// broken coder, while the reply it came with says "You've hit your session
+	// limit · resets 8:20pm". Only the first line, and only when it is not the raw
+	// output (ParseUsage falls back to raw when it cannot decode), so an
+	// unparseable dump is not spliced into the error.
+	if err != nil && text != "" && text != raw {
+		if msg := firstLine(text); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+	}
+	if err != nil && providerStatus > 0 {
+		err = fmt.Errorf("%w (provider returned %d -- the API refused the call, the agent did not fail)", err, providerStatus)
+	}
 	errText := stderr.String()
 	if leakedPipe {
 		// Say so in the .raw log: a descendant that escaped the process group kept
@@ -243,13 +262,26 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 		errText += "\n[fixpoint: a descendant process held the output pipe open past the agent's exit; the capture ends where fixpoint closed the pipe]\n"
 	}
 	return Result{
-		Stdout:    text,
-		Stderr:    errText,
-		Duration:  time.Since(start),
-		Err:       err,
-		Usage:     usage,
-		rawStdout: raw,
+		Stdout:         text,
+		Stderr:         errText,
+		Duration:       time.Since(start),
+		Err:            err,
+		Usage:          usage,
+		ProviderStatus: providerStatus,
+		rawStdout:      raw,
 	}
+}
+
+// firstLine is the first non-empty line of s, trimmed. Agent replies are wrapped
+// into one-line errors, and a CLI's failure message routinely carries a multi-line
+// body after its headline.
+func firstLine(s string) string {
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 // KillProcessGroup SIGKILLs the command's whole process group so CLI-spawned

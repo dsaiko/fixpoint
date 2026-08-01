@@ -20,9 +20,18 @@ usage:
   cache_read_tokens: modelUsage.*.cacheReadInputTokens
   cache_write_tokens: modelUsage.*.cacheCreationInputTokens
   cost_usd: modelUsage.*.costUSD
+  # Set when the API refused the call rather than the CLI failing -- 429 on a
+  # session limit, 5xx on an outage. Without it both are just "exit status 1".
+  error_status: api_error_status
 
 prompt_via: stdin
-timeout: 10m
+# 20m, raised from 10m: a reviewer's budget has to cover a target that GROWS during
+# the run. In a measured 7-round run the review prompt went from 4.6 KB to 37.7 KB
+# (accumulated history) while the coder added 24 commits of code to read, and this
+# agent was killed twice at exactly 10m00s having written nothing at all. A timeout
+# buys no findings and still resets the convergence streak, so it is the most
+# expensive way to save time.
+timeout: 20m
 can_edit: false
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,

@@ -19,13 +19,21 @@ import (
 // left zero. The alternative -- discarding a round's findings because the token
 // counter could not be read -- inverts the priorities.
 func ParseUsage(u config.AgentUsage, stdout string) (text string, usage model.Usage) {
+	text, usage, _ = parseEnvelope(u, stdout)
+	return text, usage
+}
+
+// parseEnvelope is ParseUsage plus the provider status, split out so Run can tell
+// a CLI failure from a provider refusal without a second decode of the same output.
+func parseEnvelope(u config.AgentUsage, stdout string) (text string, usage model.Usage, providerStatus int) {
 	if !u.Enabled() {
-		return stdout, model.Usage{}
+		return stdout, model.Usage{}, 0
 	}
 	objs := decodeEnvelope(u.Format, stdout)
 	if len(objs) == 0 {
-		return stdout, model.Usage{}
+		return stdout, model.Usage{}, 0
 	}
+	providerStatus = lastInt(objs, u.ErrorStatus)
 	// Last value wins: a jsonl stream reports its running state line by line, and
 	// the final mention of a path is the settled one. For a single object it is
 	// simply the only value.
@@ -41,7 +49,7 @@ func ParseUsage(u config.AgentUsage, stdout string) (text string, usage model.Us
 		usage.CostUSD = c
 		usage.CostKnown = true
 	}
-	return text, usage
+	return text, usage, providerStatus
 }
 
 // decodeEnvelope parses stdout into the objects the paths are resolved against.

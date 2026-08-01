@@ -17,6 +17,7 @@ var claudeUsage = config.AgentUsage{
 	CacheReadTokens:  "modelUsage.*.cacheReadInputTokens",
 	CacheWriteTokens: "modelUsage.*.cacheCreationInputTokens",
 	CostUSD:          "modelUsage.*.costUSD",
+	ErrorStatus:      "api_error_status",
 }
 
 var codexUsage = config.AgentUsage{
@@ -36,6 +37,39 @@ const claudeEnvelope = `{"is_error":false,"num_turns":1,"total_cost_usd":0.06129
 "modelUsage":{"claude-opus-5":{"inputTokens":2,"outputTokens":4,"cacheReadInputTokens":15738,
 "cacheCreationInputTokens":5332,"costUSD":0.061299,"canonicalModel":"claude-opus-5"}},
 "result":"I reviewed the code.\n<review>{\"findings\":[]}</review>\n","type":"result"}`
+
+// A provider refusal and a broken agent are the same exit code and want opposite
+// responses -- wait for the clock, or investigate a defect. This envelope is the
+// one that ended a real run: the summary said `coder failed: exit status 1` while
+// the CLI had reported a 429 and the reset time, which nothing surfaced.
+const claudeRateLimited = `{"is_error":false,"terminal_reason":"api_error","api_error_status":429,
+"modelUsage":{"claude-opus-5":{"inputTokens":16,"outputTokens":4562,"costUSD":0.4559}},
+"result":"You've hit your session limit · resets 8:20pm (Europe/Prague)","type":"result"}`
+
+func TestParseEnvelopeReportsProviderRefusal(t *testing.T) {
+	text, u, status := parseEnvelope(claudeUsage, claudeRateLimited)
+	if status != 429 {
+		t.Errorf("provider status = %d, want 429", status)
+	}
+	if !strings.Contains(text, "session limit") {
+		t.Errorf("text = %q, want the CLI's own explanation", text)
+	}
+	// The call still cost real tokens, and a refusal must not lose the accounting.
+	if u.OutputTokens != 4562 {
+		t.Errorf("output tokens = %d, want 4562 (a refused call still spent them)", u.OutputTokens)
+	}
+	// A healthy envelope carries no status, so nothing is mislabeled a refusal.
+	if _, _, ok := parseEnvelope(claudeUsage, claudeEnvelope); ok != 0 {
+		t.Errorf("provider status = %d on a successful envelope, want 0", ok)
+	}
+	// Unconfigured path: an agent that declares no error_status reports nothing
+	// rather than guessing at field names.
+	bare := claudeUsage
+	bare.ErrorStatus = ""
+	if _, _, ok := parseEnvelope(bare, claudeRateLimited); ok != 0 {
+		t.Errorf("provider status = %d without error_status configured, want 0", ok)
+	}
+}
 
 func TestParseUsageUnwrapsClaudeEnvelope(t *testing.T) {
 	text, u := ParseUsage(claudeUsage, claudeEnvelope)

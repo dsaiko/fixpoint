@@ -3285,6 +3285,102 @@ func (f *fixture) finalLens() {
 // subject is the finished code -- and must run after it, with its findings fixed.
 // The phase then repeats while it keeps fixing, so it ends on the pass that finds
 // nothing rather than after a fixed number of rounds.
+// A round's reviewers all read ONE snapshot, then its per-fix sessions commit into
+// the tree one after another -- so the second session opens a finding written
+// against a tree that has since moved. Observed in a real run as three findings
+// rejected with "already handled at HEAD, in the most recent commit 390cfcb", a
+// commit made minutes earlier by an earlier session of the same pass. The later
+// session is told which of its files moved, so it reads before it edits.
+func TestFixSessionIsWarnedWhenItsFilesMovedEarlierInTheRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	// The fixture's coder template omits {{.Stale}} (see newFixture); this test is
+	// about what reaches the prompt, so it needs the placeholder the shipped
+	// config/prompts/fix.md carries.
+	fixPrompt := f.cfg.Roles.Coder.PromptFile()
+	if err := os.WriteFile(fixPrompt, []byte("Round {{.Round}}\n{{.Findings}}\n{{.Stale}}\n{{.OutputContract}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Two issues in ONE round, both naming main.go -- which is the file editRepoOn
+	// writes, so session 1's commit moves the ground under session 2's finding.
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 1, Title: "first"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 90, Title: "second"}))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "patched too"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	prompts := f.coderPromptFiles(1)
+	if len(prompts) != 2 {
+		t.Fatalf("got %d coder prompts, want 2", len(prompts))
+	}
+	// The FIRST session runs against the tree its reviewers read, so it must not be
+	// told anything moved -- a warning on every session would be ignored on all of them.
+	first := f.artifact(1, filepath.Base(prompts[0]))
+	if strings.Contains(first, "may already be out of date") {
+		t.Errorf("the first session of a round was warned about a tree that had not moved yet:\n%s", first)
+	}
+	// The SECOND session opens its finding after session 1 committed to main.go.
+	second := f.artifact(1, filepath.Base(prompts[1]))
+	for _, want := range []string{"may already be out of date", "main.go", "Read the CURRENT contents"} {
+		if !strings.Contains(second, want) {
+			t.Errorf("the second session's prompt is missing %q:\n%s", want, second)
+		}
+	}
+}
+
+// The closing phase repeats until it has nothing left to fix, which for a coverage
+// lens is never: each pass reviews the tests the previous pass just wrote. It used
+// to borrow loop.max_iterations, which conflated two unrelated budgets -- one
+// measured run spent 51 minutes there and pass 2 still surfaced four NEW issues.
+// max_final_passes bounds it on its own, and the run still ends cleanly with what
+// did not fit reported rather than dropped.
+func TestFinalPhaseStopsAtMaxFinalPasses(t *testing.T) {
+	// max_iterations deliberately far larger, to prove the phase no longer reads it.
+	f := newFixture(t, config.Loop{MaxIterations: 9, MaxFinalPasses: 2, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged
+
+	// Every closing pass finds a NEW gap and fixes it, so the phase never runs out
+	// of work on its own and only the cap can end it.
+	for i, n := range []int{2, 4, 6, 8} {
+		f.respond(n, reviewResponse(t, model.ReviewFinding{
+			Category: "tests", Severity: "medium",
+			File: fmt.Sprintf("gap%d.go", i), Line: 10 + i,
+			Title: fmt.Sprintf("gap %d has no test", i),
+		}))
+		f.editRepoOn(n + 1)
+		f.respond(n+1, fixResponse(t, model.FixResult{
+			ID: fmt.Sprintf("i%d", i+1), Verdict: "fixed", Detail: "test added",
+		}))
+	}
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Errorf("termination = %q, want the loop's converged preserved", sum.Termination)
+	}
+	passes := 0
+	for _, r := range sum.Rounds {
+		if r.Final {
+			passes++
+		}
+	}
+	if passes != 2 {
+		t.Errorf("closing passes = %d, want exactly 2 (max_final_passes), not %d (max_iterations)", passes, f.cfg.Loop.MaxIterations)
+	}
+	// Bounded, not silently truncated: the cap stops the phase but the commits it
+	// did make still stand.
+	if sum.Rounds[len(sum.Rounds)-1].Fixed != 1 {
+		t.Errorf("last closing pass fixed %d, want 1: the capped phase still commits its work", sum.Rounds[len(sum.Rounds)-1].Fixed)
+	}
+}
+
 func TestFinalLensRunsAfterTheLoopAndStopsWhenClean(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.finalLens()

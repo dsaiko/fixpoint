@@ -158,9 +158,16 @@ Per-lens modifiers:
   either:
   pass 2 sees the tests pass 1 wrote, so it reports what's genuinely still missing
   instead of working from a list computed before the code changed — which is also
-  what makes the phase stop on its own. `loop.max_iterations` bounds it as a last
-  resort, and if it runs out with issues still open the run says so loudly rather
-  than dropping them silently.
+  what makes the phase stop on its own. `loop.max_final_passes` (default 2) bounds
+  it as a last resort, and if it runs out with issues still open the run says so
+  loudly rather than dropping them silently.
+
+  Two, and its own knob rather than `max_iterations`, because this phase is where a
+  measured run spent 51 minutes and still had pass 2 producing four *new* issues:
+  each pass reviews the tests the previous pass just wrote. Every repeated issue id
+  in that run came from here — a real bug fixed in the loop, re-opened as "the test
+  for that fix is flaky", then as "the test for the test" — while the loop's own
+  rounds did not repeat themselves at all.
 
   **Advisory final lenses run exactly once, after that** — they're reports, and a
   report should describe the code that actually shipped, which isn't known until the
@@ -477,7 +484,8 @@ The main sections of a task config:
 - **`roles`** — the coder (agent + prompt) and the review lens list with its
   assignment strategy and agent pool.
 - **`agents`** — the command templates described above.
-- **`loop`** — `max_iterations`, `commit_policy` (see
+- **`loop`** — `max_iterations`, `max_final_passes` (how many times the closing
+  round may repeat, default 2), `commit_policy` (see
   [One fix, one commit](#one-fix-one-commit)), `max_findings_per_round` (caps how
   many **issues** a round hands over, `0` = unlimited and the default; worst
   severity goes first and the overflow is deferred to later rounds, but every

@@ -36,7 +36,11 @@ type FixData struct {
 	History  string // prior rounds' findings + verdicts
 	// Verification is empty on the first fix attempt of a round and holds the
 	// deterministic gate's failures on the one correction attempt that follows.
-	Verification   string
+	Verification string
+	// Stale warns that the file this finding names has already been committed to
+	// since the finding was written, by an earlier fix session in the SAME round.
+	// Empty when the tree still stands where the reviewers saw it.
+	Stale          string
 	OutputContract string
 }
 
@@ -205,8 +209,39 @@ func FormatFindings(findings []model.Finding) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
+// historyRoundsInFull is how many of the most recent rounds FormatHistory renders
+// with titles and verdict details. Older rounds collapse to one line per finding:
+// id, location, and verdict.
+//
+// History is prepended to EVERY review prompt and grew without bound, which made
+// the run slower the longer it ran. Measured over one 7-round run: 4.6 KB in round
+// 1, 37.7 KB by round 7 -- an 8x growth against a fixed reviewer timeout, and three
+// reviewers were killed mid-work at that timeout. The prompt is read in full by
+// every reviewer, every round, so this is the one input whose size compounds.
+//
+// The tail is what a reviewer actually reasons about (what changed, and why the
+// last verdicts went the way they did); older rounds only need to keep the reviewer
+// from re-reporting decided issues, and an id with a verdict does that in a tenth of
+// the bytes. Nothing is dropped outright -- a rejected finding from round 1 is still
+// listed in round 9, because "do not re-report this" must survive the whole run.
+const historyRoundsInFull = 3
+
+// historyDetailMax caps a verdict detail inside the full window. Even with older
+// rounds condensed, this is what is left of the bulk: a coder's rejection is
+// argued at length -- the ones in the run that motivated this ran past 700
+// characters each, citing commits and line numbers -- and history carries one per
+// finding, to every reviewer, every round.
+//
+// A reviewer reads these to answer one question: has this already been decided,
+// and does my evidence beat the reason it was decided that way? The headline
+// answers it; the citation trail behind it is for a human reading the summary,
+// which keeps the untruncated text. Cutting on a word boundary keeps the tail from
+// ending mid-token.
+const historyDetailMax = 240
+
 // FormatHistory renders prior rounds for review prompts, so a freshly rotated
-// reviewer knows what was already reported, fixed, and rejected.
+// reviewer knows what was already reported, fixed, and rejected. Rounds older than
+// historyRoundsInFull are compacted -- see that constant for why.
 func FormatHistory(rounds []model.RoundRecord) string {
 	if len(rounds) == 0 {
 		return ""
@@ -218,21 +253,81 @@ func FormatHistory(rounds []model.RoundRecord) string {
 	sb.WriteString("Findings marked DEFERRED or UNRESOLVED were NOT yet addressed -- report them again if still present.\n")
 	sb.WriteString("Each entry starts with its issue id in brackets. If you report the SAME problem as one of these,\n")
 	sb.WriteString("set \"issue\" to that id -- rewording it or pointing at a moved line would otherwise look like a new issue.\n\n")
-	for _, r := range rounds {
+	// The boundary is counted from the END, so the most recent rounds keep their
+	// detail as the run gets longer.
+	full := len(rounds) - historyRoundsInFull
+	if full < 0 {
+		full = 0
+	}
+	if full > 0 {
+		fmt.Fprintf(&sb, "Rounds 1-%d, condensed (id, location, verdict -- ask the tree, not this list, for detail):\n",
+			rounds[full-1].Round)
+		for _, r := range rounds[:full] {
+			for _, f := range r.Findings {
+				fmt.Fprintf(&sb, "- [%s] %s — %s\n", historyID(f), f.Loc(), strings.ToUpper(f.VerdictOrDefault()))
+			}
+		}
+		sb.WriteString("\n")
+	}
+	for _, r := range rounds[full:] {
 		fmt.Fprintf(&sb, "Round %d (%d fixed, %d rejected):\n", r.Round, r.Fixed, r.Rejected)
 		if len(r.Findings) == 0 {
 			sb.WriteString("- no findings\n")
 		}
 		for _, f := range r.Findings {
-			// The ISSUE id, not the observation id: that is what a reviewer must cite
-			// to declare a re-report, and what the ledger matches on.
-			id := f.IssueID
-			if id == "" {
-				id = f.ID
-			}
-			fmt.Fprintf(&sb, "- [%s] %s %s — %s: %s\n", id, f.Loc(), f.Title, strings.ToUpper(f.VerdictOrDefault()), f.VerdictDetail)
+			fmt.Fprintf(&sb, "- [%s] %s %s — %s: %s\n", historyID(f), f.Loc(), f.Title, strings.ToUpper(f.VerdictOrDefault()), clip(f.VerdictDetail, historyDetailMax))
 		}
 		sb.WriteString("\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// FormatStale is the warning handed to a coder session whose issue names files
+// that later commits in the same round have already touched. Empty when nothing
+// the issue points at has moved.
+//
+// It is a caution, not an instruction to reject: the reviewers of a round all read
+// ONE snapshot, and the per-fix sessions that follow commit into the tree one after
+// another, so a finding written against that snapshot can arrive already addressed.
+// The coder is the only party that can tell "already fixed by the last session"
+// from "still broken in a file that happens to have changed", so it is told what
+// moved and asked to look before editing.
+func FormatStale(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\n## This finding may already be out of date\n")
+	sb.WriteString("The reviewers of this round all read the same snapshot of the tree. Since then, EARLIER\n")
+	sb.WriteString("fix sessions in this same round have committed changes to the file(s) this finding names:\n\n")
+	for _, f := range files {
+		sb.WriteString("- " + f + "\n")
+	}
+	sb.WriteString("\nRead the CURRENT contents before editing. If the problem is already resolved there, reject\n")
+	sb.WriteString("the finding and say which commit resolved it -- do not re-apply a fix that has already landed.\n")
+	return sb.String()
+}
+
+// clip shortens s to at most max characters, breaking on the last word boundary
+// before the limit and marking the cut so the reader knows text is missing rather
+// than believing a sentence simply ended there.
+func clip(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= limit {
+		return s
+	}
+	cut := s[:limit]
+	if i := strings.LastIndexAny(cut, " \t\n"); i > limit/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " \t\n.,;:") + " […]"
+}
+
+// historyID is the ISSUE id, not the observation id: that is what a reviewer must
+// cite to declare a re-report, and what the ledger matches on.
+func historyID(f model.Finding) string {
+	if f.IssueID != "" {
+		return f.IssueID
+	}
+	return f.ID
 }

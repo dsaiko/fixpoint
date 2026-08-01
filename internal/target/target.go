@@ -1041,6 +1041,42 @@ func (c *Collector) HeadSHA(ctx context.Context) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// ChangedSince lists the repo-relative paths that differ between base and HEAD.
+// It answers one question for the orchestrator: has the code a finding describes
+// already moved under it?
+//
+// A round's reviewers all run against ONE snapshot, and the per-fix sessions that
+// follow each commit into the tree -- so by the time session 7 opens its issue, six
+// commits have landed since the finding was written. Observed in a real run: three
+// findings were rejected as "already handled at HEAD, in the most recent commit
+// 390cfcb", a commit made minutes earlier by an earlier session of the SAME pass.
+//
+// base == "" (an unborn branch had no commits when the round started) means
+// everything since is new, which no diff can express, so the caller is told nothing
+// is known rather than being handed a wrong answer.
+//
+// The empty result is an empty map, never nil-with-nil-error: "nothing moved" and
+// "cannot say" are both answered by len() == 0 here, and the caller treats them the
+// same way -- it omits a caution rather than acting on one.
+func (c *Collector) ChangedSince(ctx context.Context, base string) (map[string]bool, error) {
+	changed := map[string]bool{}
+	if base == "" {
+		return changed, nil
+	}
+	head, err := c.HeadSHA(ctx)
+	if err != nil {
+		return changed, err
+	}
+	if head == "" || head == base {
+		return changed, nil
+	}
+	if err := c.gitScanNUL(ctx, func(p string) { changed[p] = true },
+		"diff", "--name-only", "-z", base, head); err != nil {
+		return nil, fmt.Errorf("list paths changed since %s: %w", base, err)
+	}
+	return changed, nil
+}
+
 // SquashSince replaces every commit after base with a single commit carrying the
 // same tree, for loop.commit_policy. It is a pure regrouping: the replacement
 // commit is built from the index as it stands, so the content committed here is
