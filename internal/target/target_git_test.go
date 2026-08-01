@@ -2039,6 +2039,89 @@ func TestCollectDirectoryAlwaysExcludesCredentialFiles(t *testing.T) {
 	})
 }
 
+// symlinkTree lays out a target directory holding one alias of every shape the
+// destination check has to separate, and returns the target-relative paths that
+// must survive collection and those that must not. The secret they reach for
+// lives in a sibling directory, so an escaping link is a real escape rather than
+// a path-string trick.
+func symlinkTree(t *testing.T, dir string) (want, unwanted []string) {
+	t.Helper()
+	outside := t.TempDir()
+	writeFile(t, outside, "id_rsa", "PRIVATE KEY\n")
+	writeFile(t, dir, "pkg/a.go", "package pkg\n")
+	writeFile(t, dir, "config/.env", "TOKEN=leaked\n")
+	rel, err := filepath.Rel(dir, filepath.Join(outside, "id_rsa"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := []struct{ dest, name string }{
+		// The headline case: an innocent name, an absolute destination outside the
+		// target, and no pattern in the world matches the name it was committed under.
+		{filepath.Join(outside, "id_rsa"), "context.txt"},
+		{rel, "relative.txt"},       // same escape, spelled relatively
+		{outside, "docs"},           // a whole directory outside the target
+		{"config/.env", "notes.md"}, // inside the root, but an excluded destination
+		{"nowhere", "dangling.txt"}, // unresolvable: nothing can read it anyway
+		{"pkg/a.go", "inside.txt"},  // legitimate, and must stay in scope
+	}
+	for _, l := range links {
+		if err := os.Symlink(l.dest, filepath.Join(dir, l.name)); err != nil {
+			t.Fatal(err)
+		}
+		if l.name == "inside.txt" {
+			want = append(want, l.name)
+			continue
+		}
+		unwanted = append(unwanted, l.name)
+	}
+	return append(want, "pkg/a.go"), append(unwanted, "config/.env")
+}
+
+// A symlink's NAME says nothing about what opening it yields, so filtering the
+// pathname alone lets a committed `context.txt -> ~/.ssh/id_rsa` walk straight
+// past the mandatory credential patterns into the reviewer's file list -- and the
+// reviewer is unsandboxed and told to read the files in scope, so the key lands in
+// its prompt, its output, and the run's artifacts. Both collectors must therefore
+// judge the resolved destination, and both are covered here for the same reason
+// the credential test covers both: they filter at different call sites.
+func TestCollectDirectorySkipsSymlinksLeavingTheTarget(t *testing.T) {
+	assert := func(t *testing.T, material string, want, unwanted []string) {
+		t.Helper()
+		for _, name := range unwanted {
+			if strings.Contains(material, name) {
+				t.Errorf("collected material names out-of-scope symlink %q:\n%s", name, material)
+			}
+		}
+		for _, name := range want {
+			if !strings.Contains(material, name) {
+				t.Errorf("collected material dropped in-scope %q:\n%s", name, material)
+			}
+		}
+	}
+	t.Run("git", func(t *testing.T) {
+		repo := gitRepo(t)
+		want, unwanted := symlinkTree(t, repo)
+		// TRACKED, the harder case: --cached lists index entries no ignore rule can
+		// remove, so only the destination check stands between a committed alias and
+		// the reviewer prompt.
+		git(t, repo, "add", "-A")
+		material, err := New(config.Target{Mode: "directory", Path: repo}).Collect(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert(t, material, want, unwanted)
+	})
+	t.Run("walk", func(t *testing.T) {
+		dir := t.TempDir()
+		want, unwanted := symlinkTree(t, dir)
+		material, err := New(config.Target{Mode: "directory", Path: dir}).Collect(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert(t, material, want, unwanted)
+	})
+}
+
 // target.exclude still applies on top of .gitignore, for committed material that
 // is not worth reviewing (vendored deps, fixtures).
 func TestCollectDirectoryGitExcludeGlobsStillApply(t *testing.T) {
@@ -2176,12 +2259,16 @@ func TestCollectDirectoryOversizedEntryFails(t *testing.T) {
 func TestListGitFilesCanceledContextReturnsPromptly(t *testing.T) {
 	repo := gitRepo(t)
 	c := New(config.Target{Mode: "directory", Path: repo})
+	scope, err := c.fileScope()
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := c.listGitFiles(ctx, nil)
+		_, _, err := c.listGitFiles(ctx, scope)
 		done <- err
 	}()
 	select {

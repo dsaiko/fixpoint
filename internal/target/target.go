@@ -213,11 +213,9 @@ func (c *Collector) excludes() []string {
 // the retained prefix is stable across runs without materializing and sorting
 // every path first.
 func (c *Collector) listFiles(ctx context.Context) (int, string, error) {
-	// EffectiveExcludes adds the mandatory credential patterns, which no config can
-	// drop: a reviewer reads any path it is pointed at, so never point it at a key.
-	excludes, err := compileGlobs(c.cfg.EffectiveExcludes())
+	scope, err := c.fileScope()
 	if err != nil {
-		return 0, "", fmt.Errorf("target.exclude: %w", err)
+		return 0, "", err
 	}
 	// Only a CONFIRMED non-worktree falls back to the filesystem walk. The two
 	// paths do not review the same set of files -- the walk ignores .gitignore --
@@ -229,9 +227,35 @@ func (c *Collector) listFiles(ctx context.Context) (int, string, error) {
 		return 0, "", err
 	}
 	if isRepo {
-		return c.listGitFiles(ctx, excludes)
+		return c.listGitFiles(ctx, scope)
 	}
-	return c.walkFiles(ctx, excludes)
+	return c.walkFiles(ctx, scope)
+}
+
+// fileScope is what both directory collectors filter against: the compiled
+// exclude globs, and the canonical target root every symlink's destination is
+// checked against (see symlinkOutOfScope).
+type fileScope struct {
+	excludes []*regexp.Regexp
+	root     string // target.path with every symlink in it resolved
+}
+
+// fileScope builds the filter both collectors share. The root is resolved once
+// here rather than per file: it is what a symlink's canonical destination is
+// compared against, and target.path itself may sit under a symlinked parent
+// (/tmp -> /private/tmp), which would otherwise make every path look external.
+func (c *Collector) fileScope() (fileScope, error) {
+	// EffectiveExcludes adds the mandatory credential patterns, which no config can
+	// drop: a reviewer reads any path it is pointed at, so never point it at a key.
+	excludes, err := compileGlobs(c.cfg.EffectiveExcludes())
+	if err != nil {
+		return fileScope{}, fmt.Errorf("target.exclude: %w", err)
+	}
+	root, err := filepath.EvalSymlinks(c.cfg.Path)
+	if err != nil {
+		return fileScope{}, fmt.Errorf("resolve target.path %s: %w", c.cfg.Path, err)
+	}
+	return fileScope{excludes: excludes, root: root}, nil
 }
 
 // listGitFiles asks git for the scope instead of walking the filesystem:
@@ -253,7 +277,7 @@ func (c *Collector) listFiles(ctx context.Context) (int, string, error) {
 // arrive as one final pseudo-path that Lstat rejects and skips, and the header
 // would confidently report a total that undercounts the tree -- the exact
 // silently-narrowed scope listFiles' denylist-only design exists to avoid.
-func (c *Collector) listGitFiles(ctx context.Context, excludes []*regexp.Regexp) (int, string, error) {
+func (c *Collector) listGitFiles(ctx context.Context, scope fileScope) (int, string, error) {
 	count := 0
 	var sb strings.Builder
 	// -z separates paths with NUL, so a filename containing a newline (or one git
@@ -263,12 +287,16 @@ func (c *Collector) listGitFiles(ctx context.Context, excludes []*regexp.Regexp)
 			return
 		}
 		rel = filepath.ToSlash(rel)
-		if c.skipFile(rel, excludes) {
+		if c.skipFile(rel, scope.excludes) {
 			return
 		}
 		// --cached reports index entries, which outlive a file deleted from the
 		// worktree. Listing a path an agent cannot open is worse than omitting it.
-		if _, err := os.Lstat(filepath.Join(c.cfg.Path, rel)); err != nil {
+		fi, err := os.Lstat(filepath.Join(c.cfg.Path, rel))
+		if err != nil {
+			return
+		}
+		if fi.Mode()&os.ModeSymlink != 0 && c.symlinkOutOfScope(rel, scope) {
 			return
 		}
 		// Keep counting every match (the header reports the true total) but stop
@@ -410,14 +438,49 @@ func (c *Collector) skipFile(rel string, excludes []*regexp.Regexp) bool {
 	return matchAny(excludes, rel)
 }
 
+// symlinkOutOfScope reports whether a symlink at the target-relative path rel
+// resolves somewhere a reviewer must not be pointed at: outside the canonical
+// target root, or onto a path the exclude globs (mandatory credential patterns
+// included) remove.
+//
+// Filtering the pathname alone is not enough, because the name of a symlink says
+// nothing about what it opens. A repository can commit an innocent-looking
+// `context.txt` pointing at ~/.ssh/id_rsa, another checkout, or a
+// credential file just outside the target; listing that alias hands the secret to
+// an unsandboxed reviewer that is instructed to read the files in scope -- and
+// into its prompt, output, and log artifacts -- while every mandatory pattern
+// matches only the alias, never the resolved destination. So the destination is
+// what is judged here. An unresolvable link (dangling, a resolution loop, an
+// unreadable parent) is dropped too: nothing can read it anyway, and guessing
+// where it points is the wrong way to be wrong.
+//
+// This bounds what collection ADVERTISES; it is not a sandbox. A prompt-injected
+// agent can still open any path it likes, which is what the shipped configs'
+// security notes and an OS-level sandbox are for.
+func (c *Collector) symlinkOutOfScope(rel string, scope fileScope) bool {
+	dest, err := filepath.EvalSymlinks(filepath.Join(c.cfg.Path, rel))
+	if err != nil {
+		return true
+	}
+	inner, err := filepath.Rel(scope.root, dest)
+	if err != nil || inner == ".." || strings.HasPrefix(inner, ".."+string(filepath.Separator)) {
+		return true
+	}
+	// Inside the root, but the destination gets the same filtering the pathname
+	// got: a `notes.md -> config/.env` alias must not smuggle in a file the
+	// exclusions already removed under its real name.
+	return c.skipFile(filepath.ToSlash(inner), scope.excludes)
+}
+
 // walkFiles is the non-git fallback: target.path may be any directory, so scope
 // comes from the filesystem and only target.exclude narrows it.
 //
 // It observes ctx: a large tree can take a long time to walk, and Ctrl-C has to
 // reach the one collection path that runs no subprocess of its own.
-func (c *Collector) walkFiles(ctx context.Context, excludes []*regexp.Regexp) (int, string, error) {
+func (c *Collector) walkFiles(ctx context.Context, scope fileScope) (int, string, error) {
 	count := 0
 	var sb strings.Builder
+	excludes := scope.excludes
 	root := c.cfg.Path
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -442,6 +505,12 @@ func (c *Collector) walkFiles(ctx context.Context, excludes []*regexp.Regexp) (i
 			return nil
 		}
 		if matchAny(excludes, rel) {
+			return nil
+		}
+		// WalkDir never descends through a symlink, so every one of them -- to a
+		// file or to a directory -- arrives here as an entry to list. Judge it by
+		// where it actually points, not by the name it was committed under.
+		if d.Type()&os.ModeSymlink != 0 && c.symlinkOutOfScope(rel, scope) {
 			return nil
 		}
 		count++

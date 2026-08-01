@@ -102,7 +102,12 @@ func TestWalkFilesObservesContextCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, _, err := New(config.Target{Mode: "directory", Path: dir}).walkFiles(ctx, nil); !errors.Is(err, context.Canceled) {
+	c := New(config.Target{Mode: "directory", Path: dir})
+	scope, err := c.fileScope()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.walkFiles(ctx, scope); !errors.Is(err, context.Canceled) {
 		t.Errorf("walkFiles() err = %v, want context.Canceled", err)
 	}
 }
