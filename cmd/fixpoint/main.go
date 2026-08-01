@@ -65,7 +65,7 @@ Flags:
 		return 2
 	}
 
-	logf, logRaw := newLogger(stderr)
+	logf, logRaw := newRunLogger(stderr)
 
 	// Anchor the run at the project root -- the git root, or the nearest directory
 	// holding a config bundle, found by walking up from the working directory. Every
@@ -184,6 +184,13 @@ Flags:
 	}
 	return model.ExitCode(sum.Termination)
 }
+
+// newRunLogger is the constructor run() uses for its writers. It is a variable
+// so a test can wrap them: the table's own writer is what lets a full-CLI test
+// drive a concurrent log line into the window the scoreboard write holds open,
+// and going through it is what pins the scoreboard to the locked path at all --
+// a table written straight to stderr would never reach the wrapper.
+var newRunLogger = newLogger
 
 // newLogger builds the run's two stderr writers over ONE mutex: logf for the
 // timestamped single lines everything logs, and logRaw for pre-formatted

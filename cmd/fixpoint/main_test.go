@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -994,5 +995,64 @@ func TestLogRawSerializesAgainstLogLines(t *testing.T) {
 	}
 	if !strings.Contains(got[1], "concurrent") {
 		t.Errorf("writes = %q, want the concurrent line second", got)
+	}
+}
+
+// The test above pins newLogger's shared lock; this pins run() actually SENDING
+// the scoreboard through it. The two are separate regressions: a table reverted
+// to a bare fmt.Fprint(stderr, ...) keeps every logRaw guarantee intact and still
+// lets the signal handler -- installed until run returns -- split the table.
+// Wrapping the run's own writers is the only way a full-CLI test can open that
+// window on demand, and a scoreboard that bypassed them would never arrive here.
+func TestRunScoreboardWritesThroughLockedWriter(t *testing.T) {
+	f := newFixture(t)
+	f.respond(1, reviewResponse(t))
+
+	// The horizontal rule opens the table and appears in no timestamped line.
+	w := &gateWriter{mark: strings.Repeat("─", 10), hold: 200 * time.Millisecond, started: make(chan struct{})}
+	tables := 0 // only run()'s goroutine touches this, and only before run returns
+	orig := newRunLogger
+	t.Cleanup(func() { newRunLogger = orig })
+	newRunLogger = func(io.Writer) (func(string, ...any), func(string)) {
+		logf, logRaw := newLogger(w)
+		return logf, func(s string) {
+			tables++
+			// Race a log line against the table write, joined before returning so
+			// nothing outlives the run: logMu must hold it back until the table is
+			// whole. Without the shared lock it lands first, as it would mid-table.
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				<-w.started
+				logf("concurrent")
+			}()
+			logRaw(s)
+			<-done
+		}
+	}
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", f.configFile("directory", "", "  review_only: true")}, &buf, &buf); got != 0 {
+		t.Fatalf("run() = %d, want 0; log:\n%s", got, strings.Join(w.recorded(), ""))
+	}
+	if tables != 1 {
+		t.Fatalf("scoreboard reached the locked writer %d times, want 1: run() is not printing the table through logRaw", tables)
+	}
+	got := w.recorded()
+	table, concurrent := -1, -1
+	for i, s := range got {
+		if strings.Contains(s, w.mark) && table < 0 {
+			table = i
+		}
+		if strings.Contains(s, "concurrent") && concurrent < 0 {
+			concurrent = i
+		}
+	}
+	if table < 0 || concurrent < 0 {
+		t.Fatalf("writes = %q, want both the table and the concurrent line", got)
+	}
+	if concurrent < table {
+		t.Errorf("concurrent line at %d precedes the table at %d: the scoreboard did not hold the log lock\nwrites = %q",
+			concurrent, table, got)
 	}
 }
