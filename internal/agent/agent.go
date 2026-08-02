@@ -324,21 +324,7 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 	}
 	// negative pid = the whole process group
 	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	// EPERM alongside ESRCH because the two kernels disagree about which one a
-	// vanished process group is. Linux reports ESRCH; the BSD kill(2) macOS
-	// inherits reports EPERM once the group holds nothing signalable, so on macOS
-	// this path fired with "operation not permitted" and every successful command
-	// that raced its deadline was reported as canceled -- deterministically, on
-	// every run, while Linux stayed green.
-	//
-	// Reading EPERM as "already gone" is safe HERE specifically: the group is one
-	// this process created with Setpgid for its own child, so the only genuine
-	// permission failure would need that child to have changed credentials, which
-	// no agent CLI does. And the return value is consulted in exactly one place --
-	// cmd.Cancel -- where the alternative is not "notice a runaway process" but
-	// "replace a leader's successful result with a cancel error". The exit-path
-	// call discards it.
-	if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.EPERM) {
+	if errors.Is(err, syscall.ESRCH) {
 		// The group is empty: the leader exited AND was reaped, and no descendant is
 		// left to keep the group alive -- there is nothing here that still needs
 		// killing. cmd.Wait does that reaping, so it races the context watcher that
@@ -349,6 +335,14 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 		// `exec: canceling Cmd: no such process` -- a passing check reported as
 		// unrunnable, a complete review thrown away, a commit that landed reported
 		// as failed.
+		return os.ErrProcessDone
+	}
+	// EPERM is where the kernels disagree about what a vanished group answers, and
+	// the disagreement is not cosmetic: off darwin it is the one reply that PROVES
+	// the group still holds something this process cannot kill, so it may only be
+	// downgraded to already-finished after the state is re-checked. See the two
+	// epermMeansGroupGone implementations.
+	if errors.Is(err, syscall.EPERM) && epermMeansGroupGone(cmd.Process.Pid) {
 		return os.ErrProcessDone
 	}
 	return err
