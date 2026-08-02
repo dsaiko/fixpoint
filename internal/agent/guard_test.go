@@ -193,6 +193,39 @@ func TestSuperviseCancelAfterReapKeepsSuccess(t *testing.T) {
 	}
 }
 
+// The mirror of the interleaving above, and the other half of the cancel path:
+// the context fires while the leader is still running, so cmd.Cancel's group kill
+// lands on a LIVE group and is what ends the command. The child's own first byte
+// of output is what triggers the cancel, so this reaches the kill without
+// depending on a wall clock -- unlike the sweep below, whose deadlines can only
+// aim at that window and can be pushed out of it by load either way.
+func TestSuperviseCancelBeforeExitKillsGroup(t *testing.T) {
+	kills := observeCancelKill(t, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	// Announces itself and then sleeps far past anything this test waits for, so the
+	// cancel that its announcement triggers always finds the leader alive.
+	cmd := exec.CommandContext(ctx, "sh", "-c", "echo ready; sleep 60")
+	_, err := Supervise(ctx, cmd, &cancelOnWrite{cancel: cancel}, nil)
+
+	killed := kills()
+	if len(killed) != 1 {
+		t.Fatalf("the cancel kill ran %d times, want exactly once; the cancel never reached a running leader", len(killed))
+	}
+	if killErr := killed[0]; killErr != nil {
+		t.Errorf("killing the group of a live leader = %v, want nil", killErr)
+	}
+	if cmd.ProcessState == nil || cmd.ProcessState.Success() {
+		t.Errorf("leader state = %v, want an unsuccessful exit; the group kill is what must have ended it", cmd.ProcessState)
+	}
+	if err == nil {
+		t.Error("Supervise() err = nil for a leader the cancel killed; want the kill reported")
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		t.Errorf("Supervise() err = %v; the kill of a live group leaked a raw errno", err)
+	}
+}
+
 // superviseBaseline is the median wall time of an uncanceled Supervise of a
 // trivial command on the machine running the test. The sweep below aims its
 // deadlines at that figure because a fixed range only guesses at what a fork,
@@ -214,21 +247,16 @@ func superviseBaseline(t *testing.T) time.Duration {
 	return runs[len(runs)/2]
 }
 
-// The forced test above pins the one interleaving; this sweeps deadlines across
-// the whole window in which a trivial command starts, exits and is reaped, so
-// cancellation lands at every offset around that exit, and requires that no
-// offset surfaces as an ESRCH failure or rewrites a successful leader's result.
-// It also requires the sweep not to be vacuous: every assertion below holds
-// trivially if each command simply finishes before its deadline, so at least one
-// iteration must have canceled a run that was still under way.
-func TestSuperviseSuccessRacingDeadline(t *testing.T) {
-	const iterations = 400
-	base := superviseBaseline(t)
-	kills := observeCancelKill(t, nil)
-	for i := range iterations {
+const sweepIterations = 400
+
+// sweepDeadlines runs one pass of the sweep, asserting what must hold at every
+// offset regardless of where that iteration's cancellation actually landed.
+func sweepDeadlines(t *testing.T, base time.Duration) {
+	t.Helper()
+	for i := range sweepIterations {
 		// A quarter of the baseline up to twice it: short enough at the start that the
 		// kill beats the command, long enough at the end that the command beats it.
-		deadline := base/4 + time.Duration(int64(2*base)*int64(i)/iterations)
+		deadline := base/4 + time.Duration(int64(2*base)*int64(i)/sweepIterations)
 		ctx, cancel := context.WithTimeout(t.Context(), deadline)
 		cmd := exec.CommandContext(ctx, "true")
 		_, err := Supervise(ctx, cmd, io.Discard, nil)
@@ -240,9 +268,39 @@ func TestSuperviseSuccessRacingDeadline(t *testing.T) {
 			t.Fatalf("Supervise() err = %v for a leader that exited 0; want nil or the context's own error", err)
 		}
 	}
+}
+
+// The two forced tests above pin the interleavings themselves -- the cancel that
+// meets a live leader and the one that meets an already-reaped one -- without a
+// wall clock. This sweeps deadlines across the whole window in which a trivial
+// command starts, exits and is reaped, so cancellation also lands at the offsets
+// BETWEEN those two, and requires that no offset surfaces as an ESRCH failure or
+// rewrites a successful leader's result.
+//
+// It also requires the sweep not to be vacuous: every assertion in sweepDeadlines
+// holds trivially if each command simply finishes before its deadline, so at least
+// one iteration must have canceled a run that was still under way. That is the one
+// claim here a scheduler can starve, since a deadline can only aim at the window,
+// so a pass that observes nothing re-measures and sweeps again instead of failing:
+// both ways a sweep misses entirely -- the machine slower than when the baseline
+// was taken, so every deadline expires before Start, or faster, so every command
+// beats its deadline -- are drift between the measurement and the sweep, and a
+// fresh baseline follows that drift. Only a sweep mis-scaled at every load it is
+// measured under fails.
+func TestSuperviseSuccessRacingDeadline(t *testing.T) {
+	kills := observeCancelKill(t, nil)
+	var base time.Duration
+	for attempt := 1; attempt <= 3; attempt++ {
+		base = superviseBaseline(t)
+		sweepDeadlines(t, base)
+		if len(kills()) > 0 {
+			break
+		}
+		t.Logf("attempt %d (baseline %v) canceled no run in progress; re-measuring and sweeping again", attempt, base)
+	}
 	killed := kills()
 	if len(killed) == 0 {
-		t.Fatalf("no iteration canceled a run in progress (baseline %v); the sweep never exercised the deadline race", base)
+		t.Fatalf("no iteration canceled a run in progress (last baseline %v); the sweep never exercised the deadline race", base)
 	}
 	reaped := 0
 	for _, err := range killed {
@@ -250,7 +308,8 @@ func TestSuperviseSuccessRacingDeadline(t *testing.T) {
 			reaped++
 		}
 	}
-	t.Logf("baseline %v: canceled %d/%d runs in progress, %d of them after the leader was reaped", base, len(killed), iterations, reaped)
+	t.Logf("baseline %v: canceled %d runs in progress out of the %d swept per pass, %d of them after the leader was reaped",
+		base, len(killed), sweepIterations, reaped)
 }
 
 // Supervise owns the output pipes, so a caller that has already set cmd.Stdout
