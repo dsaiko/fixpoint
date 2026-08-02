@@ -310,6 +310,29 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 			wantInheritAll: true,
 		},
 		{
+			// The direction that makes dropping the base from the candidate paths safe,
+			// asserted from the other side: the project's base declares the agent WITH
+			// inherit_all (and an env.pass of its own) and the operator's out-of-project
+			// config re-declares it inline without either. The child's entry replaces the
+			// base's whole entry, so nothing the base said survives and there is no
+			// project-set inherit_all left for the gate to catch. Under a merging decoder
+			// the key WOULD survive -- into an agent the gate no longer inspects the base
+			// of -- so this is the case that fails if that behavior ever shifts.
+			name: "an operator's inline agent erases a project base's inherit_all",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"base": "target: {mode: directory}\nagents:\n  mock:\n    command: [false]\n    can_edit: true\n" +
+						"    env:\n      inherit_all: true\n      pass: [FIXPOINT_BASE_ONLY]\n",
+				}, nil, nil)
+				out := bundle(t, t.TempDir(), map[string]string{
+					"task": "extends: base\nagents:\n  mock:\n    command: [true]\n    can_edit: true\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				return []string{out, filepath.Join(root, projectBundleDir)}, root, "task"
+			},
+		},
+		{
 			name: "operator bundle outside the project may declare it",
 			setup: func(t *testing.T) ([]string, string, string) {
 				t.Helper()
@@ -373,6 +396,14 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 				// base's WHOLE entry, command included, rather than merging into it.
 				if got := l.Config.Agents["mock"].Command; len(got) != 1 || got[0] != "true" {
 					t.Errorf("agents.mock.command = %v, want the declaring file's [true]", got)
+				}
+				// No allowed case's DECLARING file sets env.pass, so a non-empty one can
+				// only have leaked out of a base whose entry the child replaced -- the
+				// field the command check cannot see, since the child supplies a command
+				// either way. This is what distinguishes replacement from a per-field
+				// merge, and the gate stops reading the base on the strength of it.
+				if got := l.Config.Agents["mock"].Env.Pass; len(got) != 0 {
+					t.Errorf("agents.mock.env.pass = %v, want nothing: only a replaced base declared one", got)
 				}
 				return
 			}
