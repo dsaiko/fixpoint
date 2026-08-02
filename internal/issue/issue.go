@@ -47,9 +47,10 @@ import (
 // parallel part of a round is the reviewers, and aggregation happens after their
 // barrier.
 type Ledger struct {
-	issues []model.Issue
-	byID   map[string]int
-	seq    int
+	issues    []model.Issue
+	byID      map[string]int
+	seq       int
+	conflicts []string
 }
 
 // NewLedger returns an empty ledger.
@@ -69,7 +70,9 @@ func (l *Ledger) Issues() []model.Issue { return l.issues }
 //
 //   - An observation whose Issue field names a known issue joins it. Only the
 //     reviewer, which can see the history, can recognize its own reworded
-//     re-report of a problem whose line has since moved.
+//     re-report of a problem whose line has since moved. The one exception is a
+//     declaration naming an already REJECTED issue, which would suppress the
+//     observation outright -- see declarationHolds.
 //   - Otherwise the same file plus agreeing titles decide, at any distance. A
 //     shared location is where two reports MAY be about one defect; the titles
 //     are what say they are.
@@ -82,11 +85,13 @@ func (l *Ledger) Absorb(round int, observations []model.Finding) []model.Issue {
 	touched := map[int]bool{}
 	for i := range observations {
 		obs := &observations[i]
+		declared := obs.IssueID
 		idx := l.match(obs)
 		if idx < 0 {
 			idx = l.create(round, *obs)
 		}
 		l.attach(idx, round, obs)
+		l.noteRefusedDeclaration(round, declared, idx, obs)
 		touched[idx] = true
 	}
 	out := make([]model.Issue, 0, len(touched))
@@ -155,51 +160,108 @@ func observationsIn(obs []model.Finding, round int) []model.Finding {
 // match finds an existing issue for an observation, or -1.
 func (l *Ledger) match(obs *model.Finding) int {
 	// A reviewer-declared reference wins: it is the only signal that survives
-	// rewording and code movement.
+	// rewording and code movement. Except when the issue it names is already
+	// rejected -- see declarationHolds.
 	if obs.IssueID != "" {
-		if idx, ok := l.byID[obs.IssueID]; ok {
+		if idx, ok := l.byID[obs.IssueID]; ok && l.declarationHolds(idx, obs) {
 			return idx
 		}
 		// A declared id that does not exist is a model mistake, not a new issue
 		// identity -- fall through to the fingerprint rather than trusting it.
 	}
-	fp := Fingerprint(*obs)
-	located := locationKeyed(*obs)
 	for idx := range l.issues {
-		if l.issues[idx].Fingerprint != fp {
-			continue
+		if fingerprintMatch(l.issues[idx], *obs) {
+			return idx
 		}
-		// An exact location is where two reports MAY be about one defect, not proof
-		// that they are. One statement routinely holds two: the nil deref and the
-		// unchecked error it came from, the racy read and the test that never
-		// asserts it. Both reviewers cite that line, and merging them hands the
-		// coder ONE title, description and suggestion for two problems -- then one
-		// verdict closes both, so fixing or rejecting the defect the issue happens
-		// to describe silently buries the other for the rest of the run. That is the
-		// failure this package prices as strictly worse than a surviving duplicate,
-		// so a located observation must clear the same title agreement the same-file
-		// case below demands. A reviewer that can see past the wording says so with
-		// Issue, handled above.
-		if located && !titlesAgree(l.issues[idx].Title, obs.Title) {
-			continue
-		}
-		return idx
 	}
 	// Same file, agreeing titles: one issue, at any distance. This is what carries a
 	// re-report across rounds once a fix has moved the code -- see the note on
 	// titlesAgree above for why the line window that used to bound this is gone.
-	if obs.File != "" {
-		for idx := range l.issues {
-			it := l.issues[idx]
-			if normalizePath(it.File) != normalizePath(obs.File) {
-				continue
-			}
-			if titlesAgree(it.Title, obs.Title) {
-				return idx
-			}
+	for idx := range l.issues {
+		if fileTitleMatch(l.issues[idx], *obs) {
+			return idx
 		}
 	}
 	return -1
+}
+
+// fingerprintMatch reports whether an observation shares an issue's fingerprint
+// AND, when that fingerprint is a location, agrees with its title.
+//
+// An exact location is where two reports MAY be about one defect, not proof that
+// they are. One statement routinely holds two: the nil deref and the unchecked
+// error it came from, the racy read and the test that never asserts it. Both
+// reviewers cite that line, and merging them hands the coder ONE title,
+// description and suggestion for two problems -- then one verdict closes both, so
+// fixing or rejecting the defect the issue happens to describe silently buries the
+// other for the rest of the run. That is the failure this package prices as
+// strictly worse than a surviving duplicate, so a located observation must clear
+// the same title agreement fileTitleMatch demands. A reviewer that can see past
+// the wording says so with Issue.
+func fingerprintMatch(it model.Issue, obs model.Finding) bool {
+	if it.Fingerprint != Fingerprint(obs) {
+		return false
+	}
+	return !locationKeyed(obs) || titlesAgree(it.Title, obs.Title)
+}
+
+// fileTitleMatch reports whether an observation names the same file as an issue
+// with an agreeing title, at any distance.
+func fileTitleMatch(it model.Issue, obs model.Finding) bool {
+	if obs.File == "" || normalizePath(it.File) != normalizePath(obs.File) {
+		return false
+	}
+	return titlesAgree(it.Title, obs.Title)
+}
+
+// declarationHolds reports whether a reviewer's "this is issue X" may be taken at
+// face value.
+//
+// It may, for every issue this round will still hand to the coder: absorbing a
+// re-report is the whole point of the declaration, attach re-anchors the issue onto
+// the new observation's location and text, and the worst a wrong id costs is one
+// cap slot spent on two problems.
+//
+// It may NOT when the named issue was REJECTED in an earlier round, because that is
+// the one state where attaching an observation SUPPRESSES it: forRound carries the
+// rejection forward and coderWork then drops the issue, so the reported problem
+// never reaches the coder -- this round or any later one, since the issue stays
+// rejected. Every review prompt replays the history with issue ids, so a reviewer
+// that is prompt-injected, or merely confused about which id it is re-reporting,
+// holds the full list of ids that silence a finding. A rejected issue therefore has
+// to earn the match on the same evidence an undeclared observation would: the
+// fingerprint, or the file with an agreeing title. Anything else becomes a new
+// issue -- a slot spent, but seen -- and Absorb records the conflict.
+func (l *Ledger) declarationHolds(idx int, obs *model.Finding) bool {
+	it := l.issues[idx]
+	if it.Status != model.VerdictRejected {
+		return true
+	}
+	return fingerprintMatch(it, *obs) || fileTitleMatch(it, *obs)
+}
+
+// noteRefusedDeclaration records that an observation's declared issue id was not
+// honored, so a refusal is reported rather than silently rewriting what a reviewer
+// claimed. Only a declaration naming a KNOWN issue is a conflict: an unknown id is
+// an ordinary model slip, already covered by match's fallback.
+func (l *Ledger) noteRefusedDeclaration(round int, declared string, idx int, obs *model.Finding) {
+	if declared == "" || declared == l.issues[idx].ID {
+		return
+	}
+	if _, known := l.byID[declared]; !known {
+		return
+	}
+	l.conflicts = append(l.conflicts, fmt.Sprintf(
+		"round %d: %s declared issue %s, which is already rejected and does not match the report (%s:%d %q) -- recorded as %s instead",
+		round, obs.Agent, declared, obs.File, obs.Line, obs.Title, l.issues[idx].ID))
+}
+
+// TakeConflicts returns the declaration conflicts recorded since the last call and
+// clears them, so the caller reports each one once.
+func (l *Ledger) TakeConflicts() []string {
+	out := l.conflicts
+	l.conflicts = nil
+	return out
 }
 
 // titlesAgree reports whether two titles describe the same thing, by overlap of

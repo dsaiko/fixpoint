@@ -241,6 +241,97 @@ func TestAbsorbIgnoresUnknownDeclaredIssueID(t *testing.T) {
 	}
 }
 
+// A declared id naming an already REJECTED issue is the one declaration that can
+// SUPPRESS a finding: the round copy carries the rejection forward and the coder
+// never sees the issue, this round or any later one. Every review prompt lists the
+// ids, so a reviewer that is confused -- or steered -- can silence a genuine new
+// finding by citing a decided id. So a rejected issue has to earn the match on the
+// same evidence an undeclared observation would.
+func TestAbsorbRefusesADeclarationThatWouldBuryANewFindingUnderARejection(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{obs("a", "review-style", "style", "low", "x.go", 4, "prefer a named constant here")})
+	rejected := r1[0].ID
+	l.Record(rejected, model.VerdictRejected, "not genuine")
+
+	// A different file, a different problem -- with the rejected issue's id on it.
+	hijack := obs("b", "review-security", "security", "high", "internal/auth/token.go", 91,
+		"Session token is compared with a non-constant-time equality")
+	hijack.IssueID = rejected
+	r2 := l.Absorb(2, []model.Finding{hijack})
+
+	if len(r2) != 1 {
+		t.Fatalf("got %d issues, want the report kept", len(r2))
+	}
+	if r2[0].ID == rejected {
+		t.Fatalf("the report joined rejected issue %s; a new finding must not inherit a decided verdict", rejected)
+	}
+	if r2[0].Verdict != "" {
+		t.Errorf("Verdict = %q, want empty so the coder is handed this round's work", r2[0].Verdict)
+	}
+	if r2[0].Title != hijack.Title || r2[0].Severity != "high" {
+		t.Errorf("issue = %+v, want the new observation's own text and severity", r2[0])
+	}
+	// The refusal is reported, not silent: a reviewer citing a decided id while
+	// describing something else is worth seeing.
+	if got := l.TakeConflicts(); len(got) != 1 {
+		t.Errorf("TakeConflicts() = %v, want the refused declaration recorded once", got)
+	}
+	if got := l.TakeConflicts(); len(got) != 0 {
+		t.Errorf("TakeConflicts() = %v, want the list drained by the first call", got)
+	}
+}
+
+// The guard above must not turn every re-report of a rejected issue into a fresh
+// one: that would spend a cap slot on a decided problem every round. A declaration
+// backed by the ordinary evidence -- same file, agreeing title -- still joins.
+func TestAbsorbHonorsADeclaredReReportOfARejectedIssue(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{obs("a", "bugs", "bug", "low", "x.go", 12, "config pointer can be nil here")})
+	rejected := r1[0].ID
+	l.Record(rejected, model.VerdictRejected, "guarded by the caller")
+
+	reReport := obs("b", "bugs", "bug", "low", "x.go", 40, "nil deref on the config pointer")
+	reReport.IssueID = rejected
+	r2 := l.Absorb(2, []model.Finding{reReport})
+
+	if len(r2) != 1 || r2[0].ID != rejected {
+		t.Fatalf("got %+v, want the re-report folded back into %s", r2, rejected)
+	}
+	if r2[0].Verdict != model.VerdictRejected {
+		t.Errorf("Verdict = %q, want the rejection carried forward", r2[0].Verdict)
+	}
+	if got := l.TakeConflicts(); len(got) != 0 {
+		t.Errorf("TakeConflicts() = %v, want none: this declaration was honored", got)
+	}
+}
+
+// Only a rejection suppresses. An issue the round will still hand over -- open,
+// deferred, or fixed-and-reopened -- absorbs a declared re-report on the
+// reviewer's word alone, however far the wording and the line have moved, because
+// the round copy re-anchors onto the new observation and the coder sees it.
+func TestAbsorbHonorsADeclarationOnADeferredIssueWithoutLexicalEvidence(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{obs("a", "review-maintainability", "maintainability", "medium",
+		"internal/orchestrator/orchestrator.go", 382, "Severity vocabulary has two independent declarations")})
+	id := r1[0].ID
+	l.Record(id, model.VerdictDeferred, "capped")
+
+	reworded := obs("b", "review-maintainability", "maintainability", "medium",
+		"internal/config/config.go", 77, "duplicated severity ranking table")
+	reworded.IssueID = id
+	r2 := l.Absorb(2, []model.Finding{reworded})
+
+	if len(r2) != 1 || r2[0].ID != id {
+		t.Fatalf("got %+v, want the declared re-report to join %s", r2, id)
+	}
+	if l.Deferrals(id) != 1 {
+		t.Error("the deferral count must survive, or aging restarts and the issue is deferred forever")
+	}
+	if got := l.TakeConflicts(); len(got) != 0 {
+		t.Errorf("TakeConflicts() = %v, want none: only a rejected issue refuses a declaration", got)
+	}
+}
+
 // Deferral counts are now exact, which is what the cap's aging consumes. The
 // previous approximation could only guess from (file, category).
 func TestRecordTracksDeferralsAndStatus(t *testing.T) {

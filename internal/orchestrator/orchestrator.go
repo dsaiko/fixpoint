@@ -1065,6 +1065,7 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	sum.Rounds = append(sum.Rounds, rec)
 	recP := &sum.Rounds[len(sum.Rounds)-1]
 	recP.Issues = o.ledger.Absorb(round, recP.Findings)
+	o.logLedgerConflicts()
 	// Same reason as in runRound: an issue that arrives already rejected is never
 	// touched by setIssueVerdict, so without this its observations keep an empty
 	// verdict and the summary renders them UNRESOLVED while the issues block right
@@ -1485,6 +1486,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	// consumed two slots against the per-round cap and so REDUCED how many
 	// distinct problems a round could fix.
 	recP.Issues = o.ledger.Absorb(round, recP.Findings)
+	o.logLedgerConflicts()
 	mirrorCarriedVerdicts(recP)
 	if dup := len(recP.Findings) - len(recP.Issues); dup > 0 {
 		o.logf("round %d: %d observation(s) grouped into %d issue(s) (%d corroborating report(s))",
@@ -1670,6 +1672,18 @@ func (o *Orchestrator) deferOverCap(rec *model.RoundRecord) {
 		Deferred: len(deferred),
 		IDs:      deferred,
 	})
+}
+
+// logLedgerConflicts reports every reviewer-declared issue id the ledger refused
+// to honor. A refusal means a reviewer cited an id whose issue was already
+// rejected while describing something else, and the observation was filed under
+// its own issue instead of being buried under that rejection. Either the reviewer
+// is confused about the history or something is steering it, and both are worth
+// seeing in the log rather than inferring from an issue count.
+func (o *Orchestrator) logLedgerConflicts() {
+	for _, c := range o.ledger.TakeConflicts() {
+		o.logf("%s", c)
+	}
 }
 
 // mirrorCarriedVerdicts copies a verdict an issue ALREADY carries out of Absorb
