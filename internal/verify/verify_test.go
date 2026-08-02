@@ -482,36 +482,70 @@ func TestRunKeepsPassWhenDeadlineExpiresDuringTeardown(t *testing.T) {
 	// subject was broken. That is what it did on a loaded macOS box (observed
 	// duration 4.0007s = deadline 2s + drain 2s, i.e. killed, never exited).
 	//
-	// Now: poll finely so readiness costs no more than it has to, then hold until 5s
-	// have elapsed and exit. The holder gets a full 5 seconds to start, the exit
-	// lands at ~5s, and the 6s deadline falls squarely inside the 5s-7s drain.
-	const leaderExitSec, deadline = 5, 6 * time.Second
+	// Anchoring the exit to the clock fixed that, but left only a 1s margin (exit at
+	// 5s, deadline at 6s) -- and `date +%s` has 1-SECOND granularity, so "elapsed < 5"
+	// can still be true at 5.99s. Add polling granularity and scheduler delay under a
+	// loaded machine and the exit drifts past the deadline: the leader is killed
+	// again, and the test fails claiming its subject is broken. Observed on macOS
+	// only while the full suite ran alongside it (8.0026s = deadline 6s + drain 2s).
+	//
+	// Widening the margin is NOT the fix, and trying it first showed why: pushing the
+	// exit to 6s under an 8s deadline makes the 2s drain end at 8s too, so the
+	// deadline stops landing mid-drain and the test goes VACUOUS -- reverting the
+	// production fix then still passed. The window has a floor as well as a ceiling.
+	//
+	// The real defect was the CLOCK. `date +%s` counts whole seconds, so "elapsed
+	// < N" can hold until N+0.99s; that ~1s of slop is most of a 2s window on its
+	// own. perl is already required here, and Time::HiRes gives sub-millisecond
+	// resolution, which cuts the drift to polling granularity. So: exit at 7s under
+	// an 8s deadline -- drain 7s-9s, deadline squarely inside -- with drift small
+	// enough that the 1s margin holds.
+	//
+	// The assertion also RETRIES, as a backstop rather than the mechanism: whether
+	// the deadline lands mid-drain is a race no test wins every time on a loaded
+	// box, so a miss (leader killed, nothing written) is re-run instead of reported
+	// as a failure of the code under test. Only a miss on every attempt fails, which
+	// is what a genuinely broken window produces. Same shape as the adaptive sweep in
+	// the agent package, for the same reason.
+	const leaderExitSec, deadline = 7, 8 * time.Second
 	body := fmt.Sprintf("#!/bin/sh\n"+
-		"start=$(date +%%s)\n"+
+		"now() { perl -MTime::HiRes=time -e 'printf \"%%.3f\", time'; }\n"+
+		"start=$(now)\n"+
 		"perl -e 'setpgrp(0,0); open(F,\">\",$ARGV[0]) or die; print F $$; close F; sleep 60' '%s' &\n"+
 		"n=0\nwhile [ ! -s '%s' ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done\n"+
-		"while [ $(( $(date +%%s) - start )) -lt %d ]; do sleep 0.1; done\n"+
+		"while perl -e \"exit(((\\$ARGV[1]-\\$ARGV[0]) < %d) ? 0 : 1)\" \"$start\" \"$(now)\"; do sleep 0.05; done\n"+
 		"echo leader done\nexit 0\n", pidFile, pidFile, leaderExitSec)
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan Report, 1)
-	go func() {
-		done <- Run(t.Context(), cfg(deadline,
-			config.VerifyCommand{Name: "leader", Run: []string{script}},
-		), dir, nil)
-	}()
-	select {
-	case rep := <-done:
-		r := rep.Results[0]
-		if !r.Passed || r.Err != "" {
-			t.Fatalf("a check that exited 0 before its deadline must pass even when the drain crossed it: %+v", r)
+	const attempts = 3
+	for attempt := 1; ; attempt++ {
+		done := make(chan Report, 1)
+		go func() {
+			done <- Run(t.Context(), cfg(deadline,
+				config.VerifyCommand{Name: "leader", Run: []string{script}},
+			), dir, nil)
+		}()
+		select {
+		case rep := <-done:
+			r := rep.Results[0]
+			// The leader never got to write, so the deadline beat it to the exit and
+			// this attempt never entered the window under test. Not a verdict on the
+			// code -- try again.
+			if !strings.Contains(r.Output, "leader done") {
+				if attempt < attempts {
+					t.Logf("attempt %d: leader killed before it exited (%v); the deadline did not land mid-drain, retrying", attempt, r.Err)
+					continue
+				}
+				t.Fatalf("the leader was killed before exiting on all %d attempts, so the window was never entered: %+v", attempts, r)
+			}
+			if !r.Passed || r.Err != "" {
+				t.Fatalf("a check that exited 0 before its deadline must pass even when the drain crossed it: %+v", r)
+			}
+			return
+		case <-time.After(30 * time.Second):
+			t.Fatal("Run hung with a detached descendant on the output pipe past the deadline")
 		}
-		if !strings.Contains(r.Output, "leader done") {
-			t.Errorf("output = %q, want the check's own output kept", r.Output)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Run hung with a detached descendant on the output pipe past the deadline")
 	}
 }
 
