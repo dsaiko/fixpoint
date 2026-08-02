@@ -3319,22 +3319,26 @@ func TestCollectDirectoryNonGitFallsBackToWalk(t *testing.T) {
 	}
 }
 
-// The untracked tally in a --check estimate counts git records, not whitespace-
-// separated words: a filename containing a space is one file, and a filename that
-// is nothing but a space is still a file.
+// The untracked tally in a --check estimate counts NUL-delimited git records, not
+// whitespace-separated words and not lines: a filename containing a space or an
+// embedded newline is one file, and a filename that is nothing but a space is
+// still a file.
 func TestScopeCountsUntrackedFilesAsRecords(t *testing.T) {
 	repo := gitRepo(t)
 	writeFile(t, repo, "a b.go", "package a\n")
 	writeFile(t, repo, "c d.go", "package c\n")
 	writeFile(t, repo, " ", "space\n")
+	// Splitting records on "\n" instead of NUL would count this one twice.
+	writeFile(t, repo, "e\nf.go", "package e\n")
 
 	got, err := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: "HEAD"}).Scope(t.Context())
 	if err != nil {
 		t.Fatalf("Scope() err = %v", err)
 	}
-	// Field-splitting would say 4: two words each for the spaced names and none at
-	// all for the file whose name is a single space.
-	if !strings.Contains(got, "plus 3 untracked file(s)") {
-		t.Errorf("Scope() = %q, want it to report 3 untracked files", got)
+	// Field-splitting would say 5: two words each for the spaced and newline names
+	// and none at all for the file whose name is a single space. Line-splitting
+	// would say 5 too, from the two halves of the newline name.
+	if !strings.Contains(got, "plus 4 untracked file(s)") {
+		t.Errorf("Scope() = %q, want it to report 4 untracked files", got)
 	}
 }
