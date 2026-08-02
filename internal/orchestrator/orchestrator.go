@@ -60,13 +60,19 @@ type Orchestrator struct {
 	// journalWarn keeps a broken journal to ONE warning. A full disk would
 	// otherwise emit a line per transition and bury the run's real output.
 	journalWarn sync.Once
-	// preflightOnce/preflightErr memoize PreflightGuards. Both run() and Ping call
-	// it -- Ping because -check-live reaches it WITHOUT going through run() -- and
-	// on the run path that would otherwise repeat the git probes and, worse, print
-	// the repo-supplied-git-config WARNING twice for one target. The guards are
-	// pure reads of a target that does not change mid-run, so one answer holds.
-	preflightOnce sync.Once
-	preflightErr  error
+	// preflight* memoize the guards. Both run() and Ping call them -- Ping because
+	// -check-live reaches it WITHOUT going through run() -- and on the run path
+	// that would otherwise repeat the git probes and, worse, print the
+	// repo-supplied-git-config WARNING twice for one target. The guards are pure
+	// reads of a target that does not change mid-run, so one answer holds.
+	//
+	// preflightAgents records the STRENGTH of the memoized answer: --check runs the
+	// weaker no-agent variant (see PreflightGuardsNoAgent), and that answer must not
+	// satisfy a later agent-invoking caller, which inspects strictly more.
+	preflightMu     sync.Mutex
+	preflightDone   bool
+	preflightAgents bool
+	preflightErr    error
 	// heartbeatEvery is how often runAgent's progress line fires. It is a field
 	// defaulting to heartbeatDefault rather than a bare const so a test can shorten
 	// it: the tick body is the only thing that makes the heartbeat goroutine touch
@@ -1191,7 +1197,8 @@ func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 // PreflightGuards runs the two target-integrity gates that must hold before
 // fixpoint points git at the target at all: the work-tree redirect check and the
 // repo-supplied-git-config trust gate. It exists as its own entry point because
-// -check reaches the target WITHOUT going through run() -- Scope runs the same
+// -check and -check-live reach the target WITHOUT going through run() -- Scope
+// runs the same
 // commands collection does (`git diff` in git-diff mode, `git ls-files` in
 // directory mode), so a repo-supplied filter.<name>.clean would run as a program,
 // with fixpoint's inherited environment, from the one command documented as
@@ -1202,16 +1209,44 @@ func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 // --list`), take no lock and mutate nothing, so they are safe on that
 // non-mutating path.
 //
-// It is idempotent (see preflightOnce): Ping calls it too, so the run path, which
+// It is idempotent (see preflightMu): Ping calls it too, so the run path, which
 // guards before its first git command and then pings, probes and warns once.
+//
+// This is the variant for every entry point that will launch an agent with its
+// working directory inside the target -- run() and Ping. That is what decides
+// whether the repo-supplied-git-config gate applies at all, because the agents
+// run their own `git status`/`git diff`/`git log` there, in every mode. Use
+// PreflightGuardsNoAgent only where nothing but fixpoint's own git commands run.
 func (o *Orchestrator) PreflightGuards(ctx context.Context) error {
-	o.preflightOnce.Do(func() {
-		if err := o.guardRedirectedWorktree(ctx); err != nil {
-			o.preflightErr = err
-			return
-		}
-		o.preflightErr = o.guardUntrustedGitConfig(ctx)
-	})
+	return o.preflightGuards(ctx, true)
+}
+
+// PreflightGuardsNoAgent is the --check variant of PreflightGuards: it applies
+// the repo-supplied-git-config gate only to the modes whose OWN git commands
+// touch the worktree. --check runs Scope and exits without invoking an agent, so
+// a directory review-only estimate (`git ls-files`, no content normalized, no
+// agent launched in the target) has no code-execution path to gate on -- and
+// refusing it would refuse `fixpoint --check` on every git-lfs checkout the
+// operator has not asserted trust in.
+func (o *Orchestrator) PreflightGuardsNoAgent(ctx context.Context) error {
+	return o.preflightGuards(ctx, false)
+}
+
+func (o *Orchestrator) preflightGuards(ctx context.Context, agentsInTarget bool) error {
+	o.preflightMu.Lock()
+	defer o.preflightMu.Unlock()
+	// A memoized no-agent answer does not satisfy an agent-invoking caller: it may
+	// have skipped the config gate entirely. Re-probe in that direction only; the
+	// reverse (strong answer, weak question) is already conclusive.
+	if o.preflightDone && (o.preflightAgents || !agentsInTarget) {
+		return o.preflightErr
+	}
+	o.preflightDone, o.preflightAgents = true, agentsInTarget
+	if err := o.guardRedirectedWorktree(ctx); err != nil {
+		o.preflightErr = err
+		return o.preflightErr
+	}
+	o.preflightErr = o.guardUntrustedGitConfig(ctx, agentsInTarget)
 	return o.preflightErr
 }
 
@@ -1263,17 +1298,27 @@ func (o *Orchestrator) guardRedirectedWorktree(ctx context.Context) error {
 // worktree script such a filter may point at, and (for git-lfs) the .lfsconfig
 // that redirects where the filter talks to. That half of the path is a filter the
 // repository ACTIVATES rather than defines, so it is invisible to a repo-scoped
-// key list and is handled separately by warnActivatableFilters. Directory
-// review-only walks the filesystem and runs no worktree-touching git command, so
-// it has no such path.
+// key list and is handled separately by warnActivatableFilters.
+//
+// agentsInTarget widens that set to EVERY mode, and is the common case: fixpoint's
+// own git commands are not the only ones that run against the target. run() and
+// Ping launch each CLI with its working directory inside target.path, and those
+// CLIs run `git status`/`git diff`/`git log` while exploring -- which is enough to
+// fire a repo-supplied filter.<name>.clean, core.sshCommand or credential helper,
+// with fixpoint's inherited environment. Directory review-only is exactly the
+// shipped review bundle (defaults.yaml sets mode: directory, review-code.yaml sets
+// review_only: true), so without this it would be the one configuration that
+// reaches an agent-in-target with no key inspected and no warning printed. Only
+// --check, which invokes no agent, gets the narrower set.
 //
 // When the operator has asserted no trust we refuse; when trust IS asserted we
 // still WARN, because trusted_target/allow_untrusted_fix is documented as
 // accepting coder prompt-injection risk and an operator must also learn it accepts
 // .git/config-driven code execution (a git-lfs repo they trust, or an enforced
 // external sandbox, is the intended use).
-func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context) error {
-	touchesGit := o.cfg.Target.Mode == config.ModeGitDiff ||
+func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context, agentsInTarget bool) error {
+	touchesGit := agentsInTarget ||
+		o.cfg.Target.Mode == config.ModeGitDiff ||
 		o.cfg.Target.Mode == config.ModePR ||
 		(!o.cfg.Loop.ReviewOnly && o.cfg.Target.Mode == config.ModeDirectory)
 	if !touchesGit {
@@ -1950,7 +1995,9 @@ func (o *Orchestrator) Ping(ctx context.Context) error {
 	// `git status`/`git diff`/`git log` while exploring, so a repo-supplied
 	// filter.<name>.clean (or core.sshCommand, or a credential helper) executes with
 	// fixpoint's inherited environment, and a core.worktree redirect points them at
-	// a tree outside the target. -check-live reaches Ping without going through
+	// a tree outside the target. That holds in EVERY mode, including directory
+	// review-only -- which is why this is PreflightGuards and not the narrower
+	// no-agent variant --check uses. -check-live reaches Ping without going through
 	// run() -- and it is strictly more invasive than -check, which is gated -- so
 	// gating at the ping rather than at the caller keeps every agent-invoking entry
 	// point covered. PreflightGuards is idempotent, so run() still probes once.

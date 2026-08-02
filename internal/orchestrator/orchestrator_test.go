@@ -1205,6 +1205,62 @@ func TestRunRefusesUntrustedGitDiffConfigFilter(t *testing.T) {
 	})
 }
 
+// Directory review-only -- the shipped review bundle's own shape -- is gated too,
+// because the gate is not only about fixpoint's git commands: every agent is
+// launched with its working directory INSIDE the target and runs `git status`/
+// `git diff`/`git log` while exploring, which fires a repo-supplied clean filter
+// just as fixpoint's own diff would. --check is the exception: it invokes no
+// agent, so it keeps the cheap path rather than refusing every git-lfs checkout.
+func TestRunRefusesUntrustedDirectoryReviewOnlyConfigFilter(t *testing.T) {
+	t.Run("review-only run is refused before any agent", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false // undo the fixture's trusted default
+		gitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+
+		_, err := f.orchestrator().Run(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "repo-controlled programs") {
+			t.Fatalf("Run() err = %v, want refusal citing repo-controlled programs", err)
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (must refuse before launching an agent)", got)
+		}
+	})
+
+	t.Run("check-live is refused before any agent", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		gitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+
+		err := f.orchestrator().Ping(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "repo-controlled programs") {
+			t.Fatalf("Ping() err = %v, want refusal citing repo-controlled programs", err)
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (must refuse before pinging)", got)
+		}
+	})
+
+	t.Run("check invokes no agent and is not refused", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		gitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+
+		if err := f.orchestrator().PreflightGuardsNoAgent(t.Context()); err != nil {
+			t.Fatalf("PreflightGuardsNoAgent() err = %v, want --check on a directory review-only target to proceed", err)
+		}
+	})
+
+	t.Run("trusted target proceeds", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true}) // fixture keeps trusted_target: true
+		gitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+		f.respond(1, reviewResponse(t)) // clean review
+
+		if _, err := f.orchestrator().Run(t.Context()); err != nil {
+			t.Fatalf("Run() err = %v, want the trust assertion to bypass the config guard", err)
+		}
+	})
+}
+
 // A review-only pr run is gated on the same execution-capable git config. The
 // PR cannot write .git/config, but `gh pr checkout` writes the worktree and git
 // runs a configured smudge/process filter during checkout -- and the PR supplies

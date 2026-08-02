@@ -203,7 +203,9 @@ func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Co
 	// otherwise the command documented as invoking no agent is the one that runs a
 	// repo-supplied filter.<name>.clean while git normalizes the worktree for the
 	// diff, or that reports on whatever tree a core.worktree redirect points at.
-	if err := o.PreflightGuards(ctx); err != nil {
+	// It is the no-agent variant because this path launches no CLI inside the
+	// target -- an agent's own git commands are the wider half of that exposure.
+	if err := o.PreflightGuardsNoAgent(ctx); err != nil {
 		logf("target: %v", err)
 		return 1
 	}
