@@ -86,7 +86,7 @@ func appendLine(path string, line []byte) (err error) {
 // only when the directory cannot be claimed at all -- there is then no journal to
 // name, and the write that reports it will fail for the same reason.
 //
-// Safe to call concurrently, and for the same reason as its neighbours: runDir is
+// Safe to call concurrently, and for the same reason as its neighbors: runDir is
 // written inside ensureDir's sync.Once, so going through ensureDir here is what
 // orders this read after that write.
 func (s *Store) JournalPath() string {

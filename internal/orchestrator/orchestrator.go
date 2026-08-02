@@ -1151,14 +1151,26 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	o.logf("closing %s: coder fixed %d, rejected %d", label, recP.Fixed, recP.Rejected)
 	if committed == 0 {
 		// Nothing was committed, so normally there is nothing for another pass to see:
-		// it would re-review identical code and get an identical answer. The exception
-		// is a capped pass, where the coder was only ever handed the active issues: if
-		// it rejected all of them, the deferred remainder still never reached it, and
+		// it would re-review identical code and get an identical answer. Two exceptions,
+		// the same two finalizeRound makes for the loop.
+		//
+		// First, nothing committed is not proof of a rejection: a verification
+		// correction can revert a reported fix outright, and verifyAndCommitFix then
+		// withdraws the verdict and reopens the issue without producing a commit. The
+		// code did change under that issue -- the correction reverted the edits, so the
+		// tree is back where it started but the defect is still there and undecided --
+		// and ending the phase here would leave it unresolved with nobody having said
+		// so.
+		if open := unrejectedIssues(recP); open > 0 {
+			o.logf("closing %s: nothing committed, but %d issue(s) are still open (a reverted fix, not a rejection); continuing", label, open)
+			return false, nil
+		}
+		// Second, a capped pass, where the coder was only ever handed the active issues:
+		// if it rejected all of them, the deferred remainder still never reached it, and
 		// stopping here would drop exactly the work this repeating phase exists to
 		// pick up -- silently, since warnFinalPhaseCapped only fires on the pass cap.
 		// The re-review is not wasted on them either: deferral aging promotes what was
-		// skipped, so the next pass hands it over first. Same reasoning as
-		// finalizeRound's deferred check in the loop.
+		// skipped, so the next pass hands it over first.
 		if deferred := deferredFindings(recP); deferred > 0 {
 			o.logf("closing %s: coder rejected every active issue, but %d finding(s) held back by the cap never reached it; continuing", label, deferred)
 			return false, nil

@@ -3597,6 +3597,54 @@ func TestFinalPhaseStopsAtMaxFinalPasses(t *testing.T) {
 	}
 }
 
+// A closing pass whose verification correction reverts the whole fix commits
+// nothing and reopens the issue -- the defect is still in the tree, and nobody
+// rejected it. The phase used to read "nothing committed" as "nothing left to ask",
+// so that reopened issue ended the run unresolved with no pass left to look at it.
+// The loop's finalizeRound already keeps going in exactly this case; the closing
+// path has to as well.
+func TestClosingPassContinuesWhenACorrectionReopensTheOnlyFix(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 9, MaxFinalPasses: 2, CleanRoundsToStop: 1})
+	f.finalLens()
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	before := f.commitCount()
+
+	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged
+	// Closing pass 1 reports a finding, and the coder's edits fail the gate.
+	f.respond(2, reviewResponse(t, aFinding("bug")))
+	f.breakBuildOn(3, "broken.txt")
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+	// The correction throws away everything the pass did, so the gate passes over a
+	// tree identical to the pass's starting point and there is nothing to commit.
+	testfixture.WriteSide(t, f.respDir, 4, fmt.Sprintf("#!/bin/sh\nrm -f '%s'\ngit -C '%s' checkout -- .\n",
+		filepath.Join(f.repo, "broken.txt"), f.repo))
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "reverted it all"}))
+	// Pass 2 is the only thing that can still resolve i1, so it must run.
+	f.respond(5, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() = %v, want the reverted closing pass to continue without an error", err)
+	}
+	if got := f.commitCount(); got != before {
+		t.Errorf("commit count = %d, want %d: a reverted pass has nothing to commit", got, before)
+	}
+	passes := 0
+	for _, r := range sum.Rounds {
+		if r.Final {
+			passes++
+		}
+	}
+	if passes != 2 {
+		t.Errorf("closing passes = %d, want 2: the reopened issue must get another pass", passes)
+	}
+	for _, it := range sum.Rounds[1].Issues {
+		if it.Verdict == model.VerdictFixed || it.StatusOrDefault() != model.StatusOpen {
+			t.Errorf("issue %s = %q/%q, want it reopened", it.ID, it.Verdict, it.StatusOrDefault())
+		}
+	}
+}
+
 // warnFinalPhaseCapped only runs when the last allowed pass asked for another one,
 // so every call is a real exhaustion. It used to say nothing when that pass had
 // fixed everything it reported -- the very case where the closing round committed
