@@ -2932,6 +2932,108 @@ func TestCollectDirectoryExcludesDirectoryContents(t *testing.T) {
 	}
 }
 
+// The same wildcard-free directory entry has to remove that directory's contents
+// in the GIT modes too -- where compileGlobs is never called at all. Collect
+// builds its `git diff` and `git ls-files` argv from collectPathspec, so the
+// exclusion there is enforced solely by git's own :(exclude,glob) prefix
+// semantics, and compileGlobs' widening is only correct because the two agree.
+// The git modes are also where a divergence costs the most: the diff embeds full
+// file CONTENT, so a missed entry puts config/secrets/prod.token verbatim into
+// every reviewer prompt and every .prompt artifact rather than merely naming its
+// path -- silently, because the entry looks configured.
+//
+// The other direction is pinned here as well. "**/credentials" carries a
+// wildcard, git matches it with wildmatch under WM_PATHNAME, and widening it to
+// descendants would delete an ordinary internal/credentials Go package from
+// review. It is a mandatory exclude no config can drop, so it is in force in
+// every subtest below and its package must still arrive.
+func TestCollectGitModesExcludeDirectoryContents(t *testing.T) {
+	// Not a credential-shaped name: a *.key would be dropped by the mandatory
+	// patterns whatever target.exclude says, and the test would pass without
+	// reading the exclude entry at all.
+	const (
+		secret        = "config/secrets/prod.token"
+		secretContent = "TOKEN=leaked-in-diff"
+		newSecret     = "config/secrets/new.token"
+	)
+	// Everything is committed in the base and MODIFIED inside the diff range, so
+	// the diff renders each file's content in full if a spec misses it.
+	setup := func(t *testing.T) (repo, base string) {
+		t.Helper()
+		repo = gitRepo(t)
+		writeFile(t, repo, secret, "TOKEN=original\n")
+		writeFile(t, repo, "pkg/a.go", "package pkg\n")
+		writeFile(t, repo, "internal/credentials/aws.go", "package credentials\n")
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-qm", "base")
+		base = strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+		writeFile(t, repo, secret, secretContent+"\n")
+		writeFile(t, repo, "pkg/a.go", "package pkg // reviewed\n")
+		writeFile(t, repo, "internal/credentials/aws.go", "package credentials // reviewed-package\n")
+		git(t, repo, "add", "-A")
+		git(t, repo, "commit", "-qm", "changes")
+		// The untracked half is built from the SAME pathspecs but reaches the
+		// material through the "read them directly" listing rather than the diff.
+		writeFile(t, repo, newSecret, "TOKEN=untracked\n")
+		writeFile(t, repo, "sub/ok.txt", "fine\n")
+		return repo, base
+	}
+	assert := func(t *testing.T, material string) {
+		t.Helper()
+		for _, leak := range []string{secret, secretContent, newSecret} {
+			if strings.Contains(material, leak) {
+				t.Errorf("collected material leaked excluded directory content %q:\n%s", leak, material)
+			}
+		}
+		for _, want := range []string{
+			"pkg/a.go", "// reviewed", "sub/ok.txt",
+			// The wildcard exclude must NOT have been widened to descendants.
+			"internal/credentials/aws.go", "// reviewed-package",
+		} {
+			if !strings.Contains(material, want) {
+				t.Errorf("collected material dropped %q:\n%s", want, material)
+			}
+		}
+	}
+	for _, glob := range []string{"config/secrets", "config/secrets/"} {
+		t.Run("git-diff/"+glob, func(t *testing.T) {
+			repo, base := setup(t)
+			c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: base, Exclude: []string{glob}})
+			if err := c.Prepare(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			material, err := c.Collect(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			assert(t, material)
+		})
+		t.Run("pr/"+glob, func(t *testing.T) {
+			repo, base := setup(t)
+			// Stub gh: the PR head is already checked out and its base tip is the
+			// local base commit, so Prepare pins it without fetching.
+			binDir := t.TempDir()
+			stub := "#!/bin/sh\ncase \"$1 $2\" in\n" +
+				"\"pr checkout\") : ;;\n" +
+				"\"pr view\") echo " + base + " ;;\n" +
+				"*) exit 1 ;;\nesac\n"
+			if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(stub), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			c := New(config.Target{Mode: "pr", Path: repo, PR: 7, Exclude: []string{glob}})
+			if err := c.Prepare(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			material, err := c.Collect(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			assert(t, material)
+		})
+	}
+}
+
 // symlinkTree lays out a target directory holding one alias of every shape the
 // destination check has to separate, and returns the target-relative paths that
 // must survive collection and those that must not. The secret they reach for
