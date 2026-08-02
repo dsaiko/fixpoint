@@ -196,12 +196,12 @@ resolved from inside the target may not set it — the run is refused, and no fl
 grants it, because those secrets include the ones no denylist or redactor knows by
 name. Name what the agent needs under `env.pass` instead.
 
-**`verify` commands do not receive credentials.** They are argv the
+**`verify` commands do not inherit credentials.** They are argv the
 target can supply (a bundle inside the target is searched first), so they inherit
 fixpoint's environment *minus* every variable an agent file declares under
 `env.pass` / `env.set`, minus a few exact names whose value is auth material or a
 live connection to it (`KUBECONFIG`, `NETRC`, `DOCKER_AUTH_CONFIG`,
-`SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `GPG_AGENT_INFO`, `GNUPGHOME`), and minus every variable whose name
+`SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `GPG_AGENT_INFO`), and minus every variable whose name
 is credential-*shaped* — one whose underscore-separated words include `TOKEN`,
 `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL(S)`, `API_KEY`,
 `ACCESS_KEY`, `SECRET_KEY`, `PRIVATE_KEY` or `SIGNING_KEY`. That covers
@@ -214,6 +214,13 @@ filtering above: a "build" command that curls a key out is not a model's
 misbehavior, it is just argv. This direction is a denylist, because what a build
 needs is project-specific and an allowlist would break checks by dropping what it
 forgot.
+
+The filter covers the *environment*, not the filesystem: the command runs as you,
+so `~/.netrc` or `~/.aws/credentials` is still readable by path, and `KUBECONFIG`
+and `NETRC` are pointers whose HOME-relative defaults survive their removal.
+`GNUPGHOME` is deliberately absent for that reason — stripping it would redirect
+`gpg` from a scratch keyring you set back to your real `~/.gnupg`, which is worse
+than leaving it. Use a container if you need that boundary.
 
 Two **environment variables** — not config keys — adjust it for your machine:
 `FIXPOINT_STRIP_ENV` names extra variables to remove (a secret whose name gives no

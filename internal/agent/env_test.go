@@ -324,7 +324,7 @@ func TestEnvWithoutCredentialsStripsCredentialShapedNames(t *testing.T) {
 		// key file. This list is the control for that denylist: dropping an entry
 		// from knownCredentialEnv must fail here.
 		"KUBECONFIG", "NETRC", "DOCKER_AUTH_CONFIG",
-		"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO", "GNUPGHOME",
+		"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO",
 	}
 	kept := []string{
 		"GIT_AUTHOR_NAME",        // AUTH is not a word boundary match
@@ -332,6 +332,11 @@ func TestEnvWithoutCredentialsStripsCredentialShapedNames(t *testing.T) {
 		"COMPASS_URL",            // nor PASS inside COMPASS
 		"SSH_KEY_ALGORITHMS",     // bare KEY is not a credential word
 		"GOFLAGS", "JAVA_HOME",   // the ordinary build environment
+		// A pointer, not a capability: HOME stays, so stripping GNUPGHOME does not
+		// remove the keyring, it redirects gpg from whatever the operator isolated
+		// fixpoint with back to ~/.gnupg -- their real keys and a live agent socket.
+		// Adding it to knownCredentialEnv must fail here.
+		"GNUPGHOME",
 	}
 	for _, name := range append(append([]string(nil), stripped...), kept...) {
 		t.Setenv(name, "value")

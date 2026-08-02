@@ -80,11 +80,27 @@ func BaselineEnvNames() []string {
 // key for (`ssh deploy@prod`, `git push`) without reading a key file at all --
 // exactly the capability this filter is documented as removing -- and the recipe
 // behind the operator's `make lint` is the target's Makefile, which a fix run has
-// by definition just changed. GPG_AGENT_INFO is the signing equivalent, and
-// GNUPGHOME names the keyring directory the way NETRC names its file.
+// by definition just changed. GPG_AGENT_INFO is the signing equivalent.
+//
+// GNUPGHOME is deliberately ABSENT, and the difference from SSH_AUTH_SOCK is the
+// rule for the whole class. SSH_AUTH_SOCK is the ONLY handle to the agent, so
+// deleting the name deletes the capability. GNUPGHOME is a REDIRECT away from
+// ~/.gnupg, which HOME -- a baseline variable, kept -- leaves reachable either
+// way: deleting it does not take a keyring away, it points gpg back at the
+// operator's real one, live agent socket and cached passphrases included. An
+// operator who isolated fixpoint with GNUPGHOME=/tmp/scratch-gnupg would get the
+// exact inverse of what they asked for, so this list leaves their redirect alone.
+//
+// KUBECONFIG and NETRC are redirects too, and stay only because the balance runs
+// the other way for them: ~/.kube/config and ~/.netrc are commonly absent, so
+// dropping the pointer usually does remove reach, whereas ~/.gnupg is populated on
+// any machine that has ever run gpg. Neither entry should be read as DENYING
+// access to the default file -- a verify command runs as the operator and can open
+// it by path regardless. Only a sandbox stops that, and this filter is not one; it
+// removes what the ENVIRONMENT carries.
 var knownCredentialEnv = []string{
 	"KUBECONFIG", "NETRC", "DOCKER_AUTH_CONFIG",
-	"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO", "GNUPGHOME",
+	"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO",
 }
 
 // credentialNameRE matches a variable name that is credential-SHAPED, whichever

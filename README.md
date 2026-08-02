@@ -524,7 +524,7 @@ do not share. They inherit fixpoint's environment **minus** every variable that
 carries a credential — not just the agents'. That means the names your agent files
 declare (`env.pass`, `env.set`), a few exact names whose value is auth material or
 a live connection to it (`KUBECONFIG`, `NETRC`, `DOCKER_AUTH_CONFIG`,
-`SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `GPG_AGENT_INFO`, `GNUPGHOME` — an inherited
+`SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `GPG_AGENT_INFO` — an inherited
 ssh-agent would let a build command authenticate as you without ever reading a
 key), and every variable whose name is
 credential-*shaped*: one whose underscore-separated words include `TOKEN`,
@@ -536,6 +536,15 @@ release tokens of the CI job you ran fixpoint from (`NPM_TOKEN`,
 `GOOGLE_APPLICATION_CREDENTIALS`, ...) and your own `ACME_INTERNAL_TOKEN`, none of
 which a build check needs to see. Words match on underscore boundaries, so
 `GIT_AUTHOR_NAME` and `TOKENIZERS_PARALLELISM` are untouched.
+
+What this removes is what the *environment* carries. A verify command still runs
+as you, so a credential file it can name by path — `~/.netrc`, `~/.gnupg`,
+`~/.aws/credentials` — stays readable; `KUBECONFIG` and `NETRC` are pointers, and
+dropping a pointer is not the same as revoking access. `GNUPGHOME` is deliberately
+*not* on the list for exactly that reason: stripping it would send `gpg` from
+whatever scratch directory you isolated fixpoint with back to your real `~/.gnupg`,
+live agent included — the opposite of what you asked for. Isolation at that level
+wants a container, not an environment filter.
 
 Set `FIXPOINT_STRIP_ENV` to name extra variables to remove, and `FIXPOINT_KEEP_ENV`
 to spare one the shape rule caught but a check really needs (both take a comma- or
