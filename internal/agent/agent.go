@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"reflect"
 	"regexp"
@@ -301,12 +302,29 @@ func firstLine(s string) string {
 // populates cmd.Process (a nil deref), and a zero pid would make
 // syscall.Kill(-0, ...) signal the caller's OWN process group -- killing
 // fixpoint itself. Both cases must no-op.
+//
+// A group that is already gone reports os.ErrProcessDone, which is what os/exec
+// requires of a cmd.Cancel: see the ESRCH comment below.
 func KillProcessGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil || cmd.Process.Pid <= 0 {
 		return nil
 	}
 	// negative pid = the whole process group
-	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		// The group is empty: the leader exited AND was reaped, and no descendant is
+		// left to keep the group alive -- there is nothing here that still needs
+		// killing. cmd.Wait does that reaping, so it races the context watcher that
+		// calls this as cmd.Cancel: a command that completes just as its deadline
+		// expires lands here. os/exec only treats a cancel error as the benign
+		// already-finished case when it wraps os.ErrProcessDone; hand it the raw
+		// errno instead and it replaces the leader's own successful result with
+		// `exec: canceling Cmd: no such process` -- a passing check reported as
+		// unrunnable, a complete review thrown away, a commit that landed reported
+		// as failed.
+		return os.ErrProcessDone
+	}
+	return err
 }
 
 // SucceededDespiteLeakedPipe reports whether err is exec's WaitDelay expiry for

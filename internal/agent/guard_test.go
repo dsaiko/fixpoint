@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -58,6 +60,49 @@ func TestKillProcessGroupGuard(t *testing.T) {
 	}
 	if err := KillProcessGroup(&exec.Cmd{Process: &os.Process{Pid: 0}}); err != nil {
 		t.Errorf("KillProcessGroup(pid 0) = %v, want nil no-op", err)
+	}
+}
+
+// A group whose leader has already exited AND been reaped no longer exists, and
+// syscall.Kill answers ESRCH. That is "already finished", not a failure, and
+// os/exec only recognizes it as such when the error wraps os.ErrProcessDone --
+// anything else and it rewrites a command that succeeded into
+// `exec: canceling Cmd: no such process`.
+func TestKillProcessGroupReportsProcessDone(t *testing.T) {
+	cmd := exec.Command("true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	if err := cmd.Wait(); err != nil { // reaps the leader, emptying the group
+		t.Fatalf("Wait() = %v", err)
+	}
+	err := KillProcessGroup(cmd)
+	if !errors.Is(err, os.ErrProcessDone) {
+		t.Errorf("KillProcessGroup(reaped leader) = %v, want an error wrapping os.ErrProcessDone", err)
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		t.Errorf("KillProcessGroup leaked the raw errno %v; os/exec does not recognize it as already-finished", err)
+	}
+}
+
+// When a command completes just as its context expires, cmd.Wait can reap the
+// leader before the context watcher runs cmd.Cancel, so the group kill finds
+// nothing left. Sweep deadlines across the window where a trivial command
+// finishes and require that this interleaving never surfaces as an ESRCH
+// failure: the leader's own result must stand.
+func TestSuperviseSuccessRacingDeadline(t *testing.T) {
+	for i := range 400 {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Duration(500+i*10)*time.Microsecond)
+		cmd := exec.CommandContext(ctx, "true")
+		_, err := Supervise(ctx, cmd, io.Discard, nil)
+		cancel()
+		if errors.Is(err, syscall.ESRCH) {
+			t.Fatalf("Supervise() err = %v; a completed command was reported as a kill failure", err)
+		}
+		if err != nil && cmd.ProcessState != nil && cmd.ProcessState.Success() && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Supervise() err = %v for a leader that exited 0; want nil or the context's own error", err)
+		}
 	}
 }
 
