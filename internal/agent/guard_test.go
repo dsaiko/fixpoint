@@ -3,12 +3,15 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -86,14 +89,147 @@ func TestKillProcessGroupReportsProcessDone(t *testing.T) {
 	}
 }
 
-// When a command completes just as its context expires, cmd.Wait can reap the
-// leader before the context watcher runs cmd.Cancel, so the group kill finds
-// nothing left. Sweep deadlines across the window where a trivial command
-// finishes and require that this interleaving never surfaces as an ESRCH
-// failure: the leader's own result must stand.
+// observeCancelKill replaces the kill Supervise installs as cmd.Cancel with one
+// that runs before (given the command) and then records what the real kill
+// reported, and returns an accessor for those records. They are what makes the
+// interleaving observable rather than assumed: a recorded os.ErrProcessDone means
+// that cancel landed on a group whose leader cmd.Wait had already reaped, and an
+// empty record means no cancel ran at all. Restoring the original is left to
+// t.Cleanup so a failing assertion cannot leak the wrapper into later tests.
+func observeCancelKill(t *testing.T, before func(*exec.Cmd)) func() []error {
+	t.Helper()
+	orig := cancelKill
+	t.Cleanup(func() { cancelKill = orig })
+	var mu sync.Mutex
+	var seen []error
+	cancelKill = func(cmd *exec.Cmd) error {
+		if before != nil {
+			before(cmd)
+		}
+		err := orig(cmd)
+		mu.Lock()
+		seen = append(seen, err)
+		mu.Unlock()
+		return err
+	}
+	return func() []error {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(seen)
+	}
+}
+
+// waitLeaderReaped blocks until pid has left the process table entirely. A zombie
+// still answers signal 0, so ESRCH here means cmd.Wait has already reaped the
+// leader and the group it led is empty -- precisely the state whose ESRCH must
+// reach os/exec as os.ErrProcessDone.
+func waitLeaderReaped(pid int) error {
+	for range 5000 {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return fmt.Errorf("leader %d still in the process table; it was never reaped", pid)
+}
+
+// cancelOnWrite cancels the moment the child produces its first output, which is
+// the child's own word that it is running -- so the cancel provably fires while
+// the leader is still alive, which is what makes os/exec's watcher take the cancel
+// path instead of its already-finished shortcut.
+type cancelOnWrite struct {
+	cancel func()
+	once   sync.Once
+}
+
+func (w *cancelOnWrite) Write(p []byte) (int, error) {
+	w.once.Do(w.cancel)
+	return len(p), nil
+}
+
+// The interleaving that matters here: cmd.Wait reaps a leader that exited 0, and
+// only then does the context watcher run cmd.Cancel, so the group kill finds
+// nothing left. Force it rather than hoping a deadline lands inside it -- hold the
+// kill back until the leader is provably reaped, so the cancel always meets an
+// empty group. The leader's success must survive that, and it only does because
+// KillProcessGroup reports os.ErrProcessDone instead of the raw ESRCH: with the
+// errno, os/exec rewrites this run into `exec: canceling Cmd: no such process`.
+func TestSuperviseCancelAfterReapKeepsSuccess(t *testing.T) {
+	// Reported through a channel because the wait runs on os/exec's context watcher
+	// goroutine, not this one.
+	reapErrs := make(chan error, 1)
+	kills := observeCancelKill(t, func(cmd *exec.Cmd) {
+		if err := waitLeaderReaped(cmd.Process.Pid); err != nil {
+			select {
+			case reapErrs <- err:
+			default:
+			}
+		}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	// Announces itself, then exits 0 well after the cancel has fired. The held-back
+	// kill never reaches it, so its own successful exit is what cmd.Wait reaps.
+	cmd := exec.CommandContext(ctx, "sh", "-c", "echo ready; sleep 1")
+	_, err := Supervise(ctx, cmd, &cancelOnWrite{cancel: cancel}, nil)
+
+	select {
+	case reapErr := <-reapErrs:
+		t.Fatalf("forcing the interleaving failed: %v", reapErr)
+	default:
+	}
+	killed := kills()
+	if len(killed) != 1 {
+		t.Fatalf("the cancel kill ran %d times, want exactly once; the forced interleaving was not reached", len(killed))
+	}
+	if killErr := killed[0]; !errors.Is(killErr, os.ErrProcessDone) {
+		t.Errorf("killing the group of an already-reaped leader = %v, want an error wrapping os.ErrProcessDone", killErr)
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		t.Fatalf("leader state = %v, want a clean exit; the cancel must not have killed it", cmd.ProcessState)
+	}
+	if err != nil {
+		t.Fatalf("Supervise() err = %v for a leader that exited 0 before the cancel; want nil", err)
+	}
+}
+
+// superviseBaseline is the median wall time of an uncanceled Supervise of a
+// trivial command on the machine running the test. The sweep below aims its
+// deadlines at that figure because a fixed range only guesses at what a fork,
+// exec and exit cost here: guessed deadlines mostly expire before the command
+// starts or long after it finished, and the sweep then never reaches the
+// interleaving it is named for.
+func superviseBaseline(t *testing.T) time.Duration {
+	t.Helper()
+	runs := make([]time.Duration, 0, 20)
+	for range 20 {
+		start := time.Now()
+		cmd := exec.CommandContext(t.Context(), "true")
+		if _, err := Supervise(t.Context(), cmd, io.Discard, nil); err != nil {
+			t.Fatalf("Supervise() of an uncanceled command = %v", err)
+		}
+		runs = append(runs, time.Since(start))
+	}
+	slices.Sort(runs)
+	return runs[len(runs)/2]
+}
+
+// The forced test above pins the one interleaving; this sweeps deadlines across
+// the whole window in which a trivial command starts, exits and is reaped, so
+// cancellation lands at every offset around that exit, and requires that no
+// offset surfaces as an ESRCH failure or rewrites a successful leader's result.
+// It also requires the sweep not to be vacuous: every assertion below holds
+// trivially if each command simply finishes before its deadline, so at least one
+// iteration must have canceled a run that was still under way.
 func TestSuperviseSuccessRacingDeadline(t *testing.T) {
-	for i := range 400 {
-		ctx, cancel := context.WithTimeout(t.Context(), time.Duration(500+i*10)*time.Microsecond)
+	const iterations = 400
+	base := superviseBaseline(t)
+	kills := observeCancelKill(t, nil)
+	for i := range iterations {
+		// A quarter of the baseline up to twice it: short enough at the start that the
+		// kill beats the command, long enough at the end that the command beats it.
+		deadline := base/4 + time.Duration(int64(2*base)*int64(i)/iterations)
+		ctx, cancel := context.WithTimeout(t.Context(), deadline)
 		cmd := exec.CommandContext(ctx, "true")
 		_, err := Supervise(ctx, cmd, io.Discard, nil)
 		cancel()
@@ -104,6 +240,17 @@ func TestSuperviseSuccessRacingDeadline(t *testing.T) {
 			t.Fatalf("Supervise() err = %v for a leader that exited 0; want nil or the context's own error", err)
 		}
 	}
+	killed := kills()
+	if len(killed) == 0 {
+		t.Fatalf("no iteration canceled a run in progress (baseline %v); the sweep never exercised the deadline race", base)
+	}
+	reaped := 0
+	for _, err := range killed {
+		if errors.Is(err, os.ErrProcessDone) {
+			reaped++
+		}
+	}
+	t.Logf("baseline %v: canceled %d/%d runs in progress, %d of them after the leader was reaped", base, len(killed), iterations, reaped)
 }
 
 // Supervise owns the output pipes, so a caller that has already set cmd.Stdout

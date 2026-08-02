@@ -19,6 +19,16 @@ import (
 // otherwise wedge the run for as long as that process lives.
 const pipeDrainGrace = 2 * time.Second
 
+// cancelKill is the process-group kill Supervise installs as cmd.Cancel. It is a
+// var solely so a test can wrap it: the interleaving that makes KillProcessGroup's
+// os.ErrProcessDone mapping matter -- cmd.Wait reaping a leader that exited 0
+// BEFORE the context watcher runs cmd.Cancel -- cannot be produced on demand from
+// the outside, because once cmd.Wait is waiting on the watcher os/exec chooses
+// between running the cancel and taking its already-finished shortcut at random.
+// Wrapping the kill lets a test hold it back until the leader is provably reaped.
+// Nothing in production reassigns it.
+var cancelKill = KillProcessGroup
+
 // OutPipe carries one of a child process's output streams into dst through a
 // pipe whose read end THIS process owns.
 //
@@ -230,7 +240,7 @@ func Supervise(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (le
 	// the repository concurrently with the next check, the clean-tree check or the
 	// round commit, or to leak past an aborted run.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return KillProcessGroup(cmd) }
+	cmd.Cancel = func() error { return cancelKill(cmd) }
 	// Backstop only: with no pipe of exec's own left -- neither output nor stdin --
 	// WaitDelay's remaining job is to kill a leader that ignored the cancel signal,
 	// so Wait cannot block forever.
