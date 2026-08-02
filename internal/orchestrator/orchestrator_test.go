@@ -2602,6 +2602,39 @@ func TestAssignments(t *testing.T) {
 			}
 		}
 	})
+
+	// A review-only run runs its final lenses in this one round (there is no closing
+	// round to hold them). They must fan out exactly as the closing round would:
+	// an unpinned final lens on every eligible agent regardless of the review
+	// strategy, a pinned one still on its own agent. Letting rotate pick a single
+	// agent makes a review-only config a subset of its fix sibling, not a preview.
+	t.Run("review-only fans an unpinned final lens across the pool under rotate", func(t *testing.T) {
+		o := newO("rotate")
+		o.cfg.Loop.ReviewOnly = true
+		o.cfg.Roles.Review.Prompts = append(o.cfg.Roles.Review.Prompts,
+			config.ReviewLens{Prompt: "final.md", Final: true},
+			config.ReviewLens{Prompt: "pinnedfinal.md", Agent: "a2", Final: true},
+		)
+		got := o.assignments(1)
+		set := map[string]bool{}
+		for _, a := range got {
+			set[a.Lens+"->"+a.Agent] = true
+		}
+		want := []string{
+			"pinned.md->x",
+			"b.md->a1", "c.md->a2",
+			"final.md->a1", "final.md->a2", // unpinned final: the whole pool
+			"pinnedfinal.md->a2", // pinned final: its agent only
+		}
+		if len(got) != len(want) {
+			t.Fatalf("assignments = %d, want %d: %v", len(got), len(want), got)
+		}
+		for _, w := range want {
+			if !set[w] {
+				t.Errorf("missing assignment %q; got %v", w, got)
+			}
+		}
+	})
 }
 
 func TestValidateReviewFindings(t *testing.T) {

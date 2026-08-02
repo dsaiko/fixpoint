@@ -2176,7 +2176,13 @@ func (o *Orchestrator) assignments(round int) []model.Assignment {
 		switch {
 		case pinned: // pinned under every strategy
 			out = append(out, model.Assignment{Lens: l.Prompt, Agent: agents[0], Advisory: l.Advisory, Pinned: true})
-		case rv.Strategy == config.StrategyAll:
+		// An unpinned final lens fans out to the whole panel regardless of the
+		// review strategy, exactly as finalAssignments does it: breadth on the
+		// last look, with no next round to catch what one model missed. Only
+		// reachable in a review-only run (the skip above removed the rest), and
+		// letting rotate pick a single agent here would make that run a subset
+		// of its fix sibling's closing round rather than a preview of it.
+		case l.Final, rv.Strategy == config.StrategyAll:
 			for _, a := range agents {
 				out = append(out, model.Assignment{Lens: l.Prompt, Agent: a, Advisory: l.Advisory})
 			}
