@@ -9,6 +9,11 @@
 # Kimi also keeps the panel diverse -- glm is the general reasoner, kimi the code
 # specialist, so their findings overlap less than two general models' would.
 model: kimi-k2.7-code:cloud
+# No `effort`, deliberately: it is Anthropic's setting, and ollama drops the
+# thinking budget the harness translates it into. Measured -- this model produced
+# ~3428 thinking tokens under a 1024 budget, 3.3x over, and within half a percent
+# of what it produces with no budget at all. Setting it would validate, run, and
+# lie. See "effort (claude)" in _README.md.
 command:
   - ollama
   - launch

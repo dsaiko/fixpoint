@@ -44,6 +44,28 @@ Reasoning budget per request; all five levels verified with `claude -p`:
 Higher effort buys judgment at the cost of latency. Reviewers run every round, so
 their effort multiplies across the loop; the coder runs once per round.
 
+The heading says **(claude)** because the setting is Anthropic's, not the
+harness's. `--effort` becomes a `thinking.budget_tokens` field in the API request,
+so it only does something if whatever serves the model reads that field.
+
+**ollama does not.** Setting `effort` on an ollama-served agent is accepted,
+validates, runs without error — and changes nothing, which is worse than being
+rejected, because the config then claims a reviewer runs deliberately that the
+panel never configured. Measured against `/v1/messages` on the local ollama proxy
+(the endpoint `ollama launch claude` points the harness at):
+
+    model            thinking budget    thinking produced
+    glm-5.2          not sent           ~1511 tok
+    glm-5.2          1024               ~1487 tok    45% over budget
+    kimi-k2.7-code   not sent           ~3443 tok
+    kimi-k2.7-code   1024               ~3428 tok    3.3x over budget
+
+Two findings there: both models emit a thinking block whether or not one is asked
+for, and a budget that should bind is ignored outright — the with/without pairs
+differ by under half a percent. So `kimi.yaml` and `glm.yaml` deliberately declare
+no `effort`, and adding one is not a knob, it is a comment that lies. To change how
+hard those models work, change `model` or the prompt.
+
 ## env
 
 Each agent receives a non-secret baseline (`PATH`, `HOME`, temp dir, locale, TLS

@@ -1,6 +1,10 @@
 # GLM via ollama, same claude-harness wrapping as kimi. The panel's general
 # reasoner to kimi's code specialist, and the slower of the two.
 model: glm-5.2:cloud
+# No `effort`, deliberately: it is Anthropic's setting, and ollama drops the
+# thinking budget the harness translates it into. Measured -- this model produced
+# ~1487 thinking tokens under a 1024 budget, and ~1511 with no budget at all.
+# Setting it would validate, run, and lie. See "effort (claude)" in _README.md.
 command:
   - ollama
   - launch
