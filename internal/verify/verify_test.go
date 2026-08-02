@@ -407,18 +407,39 @@ func TestRunKeepsPassWhenDeadlineExpiresDuringTeardown(t *testing.T) {
 	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
 	script := filepath.Join(dir, "leader.sh")
 	// The leader waits for the holder to publish its PID -- written after setpgrp, so
-	// by then it really has escaped the group the exit is about to kill -- then exits
-	// 0 well inside the 2s timeout. The drain that follows runs past that deadline.
+	// by then it really has escaped the group the exit is about to kill -- and then
+	// exits 0 at a point ANCHORED TO THE WALL CLOCK rather than to how long the
+	// holder took to start.
+	//
+	// The window this test needs is narrow and it must land in it every time: the
+	// leader has to exit BEFORE the deadline, and the 2s drain grace that follows has
+	// to still be running WHEN the deadline fires. So exit must fall inside
+	// (deadline-2s, deadline).
+	//
+	// The first version of this test polled for the holder in 1-SECOND steps under a
+	// 2s deadline, which made the exit time a function of process startup: if the
+	// holder was not ready at the first check the leader slept a whole second, and if
+	// it took longer than two the deadline killed the leader outright -- reporting a
+	// timeout, which is the very thing under test, so the test failed claiming its
+	// subject was broken. That is what it did on a loaded macOS box (observed
+	// duration 4.0007s = deadline 2s + drain 2s, i.e. killed, never exited).
+	//
+	// Now: poll finely so readiness costs no more than it has to, then hold until 5s
+	// have elapsed and exit. The holder gets a full 5 seconds to start, the exit
+	// lands at ~5s, and the 6s deadline falls squarely inside the 5s-7s drain.
+	const leaderExitSec, deadline = 5, 6 * time.Second
 	body := fmt.Sprintf("#!/bin/sh\n"+
+		"start=$(date +%%s)\n"+
 		"perl -e 'setpgrp(0,0); open(F,\">\",$ARGV[0]) or die; print F $$; close F; sleep 60' '%s' &\n"+
-		"n=0\nwhile [ ! -s '%s' ] && [ $n -lt 5 ]; do sleep 1; n=$((n+1)); done\n"+
-		"echo leader done\nexit 0\n", pidFile, pidFile)
+		"n=0\nwhile [ ! -s '%s' ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done\n"+
+		"while [ $(( $(date +%%s) - start )) -lt %d ]; do sleep 0.1; done\n"+
+		"echo leader done\nexit 0\n", pidFile, pidFile, leaderExitSec)
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan Report, 1)
 	go func() {
-		done <- Run(t.Context(), cfg(2*time.Second,
+		done <- Run(t.Context(), cfg(deadline,
 			config.VerifyCommand{Name: "leader", Run: []string{script}},
 		), dir, nil)
 	}()
