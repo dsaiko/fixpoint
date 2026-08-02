@@ -87,6 +87,29 @@ func TestIsGitRepoOperationalFailureIsAnError(t *testing.T) {
 	}
 }
 
+// The reverse mistake: an EXPECTED probe result must not be read as a failure
+// just because the invoking shell has a locale set. git translates its fatal
+// messages when built with NLS, and notARepository matches the English text, so
+// without a pinned locale an ordinary non-repository directory would abort
+// preflight on any translated git. The shim stands in for that git -- English
+// only under LC_ALL=C -- so the test does not depend on which locales the host
+// has installed.
+func TestIsGitRepoUnderATranslatedGit(t *testing.T) {
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	t.Setenv("LANG", "de_DE.UTF-8")
+	t.Setenv("LANGUAGE", "de")
+	shimGit(t, "rev-parse", `    if [ "$LC_ALL" = C ]; then
+      echo 'fatal: not a git repository (or any of the parent directories): .git' >&2
+    else
+      echo 'fatal: Kein Git-Repository (oder irgendein Elternverzeichnis): .git' >&2
+    fi
+    exit 128`)
+
+	if ok, err := New(config.Target{Path: t.TempDir()}).IsGitRepo(t.Context()); err != nil || ok {
+		t.Errorf("IsGitRepo() = %v, %v under a translated git, want false with no error", ok, err)
+	}
+}
+
 // The same diversion, seen from the collection path: a failed probe must fail the
 // round rather than quietly changing scope to the .gitignore-blind walk.
 func TestCollectDirectoryDoesNotFallBackOnAProbeFailure(t *testing.T) {

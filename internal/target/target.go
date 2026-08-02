@@ -447,7 +447,7 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	full := append(gitenv.SafeConfigArgs(), args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = c.cfg.Path
-	cmd.Env = gitenv.Harden(nil)
+	cmd.Env = c.probeEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return agent.KillProcessGroup(cmd) }
 	// Backstop for a leader that ignores the cancel signal. It has no pipe drain
@@ -724,7 +724,9 @@ func (c *Collector) IsGitRepo(ctx context.Context) (bool, error) {
 // notARepository reports whether a failed git command failed because there is no
 // repository, as opposed to failing for any other reason. git answers that with
 // exit 128 plus a specific message; the exit status alone covers every fatal, so
-// both are required before a failure is read as an answer.
+// both are required before a failure is read as an answer. Matching the English
+// message is only sound because probeEnv pins LC_ALL=C for every git command
+// fixpoint runs -- see there.
 func notARepository(err error) bool {
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 128 {
@@ -1942,6 +1944,27 @@ func (c *Collector) scopedConfigKeys(ctx context.Context) ([]configEntry, error)
 	return entries, nil
 }
 
+// probeEnv is the environment for fixpoint's OWN git/gh subprocesses: the
+// safe-config pins, plus a C locale.
+//
+// The locale pin is load-bearing, not tidiness. git translates its fatal
+// messages when built with NLS, and notARepository/noWorkTree read those
+// messages to tell an EXPECTED probe result -- "this is not a repository", "this
+// is a bare repository" -- apart from a real fault, since exit 128 alone covers
+// every fatal. Inheriting LANG/LC_* from whoever started fixpoint would make
+// those reads miss under a translated git, turning an ordinary non-repository
+// directory into an aborted preflight. LC_ALL beats LANG and every LC_*, and
+// gettext ignores LANGUAGE once the locale is C, so nothing else needs clearing;
+// exec resolves the duplicate key in favor of the last entry, so this wins over
+// an inherited LC_ALL too.
+//
+// This deliberately does NOT live in gitenv.Harden: that env is also exported
+// into the reviewer/coder CLIs, which must keep the user's own locale for their
+// output encoding.
+func (c *Collector) probeEnv() []string {
+	return append(gitenv.Harden(nil), "LC_ALL=C")
+}
+
 func (c *Collector) git(ctx context.Context, args ...string) (string, error) {
 	return c.run(ctx, "git", append(gitenv.SafeConfigArgs(), args...)...)
 }
@@ -1970,8 +1993,9 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	// checkout runs `git checkout`, and a repo whose config points core.hooksPath into
 	// the worktree (e.g. .githooks) would otherwise run a PR-supplied post-checkout
 	// hook with fixpoint's inherited tokens, even in a review-only PR run before any
-	// sandbox. GIT_CONFIG_COUNT/KEY/VALUE make git treat these as -c overrides.
-	cmd.Env = gitenv.Harden(nil)
+	// sandbox. GIT_CONFIG_COUNT/KEY/VALUE make git treat these as -c overrides. The
+	// locale is pinned too, so the messages callers read stay the ones they parse.
+	cmd.Env = c.probeEnv()
 	// Stream stdout and stderr into SEPARATE bounded buffers rather than one:
 	// callers parse the returned string as a machine-readable value (a SHA, a PR
 	// base OID, a remote list, a filename list), and a successful git/gh command
