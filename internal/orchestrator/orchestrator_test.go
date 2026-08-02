@@ -1407,6 +1407,26 @@ func TestRunRefusesUntrustedDirectoryReviewOnlyConfigFilter(t *testing.T) {
 		}
 	})
 
+	// The preflight answer is memoized, and a --check answer is the WEAK one: it
+	// may have skipped the config gate entirely. So a cached no-agent pass must
+	// not satisfy an agent-invoking caller on the same orchestrator -- the gate
+	// has to re-probe in that direction, or the day a caller does both the agent
+	// path runs unguarded.
+	t.Run("a cached --check pass does not satisfy an agent-invoking caller", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		gitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+		o := f.orchestrator()
+
+		if err := o.PreflightGuardsNoAgent(t.Context()); err != nil {
+			t.Fatalf("PreflightGuardsNoAgent() err = %v, want --check on a directory review-only target to proceed", err)
+		}
+		err := o.PreflightGuards(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "repo-controlled programs") {
+			t.Fatalf("PreflightGuards() after a cached --check pass err = %v, want refusal citing repo-controlled programs", err)
+		}
+	})
+
 	t.Run("trusted target proceeds", func(t *testing.T) {
 		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true}) // fixture keeps trusted_target: true
 		gitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
@@ -1414,6 +1434,26 @@ func TestRunRefusesUntrustedDirectoryReviewOnlyConfigFilter(t *testing.T) {
 
 		if _, err := f.orchestrator().Run(t.Context()); err != nil {
 			t.Fatalf("Run() err = %v, want the trust assertion to bypass the config guard", err)
+		}
+	})
+
+	// The other half of the memoization: run() guards and then pings, and Ping
+	// guards again, so without it the operator sees the same WARNING twice for
+	// one target and starts discounting it.
+	t.Run("trusted target warns once across run and ping", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true}) // fixture keeps trusted_target: true
+		ping := true
+		f.cfg.PingAgents = &ping // undo the fixture's no-ping default: this is the double-guard path
+		gitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+		f.respond(1, "OK")              // ping
+		f.respond(2, reviewResponse(t)) // clean review
+		o, logged := f.capturingOrchestrator()
+
+		if _, err := o.Run(t.Context()); err != nil {
+			t.Fatalf("Run() err = %v, want the trust assertion to bypass the config guard", err)
+		}
+		if got := strings.Count(logged(), "has repo-supplied git config"); got != 1 {
+			t.Errorf("repo-supplied git config warnings = %d, want 1, got logs:\n%s", got, logged())
 		}
 	})
 }
