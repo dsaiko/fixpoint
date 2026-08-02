@@ -414,9 +414,41 @@ Three things that cost an afternoon to learn:
   `cost_usd` unset and the scoreboard prints `-` instead of money nobody was
   charged; tokens are real either way and still counted.
 
-`codex` is not a second route to OpenRouter: codex 0.146 dropped
-`wire_api = "chat"` in favour of the Responses API, which OpenRouter does not
-serve.
+`codex` is a second route to OpenRouter, and a working one. It needs
+`wire_api = "responses"` — 0.146 dropped `"chat"` — plus a provider block:
+
+```
+-c model_provider=openrouter
+-c 'model_providers.openrouter.base_url="https://openrouter.ai/api/v1"'
+-c 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"'
+-c 'model_providers.openrouter.wire_api="responses"'
+```
+
+Verified: it explores with tools, answers correctly, and reports
+`cached_input_tokens`, so caching survives that route too.
+
+*(An earlier version of this file said OpenRouter does not serve the Responses
+API. That was wrong — the probe behind it used an expired key, and the resulting
+401 "User not found" was read as a missing endpoint. With a valid key
+`POST /api/v1/responses` returns 200.)*
+
+Which harness suits a non-Anthropic model is a separate question from which route
+reaches it, and OpenRouter's own docs note that Claude Code is tuned for Anthropic
+models. Measured here over every run so far, the gap is narrow but real — and it
+shows up in output-contract compliance rather than in error rate:
+
+| agent | sessions | errors | error rate | of which schema |
+|---|---|---|---|---|
+| kimi | 24 | 4 | 17% | **3** |
+| claude | 43 | 7 | 16% | 0 |
+| codex | 38 | 5 | 13% | 0 |
+| glm | 33 | 4 | 12% | 1 |
+
+Every schema failure in the project's history — a missing `<review>` block, a
+string where the contract wants an int — came from a non-Anthropic model driving
+the claude harness. Yield is a different matter: kimi was the panel's top producer
+in one run. Adding an agent is one file, so comparing harnesses is a config
+experiment, not a migration.
 
 ### The route is part of the agent's identity
 

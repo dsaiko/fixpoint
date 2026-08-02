@@ -13,8 +13,12 @@
 #     ANTHROPIC_API_KEY is deliberately NOT passed: if it reaches the process it
 #     takes precedence and the run silently bills Anthropic instead.
 #
-# codex is NOT a route to OpenRouter: codex 0.146 dropped `wire_api = "chat"` and
-# requires the Responses API, which OpenRouter does not serve.
+# codex reaches OpenRouter too, with `wire_api = "responses"` (0.146 dropped
+# "chat") and a model_providers block -- see the root README. An earlier comment
+# here claimed OpenRouter does not serve the Responses API; that was wrong, read
+# off a probe made with an expired key whose 401 looked like a missing endpoint.
+# The claude harness is used here because the panel already speaks it, not because
+# it is the only option.
 #
 # qwen3.7-max, not the cheaper qwen3.7-flash the panel was first offered: max is
 # the only one of the three that is text->text (flash and plus are
