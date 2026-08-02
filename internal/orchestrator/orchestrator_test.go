@@ -14,6 +14,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
 	"github.com/dsaiko/fixpoint/internal/target"
@@ -651,6 +652,58 @@ func TestRunRejectsSymlinkedLogsDirWhenRunFailsBeforeCheck(t *testing.T) {
 		t.Errorf("failed run wrote into the target: before %v, after %v", before, got)
 	}
 	assertRefusalLogged(t, logged(), filepath.Join(f.repo, "logs"))
+}
+
+// A redirection planted AFTER run()'s own check -- the loop itself succeeded --
+// must still fail the run. Run's closing check suppresses the journal and summary,
+// so a nil error would exit 0 and print a successful outcome for a run whose
+// durable artifacts do not exist (and whose round artifacts went to the planted
+// destination). The loop's own verdict survives as LoopTermination.
+func TestRunReportsLogsRedirectedAfterSuccessfulLoop(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.cfg.Loop.ReviewOnly = true // nothing but the symlink guard can fail this run
+	f.cfg.Logs.Dir = filepath.Join(f.repo, "logs", "{timestamp}")
+	dest, moved := t.TempDir(), t.TempDir()
+	// The reviewer plants the link mid-round, once run()'s post-Prepare check has
+	// already passed: move the claimed run directory out of the target (outside it,
+	// so it cannot dirty the tree) and leave a symlink in its place.
+	testfixture.WriteSide(t, f.respDir, 1, fmt.Sprintf("#!/bin/sh\nmv '%s' '%s'\nln -s '%s' '%s'\n",
+		filepath.Join(f.repo, "logs"), filepath.Join(moved, "logs"), dest, filepath.Join(f.repo, "logs")))
+	f.respond(1, reviewResponse(t)) // clean round: the loop itself succeeds
+	o, logged := f.capturingOrchestrator()
+
+	sum, err := o.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Run() = %v, want the symlink refusal reported as the run error", err)
+	}
+	if sum.Termination != model.TermError || sum.Error == "" {
+		t.Errorf("termination = %q, error = %q, want error and a recorded message", sum.Termination, sum.Error)
+	}
+	if sum.LoopTermination != model.TermReviewOnly {
+		t.Errorf("loop termination = %q, want the loop's own verdict kept", sum.LoopTermination)
+	}
+	assertRefusalLogged(t, logged(), filepath.Join(f.repo, "logs"))
+	// Neither closing write may reach the redirected destination.
+	if err := filepath.WalkDir(dest, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if strings.HasPrefix(d.Name(), "summary.") {
+			t.Errorf("refused run wrote the summary through the symlink: %s", path)
+		}
+		if d.Name() == logstore.JournalName {
+			b, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
+			}
+			if strings.Contains(string(b), model.EvRunFinished) {
+				t.Errorf("refused run journaled the outcome through the symlink: %s", path)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // assertRefusalLogged checks that Run reported a suppressed-artifacts refusal to

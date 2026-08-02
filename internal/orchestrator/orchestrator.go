@@ -313,6 +313,15 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 	if !redirected {
 		if cerr := o.checkLogsNotSymlinked(); errors.Is(cerr, errLogsRedirected) {
 			redirected, refusal = true, cerr
+			// A run that otherwise SUCCEEDED has no other way to report this: the
+			// refusal suppresses both closing writes, so leaving err nil would exit 0
+			// and print a converged outcome for a run whose journal and summary do not
+			// exist. recordRunError demotes that outcome to LoopTermination and marks
+			// the run itself failed. An error already recorded stands -- it came first,
+			// and this one is reported to the log either way.
+			if err == nil {
+				err = recordRunError(ctx, sum, cerr)
+			}
 		}
 	}
 	// A run refused because the logs path is symlinked writes NOTHING: both closing
