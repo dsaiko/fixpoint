@@ -244,7 +244,9 @@ var errLogsRedirected = errors.New("logs directory is redirected by a symlink")
 // the target at all. It is a no-op when the logs dir lives outside the target
 // (o.gitExclude unset) or when the logs path does not exist yet (it will then be
 // created as a real directory). Called after Prepare because a PR checkout can
-// change the path from a plain directory into a symlink.
+// change the path from a plain directory into a symlink -- and again from Run
+// before the closing writes, which happen even when the run ended before that
+// first call (see Run).
 func (o *Orchestrator) checkLogsNotSymlinked() error {
 	if len(o.gitExclude) == 0 {
 		return nil
@@ -299,6 +301,19 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 	redirected, refusal := errors.Is(err, errLogsRedirected), err
 	if err != nil {
 		err = recordRunError(ctx, sum, err)
+	}
+	// run() only reaches checkLogsNotSymlinked when Prepare SUCCEEDED, but the
+	// checkout Prepare performs is itself what can plant the symlink: a pr run whose
+	// `gh pr checkout` turned the in-target logs dir into a link and then failed (or
+	// was canceled) on a later Prepare step returns an error that is not
+	// errLogsRedirected, and used to write both closing artifacts straight through
+	// the planted link. The closing writes are the thing being protected, so decide
+	// here -- where they happen -- rather than trusting how the run ended. The check
+	// is a no-op unless the logs dir lives inside the target.
+	if !redirected {
+		if cerr := o.checkLogsNotSymlinked(); errors.Is(cerr, errLogsRedirected) {
+			redirected, refusal = true, cerr
+		}
 	}
 	// A run refused because the logs path is symlinked writes NOTHING: both closing
 	// writes reach Store.ensureDir, which resolves the link at syscall time and would

@@ -617,6 +617,42 @@ func TestRunRejectsSymlinkedLogsDirWhenCanceled(t *testing.T) {
 	assertRefusalLogged(t, logged(), filepath.Join(f.repo, "logs"))
 }
 
+// The suppression must also hold when the run ended BEFORE run() got as far as
+// its own symlink check: that call site sits after Prepare and only runs when
+// Prepare returned nil, yet the checkout Prepare performs is exactly what can
+// plant the link. Any earlier or concurrent failure (here a dirty tree, in pr
+// mode a `gh pr view` failure or a Ctrl-C after the checkout) then leaves an
+// error that is not errLogsRedirected, and Run's closing journal and summary
+// resolve the link at syscall time -- writing the artifacts to the destination
+// the checkout chose.
+func TestRunRejectsSymlinkedLogsDirWhenRunFailsBeforeCheck(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.cfg.Logs.Dir = filepath.Join(f.repo, "logs") // logs under the target root
+	dest := t.TempDir()
+	if err := os.Symlink(dest, filepath.Join(f.repo, "logs")); err != nil {
+		t.Fatal(err)
+	}
+	// Fail the run at the pre-Prepare clean-tree gate, so run() returns an error
+	// that has nothing to do with the symlink and never reaches its own check.
+	if err := os.WriteFile(filepath.Join(f.repo, "dirty.txt"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o, logged := f.capturingOrchestrator()
+	before := dirNames(t, f.repo)
+
+	_, err := o.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("Run() = %v, want the dirty-tree failure", err)
+	}
+	if got := dirNames(t, dest); len(got) != 0 {
+		t.Errorf("failed run wrote through the symlink: %v", got)
+	}
+	if got := dirNames(t, f.repo); !slices.Equal(got, before) {
+		t.Errorf("failed run wrote into the target: before %v, after %v", before, got)
+	}
+	assertRefusalLogged(t, logged(), filepath.Join(f.repo, "logs"))
+}
+
 // assertRefusalLogged checks that Run reported a suppressed-artifacts refusal to
 // the operator, naming path. Matching the path pins the surviving line to the
 // pre-recordRunError refusal text rather than a generic notice.
