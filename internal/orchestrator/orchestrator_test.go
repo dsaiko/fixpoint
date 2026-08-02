@@ -1545,6 +1545,32 @@ func TestRunRefusesActivatableFiltersInPRMode(t *testing.T) {
 		}
 	})
 
+	t.Run("--check on an untrusted PR proceeds", func(t *testing.T) {
+		// --check never reaches the checkout the refusal is about: it runs Scope,
+		// which reports pr mode as "known only after `gh pr checkout`" without
+		// issuing a git command, and exits. Refusing here would refuse the cheap
+		// first look at an unfamiliar config on every host with `git lfs install`.
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		f.cfg.Target.Mode = "pr"
+		f.cfg.Target.PR = 7
+		installGlobalFilter(t)
+
+		var log strings.Builder
+		o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, func(format string, args ...any) {
+			fmt.Fprintf(&log, format+"\n", args...)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := o.PreflightGuardsNoAgent(t.Context()); err != nil {
+			t.Fatalf("PreflightGuardsNoAgent() err = %v, want --check on a pr target to proceed", err)
+		}
+		if !strings.Contains(log.String(), "WARNING") || !strings.Contains(log.String(), "filter.lfs.clean") {
+			t.Errorf("--check must still name the filters a real run would fire:\n%s", log.String())
+		}
+	})
+
 	t.Run("untrusted local run only warns", func(t *testing.T) {
 		// Not a false refusal: the tree is the one the operator pointed fixpoint at,
 		// its .gitattributes is already theirs to read, and the filter is their own
