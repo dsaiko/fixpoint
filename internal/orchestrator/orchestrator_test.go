@@ -504,13 +504,19 @@ func TestRunExcludesInRepoLogsDir(t *testing.T) {
 // artifacts past the lexical logs exclusion and sweep them into a round commit.
 // Drive the rejection through Run so the post-Prepare call site is covered, and
 // exercise the helper's positive and no-op branches directly.
+//
+// The refused run must also write NOTHING through the link: Run's closing journal
+// and summary writes resolve the symlink at syscall time, so leaving them
+// unconditional would create the run directory and its artifacts at the
+// checkout-chosen destination -- exactly what the check refuses the run over.
 func TestRunRejectsSymlinkedLogsDir(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
 	f.cfg.Logs.Dir = filepath.Join(f.repo, "logs") // logs under the target root
 	// Redirect the logs dir out of the repo via a symlink; the lexical exclusion
 	// ("logs") still hides it from the clean check, so only the symlink guard can
 	// catch the redirection.
-	if err := os.Symlink(t.TempDir(), filepath.Join(f.repo, "logs")); err != nil {
+	dest := t.TempDir()
+	if err := os.Symlink(dest, filepath.Join(f.repo, "logs")); err != nil {
 		t.Fatal(err)
 	}
 	_, err := f.orchestrator().Run(t.Context())
@@ -519,6 +525,17 @@ func TestRunRejectsSymlinkedLogsDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), filepath.Join(f.repo, "logs")) {
 		t.Errorf("error should name the offending path: %v", err)
+	}
+	entries, rerr := os.ReadDir(dest)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("refused run wrote through the symlink: %v", names)
 	}
 }
 

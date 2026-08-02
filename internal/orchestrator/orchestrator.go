@@ -100,8 +100,9 @@ type Orchestrator struct {
 //
 // Run's closing EvRunFinished is deliberately NOT gated this way, so a run refused
 // by a gate still leaves a one-record journal naming the refusal. That write carries
-// no such exposure for the same reason the unconditional summary write does not:
-// nothing commits after it.
+// no commit-sweep exposure, because nothing commits after it. The one refusal it is
+// NOT safe after is the symlink check's own: writing outside the target is the other
+// half of what that check prevents, so Run skips both closing writes on that path.
 func (o *Orchestrator) openJournal() {
 	o.journal(model.EvRunStarted, 0, model.JournalRunStarted{
 		Config:        o.source.Config,
@@ -230,13 +231,20 @@ func logsDirWithin(logsDir, root string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
+// errLogsRedirected marks the symlinked-logs refusal so Run can recognize it and
+// suppress its own closing writes. Those writes go through the very path the check
+// refused, so they would create a directory and drop artifacts wherever the
+// checkout pointed the logs dir -- the second half of what the check exists to
+// prevent (see checkLogsNotSymlinked and Run).
+var errLogsRedirected = errors.New("logs directory is redirected by a symlink")
+
 // checkLogsNotSymlinked verifies that no path component of the in-target logs
 // directory is a symlink, so artifacts cannot be redirected outside the lexical
-// logs exclusion (o.gitExclude) and swept into a round commit. It is a no-op when
-// the logs dir lives outside the target (o.gitExclude unset) or when the logs
-// path does not exist yet (it will then be created as a real directory). Called
-// after Prepare because a PR checkout can change the path from a plain directory
-// into a symlink.
+// logs exclusion (o.gitExclude) and swept into a round commit, nor written outside
+// the target at all. It is a no-op when the logs dir lives outside the target
+// (o.gitExclude unset) or when the logs path does not exist yet (it will then be
+// created as a real directory). Called after Prepare because a PR checkout can
+// change the path from a plain directory into a symlink.
 func (o *Orchestrator) checkLogsNotSymlinked() error {
 	if len(o.gitExclude) == 0 {
 		return nil
@@ -256,7 +264,7 @@ func (o *Orchestrator) checkLogsNotSymlinked() error {
 			return fmt.Errorf("inspect logs path %s: %w", cur, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("logs path component %s is a symlink; the prepared target (e.g. a PR) may have redirected the logs directory to bypass the artifact exclusion and leak prompts/outputs into a commit. Point logs.dir outside the target, or remove the symlink", cur)
+			return fmt.Errorf("%w: logs path component %s is a symlink; the prepared target (e.g. a PR) may have redirected the logs directory to bypass the artifact exclusion and leak prompts/outputs into a commit. Point logs.dir outside the target, or remove the symlink", errLogsRedirected, cur)
 		}
 	}
 	return nil
@@ -286,8 +294,20 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 	}
 	err := o.run(ctx, sum)
 	sum.FinishedAt = time.Now()
+	// Recognize the refusal BEFORE recordRunError, which returns nil for a
+	// cancellation and would erase both the marker and the text.
+	redirected, refusal := errors.Is(err, errLogsRedirected), err
 	if err != nil {
 		err = recordRunError(ctx, sum, err)
+	}
+	// A run refused because the logs path is symlinked writes NOTHING: both closing
+	// writes reach Store.ensureDir, which resolves the link at syscall time and would
+	// create the run directory -- plus the journal and summary in it -- at whatever
+	// path the checkout pointed the logs dir to. Keeping artifacts out of such a path
+	// is half of what the check is for, so the refusal is reported to the log instead.
+	if redirected {
+		o.logf("WARNING: no journal or summary written: %v", refusal)
+		return sum, err
 	}
 	// Journal the outcome BEFORE writing the summary, so the ordering on disk
 	// matches reality: the summary is a whole-run rewrite that can itself fail,
