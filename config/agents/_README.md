@@ -61,7 +61,9 @@ credential in its environment at all.
 
 If a CLI misbehaves after you add it, check whether it needs a variable you have
 not declared; `env.inherit_all: true` is the escape hatch, and gives up the
-protection for that agent. `--check-live` invokes every agent, so a missing
+protection for that agent — usable only from a bundle outside the reviewed target,
+since an agent file the target ships must not be able to hand itself every
+exported secret. `--check-live` invokes every agent, so a missing
 variable surfaces there rather than mid-run.
 
 ## A note on prompt_via

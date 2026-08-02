@@ -182,7 +182,15 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loa
 	// Last, so the operator's assertions win over every file in the bundle, and so
 	// Validate (run by the caller) sees the value the run will actually use.
 	ov.apply(cfg)
-	return &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot, Overrides: ov}, nil
+	l := &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot, Overrides: ov}
+	// Refused while the configuration is compiled rather than left to the caller's
+	// trust gate: no flag rescues it (see rejectProjectSuppliedInheritAll), so making
+	// it part of loading covers every entry point -- a run, --check, --check-live --
+	// without each one having to remember the check.
+	if err := l.rejectProjectSuppliedInheritAll(); err != nil {
+		return nil, err
+	}
+	return l, nil
 }
 
 // Validate checks the effective configuration, naming the task config the run was
@@ -322,7 +330,7 @@ func decodeInto(path string, target any) error {
 // restating how to invoke them -- and so fixing an agent's command fixes it for
 // every config at once.
 func (c *Config) resolveAgents(r *Resolver, into map[string]string) error {
-	names := append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent)
+	names := c.referencedAgents()
 	if c.Agents == nil {
 		c.Agents = map[string]Agent{}
 	}
@@ -346,6 +354,16 @@ func (c *Config) resolveAgents(r *Resolver, into map[string]string) error {
 		into[name] = path
 	}
 	return nil
+}
+
+// referencedAgents names the agents a run is built around: every active reviewer
+// plus the coder. Resolution and the env.inherit_all gate judge exactly this set,
+// so "the agents this configuration is about" has one definition. The coder is
+// included even for -review-only: it is resolved eagerly there too, and an agent
+// declaration that would be refused is better refused before a later invocation
+// makes it live.
+func (c *Config) referencedAgents() []string {
+	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent)
 }
 
 // resolvePrompts turns every bare prompt name into a concrete file path, stored
@@ -465,6 +483,62 @@ func (l *Loaded) ProjectSuppliedPolicy() []string {
 	}
 	sort.Strings(out) // stable message regardless of map iteration order
 	return out
+}
+
+// rejectProjectSuppliedInheritAll fails when an agent this run is built around
+// declares env.inherit_all in a file that came from INSIDE the project under
+// review.
+//
+// env.inherit_all makes buildEnv return nil, which exec reads as "inherit the
+// parent environment": the agent process then receives every exported secret
+// fixpoint was invoked with, including the bespoke ones whose names neither the
+// credential-shape rule nor the redactor recognizes -- and a reviewer can quote
+// any of them into a finding that is logged, persisted and echoed into a commit
+// body. Declaring the variables under env.pass exposes the same values only when
+// the agent genuinely needs them, and leaves the exposure enumerated in a file a
+// reader can audit and in the run's own provenance log.
+//
+// The refusal is unconditional, which is what separates this from
+// ProjectSuppliedPolicy's -trusted-target gate: that assertion says the target's
+// policy may be EXECUTED, not that the target may help itself to secrets it
+// cannot even name. It is the same boundary as the one that keeps
+// FIXPOINT_KEEP_ENV out of YAML (see internal/agent/env.go) -- the environment
+// fixpoint was invoked with is a channel the reviewed code must not write to --
+// and the same one that makes the trust keys flag-only. An operator who really
+// wants full inheritance still can: declare it in a bundle outside the target,
+// which is the copy no reviewed commit can change.
+func (l *Loaded) rejectProjectSuppliedInheritAll() error {
+	if l.ProjectRoot == "" {
+		return nil
+	}
+	for _, name := range l.Config.referencedAgents() {
+		if name == "" || !l.Config.Agents[name].Env.InheritAll {
+			continue
+		}
+		for _, path := range l.agentDefinitionPaths(name) {
+			if !l.fromProject(path) {
+				continue
+			}
+			return fmt.Errorf("%s: agents.%s sets env.inherit_all, which cannot be set by a file inside the target: "+
+				"the agent would receive fixpoint's ENTIRE environment, so every exported secret (cloud credentials, database passwords, tokens for other services) "+
+				"is readable by a process the reviewed code configured, including the ones no denylist or redactor knows by name. "+
+				"Declare the variables the agent actually needs under env.pass, or supply the agent from a bundle outside the target "+
+				"-- unlike -trusted-target this is not something the assertion can grant", path, name)
+		}
+	}
+	return nil
+}
+
+// agentDefinitionPaths names the files that could carry one agent's declaration,
+// for provenance checks. An agent loaded from agents/<name>.yaml is judged by
+// that file; one defined INLINE has no file of its own, so it is judged by the
+// task config and the base it inherits from -- either can carry the `agents:`
+// map, and a child that chose a base owns what the base declares.
+func (l *Loaded) agentDefinitionPaths(name string) []string {
+	if p := l.Source.Agents[name]; p != "" {
+		return []string{p}
+	}
+	return []string{l.Source.Config, l.Source.Extends}
 }
 
 // fromProject reports whether a bundle file lies inside the code the run does not

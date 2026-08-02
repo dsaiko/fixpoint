@@ -179,6 +179,145 @@ func TestProjectSuppliedPolicyWithoutProjectRoot(t *testing.T) {
 	}
 }
 
+// env.inherit_all hands an agent every exported secret, including the ones no
+// denylist or redactor knows by name -- so a file inside the target must not be
+// able to declare it, and no flag may grant it. -trusted-target says the target's
+// policy may be executed; it does not say the target may help itself to secrets it
+// cannot enumerate. Every shape a target can ship the key in is refused here, and
+// the operator's own bundle must still be able to use it.
+func TestProjectSuppliedInheritAll(t *testing.T) {
+	const inheritAgent = "command: [true]\ncan_edit: true\nenv:\n  inherit_all: true\n"
+	const inlineInherit = "agents:\n  mock:\n    command: [true]\n    can_edit: true\n    env: {inherit_all: true}\n"
+
+	// agentFile writes an agents/<name>.yaml with a body of its own, which the shared
+	// bundle helper cannot: the whole point here is the env block.
+	agentFile := func(t *testing.T, dir, name, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, agentsDir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, agentsDir, name+configExt), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		name       string
+		setup      func(t *testing.T) (bundles []string, root, cfgName string)
+		wantRefuse bool
+	}{
+		{
+			name: "agent file inside the project",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"task": "target: {mode: directory}\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				agentFile(t, dir, "mock", inheritAgent)
+				return []string{dir}, root, "task"
+			},
+			wantRefuse: true,
+		},
+		{
+			// No agents/<name>.yaml at all: the declaration rides in the task config's
+			// own `agents:` map, which Source.Agents never records.
+			name: "agent defined inline in a project-resolved config",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"task": "target: {mode: directory}\n" + inlineInherit + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				return []string{dir}, root, "task"
+			},
+			wantRefuse: true,
+		},
+		{
+			// The config comes from the operator's bundle; only the inherited base is
+			// the target's, and it is the file carrying the inline agent.
+			name: "inline agent in a project-resolved extends base",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"base": "target: {mode: directory}\n" + inlineInherit,
+				}, nil, nil)
+				out := bundle(t, t.TempDir(), map[string]string{
+					"task": "extends: base\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				return []string{out, filepath.Join(root, projectBundleDir)}, root, "task"
+			},
+			wantRefuse: true,
+		},
+		{
+			// The bypass a target.path-only boundary would allow: a narrow target puts
+			// the config's own sibling agent file outside "the target".
+			name: "config narrowing target.path below its own bundle",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"task": "target:\n  mode: directory\n  path: ./src\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				agentFile(t, dir, "mock", inheritAgent)
+				return []string{dir}, root, "task"
+			},
+			wantRefuse: true,
+		},
+		{
+			name: "operator bundle outside the project may declare it",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				out := bundle(t, t.TempDir(), map[string]string{
+					"task": "target: {mode: directory}\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				agentFile(t, out, "mock", inheritAgent)
+				return []string{out}, root, "task"
+			},
+		},
+		{
+			name: "a project-supplied agent without inherit_all is untouched",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"task": "target: {mode: directory}\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, []string{"mock"})
+				return []string{dir}, root, "task"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bundles, root, name := tc.setup(t)
+			// -trusted-target asserted throughout: the refusal must not be reachable
+			// only on the path where the weaker gate already stops the run.
+			l, err := LoadBundle(&Resolver{Bundles: bundles}, name, root, Overrides{TrustedTarget: true})
+			if !tc.wantRefuse {
+				if err != nil {
+					t.Fatalf("LoadBundle() = %v, want the operator's own inherit_all declaration to load", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("LoadBundle() succeeded; the target declared env.inherit_all and would receive every exported secret")
+			}
+			if !strings.Contains(err.Error(), "inherit_all") || !strings.Contains(err.Error(), "env.pass") {
+				t.Errorf("LoadBundle() = %v, want the refusal to name inherit_all and the env.pass alternative", err)
+			}
+			if l != nil {
+				t.Errorf("LoadBundle() returned a configuration alongside the refusal: %v", l.Source)
+			}
+		})
+	}
+}
+
 // A bundle inside target.path but outside the project root is target-supplied too:
 // the two boundaries are checked as a union, so neither one being the wrong tree
 // lets a file through.

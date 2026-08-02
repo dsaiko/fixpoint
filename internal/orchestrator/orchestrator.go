@@ -1963,6 +1963,11 @@ func roundReviewErr(rec *model.RoundRecord) error {
 // warning rather than silence: the filtered default is what keeps an exported
 // secret out of a prompt-injectable reviewer, and inherit_all gives that up for
 // one agent without changing anything visible in the run's output.
+//
+// A warning is the right level only because these declarations are the OPERATOR's:
+// an agent file resolved from inside the target cannot set inherit_all at all
+// (config.rejectProjectSuppliedInheritAll refuses the run while the configuration
+// is compiled), so nothing that reaches here was authored by the reviewed code.
 func (o *Orchestrator) warnInheritedEnv() {
 	for _, n := range o.activeAgentNames() {
 		if !o.cfg.Agents[n].Env.InheritAll {

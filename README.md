@@ -444,7 +444,11 @@ What this does **not** fix: an agent authenticating *via* an environment variabl
 must still be given it, so its own credential stays reachable by the process that
 needs it. The win is everything else — your GitHub token is no longer inside the
 code reviewer. `env.inherit_all: true` opts back out entirely for a CLI whose
-requirements you don't know; fixpoint warns at run start when an agent does.
+requirements you don't know; fixpoint warns at run start when an agent does — and
+**refuses to run** when the agent was declared inside the target, whatever you
+asserted on the command line. `-trusted-target` says the target's policy may be
+executed, not that it may help itself to secrets it cannot even name; declare
+those under `env.pass`, or keep the agent in a bundle outside the target.
 
 The `verify` commands are filtered too, from the other direction. They are argv the
 *target* can supply, so running them with fixpoint's whole environment would hand a

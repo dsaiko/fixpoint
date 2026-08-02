@@ -191,7 +191,10 @@ should unset them for fixpoint's own process.
 
 `env.inherit_all: true` restores full inheritance for one agent, with a run-start
 warning. It exists for a CLI whose requirements are unknown, at the cost of
-re-exposing every exported secret to that agent.
+re-exposing every exported secret to that agent. An agent declared in a file
+resolved from inside the target may not set it — the run is refused, and no flag
+grants it, because those secrets include the ones no denylist or redactor knows by
+name. Name what the agent needs under `env.pass` instead.
 
 **`verify` commands do not receive credentials.** They are argv the
 target can supply (a bundle inside the target is searched first), so they inherit

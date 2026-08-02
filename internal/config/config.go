@@ -386,6 +386,9 @@ type AgentEnv struct {
 	// InheritAll restores the old behavior of passing fixpoint's whole environment.
 	// An escape hatch for a CLI whose requirements are not known, at the cost of
 	// re-exposing every exported secret to that agent. fixpoint warns at run start.
+	//
+	// It is refused outright in a file resolved from inside the target, whatever the
+	// operator asserted: see rejectProjectSuppliedInheritAll.
 	InheritAll bool `yaml:"inherit_all"`
 }
 
