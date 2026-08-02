@@ -1307,6 +1307,96 @@ func TestRunRefusesUntrustedPRConfigFilter(t *testing.T) {
 	})
 }
 
+// A filter the OPERATOR configured globally is a program the PR can still reach:
+// it does not define the filter, it ships the .gitattributes that SELECTS it (and
+// the worktree script it may run, and the .lfsconfig that redirects where a
+// git-lfs filter talks). All three arrive with the `gh pr checkout` that fires the
+// filter, so the preflight has nothing to inspect and pr mode refuses instead of
+// warning. Local modes keep the warning: there the attributes are already on disk
+// and refusing would refuse every run on a git-lfs host.
+func TestRunRefusesActivatableFiltersInPRMode(t *testing.T) {
+	// installGlobalFilter gives the test process the operator config `git lfs
+	// install` writes, overriding the empty global scope the fixture pins.
+	installGlobalFilter := func(t *testing.T) {
+		t.Helper()
+		global := filepath.Join(t.TempDir(), "gitconfig")
+		if err := os.WriteFile(global, []byte("[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GIT_CONFIG_GLOBAL", global)
+	}
+	// guardLog runs the preflight with a capturing logger, for the paths that warn
+	// rather than refuse.
+	guardLog := func(t *testing.T, f *fixture) (string, error) {
+		t.Helper()
+		var log strings.Builder
+		o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, func(format string, args ...any) {
+			fmt.Fprintf(&log, format+"\n", args...)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = o.PreflightGuards(t.Context())
+		return log.String(), err
+	}
+
+	t.Run("untrusted PR run is refused before checkout", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false // undo the fixture's trusted default
+		f.cfg.Target.Mode = "pr"
+		f.cfg.Target.PR = 7
+		installGlobalFilter(t)
+
+		_, err := f.orchestrator().Run(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "filter.lfs.clean") {
+			t.Fatalf("Run() err = %v, want refusal naming the activatable filter", err)
+		}
+		if !strings.Contains(err.Error(), "-trusted-target") {
+			t.Errorf("Run() err = %v, want it to name the opt-in flag", err)
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (must refuse before checkout)", got)
+		}
+		if branch := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "--abbrev-ref", "HEAD")); branch != "main" && branch != "master" {
+			t.Errorf("HEAD is on %q; the guard must refuse before any checkout", branch)
+		}
+	})
+
+	t.Run("asserted trust downgrades the PR refusal to a warning", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		f.cfg.Loop.AllowUntrustedFix = true
+		f.cfg.Target.Mode = "pr"
+		f.cfg.Target.PR = 7
+		installGlobalFilter(t)
+
+		log, err := guardLog(t, f)
+		if err != nil {
+			t.Fatalf("PreflightGuards() err = %v, want the trust assertion to clear the filter gate", err)
+		}
+		if !strings.Contains(log, "WARNING") || !strings.Contains(log, "filter.lfs.clean") {
+			t.Errorf("accepting the path must still name the filters:\n%s", log)
+		}
+	})
+
+	t.Run("untrusted local run only warns", func(t *testing.T) {
+		// Not a false refusal: the tree is the one the operator pointed fixpoint at,
+		// its .gitattributes is already theirs to read, and the filter is their own
+		// program -- refusing here would refuse every git-lfs host.
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		installGlobalFilter(t)
+
+		log, err := guardLog(t, f)
+		if err != nil {
+			t.Fatalf("PreflightGuards() err = %v, want a directory run to proceed", err)
+		}
+		if !strings.Contains(log, "WARNING") || !strings.Contains(log, "filter.lfs.clean") {
+			t.Errorf("the local path must warn and name the filters:\n%s", log)
+		}
+	})
+}
+
 // A repo-local core.worktree redirects git's work tree away from target.path
 // while .git stays put, so target.path still looks like an ordinary checkout.
 // git-diff/pr collection is where that bites hardest: Collect runs `git diff` and

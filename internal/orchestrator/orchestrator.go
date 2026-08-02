@@ -1312,7 +1312,7 @@ func (o *Orchestrator) guardRedirectedWorktree(ctx context.Context) error {
 // worktree script such a filter may point at, and (for git-lfs) the .lfsconfig
 // that redirects where the filter talks to. That half of the path is a filter the
 // repository ACTIVATES rather than defines, so it is invisible to a repo-scoped
-// key list and is handled separately by warnActivatableFilters.
+// key list and is handled separately by guardActivatableFilters.
 //
 // agentsInTarget widens that set to EVERY mode, and is the common case: fixpoint's
 // own git commands are not the only ones that run against the target. run() and
@@ -1357,10 +1357,10 @@ func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context, agentsInTarg
 		}
 		o.logf("WARNING: target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that runs repo-controlled programs during git diff/add/status/checkout (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", "))
 	}
-	return o.warnActivatableFilters(ctx)
+	return o.guardActivatableFilters(ctx)
 }
 
-// warnActivatableFilters reports the content filters the target can ACTIVATE but
+// guardActivatableFilters handles the content filters the target can ACTIVATE but
 // does not DEFINE -- the second half of the .gitattributes path guardUntrustedGitConfig
 // exists for. UnsafeConfig only sees definitions in the repository's own scopes,
 // so on a host where the operator installed a filter globally (`git lfs install`
@@ -1369,18 +1369,31 @@ func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context, agentsInTarg
 // `.lfsconfig`, and git runs that filter over PR-controlled content -- before any
 // agent sandbox, in a review-only run that passes no trust gate.
 //
-// It warns rather than refuses in every trust mode: the definition is the
-// operator's own configuration, the attributes that select it are not present to
-// check against when the pr preflight runs, and refusing would refuse every
-// target on a git-lfs host. The point is that the operator learns which of their
-// programs the checkout can reach.
-func (o *Orchestrator) warnActivatableFilters(ctx context.Context) error {
+// pr mode is where that is REFUSED rather than warned about, absent a trust
+// assertion. It is the one mode whose content is untrusted by definition and, as
+// of the checkout, not yet on disk: the PR supplies the .gitattributes that names
+// the filter, the worktree script such a filter may run, and the .lfsconfig that
+// redirects where a git-lfs filter talks -- all written by the `gh pr checkout`
+// that would fire the filter, so there is nothing for the preflight to inspect
+// and "warn and continue" amounts to running the operator's program over material
+// nobody has seen yet, with fixpoint's inherited environment. review_only does not
+// soften this; it is the default pr path and passes no other trust gate.
+//
+// Everywhere else it stays a warning. There the checkout is one the operator
+// pointed fixpoint at (its .gitattributes is already theirs to read), the filter
+// definition is their own configuration, and refusing would refuse every local
+// run on a git-lfs host -- so the point is that the operator learns which of
+// their programs the checkout can reach.
+func (o *Orchestrator) guardActivatableFilters(ctx context.Context) error {
 	filters, err := o.collector.ExternalFilterConfig(ctx)
 	if err != nil {
 		return err
 	}
 	if len(filters) == 0 {
 		return nil
+	}
+	if o.cfg.Target.Mode == config.ModePR && !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
+		return fmt.Errorf("mode pr: content filters configured outside target %s -- in your global or system git config (%s) -- are selected by REPOSITORY content, and in pr mode that content is the PR's: `gh pr checkout` writes the branch's .gitattributes (plus any worktree script the filter runs, and the .lfsconfig that redirects where a git-lfs filter talks), so git would run your filter program over PR-authored file content with fixpoint's inherited environment, before any agent sandbox. fixpoint cannot neutralize them (their names are dynamic) and cannot inspect the attributes before the checkout that brings them. Review the PR under an external sandbox (container/VM), unset the filter for this run, or pass -trusted-target/-allow-untrusted-fix to accept this path", o.cfg.Target.Path, strings.Join(filters, ", "))
 	}
 	o.logf("WARNING: content filters configured outside target %s -- in your global or system git config (%s) -- are selected by REPOSITORY content: a .gitattributes naming one (in the checkout, or in a PR branch `gh pr checkout` writes) makes git run it over repo-controlled file content during checkout/add/status/diff, and a repo-supplied .lfsconfig redirects where a git-lfs filter talks. fixpoint cannot neutralize them (their names are dynamic). Review untrusted checkouts under an external sandbox.", o.cfg.Target.Path, strings.Join(filters, ", "))
 	return nil

@@ -147,8 +147,18 @@ func AFinding(title string) model.ReviewFinding {
 
 // GitRepo initializes a throwaway git repository with one committed main.go and
 // returns its path.
+//
+// The operator scopes are pinned empty for the test process, so what the machine
+// running the tests has in ~/.gitconfig or /etc/gitconfig cannot change a result.
+// That is load-bearing for the external-filter gate (guardActivatableFilters):
+// `git lfs install` writes filter.lfs.* into ~/.gitconfig, and without this a
+// developer with git-lfs installed would get a different verdict on every pr-mode
+// test than CI does. Tests that need an operator-scope setting point
+// GIT_CONFIG_GLOBAL at their own file instead.
 func GitRepo(t *testing.T) string {
 	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	dir := t.TempDir()
 	GitRun(t, dir, "init", "-q")
 	GitRun(t, dir, "config", "user.email", "test@example.com")
