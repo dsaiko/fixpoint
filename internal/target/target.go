@@ -852,9 +852,12 @@ const remoteOrigin = "origin"
 // ghRemote returns the git remote that corresponds to the repository gh treats
 // as this checkout's base, so PR base objects are fetched from the right place
 // without assuming the remote is named "origin". It matches the base repo's
-// nameWithOwner against configured remote URLs, falling back to origin and then
-// the sole/first remote. Remotes whose name looks like a git option are refused
-// (see below).
+// canonical URL -- host AND owner/repo, see remoteIdentity -- against the
+// configured remote URLs. Only when gh cannot name the base repository at all
+// does it fall back to origin and then the sole/first remote; once gh HAS named
+// it, a checkout with no matching remote is refused rather than fetched from a
+// remote of the checkout's choosing. Remotes whose name looks like a git option
+// are refused (see below).
 func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 	out, err := c.git(ctx, "remote")
 	if err != nil {
@@ -882,16 +885,12 @@ func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("refusing to fetch the PR base: the only git remotes have option-like names: %s", strings.Join(optionLike, " "))
 	}
 	remotes = kept
-	if nwo, err := c.run(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"); err == nil {
-		if want := strings.ToLower(strings.TrimSpace(nwo)); want != "" {
-			for _, r := range remotes {
-				if u, err := c.git(ctx, "remote", "get-url", "--end-of-options", r); err == nil &&
-					remoteIdentity(u) == want {
-					return r, nil
-				}
-			}
-		}
+	if want := c.ghBaseIdentity(ctx); want != "" {
+		return c.remoteForIdentity(ctx, remotes, want)
 	}
+	// gh could not name the base repository (offline, unauthenticated, no GitHub
+	// remote), so there is no identity to match against: fall back to git's
+	// conventional default and then the sole/first remote.
 	for _, r := range remotes {
 		if r == remoteOrigin {
 			return remoteOrigin, nil
@@ -900,30 +899,89 @@ func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 	return remotes[0], nil
 }
 
-// remoteIdentity reduces a git remote URL to the lowercased "owner/repo" identity
-// gh reports as nameWithOwner, or "" when the URL is not of that shape (a local
-// path, a file:// URL, a nested path). It exists so ghRemote compares identities
-// for EQUALITY: a substring test on the URL matches acme/widget inside
-// acme/widget-fork or acme/widgets, and if such a remote sorts first the PR base
-// would be fetched from the wrong repository.
+// ghBaseIdentity is the host/owner/repo identity of the repository gh treats as
+// this checkout's base, or "" when gh cannot name one (offline, unauthenticated,
+// no GitHub remote, an unparsable URL).
+//
+// It asks for the canonical URL rather than nameWithOwner because the URL names
+// the HOST the PR's objects live on, and that is the server the fetch has to
+// contact; see remoteIdentity for why owner/repo alone is not enough.
+func (c *Collector) ghBaseIdentity(ctx context.Context) string {
+	raw, err := c.run(ctx, "gh", "repo", "view", "--json", "url", "--jq", ".url")
+	if err != nil {
+		return ""
+	}
+	return remoteIdentity(raw)
+}
+
+// remoteForIdentity returns the remote whose URL names the given host/owner/repo
+// identity, or an error when none does.
+func (c *Collector) remoteForIdentity(ctx context.Context, remotes []string, want string) (string, error) {
+	var matches []string
+	for _, r := range remotes {
+		if u, err := c.git(ctx, "remote", "get-url", "--end-of-options", r); err == nil &&
+			remoteIdentity(u) == want {
+			matches = append(matches, r)
+		}
+	}
+	// Several remotes may legitimately name the same host and repository (a clone
+	// plus an explicitly added upstream). They are the same fetch target, so any
+	// of them is correct; prefer origin so the choice is deterministic rather than
+	// dependent on git's listing order.
+	for _, r := range matches {
+		if r == remoteOrigin {
+			return remoteOrigin, nil
+		}
+	}
+	if len(matches) > 0 {
+		return matches[0], nil
+	}
+	// gh named the base repository and no configured remote points at it. Falling
+	// back to origin or the first remote here would let an untrusted checkout pick
+	// the server: a remote for a DIFFERENT host holding the same owner/repo is
+	// exactly what an attacker adds to have the PR base fetched from a host of
+	// their choosing. Refuse instead -- the operator can add a remote for the real
+	// base repository.
+	return "", fmt.Errorf("refusing to fetch the PR base: no git remote points at the PR's base repository %s (remotes: %s)", want, strings.Join(remotes, " "))
+}
+
+// remoteIdentity reduces a git remote URL -- or the canonical repository URL gh
+// reports -- to the lowercased "host/owner/repo" identity, or "" when the URL is
+// not of that shape (a local path, a file:// URL, a nested path, a transport
+// helper such as ext::). It exists so ghRemote compares identities for EQUALITY,
+// host included:
+//
+//   - a substring test on the URL matches acme/widget inside acme/widget-fork or
+//     acme/widgets, and if such a remote sorts first the PR base would be fetched
+//     from the wrong repository;
+//   - owner/repo alone says nothing about WHICH SERVER holds it, so a checkout
+//     that configures https://attacker.example/acme/widget next to the real
+//     github.com/acme/widget would be accepted as the PR's base repository and
+//     `git fetch` would contact the attacker's host as the operator -- an
+//     unintended outbound connection, an SSH/credential-helper prompt against a
+//     host of the checkout's choosing, or a probe of an internal endpoint.
 //
 // Both supported URL forms are handled: scheme://[user[:pass]@]host[:port]/owner/repo[.git]
 // and the scp-like [user@]host:owner/repo[.git]. Only the optional .git suffix is
 // stripped, since it is the only one git itself treats as decoration.
 func remoteIdentity(raw string) string {
 	s := strings.TrimSpace(raw)
-	var path string
-	if _, rest, ok := strings.Cut(s, "://"); ok {
+	var scheme, authority, path string
+	if sch, rest, ok := strings.Cut(s, "://"); ok {
 		// Everything up to the first slash is the authority (credentials, host, port).
-		_, p, ok := strings.Cut(rest, "/")
+		a, p, ok := strings.Cut(rest, "/")
 		if !ok {
 			return ""
 		}
-		path = p
-	} else if _, p, ok := strings.Cut(s, ":"); ok {
+		scheme, authority, path = strings.ToLower(sch), a, p
+	} else if a, p, ok := strings.Cut(s, ":"); ok {
 		// scp-like syntax has no port, so the whole remainder is the path.
-		path = p
+		authority, path = a, p
 	} else {
+		return ""
+	}
+	host := remoteHost(scheme, authority)
+	if host == "" {
 		return ""
 	}
 	path = strings.Trim(path, "/")
@@ -932,7 +990,43 @@ func remoteIdentity(raw string) string {
 	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
 		return ""
 	}
-	return strings.ToLower(owner + "/" + repo)
+	return strings.ToLower(host + "/" + owner + "/" + repo)
+}
+
+// defaultPorts are the ports a git URL may spell out without naming a different
+// endpoint than the scheme already implies.
+var defaultPorts = map[string]string{"http": "80", "https": "443", "ssh": "22", "git": "9418"}
+
+// remoteHost extracts the host[:port] a git URL authority resolves to, lowercased.
+//
+// Userinfo is dropped at the LAST "@", not the first: git contacts the host after
+// it, so a username shaped like a host ("https://github.com@attacker.example/...")
+// must resolve to attacker.example rather than being mistaken for github.com.
+//
+// A port is kept unless it is the scheme's default, so a remote spelled
+// ssh://git@github.com:22/acme/widget still matches the https URL gh reports for
+// the same repository, while a non-default port -- a different endpoint on that
+// host -- stays part of the identity.
+func remoteHost(scheme, authority string) string {
+	if i := strings.LastIndex(authority, "@"); i >= 0 {
+		authority = authority[i+1:]
+	}
+	host, port := authority, ""
+	if strings.HasPrefix(host, "[") {
+		// A bracketed IPv6 literal has colons of its own; only what follows the
+		// closing bracket can be a port.
+		if end := strings.Index(host, "]"); end >= 0 {
+			if rest := host[end+1:]; strings.HasPrefix(rest, ":") {
+				host, port = host[:end+1], rest[1:]
+			}
+		}
+	} else if h, p, ok := strings.Cut(host, ":"); ok {
+		host, port = h, p
+	}
+	if port != "" && port != defaultPorts[scheme] {
+		host += ":" + port
+	}
+	return strings.ToLower(host)
 }
 
 // Commit stages everything except the excluded paths and commits with the
