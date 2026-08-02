@@ -417,6 +417,67 @@ Three things that cost an afternoon to learn:
 `wire_api = "chat"` in favour of the Responses API, which OpenRouter does not
 serve.
 
+### The route is part of the agent's identity
+
+Two endpoints can both be Anthropic-compatible, accept the same request, return a
+valid answer — and behave so differently that the same model is a different agent
+through each. That is why the shipped bundle names agents by route
+(`kimi-ollama`, `kimi-openrouter`) rather than by model alone.
+
+**ollama silently drops `cache_control`.** In an agentic loop that is the dominant
+cost, because every turn re-pays for the whole conversation so far and a reviewer
+averages ~47 turns. Measured over one `fix-branch` run:
+
+| agent | sessions | fresh input | cache read | cache rate |
+|---|---|---|---|---|
+| kimi (ollama) | 5 | 29.0M | 0.0M | **0%** |
+| glm (ollama) | 4 | 12.6M | 0.0M | **0%** |
+| claude | 5 | 0.4M | 31.1M | 99% |
+
+Two agents, a third of the sessions, **81% of the run's fresh input**.
+
+It is not a client misconfiguration. The same body carrying the same
+`cache_control`, sent to each proxy twice:
+
+```
+ollama      1st: in=5418  cacheWrite=-     cacheRead=-
+            2nd: in=5418  cacheWrite=-     cacheRead=-
+
+OpenRouter  1st: in=16    cacheWrite=5604  cacheRead=0
+            2nd: in=16    cacheWrite=0     cacheRead=5604
+```
+
+Verified end to end through the harness afterwards: with the cache warm,
+`kimi-openrouter` went from 25,593 fresh input tokens to **687** on the second
+call (99.1% cached).
+
+**ollama ignores `thinking.budget_tokens` the same way** — see
+[effort (claude)](config/agents/_README.md) — so `effort` on an ollama agent
+validates, runs, and does nothing.
+
+OpenRouter is not the answer to that one either, which is why no shipped agent
+outside `claude`/`codex` sets `effort`. It advertises reasoning support for both
+models, and the numbers do move — but not as a cap and not in one direction: a
+1024 budget produced ~2327 thinking tokens from `kimi-k2.7-code` and ~3121 from
+`glm-5.2`, and a 6000 budget produced *less* than a 1024 one. The likely cause is
+translation: OpenRouter's native control is an OpenAI-style `reasoning` field,
+while the harness sends Anthropic's `thinking`. A knob that moves unpredictably is
+worse than none, so the bundle leaves it unset on both routes.
+
+Practically: for one-shot prompts none of this matters. For anything agentic it
+decides the bill, and for a prepaid endpoint it decides whether a long run
+finishes at all — uncached volume is what exhausted a session limit mid-run twice
+here. The `-ollama` files are kept as a one-word fallback for a missing key or a
+provider outage.
+
+> **This is measured behaviour as of August 2026, not a documented contract.**
+> Both proxies are free to change: ollama may add cache and budget support, and
+> OpenRouter's caching varies by upstream provider. Re-measure before relying on
+> either — POST the same request twice with a `cache_control` breakpoint on a
+> large system block and compare `usage`, which is the whole experiment. If a run's
+> scoreboard shows a 0% cache rate for an agent that should be caching, the route
+> stopped working.
+
 ### The agent environment is filtered
 
 An agent process gets a **non-secret baseline** — `PATH`, `HOME`, temp dir, locale,
