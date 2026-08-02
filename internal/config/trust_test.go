@@ -202,9 +202,13 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 	}
 
 	cases := []struct {
-		name       string
-		setup      func(t *testing.T) (bundles []string, root, cfgName string)
-		wantRefuse bool
+		name  string
+		setup func(t *testing.T) (bundles []string, root, cfgName string)
+		// wantRefuse: loading must fail. wantInheritAll: loading must succeed AND the
+		// effective agent must still carry inherit_all -- an allowed case that quietly
+		// lost the key would pass the refusal check for the wrong reason.
+		wantRefuse     bool
+		wantInheritAll bool
 	}{
 		{
 			name: "agent file inside the project",
@@ -269,6 +273,43 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 			wantRefuse: true,
 		},
 		{
+			// The other direction of the case above, and the one the escape hatch
+			// depends on: the operator's own config declares the inline agent and the
+			// project base does not mention agents at all. The base being inside the
+			// target is not by itself a reason to refuse a key the operator set.
+			name: "operator config outside the project may declare it inline over a project base",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"base": "target: {mode: directory}\n",
+				}, nil, nil)
+				out := bundle(t, t.TempDir(), map[string]string{
+					"task": "extends: base\n" + inlineInherit + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				return []string{out, filepath.Join(root, projectBundleDir)}, root, "task"
+			},
+			wantInheritAll: true,
+		},
+		{
+			// The same, with the project base declaring the agent WITHOUT inherit_all:
+			// the child's entry replaces the base's whole entry, command included, so
+			// nothing about the effective agent came from inside the target.
+			name: "operator config outside the project may override a project base's agent inline",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"base": "target: {mode: directory}\nagents:\n  mock:\n    command: [false]\n    can_edit: true\n",
+				}, nil, nil)
+				out := bundle(t, t.TempDir(), map[string]string{
+					"task": "extends: base\n" + inlineInherit + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				return []string{out, filepath.Join(root, projectBundleDir)}, root, "task"
+			},
+			wantInheritAll: true,
+		},
+		{
 			name: "operator bundle outside the project may declare it",
 			setup: func(t *testing.T) ([]string, string, string) {
 				t.Helper()
@@ -279,11 +320,12 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 				agentFile(t, out, "mock", inheritAgent)
 				return []string{out}, root, "task"
 			},
+			wantInheritAll: true,
 		},
 		{
-			// The inline shape of the case above: with no extends base the candidate
-			// path is "", which is not a file at all -- but resolves to the working
-			// directory, normally inside the project, if it is measured like one.
+			// The inline shape of the case above: the only file that could have declared
+			// the agent is the operator's own config, and it is outside the project even
+			// though fixpoint is being run from inside one.
 			name: "operator bundle outside the project may declare it inline",
 			setup: func(t *testing.T) ([]string, string, string) {
 				t.Helper()
@@ -294,6 +336,7 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 				t.Chdir(root) // where fixpoint is normally run from: inside the project
 				return []string{out}, root, "task"
 			},
+			wantInheritAll: true,
 		},
 		{
 			name: "a project-supplied agent without inherit_all is untouched",
@@ -318,6 +361,19 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 				if err != nil {
 					t.Fatalf("LoadBundle() = %v, want the operator's own inherit_all declaration to load", err)
 				}
+				// Otherwise a case could pass by losing the key on the way in, which
+				// would test nothing: the gate is only interesting for a run that really
+				// does end up with inherit_all set.
+				if got := l.Config.Agents["mock"].Env.InheritAll; got != tc.wantInheritAll {
+					t.Errorf("agents.mock.env.inherit_all = %v, want %v", got, tc.wantInheritAll)
+				}
+				// Every allowed case defines mock with command [true]; a base that
+				// defines it too uses [false]. So this also pins what makes dropping the
+				// base from the candidate paths safe: the child's entry replaces the
+				// base's WHOLE entry, command included, rather than merging into it.
+				if got := l.Config.Agents["mock"].Command; len(got) != 1 || got[0] != "true" {
+					t.Errorf("agents.mock.command = %v, want the declaring file's [true]", got)
+				}
 				return
 			}
 			if err == nil {
@@ -330,6 +386,24 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 				t.Errorf("LoadBundle() returned a configuration alongside the refusal: %v", l.Source)
 			}
 		})
+	}
+}
+
+// Every candidate path a provenance check measures may be unset -- a config that
+// inherits from nothing has no Source.Extends -- and filepath.Abs("") resolves to
+// the working directory, which is normally inside the project being reviewed. An
+// unset path measured like a real one would therefore report the operator's own
+// files as target-supplied, so the guard is asserted directly rather than left to
+// whichever caller happens to reach it.
+func TestFromProjectIgnoresUnsetPath(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root) // where fixpoint is normally run from: inside the project
+	l := &Loaded{Config: &Config{}, ProjectRoot: root}
+	if l.fromProject("") {
+		t.Error("fromProject(\"\") = true; an absent file is not a file the project supplied")
+	}
+	if !l.fromProject(filepath.Join(root, "config", "task.yaml")) {
+		t.Error("fromProject() = false for a file inside the project root, want true")
 	}
 }
 

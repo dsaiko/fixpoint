@@ -46,6 +46,13 @@ type Loaded struct {
 	// listed in Source. Provenance is the point: the config path alone no longer
 	// explains the effective run.
 	Overrides Overrides
+	// ownInlineAgents names the agents the task config's OWN `agents:` map declared,
+	// as opposed to the ones it inherited from its extends base. Source cannot say
+	// this: an inline agent has no file of its own, so both files are candidates
+	// until the merge is known. It is unexported because it is an input to the
+	// provenance checks rather than provenance a run reports -- see
+	// agentDefinitionPaths.
+	ownInlineAgents map[string]bool
 }
 
 // Overrides are the run's command-line assertions. They are applied while the
@@ -158,7 +165,7 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loa
 	if err != nil {
 		return nil, err
 	}
-	cfg, extendsPath, err := loadWithExtends(r, path)
+	cfg, extendsPath, ownInline, err := loadWithExtends(r, path)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +189,7 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loa
 	// Last, so the operator's assertions win over every file in the bundle, and so
 	// Validate (run by the caller) sees the value the run will actually use.
 	ov.apply(cfg)
-	l := &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot, Overrides: ov}
+	l := &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot, Overrides: ov, ownInlineAgents: ownInline}
 	// Refused while the configuration is compiled rather than left to the caller's
 	// trust gate: no flag rescues it (see rejectProjectSuppliedInheritAll), so making
 	// it part of loading covers every entry point -- a run, --check, --check-live --
@@ -207,32 +214,39 @@ func (l *Loaded) Validate() error {
 // `extends`, merges it over that base. Inheritance is ONE level deep on purpose:
 // a chain makes the effective value of any field require reading N files, and the
 // whole point of naming the base explicitly is that the reader can see it.
-func loadWithExtends(r *Resolver, path string) (*Config, string, error) {
+func loadWithExtends(r *Resolver, path string) (*Config, string, map[string]bool, error) {
 	if err := rejectTrustKeys(path); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	cfg, err := decodeFile(path)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
+	}
+	// Recorded before the merge, which is the only moment the two `agents:` maps are
+	// still distinguishable: the provenance checks need to know which file declared
+	// an inline agent (see Loaded.ownInlineAgents).
+	own := make(map[string]bool, len(cfg.Agents))
+	for name := range cfg.Agents {
+		own[name] = true
 	}
 	if cfg.Extends == "" {
-		return cfg, "", nil
+		return cfg, "", own, nil
 	}
 	basePath, err := r.configByName(cfg.Extends)
 	if err != nil {
-		return nil, "", fmt.Errorf("%s: extends: %w", path, err)
+		return nil, "", nil, fmt.Errorf("%s: extends: %w", path, err)
 	}
 	// The base is checked too: inheritance would otherwise be the way around the
 	// rule, since a hostile bundle can ship both files.
 	if err := rejectTrustKeys(basePath); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	base, err := decodeFile(basePath)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	if base.Extends != "" {
-		return nil, "", fmt.Errorf("%s: extends %s, which itself extends %s; inheritance is one level deep so the effective configuration stays readable from two files",
+		return nil, "", nil, fmt.Errorf("%s: extends %s, which itself extends %s; inheritance is one level deep so the effective configuration stays readable from two files",
 			path, cfg.Extends, base.Extends)
 	}
 	// Re-decode the child over the base: yaml overwrites only the keys the child
@@ -243,10 +257,10 @@ func loadWithExtends(r *Resolver, path string) (*Config, string, error) {
 	// enforced in code instead (see mandatoryExcludes).
 	merged := base
 	if err := decodeInto(path, merged); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	merged.Extends = cfg.Extends
-	return merged, basePath, nil
+	return merged, basePath, own, nil
 }
 
 // trustKeys are the authorization keys a task config may not set. They are
@@ -530,13 +544,24 @@ func (l *Loaded) rejectProjectSuppliedInheritAll() error {
 }
 
 // agentDefinitionPaths names the files that could carry one agent's declaration,
-// for provenance checks. An agent loaded from agents/<name>.yaml is judged by
-// that file; one defined INLINE has no file of its own, so it is judged by the
-// task config and the base it inherits from -- either can carry the `agents:`
-// map, and a child that chose a base owns what the base declares.
+// for provenance checks. An agent loaded from agents/<name>.yaml is judged by that
+// file; one defined INLINE has no file of its own, so it is judged by the task
+// config -- which named the agent and chose the base -- plus, when the entry came
+// from the base, the base as well.
+//
+// The base is dropped once the config declares the agent itself because the merge
+// is per key of the `agents:` map: a child that names an agent replaces the base's
+// whole entry, command included, rather than merging into it. So an operator's own
+// config that extends a project-shipped base still owns every field of the agents
+// it declares, and refusing it for the base's mere existence would close the one
+// escape hatch env.inherit_all has (see rejectProjectSuppliedInheritAll) for
+// everyone who inherits from the project.
 func (l *Loaded) agentDefinitionPaths(name string) []string {
 	if p := l.Source.Agents[name]; p != "" {
 		return []string{p}
+	}
+	if l.ownInlineAgents[name] {
+		return []string{l.Source.Config}
 	}
 	return []string{l.Source.Config, l.Source.Extends}
 }
@@ -546,10 +571,10 @@ func (l *Loaded) agentDefinitionPaths(name string) []string {
 // when that points somewhere else. Either is enough -- a file in either tree may
 // have been shipped by the code under review.
 func (l *Loaded) fromProject(path string) bool {
-	// An absent file is not a file the project supplied. The empty string reaches
-	// here from agentDefinitionPaths whenever an inline agent chose no extends base,
-	// and filepath.Abs("") resolves to the WORKING DIRECTORY -- normally inside the
-	// project -- which would read an operator's own inline agent as target-supplied.
+	// An absent file is not a file the project supplied. Source.Extends is empty
+	// whenever a config inherits from nothing, and filepath.Abs("") resolves to the
+	// WORKING DIRECTORY -- normally inside the project -- so an unset path measured
+	// like a real one would read an operator's own bundle as target-supplied.
 	if path == "" {
 		return false
 	}
