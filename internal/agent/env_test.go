@@ -38,6 +38,24 @@ func runDumper(t *testing.T, a config.Agent) string {
 	return res.Stdout
 }
 
+// dumpedEnv turns an envDumper run's stdout back into name -> value. A duplicate
+// name resolves to the LAST entry, matching how os/exec dedups cmd.Env, so an
+// injected override is what this reports rather than the value it shadowed.
+func dumpedEnv(t *testing.T, out string) map[string]string {
+	t.Helper()
+	env := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		// A value containing a newline continues onto the next line; those
+		// continuations are not assignments, and a name never has a space in it.
+		if !ok || k == "" || strings.ContainsAny(k, " \t") {
+			continue
+		}
+		env[k] = v
+	}
+	return env
+}
+
 // The point of the whole feature: a secret the agent did not ask for must not be
 // in its process. The environment is the one exfiltration surface a container does
 // not close, because the agents' own credentials have to be inside the container.
@@ -171,6 +189,36 @@ func TestRunHardensGitForAgentInvokedGit(t *testing.T) {
 		if runGitStatus(t, config.Agent{Env: config.AgentEnv{InheritAll: true}}) {
 			t.Error("the repo-configured fsmonitor program ran under inherit_all; the pins must survive the escape hatch")
 		}
+	})
+}
+
+// The mirror of the test above: that one pins what gitenv.Harden MUST export into
+// the agent's environment, this pins what must NOT be exported there. fixpoint's
+// own git subprocesses run under LC_ALL=C (target.probeEnv) so that the fatal
+// messages notARepository/noWorkTree parse stay untranslated; that pin lives at
+// the probe rather than in Harden precisely because Harden's result is also the
+// reviewer/coder CLIs' environment. Folding it into Harden is the obvious
+// simplification -- every other pin is already there -- and it would leave the
+// suite green while silently forcing a C locale on every agent CLI, mangling
+// non-ASCII output for any operator not already running one.
+func TestRunKeepsOperatorLocaleForAgent(t *testing.T) {
+	const locale = "en_US.UTF-8"
+	t.Setenv("LC_ALL", locale)
+	t.Setenv("LANG", locale)
+
+	assertLocale := func(t *testing.T, a config.Agent) {
+		t.Helper()
+		env := dumpedEnv(t, runDumper(t, a))
+		for _, name := range []string{"LC_ALL", "LANG"} {
+			if got := env[name]; got != locale {
+				t.Errorf("agent saw %s=%q, want the operator's own %q: the C-locale pin is for fixpoint's own git, and exporting it here changes the CLI's output encoding", name, got, locale)
+			}
+		}
+	}
+
+	t.Run("filtered environment", func(t *testing.T) { assertLocale(t, config.Agent{}) })
+	t.Run("inherit_all", func(t *testing.T) {
+		assertLocale(t, config.Agent{Env: config.AgentEnv{InheritAll: true}})
 	})
 }
 
