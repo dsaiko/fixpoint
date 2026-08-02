@@ -544,12 +544,23 @@ func (o *Orchestrator) squashRun(ctx context.Context, sum *model.RunSummary, run
 		return nil // nothing was committed
 	}
 	agg := &model.RoundRecord{Round: len(sum.Rounds)}
+	var salvaged []*model.RoundRecord
 	for i := range sum.Rounds {
 		agg.Fixed += sum.Rounds[i].Fixed
 		agg.Rejected += sum.Rounds[i].Rejected
 		agg.Findings = append(agg.Findings, sum.Rounds[i].Findings...)
+		// A round that salvaged put edits in this tree that no verdict covers, and the
+		// Fixed/Rejected sections squashTo renders cannot say so.
+		if sum.Rounds[i].CoderError != "" {
+			salvaged = append(salvaged, &sum.Rounds[i])
+		}
 	}
-	sha, err := o.squashTo(ctx, agg, runBase, agg.Round)
+	var sha string
+	if len(salvaged) > 0 {
+		sha, err = o.squashSalvagedRun(ctx, agg, salvaged, runBase)
+	} else {
+		sha, err = o.squashTo(ctx, agg, runBase, agg.Round)
+	}
 	if err != nil {
 		return err
 	}
@@ -562,7 +573,11 @@ func (o *Orchestrator) squashRun(ctx context.Context, sum *model.RunSummary, run
 		sum.Rounds[n-1].CommitSHA = sha
 		sum.Rounds[n-1].Commits = []string{sha}
 	}
-	o.logf("run: squashed %d round(s) of fixes into %s", agg.Round, shortSHA(sha))
+	if len(salvaged) > 0 {
+		o.logf("run: squashed %d round(s) of fixes, including partial salvage work from %d round(s), into %s", agg.Round, len(salvaged), shortSHA(sha))
+	} else {
+		o.logf("run: squashed %d round(s) of fixes into %s", agg.Round, shortSHA(sha))
+	}
 	return nil
 }
 
@@ -822,6 +837,32 @@ func (o *Orchestrator) squashSalvagedRound(ctx context.Context, rec *model.Round
 	rec.Commits = []string{sha} // the commits it replaced no longer exist
 	o.logf("round %d: squashed %d commit(s), including the partial salvage commit, into %s", rec.Round, n, shortSHA(sha))
 	return nil
+}
+
+// squashSalvagedRun is squashTo for a per_run squash whose tree contains work a
+// failed coder left behind, and it exists for the same reason squashSalvagedRound
+// does: the resulting commit holds both verified per-fix work AND partial work no
+// verdict accounts for, and the plain round header and body say only the first.
+// per_run is the shape that collapses the salvage commit into the run's ONE commit,
+// so it is the shape where losing that fact loses it for good.
+//
+// Each salvaged round gets its own section, named by round: a run can salvage more
+// than once, and the coder error and the issues it left undecided differ per round.
+// They are reported as of that round -- a later round may well have re-reviewed and
+// fixed them, which the Fixed section above says.
+func (o *Orchestrator) squashSalvagedRun(ctx context.Context, agg *model.RoundRecord, salvaged []*model.RoundRecord, base string) (string, error) {
+	var body strings.Builder
+	writeVerdictSection(&body, "Fixed", agg.Findings, model.VerdictFixed)
+	if agg.Rejected > 0 {
+		body.WriteString("\n")
+		writeVerdictSection(&body, "Rejected", agg.Findings, model.VerdictRejected)
+	}
+	for _, rec := range salvaged {
+		fmt.Fprintf(&body, "\nRound %d: %s", rec.Round, salvageBody(rec.CoderError, activeIssues(rec)))
+	}
+	// Redacted for the same reason squashTo redacts: agent-authored text bound for a
+	// commit that gets pushed.
+	return o.collector.SquashSince(ctx, base, salvageHeader(agg.Round), agent.RedactSecrets(body.String()), o.gitExclude...)
 }
 
 // roundCommitMessage is the header for a squashed commit. commit_message defaults
@@ -2529,9 +2570,11 @@ func (o *Orchestrator) reconcileRejectedSession(ctx context.Context, rec *model.
 }
 
 // salvageHeader and salvageBody are the commit message for work a failed coder
-// left behind. Both the salvage commit itself and the per_round squash that may
-// replace it use them, because the fact a reader must not lose is the same in
-// either shape: part of that commit has no verdict behind it.
+// left behind. The salvage commit itself and both squashes that may replace it --
+// per_round and per_run -- use them, because the fact a reader must not lose is the
+// same in every shape: part of that commit has no verdict behind it. On a per_run
+// squash the round number is the run's extent, exactly as it is in the plain
+// per_run header, and the body names the rounds that actually salvaged.
 func salvageHeader(round int) string {
 	return fmt.Sprintf("fixpoint: round %d (partial, coder failed)", round)
 }

@@ -4195,6 +4195,49 @@ func TestCommitPolicyPerRunSquashesTheWholeRun(t *testing.T) {
 	}
 }
 
+// per_run collapses a salvaged round into the run's ONE commit, so it is the shape
+// where the fact that part of that commit has no verdict behind it is lost for good
+// if the message does not say so. The aggregated Fixed/Rejected sections cannot say
+// it: the failed coder reported no verdict at all.
+func TestCommitPolicyPerRunKeepsASalvagedRoundVisible(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRun})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "nil deref"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded"}))
+	// The second session edits and then dies without reporting: its work is salvaged.
+	f.editRepoOn(3)
+	f.respond(3, "I changed files but forgot the <fix> envelope.")
+	f.respond(4, reviewResponse(t)) // round 2: clean
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want salvage + continue", err)
+	}
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + one for the whole run)", got)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "(partial, coder failed)") {
+		t.Errorf("run commit message = %q, want it labeled partial", msg)
+	}
+	// Both halves of what the commit holds: the verdict that landed, and the issue
+	// the failed coder left undecided, named by the round it was left in.
+	for _, want := range []string{"nil deref", "off by one", "Coder failed before reporting verdicts", "Round 1:"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("run commit message missing %q:\n%s", want, msg)
+		}
+	}
+	if sum.Rounds[0].CoderError == "" {
+		t.Error("round 1 CoderError not recorded; the squash must not lose the coder failure")
+	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("tree left dirty by the squash: %q", status)
+	}
+}
+
 // A review-only run never commits, so per_run has nothing to collapse -- and its
 // run base is deliberately left unresolved. Squashing to that empty base would build
 // a ROOT commit from the current index and reset the branch onto it, cutting the
