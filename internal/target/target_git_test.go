@@ -2356,16 +2356,52 @@ func TestGhRemote(t *testing.T) {
 		}
 	})
 
-	// Once gh HAS named the base repository, a checkout whose remotes all point
-	// elsewhere must be refused: falling back to origin/first-remote there lets
+	// Once gh HAS named the base repository, a checkout whose remotes all point at
+	// ANOTHER HOST must be refused: falling back to origin/first-remote there lets
 	// the checkout pick the server the PR base is fetched from.
-	t.Run("no remote for the gh base repo is refused", func(t *testing.T) {
+	t.Run("no remote for the gh base repo host is refused", func(t *testing.T) {
 		installGh(t, "echo https://github.com/acme/widget\n")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "origin", "https://attacker.example/acme/widget.git")
 		_, err := New(config.Target{Path: repo}).ghRemote(t.Context())
 		if err == nil || !strings.Contains(err.Error(), "no git remote points at") {
 			t.Fatalf("ghRemote() = %v, want a refusal naming the unmatched base repository", err)
+		}
+	})
+
+	// The ordinary fork clone: the only remote is the operator's fork while gh
+	// resolves the base repository to the parent. Both live on the same host and
+	// the forge serves fork-network objects, so the fork remote is a working fetch
+	// target -- refusing here would break `gh pr checkout` runs that worked before.
+	t.Run("fork remote on the base repo host is used", func(t *testing.T) {
+		installGh(t, "echo https://github.com/acme/widget\n")
+		repo := gitRepo(t)
+		git(t, repo, "remote", "add", "origin", "https://github.com/me/widget.git")
+		if r, err := New(config.Target{Path: repo}).ghRemote(t.Context()); err != nil || r != "origin" {
+			t.Fatalf("ghRemote() = %q, %v; want origin (fork remote on the base host)", r, err)
+		}
+	})
+
+	// The same-host fallback must not outrank a remote for the base repository
+	// itself, and must never reach across hosts even when the fork remote sorts
+	// first and is named origin.
+	t.Run("exact base repo match beats a same-host fork remote", func(t *testing.T) {
+		installGh(t, "echo https://github.com/acme/widget\n")
+		repo := gitRepo(t)
+		git(t, repo, "remote", "add", "origin", "https://github.com/me/widget.git")
+		git(t, repo, "remote", "add", "upstream", "https://github.com/acme/widget.git")
+		if r, err := New(config.Target{Path: repo}).ghRemote(t.Context()); err != nil || r != "upstream" {
+			t.Fatalf("ghRemote() = %q, %v; want upstream (exact match beats same-host fallback)", r, err)
+		}
+	})
+
+	t.Run("same owner/repo on another host is not a same-host fallback", func(t *testing.T) {
+		installGh(t, "echo https://github.com/acme/widget\n")
+		repo := gitRepo(t)
+		git(t, repo, "remote", "add", "origin", "https://attacker.example/acme/widget.git")
+		git(t, repo, "remote", "add", "zfork", "https://github.com/me/widget.git")
+		if r, err := New(config.Target{Path: repo}).ghRemote(t.Context()); err != nil || r != "zfork" {
+			t.Fatalf("ghRemote() = %q, %v; want zfork (only the base host may serve the fetch)", r, err)
 		}
 	})
 

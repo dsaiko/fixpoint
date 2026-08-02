@@ -855,11 +855,11 @@ const remoteOrigin = "origin"
 // as this checkout's base, so PR base objects are fetched from the right place
 // without assuming the remote is named "origin". It matches the base repo's
 // canonical URL -- host AND owner/repo, see remoteIdentity -- against the
-// configured remote URLs. Only when gh cannot name the base repository at all
-// does it fall back to origin and then the sole/first remote; once gh HAS named
-// it, a checkout with no matching remote is refused rather than fetched from a
-// remote of the checkout's choosing. Remotes whose name looks like a git option
-// are refused (see below).
+// configured remote URLs. When gh cannot name the base repository at all it
+// falls back to origin and then the sole/first remote; once gh HAS named it, the
+// fallback is confined to remotes on the base repository's HOST, so a remote of
+// the checkout's choosing on another server is never fetched from. Remotes whose
+// name looks like a git option are refused (see below).
 func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 	out, err := c.git(ctx, "remote")
 	if err != nil {
@@ -893,12 +893,23 @@ func (c *Collector) ghRemote(ctx context.Context) (string, error) {
 	// gh could not name the base repository (offline, unauthenticated, no GitHub
 	// remote), so there is no identity to match against: fall back to git's
 	// conventional default and then the sole/first remote.
+	r, _ := preferOrigin(remotes)
+	return r, nil
+}
+
+// preferOrigin picks git's conventional default from a set of equally correct
+// remotes, falling back to the first, so the choice does not depend on git's
+// listing order. It reports false when there is nothing to choose from.
+func preferOrigin(remotes []string) (string, bool) {
 	for _, r := range remotes {
 		if r == remoteOrigin {
-			return remoteOrigin, nil
+			return remoteOrigin, true
 		}
 	}
-	return remotes[0], nil
+	if len(remotes) == 0 {
+		return "", false
+	}
+	return remotes[0], true
 }
 
 // ghBaseIdentity is the host/owner/repo identity of the repository gh treats as
@@ -916,35 +927,43 @@ func (c *Collector) ghBaseIdentity(ctx context.Context) string {
 	return remoteIdentity(raw)
 }
 
-// remoteForIdentity returns the remote whose URL names the given host/owner/repo
-// identity, or an error when none does.
+// remoteForIdentity returns the remote to fetch the PR base from, given the
+// host/owner/repo identity gh reports for the base repository.
+//
+// A remote naming that exact identity wins. Otherwise a remote on the same HOST
+// is used: the common case is a clone of a fork whose only remote is the fork
+// itself while gh resolves the base repository to the parent, and GitHub (like
+// other forges) serves fork-network objects, so fetching the base OID from the
+// fork remote succeeds. What the host check keeps out is the case the exact match
+// exists for: a remote for a DIFFERENT host holding the same owner/repo is what
+// an attacker adds to have the PR base fetched -- with the operator's credentials
+// -- from a server of the checkout's choosing.
 func (c *Collector) remoteForIdentity(ctx context.Context, remotes []string, want string) (string, error) {
-	var matches []string
+	wantHost, _, _ := strings.Cut(want, "/")
+	var matches, sameHost []string
 	for _, r := range remotes {
-		if u, err := c.git(ctx, "remote", "get-url", "--end-of-options", r); err == nil &&
-			remoteIdentity(u) == want {
+		u, err := c.git(ctx, "remote", "get-url", "--end-of-options", r)
+		if err != nil {
+			continue
+		}
+		id := remoteIdentity(u)
+		switch host, _, _ := strings.Cut(id, "/"); {
+		case id == want:
+			// Several remotes may legitimately name the same host and repository (a
+			// clone plus an explicitly added upstream). They are the same fetch
+			// target, so any of them is correct.
 			matches = append(matches, r)
+		case id != "" && host == wantHost:
+			sameHost = append(sameHost, r)
 		}
 	}
-	// Several remotes may legitimately name the same host and repository (a clone
-	// plus an explicitly added upstream). They are the same fetch target, so any
-	// of them is correct; prefer origin so the choice is deterministic rather than
-	// dependent on git's listing order.
-	for _, r := range matches {
-		if r == remoteOrigin {
-			return remoteOrigin, nil
-		}
+	if r, ok := preferOrigin(matches); ok {
+		return r, nil
 	}
-	if len(matches) > 0 {
-		return matches[0], nil
+	if r, ok := preferOrigin(sameHost); ok {
+		return r, nil
 	}
-	// gh named the base repository and no configured remote points at it. Falling
-	// back to origin or the first remote here would let an untrusted checkout pick
-	// the server: a remote for a DIFFERENT host holding the same owner/repo is
-	// exactly what an attacker adds to have the PR base fetched from a host of
-	// their choosing. Refuse instead -- the operator can add a remote for the real
-	// base repository.
-	return "", fmt.Errorf("refusing to fetch the PR base: no git remote points at the PR's base repository %s (remotes: %s)", want, strings.Join(remotes, " "))
+	return "", fmt.Errorf("refusing to fetch the PR base: no git remote points at the PR's base repository %s or any other repository on %s (remotes: %s)", want, wantHost, strings.Join(remotes, " "))
 }
 
 // remoteIdentity reduces a git remote URL -- or the canonical repository URL gh
@@ -996,8 +1015,12 @@ func remoteIdentity(raw string) string {
 }
 
 // defaultPorts are the ports a git URL may spell out without naming a different
-// endpoint than the scheme already implies.
-var defaultPorts = map[string]string{"http": "80", "https": "443", "ssh": "22", "git": "9418"}
+// endpoint than the scheme already implies. git's two aliases for ssh:// are
+// listed too, so a remote spelled with one is not treated as another endpoint.
+var defaultPorts = map[string]string{
+	"http": "80", "https": "443", "git": "9418",
+	"ssh": "22", "git+ssh": "22", "ssh+git": "22",
+}
 
 // remoteHost extracts the host[:port] a git URL authority resolves to, lowercased.
 //

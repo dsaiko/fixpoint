@@ -100,6 +100,9 @@ func TestRemoteIdentity(t *testing.T) {
 		// still match the canonical https URL gh reports for the same repository.
 		{"ssh://git@github.com:22/acme/widget.git", "github.com/acme/widget"},
 		{"https://github.com:443/acme/widget.git", "github.com/acme/widget"},
+		// git's aliases for ssh:// imply the same default port.
+		{"git+ssh://git@github.com:22/acme/widget.git", "github.com/acme/widget"},
+		{"ssh+git://git@github.com:22/acme/widget.git", "github.com/acme/widget"},
 		// The near misses a substring test would accept.
 		{"https://github.com/acme/widget-fork.git", "github.com/acme/widget-fork"},
 		{"https://github.com/acme/widgets.git", "github.com/acme/widgets"},
