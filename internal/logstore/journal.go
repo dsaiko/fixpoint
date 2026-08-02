@@ -79,11 +79,18 @@ func appendLine(path string, line []byte) (err error) {
 	return f.Sync()
 }
 
-// JournalPath returns the journal's path, for reporting it once the run dir is
-// claimed. It is empty before the first artifact write, because the run directory
-// is claimed lazily and its name can gain a collision suffix.
+// JournalPath returns the journal's path, for reporting it to the operator. It
+// claims the run directory first rather than rendering the template, because the
+// claimed name can gain a collision suffix and a reported path that names a
+// different directory than the artifacts land in is worse than none. It is empty
+// only when the directory cannot be claimed at all -- there is then no journal to
+// name, and the write that reports it will fail for the same reason.
+//
+// Safe to call concurrently, and for the same reason as its neighbours: runDir is
+// written inside ensureDir's sync.Once, so going through ensureDir here is what
+// orders this read after that write.
 func (s *Store) JournalPath() string {
-	if s.runDir == "" {
+	if err := s.ensureDir(); err != nil {
 		return ""
 	}
 	return filepath.Join(s.runDir, JournalName)
