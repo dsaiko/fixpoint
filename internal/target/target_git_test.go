@@ -3508,3 +3508,33 @@ func TestScopeCountsUntrackedFilesAsRecords(t *testing.T) {
 		t.Errorf("Scope() = %q, want it to report 4 untracked files", got)
 	}
 }
+
+// gitScanNUL reports an uncontained git descendant -- a cleanup kill that came
+// back EPERM -- through its error, and Scope's untracked tally is a real caller of
+// it. Folding that failure into "no untracked files" would print a clean --check
+// estimate over a target that still has a live git in it, so Scope must carry it
+// out. The kill is stubbed after the real one has run (the errno needs a
+// descendant under credentials this process cannot signal) and only for the
+// untracked scan itself: Scope's earlier symlink listing scans with --cached and
+// would otherwise fail first, leaving the tally's own error path unproven.
+func TestScopeReportsFailedCleanupKillFromUntrackedScan(t *testing.T) {
+	repo := gitRepo(t)
+	writeFile(t, repo, "untracked.go", "package a\n")
+	orig := gitCleanupKill
+	t.Cleanup(func() { gitCleanupKill = orig })
+	gitCleanupKill = func(cmd *exec.Cmd) error {
+		err := orig(cmd)
+		if slices.Contains(cmd.Args, "--others") && !slices.Contains(cmd.Args, "--cached") {
+			return syscall.EPERM
+		}
+		return err
+	}
+
+	got, err := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: "HEAD"}).Scope(t.Context())
+	if err == nil {
+		t.Fatalf("Scope() = %q, nil after a group kill that reported an uncontained git; want the failure surfaced", got)
+	}
+	if !errors.Is(err, syscall.EPERM) {
+		t.Errorf("Scope() err = %v, want it to carry the kill's EPERM", err)
+	}
+}

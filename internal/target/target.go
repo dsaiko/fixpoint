@@ -206,11 +206,20 @@ func (c *Collector) Scope(ctx context.Context) (string, error) {
 		lsArgs := []string{"ls-files", "--others", "--exclude-standard", "-z", "--"}
 		lsArgs = append(lsArgs, specs...)
 		n := 0
+		// Not swallowed, for the reason Collect gives about the same listing, plus one
+		// this path owns: gitScanNUL reports an uncontained git descendant -- a
+		// cleanup kill that came back EPERM -- through this error, and an estimate
+		// that discarded it would print a clean --check line while a live git sits in
+		// the target. A failed scan also cannot honestly be reported as "no untracked
+		// files".
 		if err := c.gitScanNUL(ctx, func(rel string) {
 			if rel != "" {
 				n++
 			}
-		}, lsArgs...); err == nil && n > 0 {
+		}, lsArgs...); err != nil {
+			return "", fmt.Errorf("count untracked files: %w", err)
+		}
+		if n > 0 {
 			out += fmt.Sprintf(", plus %d untracked file(s)", n)
 		}
 		return out, nil
