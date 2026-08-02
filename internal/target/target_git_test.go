@@ -2345,6 +2345,33 @@ func TestGhRemote(t *testing.T) {
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
 
+	// The host-aware defense below is only as good as the question ghBaseIdentity
+	// asks gh: `--json url` names the HOST the PR's objects live on, while the
+	// nameWithOwner it replaced reports a bare "acme/widget" that remoteIdentity
+	// refuses -- ghRemote would then think gh named no base repository and fall
+	// back to a remote of the checkout's choosing. A shim that answers any argv
+	// cannot catch that regression, so this one answers ONLY the exact invocation
+	// and records what it was really called with; the recording is asserted on
+	// cleanup so every subtest below covers it.
+	installGhURL := func(t *testing.T, url string) {
+		t.Helper()
+		const wantArgv = "repo view --json url --jq .url"
+		argvFile := filepath.Join(t.TempDir(), "argv")
+		installGh(t, "printf '%s' \"$*\" >>"+argvFile+"\n"+
+			"[ \"$*\" = '"+wantArgv+"' ] || exit 1\n"+
+			"echo "+url+"\n")
+		t.Cleanup(func() {
+			got, err := os.ReadFile(argvFile)
+			if err != nil {
+				t.Errorf("gh was never invoked: %v", err)
+				return
+			}
+			if string(got) != wantArgv {
+				t.Errorf("gh invoked as %q, want exactly one %q: the canonical URL is what names the host the fetch must contact", got, wantArgv)
+			}
+		})
+	}
+
 	t.Run("no remotes errors", func(t *testing.T) {
 		installGh(t, "exit 1\n")
 		c := New(config.Target{Path: gitRepo(t)})
@@ -2354,7 +2381,7 @@ func TestGhRemote(t *testing.T) {
 	})
 
 	t.Run("base repo URL match beats origin fallback", func(t *testing.T) {
-		installGh(t, "echo https://github.com/acme/widget\n") // gh repo view --json url
+		installGhURL(t, "https://github.com/acme/widget")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "origin", "https://github.com/acme/other.git")
 		git(t, repo, "remote", "add", "upstream", "https://github.com/acme/widget.git")
@@ -2369,7 +2396,7 @@ func TestGhRemote(t *testing.T) {
 	// owner/repo alone would select it and `git fetch` would then contact the
 	// attacker's host as the operator.
 	t.Run("same owner/repo on another host is not matched", func(t *testing.T) {
-		installGh(t, "echo https://github.com/acme/widget\n")
+		installGhURL(t, "https://github.com/acme/widget")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "attacker", "https://attacker.example/acme/widget.git")
 		git(t, repo, "remote", "add", "upstream", "https://github.com/acme/widget.git")
@@ -2381,7 +2408,7 @@ func TestGhRemote(t *testing.T) {
 	// An scp-like remote for the base repository is the same fetch target as the
 	// https URL gh reports, so it must still match rather than be refused.
 	t.Run("scp-like remote matches the gh URL", func(t *testing.T) {
-		installGh(t, "echo https://github.com/acme/widget\n")
+		installGhURL(t, "https://github.com/acme/widget")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "upstream", "git@github.com:acme/widget.git")
 		if r, err := New(config.Target{Path: repo}).ghRemote(t.Context()); err != nil || r != "upstream" {
@@ -2393,7 +2420,7 @@ func TestGhRemote(t *testing.T) {
 	// ANOTHER HOST must be refused: falling back to origin/first-remote there lets
 	// the checkout pick the server the PR base is fetched from.
 	t.Run("no remote for the gh base repo host is refused", func(t *testing.T) {
-		installGh(t, "echo https://github.com/acme/widget\n")
+		installGhURL(t, "https://github.com/acme/widget")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "origin", "https://attacker.example/acme/widget.git")
 		_, err := New(config.Target{Path: repo}).ghRemote(t.Context())
@@ -2407,7 +2434,7 @@ func TestGhRemote(t *testing.T) {
 	// the forge serves fork-network objects, so the fork remote is a working fetch
 	// target -- refusing here would break `gh pr checkout` runs that worked before.
 	t.Run("fork remote on the base repo host is used", func(t *testing.T) {
-		installGh(t, "echo https://github.com/acme/widget\n")
+		installGhURL(t, "https://github.com/acme/widget")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "origin", "https://github.com/me/widget.git")
 		if r, err := New(config.Target{Path: repo}).ghRemote(t.Context()); err != nil || r != "origin" {
@@ -2419,7 +2446,7 @@ func TestGhRemote(t *testing.T) {
 	// itself, and must never reach across hosts even when the fork remote sorts
 	// first and is named origin.
 	t.Run("exact base repo match beats a same-host fork remote", func(t *testing.T) {
-		installGh(t, "echo https://github.com/acme/widget\n")
+		installGhURL(t, "https://github.com/acme/widget")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "origin", "https://github.com/me/widget.git")
 		git(t, repo, "remote", "add", "upstream", "https://github.com/acme/widget.git")
@@ -2429,7 +2456,7 @@ func TestGhRemote(t *testing.T) {
 	})
 
 	t.Run("same owner/repo on another host is not a same-host fallback", func(t *testing.T) {
-		installGh(t, "echo https://github.com/acme/widget\n")
+		installGhURL(t, "https://github.com/acme/widget")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "origin", "https://attacker.example/acme/widget.git")
 		git(t, repo, "remote", "add", "zfork", "https://github.com/me/widget.git")
@@ -2462,7 +2489,7 @@ func TestGhRemote(t *testing.T) {
 	// returned as the remote to fetch from -- neither as the first-remote
 	// fallback (git sorts it before ordinary names) nor via the URL match.
 	t.Run("option-like remote name is skipped", func(t *testing.T) {
-		installGh(t, "echo https://github.com/acme/widget\n")
+		installGhURL(t, "https://github.com/acme/widget")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "--", "--upload-pack=/tmp/payload", "https://github.com/acme/widget.git")
 		git(t, repo, "remote", "add", "upstream", "https://github.com/acme/widget.git")
@@ -2472,6 +2499,8 @@ func TestGhRemote(t *testing.T) {
 	})
 
 	t.Run("only option-like remotes errors", func(t *testing.T) {
+		// The plain shim, not installGhURL: gh is never consulted here because the
+		// option-like refusal comes before ghRemote asks for the base repository.
 		installGh(t, "echo https://github.com/acme/widget\n")
 		repo := gitRepo(t)
 		git(t, repo, "remote", "add", "--", "--upload-pack=/tmp/payload", "https://github.com/acme/widget.git")
