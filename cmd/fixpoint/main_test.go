@@ -315,6 +315,56 @@ func TestRunCheckLive(t *testing.T) {
 			t.Errorf("agent invocations = %d, want 0 (refusal comes before any ping)", got)
 		}
 	})
+	// A review-only target clears the trust gate, but -check-live still starts the
+	// agent CLIs with their working directory inside the checkout, and those CLIs
+	// run git themselves -- so the target-integrity gates apply here exactly as they
+	// do to -check, which invokes no agent at all and is therefore the LESS invasive
+	// of the two. git-diff mode is what an untrusted-checkout preflight uses; it
+	// touches git in every trust mode.
+	t.Run("repo-supplied git config refused before pinging", func(t *testing.T) {
+		f := newFixture(t)
+		if err := os.WriteFile(filepath.Join(f.repo, "second.go"), []byte("package main\n\nfunc second() {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		testfixture.GitRun(t, f.repo, "add", "-A")
+		testfixture.GitRun(t, f.repo, "commit", "-qm", "second")
+		testfixture.GitRun(t, f.repo, "config", "filter.evil.clean", "sh -c 'id'")
+		f.respond(1, "OK")
+		var buf bytes.Buffer
+		cfg := f.configFile("git-diff", "  base_ref: HEAD~1\n", "  review_only: true")
+		if got := run([]string{"-config", cfg, "-check-live"}, &buf, &buf); got != 1 {
+			t.Fatalf("run(-check-live) = %d, want 1 for a target with repo-supplied git config; stderr:\n%s", got, buf.String())
+		}
+		for _, want := range []string{"filter.evil.clean", "-trusted-target"} {
+			if !strings.Contains(buf.String(), want) {
+				t.Errorf("stderr missing %q:\n%s", want, buf.String())
+			}
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (refusal comes before any ping)", got)
+		}
+	})
+	// The redirect guard is not trust-gated, and a ping runs each CLI with its
+	// working directory in the target: a redirected work tree means those CLIs
+	// explore a tree the operator did not name.
+	t.Run("redirected work tree refused even with -trusted-target", func(t *testing.T) {
+		f := newFixture(t)
+		elsewhere := t.TempDir()
+		testfixture.GitRun(t, f.repo, "config", "core.worktree", elsewhere)
+		f.respond(1, "OK")
+		f.respond(2, "OK")
+		var buf bytes.Buffer
+		cfg := f.configFile("directory", "", "  max_iterations: 3")
+		if got := run([]string{"-config", cfg, "-trusted-target", "-check-live"}, &buf, &buf); got != 1 {
+			t.Fatalf("run(-check-live) = %d, want 1 for a redirected work tree; stderr:\n%s", got, buf.String())
+		}
+		if !strings.Contains(buf.String(), "core.worktree") || !strings.Contains(buf.String(), elsewhere) {
+			t.Errorf("the refusal must name the redirect and the tree it points at (%s):\n%s", elsewhere, buf.String())
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (refusal comes before any ping)", got)
+		}
+	})
 	// review-only clears the gate (no coder) so a read-only preflight still works.
 	t.Run("review-only untrusted target pings reviewers", func(t *testing.T) {
 		f := newFixture(t)

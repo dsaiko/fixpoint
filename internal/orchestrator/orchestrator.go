@@ -60,6 +60,13 @@ type Orchestrator struct {
 	// journalWarn keeps a broken journal to ONE warning. A full disk would
 	// otherwise emit a line per transition and bury the run's real output.
 	journalWarn sync.Once
+	// preflightOnce/preflightErr memoize PreflightGuards. Both run() and Ping call
+	// it -- Ping because -check-live reaches it WITHOUT going through run() -- and
+	// on the run path that would otherwise repeat the git probes and, worse, print
+	// the repo-supplied-git-config WARNING twice for one target. The guards are
+	// pure reads of a target that does not change mid-run, so one answer holds.
+	preflightOnce sync.Once
+	preflightErr  error
 	// heartbeatEvery is how often runAgent's progress line fires. It is a field
 	// defaulting to heartbeatDefault rather than a bare const so a test can shorten
 	// it: the tick body is the only thing that makes the heartbeat goroutine touch
@@ -1153,11 +1160,18 @@ func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 // Both guards are read-only (`git rev-parse --show-toplevel`, `git config
 // --list`), take no lock and mutate nothing, so they are safe on that
 // non-mutating path.
+//
+// It is idempotent (see preflightOnce): Ping calls it too, so the run path, which
+// guards before its first git command and then pings, probes and warns once.
 func (o *Orchestrator) PreflightGuards(ctx context.Context) error {
-	if err := o.guardRedirectedWorktree(ctx); err != nil {
-		return err
-	}
-	return o.guardUntrustedGitConfig(ctx)
+	o.preflightOnce.Do(func() {
+		if err := o.guardRedirectedWorktree(ctx); err != nil {
+			o.preflightErr = err
+			return
+		}
+		o.preflightErr = o.guardUntrustedGitConfig(ctx)
+	})
+	return o.preflightErr
 }
 
 // guardRedirectedWorktree refuses a target whose git work tree is not the target
@@ -1888,6 +1902,18 @@ func (o *Orchestrator) Ping(ctx context.Context) error {
 	// trust signal (checkFixTrust); -check-live must not offer an unguarded path
 	// around that gate, so enforce it here before any agent is invoked.
 	if err := o.checkFixTrust(); err != nil {
+		return err
+	}
+	// The target-integrity gates belong here for the same reason: a ping launches
+	// each CLI with its working directory INSIDE the target, and those CLIs run
+	// `git status`/`git diff`/`git log` while exploring, so a repo-supplied
+	// filter.<name>.clean (or core.sshCommand, or a credential helper) executes with
+	// fixpoint's inherited environment, and a core.worktree redirect points them at
+	// a tree outside the target. -check-live reaches Ping without going through
+	// run() -- and it is strictly more invasive than -check, which is gated -- so
+	// gating at the ping rather than at the caller keeps every agent-invoking entry
+	// point covered. PreflightGuards is idempotent, so run() still probes once.
+	if err := o.PreflightGuards(ctx); err != nil {
 		return err
 	}
 	names := o.activeAgentNames()
