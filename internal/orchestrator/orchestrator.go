@@ -1089,8 +1089,22 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	// findings the survivors did report would act on a knowingly partial last look.
 	// Repeating the phase does not soften this: a later pass re-reviews the same
 	// tree, so it would inherit the same blind spot rather than close it.
+	//
+	// An ADVISORY-only pass is the exception, because the premise above does not
+	// hold for it: it hands nothing to the coder by construction (its output lands
+	// in rec.Advisory and rec.Findings stays empty), so there is no partial list to
+	// act on and nothing to abort. Failing here would rewrite a run whose loop
+	// converged, and whose every fix was verified and committed, into an error over
+	// one transient report lens -- contradicting ReviewLens.Advisory's contract that
+	// advisory findings are excluded from the termination condition. The failures
+	// are recorded on the round either way; here they are only warned about, since
+	// the report that ships is incomplete and silence would read as a full one.
 	if len(recP.ReviewErrors) > 0 {
-		return false, roundReviewErr(recP)
+		if !allAdvisory(asgs) {
+			return false, roundReviewErr(recP)
+		}
+		o.logf("WARNING: closing %s: %d advisory reviewer(s) failed: %s -- that report is incomplete, but advisory lenses hand nothing to the coder, so the run's outcome is unchanged",
+			label, len(recP.ReviewErrors), strings.Join(recP.ReviewErrors, "; "))
 	}
 	// The operator stopped us between the review and the fix: the phase is over, and
 	// the findings this pass just reported are left unfixed, so the RUN is an
@@ -1777,6 +1791,23 @@ func activeIssues(rec *model.RoundRecord) []model.Issue {
 		}
 	}
 	return out
+}
+
+// allAdvisory reports whether every assignment in a pass is advisory, which makes
+// the pass a report: nothing it produces reaches the coder, so it cannot leave a
+// fix acting on a partial finding list. An empty list is not such a pass -- the
+// callers never build one, and treating "no reviewers" as "all advisory" would
+// widen the exemption by accident.
+func allAdvisory(asgs []model.Assignment) bool {
+	if len(asgs) == 0 {
+		return false
+	}
+	for _, a := range asgs {
+		if !a.Advisory {
+			return false
+		}
+	}
+	return true
 }
 
 // deferredFindings counts the round's observations whose issue the cap deferred.

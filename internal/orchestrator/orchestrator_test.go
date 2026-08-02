@@ -3722,6 +3722,55 @@ func TestFinalRoundReviewerFailureFailsTheRun(t *testing.T) {
 	}
 }
 
+// The same failure in the ADVISORY report pass must NOT fail the run. That pass
+// hands nothing to the coder -- its findings land in rec.Advisory and rec.Findings
+// stays empty -- so there is no partial list for anything downstream to act on, and
+// config.ReviewLens.Advisory promises those lenses are excluded from the
+// termination condition. Failing here turned a run whose loop converged, and whose
+// every fix was verified and committed, into exit 1 because one pinned report lens
+// (the shipped fix-code pins maintainability and design) had a bad minute. The
+// incomplete report is still worth a warning, and the errors stay on the round.
+func TestFinalRoundAdvisoryReviewerFailureDoesNotFailTheRun(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.finalLens() // actionable, on mock2
+	// The report lens, pinned to an agent that always fails.
+	f.cfg.Agents["bad"] = config.Agent{Command: []string{"false"}, PromptVia: "stdin", Timeout: config.Duration(time.Minute)}
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts, config.ReviewLens{
+		Agent: "bad", Prompt: f.cfg.Roles.Review.Prompts[0].Prompt, Final: true, Advisory: true,
+	})
+	f.respond(1, reviewResponse(t))                  // loop round 1: clean -> converged
+	f.respond(2, reviewResponse(t, aFinding("bug"))) // closing fix pass 1
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded it"}))
+	f.respond(4, reviewResponse(t)) // closing fix pass 2: clean -> the fix half is done
+	// The report then runs on "bad" and fails; it consumes no mock response.
+
+	var logs strings.Builder
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}},
+		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want success: a failed advisory report is not a failed run", err)
+	}
+	if sum.Termination != model.TermConverged || sum.Error != "" {
+		t.Errorf("termination = %q, error = %q; want converged with no error", sum.Termination, sum.Error)
+	}
+	// The fix half really did its work, which is what makes the old exit 1 a lie.
+	if n := f.commitCount(); n < 2 {
+		t.Errorf("repo has %d commit(s), want the closing fix committed on top of the initial one", n)
+	}
+	last := sum.Rounds[len(sum.Rounds)-1]
+	if !last.Final || len(last.ReviewErrors) != 1 {
+		t.Fatalf("last round should be the report pass carrying its reviewer error: %+v", last)
+	}
+	if !strings.Contains(logs.String(), "advisory reviewer(s) failed") {
+		t.Errorf("an incomplete report must be warned about, got logs:\n%s", logs.String())
+	}
+}
+
 // An interruption of the CLOSING phase is an interruption of the run. The loop has
 // already recorded its own outcome by then, so a Ctrl-C there used to leave
 // "converged" standing: the CLI printed a clean finish and exited 0 (its contract
