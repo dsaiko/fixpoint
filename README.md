@@ -791,6 +791,21 @@ Read this before pointing the tool at code you did not write.
   `~/.aws/credentials`, `.env`) and quoting it into a finding. Point reviewers
   at untrusted content only on a host without sensitive files, or run
   fixpoint inside a container/VM.
+- **The process-group kill is the only containment, and a descendant can escape
+  it.** Every agent, verify command and git subprocess runs as a process-group
+  leader, and fixpoint SIGKILLs the whole group the moment the leader exits — so an
+  MCP server, a test daemon or a plain `child &` in a wrapper script dies with the
+  command rather than editing the repository during a later check. A child that
+  calls `setsid`/`setpgrp` first is no longer *in* that group: it outlives the run
+  with the working directory still inside the target and whatever environment its
+  agent was given, free to keep reading files or writing to the repository after
+  fixpoint believes the run has ended. fixpoint records it in the `.raw` log when
+  such a descendant holds an output pipe open past the agent's exit, but one that
+  closes its own descriptors first leaves no trace. Nothing underneath enforces
+  termination — containing a deliberately daemonizing process needs an OS-level
+  mechanism (a transient cgroup, a job object, a supervising container) that is not
+  implemented. Run agent CLIs you do not trust inside a container/VM, and do not
+  grant one `env.inherit_all`.
 - **Logs can contain secrets.** The reviewed material, raw agent output, and
   reviewer-authored text are all persisted; redaction is heuristic, not a
   guarantee. Keep the logs directory out of any sync, backup, or commit (the

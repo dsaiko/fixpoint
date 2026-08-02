@@ -182,7 +182,11 @@ func RedactSecrets(s string) string { return redactSecrets(s) }
 // drain grace bounds the pipe-copy goroutine, not the detached process.
 // Containing such
 // descendants requires an OS-level mechanism (a transient cgroup on Linux, a
-// job object, or a supervising container); that is not implemented here.
+// job object, or a supervising container); that is not implemented here. Until
+// it is, the residual risk is operational and documented under "Security model"
+// in the README: run an agent CLI you do not trust under an external
+// container/VM, and do not grant it env.inherit_all -- an escaped descendant
+// keeps whatever environment its agent was given.
 func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	argv := a.Argv()
 	// Defensive: config validation rejects an empty command, but an agent
