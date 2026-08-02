@@ -281,6 +281,21 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 			},
 		},
 		{
+			// The inline shape of the case above: with no extends base the candidate
+			// path is "", which is not a file at all -- but resolves to the working
+			// directory, normally inside the project, if it is measured like one.
+			name: "operator bundle outside the project may declare it inline",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				out := bundle(t, t.TempDir(), map[string]string{
+					"task": "target: {mode: directory}\n" + inlineInherit + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				t.Chdir(root) // where fixpoint is normally run from: inside the project
+				return []string{out}, root, "task"
+			},
+		},
+		{
 			name: "a project-supplied agent without inherit_all is untouched",
 			setup: func(t *testing.T) ([]string, string, string) {
 				t.Helper()

@@ -546,6 +546,13 @@ func (l *Loaded) agentDefinitionPaths(name string) []string {
 // when that points somewhere else. Either is enough -- a file in either tree may
 // have been shipped by the code under review.
 func (l *Loaded) fromProject(path string) bool {
+	// An absent file is not a file the project supplied. The empty string reaches
+	// here from agentDefinitionPaths whenever an inline agent chose no extends base,
+	// and filepath.Abs("") resolves to the WORKING DIRECTORY -- normally inside the
+	// project -- which would read an operator's own inline agent as target-supplied.
+	if path == "" {
+		return false
+	}
 	if within(path, l.ProjectRoot) {
 		return true
 	}
