@@ -1296,6 +1296,56 @@ func TestRunReviewOnlyAllowsNonGitDirectory(t *testing.T) {
 	}
 }
 
+// The repo-supplied-git-config gate applies in EVERY mode that launches an agent
+// with its working directory inside the target, and a review-only directory run
+// is the shipped review bundle's own shape -- so an UNTRUSTED one over a plain
+// folder is the target shape that widening newly probes. Nothing but the
+// IsGitRepo short-circuit holds UnsafeConfig/ExternalFilterConfig back there, and
+// no trust is asserted to soften what they report: a probe that errored, or a
+// listing that read the operator's own global config as the target's, would kill
+// the run before its reviewer ever launched -- and the operator's filters, which
+// no git command can fire outside a repository, must not even be warned about.
+// The gate is exercised through PreflightGuards (the agent-invoking entry point
+// run() and Ping share) rather than the probes alone, because that is where the
+// short-circuit lives.
+func TestUntrustedReviewOnlyNonGitDirectoryPassesConfigGate(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.cfg.Loop.TrustedTarget = false // undo the fixture's trusted default
+	f.cfg.Target.Path = t.TempDir()  // not a git repo
+
+	// The operator config `git lfs install` writes, installed after the fixture so
+	// it overrides the empty global scope the fixture pins: outside a repository
+	// these filters can never fire, so they must be neither refused nor warned about.
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(global, []byte("[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+
+	if err := os.WriteFile(filepath.Join(f.cfg.Target.Path, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+
+	o, logged := f.capturingOrchestrator()
+	if err := o.PreflightGuards(t.Context()); err != nil {
+		t.Fatalf("PreflightGuards() err = %v, want an untrusted review-only run over a non-git directory to proceed", err)
+	}
+	if strings.Contains(logged(), "filter.lfs") {
+		t.Errorf("preflight warned about filters no git command can fire outside a repository:\n%s", logged())
+	}
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want the reviewer to launch against a non-git directory", err)
+	}
+	if sum.Termination != model.TermReviewOnly {
+		t.Fatalf("termination = %q, want review-only", sum.Termination)
+	}
+	if got := f.invocations(); got != 1 {
+		t.Errorf("agent invocations = %d, want 1 (the reviewer must have run)", got)
+	}
+}
+
 func TestRunRefusesUntrustedPRFixRounds(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.cfg.Target.Mode = "pr"
