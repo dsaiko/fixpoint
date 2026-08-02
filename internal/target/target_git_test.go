@@ -2063,6 +2063,38 @@ func TestExternalFilterConfig(t *testing.T) {
 	})
 }
 
+// Both probes must fail soft on a target that is not a repository at all. The
+// orchestrator's repo-supplied-config gate now applies in EVERY mode, so a
+// review-only directory run -- the documented way to review a plain folder, which
+// Collect serves with a filesystem walk -- reaches this pair, held back only by an
+// IsGitRepo short-circuit ahead of them. If that guard ever moves, these calls are
+// what decides whether such a run proceeds or dies with "inspect target git
+// config", so what they do outside a repository is behavior, not an accident: the
+// listing is simply empty there, and an empty listing must read as "no keys" and
+// not as a failed probe.
+//
+// The config sources are pinned to nothing so the assertion holds on its own terms
+// -- neither the operator's global config, the host's system config, nor inherited
+// GIT_CONFIG_* overrides can be what supplies an entry that keeps the probes quiet.
+func TestConfigProbesOutsideARepository(t *testing.T) {
+	dir := t.TempDir() // not a git repo
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(global, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+
+	c := New(config.Target{Path: dir})
+	if keys, err := c.UnsafeConfig(t.Context()); err != nil || len(keys) != 0 {
+		t.Errorf("UnsafeConfig() = %v, %v outside a repository, want no keys and no error", keys, err)
+	}
+	if keys, err := c.ExternalFilterConfig(t.Context()); err != nil || len(keys) != 0 {
+		t.Errorf("ExternalFilterConfig() = %v, %v outside a repository, want no keys and no error", keys, err)
+	}
+}
+
 // A repo-local core.worktree points git's work tree somewhere else while .git
 // stays put, so every git command fixpoint runs -- diff and ls-files during
 // collection, add/commit during a fix round -- operates on that other directory
