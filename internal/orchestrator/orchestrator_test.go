@@ -4675,6 +4675,7 @@ func TestCommitPolicyPerRoundSquashesASalvagedRound(t *testing.T) {
 			t.Errorf("squashed commit message missing %q:\n%s", want, msg)
 		}
 	}
+	assertNoVerdictSection(t, msg, []string{"off by one"}, []string{"nil deref"})
 	head := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
 	if sum.Rounds[0].CommitSHA != head || len(sum.Rounds[0].Commits) != 1 {
 		t.Errorf("round 1 CommitSHA = %q, Commits = %v; want just the squash %q",
@@ -4687,6 +4688,33 @@ func TestCommitPolicyPerRoundSquashesASalvagedRound(t *testing.T) {
 	// what proves the commit holds exactly what the per-fix commits verified.
 	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Errorf("tree left dirty by the squash: %q", status)
+	}
+}
+
+// assertNoVerdictSection checks the "Issues left without a verdict" section of a
+// salvage commit message names exactly the undecided issues: an issue an earlier
+// session of the same round fixed appears in the Fixed section, and listing it
+// here too would make one commit message contradict itself.
+func assertNoVerdictSection(t *testing.T, msg string, want, unwanted []string) {
+	t.Helper()
+	const header = "Issues left without a verdict:"
+	_, section, ok := strings.Cut(msg, header)
+	if !ok {
+		t.Fatalf("commit message has no %q section:\n%s", header, msg)
+	}
+	// A per_run squash concatenates one section per salvaged round; stop at the next.
+	if next, _, cut := strings.Cut(section, "\nRound "); cut {
+		section = next
+	}
+	for _, w := range want {
+		if !strings.Contains(section, w) {
+			t.Errorf("no-verdict section missing undecided issue %q:\n%s", w, section)
+		}
+	}
+	for _, u := range unwanted {
+		if strings.Contains(section, u) {
+			t.Errorf("no-verdict section names %q, which already has a verdict:\n%s", u, section)
+		}
 	}
 }
 
@@ -4775,6 +4803,7 @@ func TestCommitPolicyPerRunKeepsASalvagedRoundVisible(t *testing.T) {
 			t.Errorf("run commit message missing %q:\n%s", want, msg)
 		}
 	}
+	assertNoVerdictSection(t, msg, []string{"off by one"}, []string{"nil deref"})
 	if sum.Rounds[0].CoderError == "" {
 		t.Error("round 1 CoderError not recorded; the squash must not lose the coder failure")
 	}

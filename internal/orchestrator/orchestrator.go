@@ -852,9 +852,11 @@ func (o *Orchestrator) squashSalvagedRound(ctx context.Context, rec *model.Round
 		body.WriteString("\n")
 		writeVerdictSection(&body, "Rejected", rec.Findings, model.VerdictRejected)
 	}
-	// What is still active is what carries no verdict: the issue the coder died on,
-	// plus any it never reached.
-	body.WriteString("\n" + salvageBody(rec.CoderError, activeIssues(rec)))
+	// What is left undecided is what carries no verdict: the issue the coder died on,
+	// plus any it never reached. Not activeIssues -- that still includes the issues
+	// earlier sessions of this round fixed, which the Fixed section above already
+	// names.
+	body.WriteString("\n" + salvageBody(rec.CoderError, pendingIssues(rec)))
 	sha, err := o.collector.SquashSince(ctx, base, salvageHeader(rec.Round), agent.RedactSecrets(body.String()), o.gitExclude...)
 	if err != nil {
 		return err
@@ -884,7 +886,7 @@ func (o *Orchestrator) squashSalvagedRun(ctx context.Context, agg *model.RoundRe
 		writeVerdictSection(&body, "Rejected", agg.Findings, model.VerdictRejected)
 	}
 	for _, rec := range salvaged {
-		fmt.Fprintf(&body, "\nRound %d: %s", rec.Round, salvageBody(rec.CoderError, activeIssues(rec)))
+		fmt.Fprintf(&body, "\nRound %d: %s", rec.Round, salvageBody(rec.CoderError, pendingIssues(rec)))
 	}
 	// Redacted for the same reason squashTo redacts: agent-authored text bound for a
 	// commit that gets pushed.
@@ -1847,6 +1849,21 @@ func activeIssues(rec *model.RoundRecord) []model.Issue {
 	out := make([]model.Issue, 0, len(rec.Issues))
 	for _, it := range rec.Issues {
 		if coderWork(it) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// pendingIssues returns the round's issues that carry NO verdict at all: what the
+// coder died on, plus anything it never reached. Unlike activeIssues it is asked
+// AFTER sessions have run, so it must also exclude the issues earlier sessions in
+// the same round already fixed -- those have a verdict, and listing them as
+// undecided would contradict the Fixed section of the same commit message.
+func pendingIssues(rec *model.RoundRecord) []model.Issue {
+	out := make([]model.Issue, 0, len(rec.Issues))
+	for _, it := range rec.Issues {
+		if it.Verdict == "" {
 			out = append(out, it)
 		}
 	}
