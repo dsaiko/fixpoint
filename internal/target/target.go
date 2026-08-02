@@ -2052,9 +2052,28 @@ func truncate(s string) string {
 
 // compileGlobs converts **-style globs to regexps: ** matches across path
 // separators, * and ? within a segment.
+//
+// A glob whose last segment names a plain directory -- "config/secrets", spelled
+// with or without a trailing slash -- also matches everything BENEATH it. Without
+// that, such an entry protects nothing where it matters most: the compiled globs
+// are anchored ^...$ against full paths, and listGitFiles (the path taken for any
+// git target) only ever sees FILE paths, because git ls-files emits no directory
+// entries. So "config/secrets" would match neither config/secrets/prod.key nor
+// anything else, silently, while the same entry pruned the directory in the
+// non-git walk -- an operator excluding a directory of committed credentials got
+// the protection only on a non-git target. Descendant matching is also the
+// semantics git pathspecs already give a wildcard-free prefix, so the git modes'
+// :(exclude,glob) specs in collectPathspec agree with the directory collectors.
+//
+// A last segment carrying a wildcard is left alone: "*.go" or "**/vendor/**"
+// describes a file shape, not a directory, and widening those would quietly
+// remove files no one asked to exclude.
 func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 	res := make([]*regexp.Regexp, 0, len(globs))
 	for _, g := range globs {
+		// The trailing slash is only a spelling of "this is a directory"; drop it so
+		// both spellings compile to the same pattern.
+		g = strings.TrimSuffix(g, "/")
 		var sb strings.Builder
 		sb.WriteString("^")
 		i := 0
@@ -2077,6 +2096,12 @@ func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 				sb.WriteString(regexp.QuoteMeta(string(r)))
 				i += size
 			}
+		}
+		if last := g[strings.LastIndexByte(g, '/')+1:]; last != "" && !strings.ContainsAny(last, "*?") {
+			// "(/.*)?" and not "/**": it also matches the "dir/" form walkFiles tests
+			// directories with, so the walk still PRUNES the directory instead of
+			// descending it to drop each file one at a time.
+			sb.WriteString(`(/.*)?`)
 		}
 		sb.WriteString("$")
 		re, err := regexp.Compile(sb.String())

@@ -2703,6 +2703,60 @@ func TestCollectDirectoryAlwaysExcludesCredentialFiles(t *testing.T) {
 	})
 }
 
+// A target.exclude entry naming a DIRECTORY has to remove that directory's
+// CONTENTS, and has to do it identically on both collection paths. The exclude
+// list is the only filter directory mode has, and the entry is what an operator
+// writes to keep a directory of arbitrarily named secrets -- the shape
+// mandatoryExcludes cannot recognize -- out of every reviewer prompt. It used to
+// work only on the non-git walk: the globs are anchored ^...$ against full paths,
+// git ls-files emits no directory entries, so nothing on the git path ever tested
+// "config/secrets" against anything but the files under it, and the entry silently
+// protected nothing on the common target. Both spellings and both collectors are
+// asserted here so the two cannot drift apart again.
+func TestCollectDirectoryExcludesDirectoryContents(t *testing.T) {
+	// Not a credential-shaped name: a *.key would be dropped by the mandatory
+	// patterns whatever target.exclude says, and the test would pass without
+	// reading the exclude entry at all.
+	const secret = "config/secrets/prod.token"
+	writeTree := func(t *testing.T, dir string) {
+		t.Helper()
+		writeFile(t, dir, secret, "TOKEN=leaked\n")
+		writeFile(t, dir, "pkg/a.go", "package pkg\n")
+	}
+	assert := func(t *testing.T, material string) {
+		t.Helper()
+		if strings.Contains(material, secret) {
+			t.Errorf("collected material names excluded directory content %q:\n%s", secret, material)
+		}
+		if !strings.Contains(material, "pkg/a.go") {
+			t.Errorf("collected material dropped an ordinary source file:\n%s", material)
+		}
+	}
+	for _, glob := range []string{"config/secrets", "config/secrets/"} {
+		t.Run("git/"+glob, func(t *testing.T) {
+			repo := gitRepo(t)
+			writeTree(t, repo)
+			// TRACKED, the harder case: --cached lists index entries, so no ignore
+			// rule stands in for the exclude entry.
+			git(t, repo, "add", "-A")
+			material, err := New(config.Target{Mode: "directory", Path: repo, Exclude: []string{glob}}).Collect(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			assert(t, material)
+		})
+		t.Run("walk/"+glob, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTree(t, dir)
+			material, err := New(config.Target{Mode: "directory", Path: dir, Exclude: []string{glob}}).Collect(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			assert(t, material)
+		})
+	}
+}
+
 // symlinkTree lays out a target directory holding one alias of every shape the
 // destination check has to separate, and returns the target-relative paths that
 // must survive collection and those that must not. The secret they reach for

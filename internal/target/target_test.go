@@ -28,6 +28,20 @@ func TestCompileGlobs(t *testing.T) {
 		{"internal/**", "cmd/main.go", false},
 		{"?.go", "a.go", true},
 		{"?.go", "ab.go", false},
+		// A wildcard-free last segment names a directory, so it takes the contents
+		// with it -- either spelling, and including the "dir/" form the walk tests
+		// directories with. Anchored at a segment boundary: a sibling whose name
+		// merely starts the same is untouched.
+		{"config/secrets", "config/secrets", true},
+		{"config/secrets", "config/secrets/prod.token", true},
+		{"config/secrets", "config/secrets/", true},
+		{"config/secrets/", "config/secrets/prod.token", true},
+		{"config/secrets/", "config/secrets", true},
+		{"config/secrets", "config/secretsx/prod.token", false},
+		{"**/node_modules", "a/node_modules/pkg/index.js", true},
+		// A wildcard in the last segment describes a file shape, not a directory,
+		// and must not start swallowing whatever sits under a matching name.
+		{"*.go", "main.go/notes.txt", false},
 		{"**/café.go", "src/café.go", true}, // multi-byte literals
 		{".github/**/*.yaml", ".github/workflows/ci.yaml", true},
 	}
