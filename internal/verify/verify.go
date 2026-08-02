@@ -20,6 +20,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
+	"github.com/dsaiko/fixpoint/internal/prompt"
 )
 
 // maxOutput caps what is retained per command. Enough to diagnose a failure and
@@ -221,20 +222,33 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 // FormatForCoder renders failures as the block handed back to the coder for its
 // correction attempt. It leads with the command and exit status, then the captured
 // output, because the coder needs to know what to run to reproduce.
+//
+// SECURITY: every part of a Result that reaches the prompt is untrusted. The
+// output is whatever the target's own build, test, and lint commands printed while
+// running over target content, and the name and argv come from a bundle file the
+// target may supply. Rendered raw, a failing test that prints a fence followed by
+// its own "## Additional required task" heading would close fixpoint's fence and
+// forge prompt structure at the same level as "## Your task" -- and could forge a
+// <fix> envelope besides. So it gets exactly what a reviewer's prose gets: the
+// "this is data" note, and prompt.Quote, whose per-line "> " marker survives any
+// fence and whose defang escapes the contract tags.
 func FormatForCoder(blocking []Result) string {
 	var sb strings.Builder
 	sb.WriteString("## Verification failed\n")
 	sb.WriteString("fixpoint ran the project's own checks after your edits. These did not pass.\n")
 	sb.WriteString("Fix the cause. Do not disable, skip, or weaken a check to get past it.\n\n")
+	sb.WriteString(prompt.UntrustedNote(
+		"the output of the project's own check commands, run over code that fixpoint does not trust",
+		"diagnostics to act on"))
 	for _, r := range blocking {
-		fmt.Fprintf(&sb, "### %s — `%s`\n", r.Name, strings.Join(r.Argv, " "))
+		fmt.Fprintf(&sb, "### %s — `%s`\n", prompt.Flatten(r.Name), prompt.Flatten(strings.Join(r.Argv, " ")))
 		if r.Err != "" {
-			fmt.Fprintf(&sb, "could not run: %s\n", r.Err)
+			fmt.Fprintf(&sb, "could not run: %s\n", prompt.Flatten(r.Err))
 		} else {
 			fmt.Fprintf(&sb, "exit status %d\n", r.ExitCode)
 		}
-		if out := strings.TrimSpace(r.Output); out != "" {
-			fmt.Fprintf(&sb, "\n```\n%s\n```\n", out)
+		if out := prompt.Quote(r.Output); out != "" {
+			sb.WriteString("\n" + out + "\n")
 		}
 		sb.WriteString("\n")
 	}
