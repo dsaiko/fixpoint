@@ -5110,6 +5110,83 @@ func TestCommitPolicyPerRunKeepsEverySalvagedRoundVisible(t *testing.T) {
 	}
 }
 
+// A salvaged round owes its commit message every issue it left undecided: the one
+// the coder died on AND the ones no session was ever handed. A round that dies on
+// its LAST issue cannot tell those two apart -- one issue answers either rule -- so
+// this round dies in the MIDDLE: i1 is fixed and committed, i2's session dies, and
+// i3 is never reached at all.
+//
+// The two commit shapes legitimately disagree about i3, and both sides are pinned
+// here. A squash (per_round, per_run) covers the whole round, so its no-verdict
+// section must name i2 AND i3. The per_fix salvage commit stands alone and holds
+// only the edits of the session that died, so it names only i2.
+func TestSalvageCommitNamesTheIssuesTheRoundNeverReached(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		policy   string
+		commits  int
+		want     []string
+		unwanted []string
+	}{
+		{
+			name: "per_round", policy: config.CommitPerRound, commits: 2,
+			want:     []string{"off by one", "unsynchronized map write"},
+			unwanted: []string{"nil deref"},
+		},
+		{
+			name: "per_run", policy: config.CommitPerRun, commits: 2,
+			want:     []string{"off by one", "unsynchronized map write"},
+			unwanted: []string{"nil deref"},
+		},
+		{
+			// initial + the verified per-fix commit + the salvage commit.
+			name: "per_fix", policy: config.CommitPerFix, commits: 3,
+			want:     []string{"off by one"},
+			unwanted: []string{"nil deref", "unsynchronized map write"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: tc.policy})
+			// Three findings, so the round has an issue left BEHIND the one it dies on.
+			// The titles share no tokens, or the ledger would fold them into one issue.
+			f.respond(1, reviewResponse(t,
+				model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "nil deref"},
+				model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "off by one"},
+				model.ReviewFinding{Category: "concurrency", Severity: "medium", File: "other.go", Line: 42, Title: "unsynchronized map write"},
+			))
+			f.editRepoOn(2)
+			f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded"}))
+			// i2's session edits and then dies without reporting. The round stops there,
+			// so i3 never reaches a coder session.
+			f.editRepoOn(3)
+			f.respond(3, "I changed files but forgot the <fix> envelope.")
+			f.respond(4, reviewResponse(t)) // round 2: clean
+
+			sum, err := f.orchestrator().Run(t.Context())
+			if err != nil {
+				t.Fatalf("Run() err = %v, want salvage + continue", err)
+			}
+			if got := f.invocations(); got != 4 {
+				t.Fatalf("mock invoked %d time(s), want 4: i3 must never be handed to a session", got)
+			}
+			if got := f.commitCount(); got != tc.commits {
+				t.Errorf("repo has %d commits, want %d", got, tc.commits)
+			}
+			msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+			if !strings.Contains(msg, "(partial, coder failed)") {
+				t.Errorf("commit message = %q, want it labeled partial", msg)
+			}
+			assertNoVerdictSection(t, msg, tc.want, tc.unwanted)
+			if sum.Rounds[0].CoderError == "" {
+				t.Error("round 1 CoderError not recorded; the salvage must not lose the coder failure")
+			}
+			if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+				t.Errorf("tree left dirty after the salvaged round: %q", status)
+			}
+		})
+	}
+}
+
 // A review-only run never commits, so per_run has nothing to collapse -- and its
 // run base is deliberately left unresolved. Squashing to that empty base would build
 // a ROOT commit from the current index and reset the branch onto it, cutting the
