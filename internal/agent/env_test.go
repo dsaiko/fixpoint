@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,8 +151,11 @@ func TestRunHardensGitForAgentInvokedGit(t *testing.T) {
 		t.Skip("sh unavailable to run the fsmonitor program")
 	}
 	// runGitStatus points an agent at a repo whose .git/config names an fsmonitor
-	// program, has it run `git status`, and reports whether the program fired.
-	runGitStatus := func(t *testing.T, a config.Agent) bool {
+	// program, has it run `git status`, and reports whether the program fired. With
+	// unpin, the agent's script drops GIT_CONFIG_COUNT from its own environment
+	// before calling git -- git then ignores the GIT_CONFIG_KEY_n/VALUE_n entries
+	// entirely, which is the positive control below.
+	runGitStatus := func(t *testing.T, a config.Agent, unpin bool) bool {
 		t.Helper()
 		repo := testfixture.GitRepo(t)
 		sentinel := filepath.Join(repo, "fsmonitor-ran")
@@ -162,8 +167,12 @@ func TestRunHardensGitForAgentInvokedGit(t *testing.T) {
 		}
 		testfixture.GitRun(t, repo, "config", "core.fsmonitor", evil)
 
+		body := "#!/bin/sh\ngit status --porcelain\n"
+		if unpin {
+			body = "#!/bin/sh\nunset GIT_CONFIG_COUNT\ngit status --porcelain\n"
+		}
 		script := filepath.Join(t.TempDir(), "explore.sh")
-		if err := os.WriteFile(script, []byte("#!/bin/sh\ngit status --porcelain\n"), 0o700); err != nil {
+		if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		a.Command = []string{script}
@@ -176,8 +185,19 @@ func TestRunHardensGitForAgentInvokedGit(t *testing.T) {
 		return err == nil
 	}
 
+	// Without this, the two assertions below are unfalsifiable: they only check that
+	// the sentinel is ABSENT, and a fixture where git never queries the fsmonitor
+	// program at all (a git version that dropped the v1 hook protocol, an index state
+	// that skips the refresh) would satisfy them with gitenv.Harden deleted from Run.
+	// The same fixture, run with the pins disarmed, must produce the sentinel.
+	t.Run("positive control", func(t *testing.T) {
+		if !runGitStatus(t, config.Agent{}, true) {
+			t.Fatal("the fsmonitor program did not run even with GIT_CONFIG_COUNT unset: this fixture no longer exercises the mechanism, so the assertions below prove nothing and must be rebuilt against whatever git now does")
+		}
+	})
+
 	t.Run("filtered environment", func(t *testing.T) {
-		if runGitStatus(t, config.Agent{}) {
+		if runGitStatus(t, config.Agent{}, false) {
 			t.Error("the repo-configured fsmonitor program ran; the agent environment lost gitenv's GIT_CONFIG_* pins")
 		}
 	})
@@ -186,9 +206,36 @@ func TestRunHardensGitForAgentInvokedGit(t *testing.T) {
 	// letting the target run code: buildEnv returns nil there, and Harden must expand
 	// that to the parent environment PLUS the pins rather than leave cmd.Env nil.
 	t.Run("inherit_all", func(t *testing.T) {
-		if runGitStatus(t, config.Agent{Env: config.AgentEnv{InheritAll: true}}) {
+		if runGitStatus(t, config.Agent{Env: config.AgentEnv{InheritAll: true}}, false) {
 			t.Error("the repo-configured fsmonitor program ran under inherit_all; the pins must survive the escape hatch")
 		}
+	})
+
+	// The git-independent half of the same guard: whatever a given git does with an
+	// fsmonitor hook, the pins must be IN the environment Run hands the CLI. This is
+	// what fails outright if cmd.Env stops going through gitenv.Harden.
+	assertPinned := func(t *testing.T, a config.Agent) {
+		t.Helper()
+		env := dumpedEnv(t, runDumper(t, a))
+		n, err := strconv.Atoi(env["GIT_CONFIG_COUNT"])
+		if err != nil {
+			t.Fatalf("GIT_CONFIG_COUNT=%q is not a count; git ignores every GIT_CONFIG_KEY_n without it, so the pins would be inert: %v", env["GIT_CONFIG_COUNT"], err)
+		}
+		want := map[string]string{"core.fsmonitor": "false", "core.hooksPath": "/dev/null"}
+		for i := range n {
+			k := env[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)]
+			if v, ok := want[k]; ok && env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)] == v {
+				delete(want, k)
+			}
+		}
+		for k, v := range want {
+			t.Errorf("no key/value pair within GIT_CONFIG_COUNT=%d pins %s=%s; the agent's own git would honor the target's .git/config instead", n, k, v)
+		}
+	}
+
+	t.Run("pins are exported/filtered environment", func(t *testing.T) { assertPinned(t, config.Agent{}) })
+	t.Run("pins are exported/inherit_all", func(t *testing.T) {
+		assertPinned(t, config.Agent{Env: config.AgentEnv{InheritAll: true}})
 	})
 }
 
