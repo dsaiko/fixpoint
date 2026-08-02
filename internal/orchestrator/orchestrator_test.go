@@ -3487,6 +3487,109 @@ func (f *fixture) reviewPrompt(round int) string {
 	return string(b)
 }
 
+// A refused declaration -- a reviewer citing a REJECTED issue's id while
+// describing a different defect -- is only ever visible to an operator through the
+// line logLedgerConflicts prints. The suppression itself is prevented by the
+// ledger either way, so a wiring mistake (draining the conflicts before Absorb, or
+// losing one of the two call sites in a refactor) costs no correctness and fails
+// no test: it just makes the event disappear. Both call sites are covered here,
+// since they are separate lines.
+func TestRunLogsRefusedDeclarationOfRejectedIssue(t *testing.T) {
+	// loggedRun runs f's orchestrator with a capturing logf and returns the summary
+	// and everything it logged.
+	loggedRun := func(t *testing.T, f *fixture) (*model.RunSummary, string) {
+		t.Helper()
+		var logs strings.Builder
+		o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}},
+			func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum, err := o.Run(t.Context())
+		if err != nil {
+			t.Fatalf("Run() err = %v", err)
+		}
+		return sum, logs.String()
+	}
+	// The defect the reviewer describes while citing i1: another file, another
+	// line, a title that agrees with nothing already known -- so the declaration is
+	// the ONLY thing tying it to the rejected issue, and the ledger refuses it.
+	hijack := model.ReviewFinding{
+		Issue: "i1", Category: "bugs", Severity: "high", File: "other.go", Line: 7,
+		Title: "the deadline context is never canceled",
+	}
+	// assertConflict checks the operator-visible line and that the observation was
+	// filed under a new issue that the round actually worked on.
+	assertConflict := func(t *testing.T, logs string, round model.RoundRecord) {
+		t.Helper()
+		for _, want := range []string{"declared issue i1", "already rejected", "recorded as i3"} {
+			if !strings.Contains(logs, want) {
+				t.Errorf("conflict log missing %q, got logs:\n%s", want, logs)
+			}
+		}
+		if len(round.Findings) != 1 || round.Findings[0].IssueID != "i3" {
+			t.Fatalf("observations = %+v, want the hijacked report filed under a new issue", round.Findings)
+		}
+		byID := issueByID(round)
+		if _, buried := byID["i1"]; buried {
+			t.Errorf("the report was attached to the rejected i1: %+v", round.Issues)
+		}
+		if got := byID["i3"]; got.Title != hijack.Title || got.Verdict != model.VerdictFixed {
+			t.Errorf("issue i3 = %+v, want the described defect, fixed rather than suppressed", got)
+		}
+	}
+	// Round 1 is shared: two issues, i1 rejected (so its id becomes one that
+	// silences a finding) and i2 fixed (so the round commits and the run goes on).
+	setupRound1 := func(f *fixture) {
+		f.respond(1, reviewResponse(t,
+			model.ReviewFinding{Category: "design", Severity: "high", File: "main.go", Line: 1, Title: "unexported field should be exported"},
+			model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 10, Title: "nil map write"},
+		))
+		f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "deliberate: the field is internal"}))
+		f.editRepoOn(3)
+		f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "guarded the write"}))
+	}
+
+	t.Run("in a loop round", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1, MaxFindingsPerRound: 2})
+		setupRound1(f)
+		f.respond(4, reviewResponse(t, hijack)) // round 2: the refused declaration
+		f.editRepoOn(5)
+		f.respond(5, fixResponse(t, model.FixResult{ID: "i3", Verdict: "fixed", Detail: "canceled it"}))
+		f.respond(6, reviewResponse(t)) // round 3: clean -> converge
+
+		sum, logs := loggedRun(t, f)
+		if len(sum.Rounds) != 3 {
+			t.Fatalf("rounds = %d, want 3", len(sum.Rounds))
+		}
+		if !strings.Contains(logs, "round 2: mock declared issue i1") {
+			t.Errorf("conflict must name the round and the reviewer, got logs:\n%s", logs)
+		}
+		assertConflict(t, logs, sum.Rounds[1])
+	})
+
+	t.Run("in the closing round", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, MaxFindingsPerRound: 2})
+		f.finalLens()
+		setupRound1(f)
+		f.respond(4, reviewResponse(t))         // round 2: clean -> converged
+		f.respond(5, reviewResponse(t, hijack)) // closing pass 1: the refused declaration
+		f.editRepoOn(6)
+		f.respond(6, fixResponse(t, model.FixResult{ID: "i3", Verdict: "fixed", Detail: "canceled it"}))
+		f.respond(7, reviewResponse(t)) // closing pass 2: clean -> the closing round is done
+
+		sum, logs := loggedRun(t, f)
+		closing := sum.Rounds[2]
+		if !closing.Final {
+			t.Fatalf("round 3 = %+v, want the closing pass", closing)
+		}
+		if !strings.Contains(logs, "round 3: mock2 declared issue i1") {
+			t.Errorf("the closing-pass call site logged no conflict, got logs:\n%s", logs)
+		}
+		assertConflict(t, logs, closing)
+	})
+}
+
 // A round in which every reported issue was already rejected has no work in it.
 // The coder must not be invoked on an empty list (a wasted session), and the loop
 // must not keep re-reviewing the same decided issues until max_iterations: it is the
