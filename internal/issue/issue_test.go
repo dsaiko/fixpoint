@@ -239,6 +239,12 @@ func TestAbsorbIgnoresUnknownDeclaredIssueID(t *testing.T) {
 	if got[0].ID == "i999" {
 		t.Error("a hallucinated id must not be adopted as the issue id")
 	}
+	// An id that names no issue is a model slip, not a refused declaration: there is
+	// no rejected issue being cited, so reporting one would tell an operator a
+	// nonexistent issue "is already rejected".
+	if c := l.TakeConflicts(); len(c) != 0 {
+		t.Errorf("conflicts = %v, want none for an unknown declared id", c)
+	}
 }
 
 // A declared id naming an already REJECTED issue is the one declaration that can
