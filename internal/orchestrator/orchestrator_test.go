@@ -90,6 +90,31 @@ func (f *fixture) orchestrator() *Orchestrator {
 	return o
 }
 
+// capturingOrchestrator builds f's orchestrator with a logf that tees to the test
+// log and records what was printed, so a test can assert on the operator-visible
+// output. The returned func reports everything logged so far; the mutex guards
+// against the agent heartbeat, which logs from its own goroutine.
+func (f *fixture) capturingOrchestrator() (*Orchestrator, func() string) {
+	f.t.Helper()
+	var mu sync.Mutex
+	var logs strings.Builder
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}},
+		func(format string, a ...any) {
+			f.t.Logf(format, a...)
+			mu.Lock()
+			defer mu.Unlock()
+			fmt.Fprintf(&logs, format+"\n", a...)
+		})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return o, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return logs.String()
+	}
+}
+
 // respond registers the mock agent's n-th response.
 func (f *fixture) respond(n int, content string) { testfixture.Respond(f.t, f.respDir, n, content) }
 
@@ -520,13 +545,15 @@ func TestRunRejectsSymlinkedLogsDir(t *testing.T) {
 	if err := os.Symlink(dest, filepath.Join(f.repo, "logs")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := f.orchestrator().Run(t.Context())
+	o, logged := f.capturingOrchestrator()
+	_, err := o.Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("Run() = %v, want symlink rejection", err)
 	}
 	if !strings.Contains(err.Error(), filepath.Join(f.repo, "logs")) {
 		t.Errorf("error should name the offending path: %v", err)
 	}
+	assertRefusalLogged(t, logged(), filepath.Join(f.repo, "logs"))
 	entries, rerr := os.ReadDir(dest)
 	if rerr != nil {
 		t.Fatal(rerr)
@@ -552,7 +579,7 @@ func TestRunRejectsSymlinkedLogsDirWhenCanceled(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
 	f.cfg.Loop.ReviewOnly = true
 	f.cfg.Logs.Dir = filepath.Join(f.repo, "logs") // logs under the target root
-	o := f.orchestrator()
+	o, logged := f.capturingOrchestrator()
 	// Memoize the preflight while the context is still live; a canceled one would
 	// fail these git-backed gates first and never reach the symlink check.
 	if err := o.PreflightGuards(t.Context()); err != nil {
@@ -582,6 +609,23 @@ func TestRunRejectsSymlinkedLogsDirWhenCanceled(t *testing.T) {
 	// the summary into a fresh logs-N directory in the target instead.
 	if got := dirNames(t, f.repo); !slices.Equal(got, before) {
 		t.Errorf("canceled refused run wrote into the target: before %v, after %v", before, got)
+	}
+	// Suppressing the artifacts is only half of the check: the refusal has to be
+	// reported somewhere, and here the log is the ONLY place left. The
+	// cancellation softened the error to nil, so an operator who is not told why
+	// sees nothing but an interrupted run that happened to write nothing.
+	assertRefusalLogged(t, logged(), filepath.Join(f.repo, "logs"))
+}
+
+// assertRefusalLogged checks that Run reported a suppressed-artifacts refusal to
+// the operator, naming path. Matching the path pins the surviving line to the
+// pre-recordRunError refusal text rather than a generic notice.
+func assertRefusalLogged(t *testing.T, logs, path string) {
+	t.Helper()
+	for _, want := range []string{"no journal or summary written", path} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("refusal log missing %q, got logs:\n%s", want, logs)
+		}
 	}
 }
 
