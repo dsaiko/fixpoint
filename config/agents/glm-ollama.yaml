@@ -1,5 +1,11 @@
-# GLM via ollama, same claude-harness wrapping as kimi. The panel's general
-# reasoner to kimi's code specialist, and the slower of the two.
+# GLM via ollama, same claude-harness wrapping as kimi-ollama.
+#
+# NOT on the panel: glm-openrouter.yaml serves the same model over a route that
+# honours prompt caching, and this one measured a 0% cache rate -- 12.6M fresh
+# input tokens across four sessions in a single run. Kept as the fallback for a
+# missing OpenRouter key or a provider outage; switching is one word in the panel.
+#
+# The panel's general reasoner to kimi's code specialist, and the slower of the two.
 model: glm-5.2:cloud
 # No `effort`, deliberately: it is Anthropic's setting, and ollama drops the
 # thinking budget the harness translates it into. Measured -- this model produced
@@ -49,5 +55,5 @@ can_edit: false
 # cannot see. See config/README.md.
 env:
   pass:
-  # See kimi.yaml.
+  # See kimi-ollama.yaml.
     - OLLAMA_HOST

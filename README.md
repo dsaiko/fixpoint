@@ -385,7 +385,7 @@ A reviewer has to *explore* the repository, not just answer from a prompt, so a
 raw chat endpoint is not enough on its own. Most models don't ship a CLI of their
 own — but any Anthropic-compatible endpoint can borrow Claude Code's harness,
 which is how the shipped ollama agents work (`ollama launch claude`) and how
-`config/agents/qwen.yaml` reaches OpenRouter with nothing but a base URL:
+`config/agents/qwen-openrouter.yaml` reaches OpenRouter with nothing but a base URL:
 
 ```yaml
 command: [claude, --model {{model}}, --output-format json, -p]

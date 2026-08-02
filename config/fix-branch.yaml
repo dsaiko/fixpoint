@@ -36,7 +36,7 @@ roles:
   coder: { agent: claude-coder, prompt: fix }
   review:
     strategy: rotate
-    agents: [codex, claude, kimi, glm]
+    agents: [codex, claude, kimi-openrouter, glm-openrouter]
     prompts:
       - review-bugs
       - review-security

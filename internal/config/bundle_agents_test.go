@@ -79,7 +79,13 @@ func TestShippedReviewersDoNotLoadTargetSettings(t *testing.T) {
 	}
 	// A rename or an extension change must not turn this into a test that
 	// silently inspects nothing.
-	if want := 5; checked != want {
+	//
+	// 7: claude, plus three ollama-routed reviewers (kimi, glm, gemma4) and three
+	// OpenRouter-routed ones (kimi, glm, qwen). The same model appears under two
+	// routes on purpose -- ollama drops prompt caching, so the panel points at the
+	// -openrouter files and keeps the -ollama ones as a fallback. Both routes drive
+	// the claude CLI, so both must carry --setting-sources.
+	if want := 7; checked != want {
 		t.Errorf("checked %d claude-backed reviewers, want %d -- update this test if the bundle gained or lost one", checked, want)
 	}
 }

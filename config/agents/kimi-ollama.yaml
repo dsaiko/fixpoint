@@ -1,4 +1,11 @@
-# Kimi via ollama, same claude-harness wrapping as glm. A code-specialized
+# Kimi via ollama, same claude-harness wrapping as glm-ollama.
+#
+# NOT on the panel: kimi-openrouter.yaml serves the same model over a route that
+# honours prompt caching, and this one measured a 0% cache rate -- 29.0M fresh
+# input tokens across five sessions in a single run. Kept as the fallback for a
+# missing OpenRouter key or a provider outage; switching is one word in the panel.
+#
+# A code-specialized
 # reasoning model: it replaced gemma4 on the review panel, which was the panel's
 # weakest producer (9 issues across a 5-round run, against claude's 27) and its
 # slowest per turn. On an identical trivial probe through this same wrapper kimi

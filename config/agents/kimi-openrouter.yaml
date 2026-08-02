@@ -1,0 +1,79 @@
+# Kimi via OpenRouter, wrapped in Claude Code's agentic harness. Same model as
+# kimi-ollama.yaml, different route -- and the route is the whole point.
+#
+# OLLAMA DOES NOT CACHE. It drops the `cache_control` breakpoints the harness
+# sends, so every turn of an agentic session re-pays for the entire conversation
+# so far, and a reviewer averages ~47 turns. Measured over one fix-branch run:
+#
+#     agent   sessions   fresh input   cache read   cache rate
+#     kimi           5        29.0M          0.0M           0%
+#     glm            4        12.6M          0.0M           0%
+#     claude         5         0.4M         31.1M          99%
+#
+# Those two agents were 81% of the run's fresh input on a third of its sessions.
+# It is not a misconfiguration: an identical request carrying the same
+# cache_control, sent to ollama and to OpenRouter, gets `in=5418, cacheWrite=-,
+# cacheRead=-` from ollama and `in=16, cacheWrite=5604` then `in=16,
+# cacheRead=5604` from OpenRouter. Same body, same shape; ollama discards the
+# field, exactly as it discards a thinking budget (see _README.md).
+#
+# So this file trades a quota problem for a small cash one. The ollama route is
+# prepaid and therefore "free", but its uncached volume is what exhausted the
+# session limit mid-run twice, and a run that dies at round 5 still costs full
+# price while delivering no closing phase. OpenRouter bills cache reads at
+# $0.15/M against $0.73/M for fresh input -- 4.9x -- so at this run's volumes the
+# same work lands near $4.50 rather than burning the quota.
+#
+# Keep kimi-ollama.yaml: if OpenRouter is down or the key is missing, swapping one
+# name in the panel restores a working reviewer.
+model: moonshotai/kimi-k2.7-code
+command:
+  - claude
+  - --model {{model}}
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
+# modelUsage is keyed by model id and aggregates the WHOLE session; the top-level
+# `usage` object is only the final turn. Unlike the ollama route the cache_* paths
+# carry real numbers here -- which is the reason this file exists, so a run whose
+# scoreboard still shows 0% cache for this agent means the route is not working.
+#
+# NO cost_usd: the wrapped harness has no idea what OpenRouter charges -- it
+# labels the model provider "firstParty" and applies Anthropic's rate card,
+# measured to overstate by ~93x. The scoreboard shows "-" rather than money nobody
+# was charged. Tokens ARE real and still counted.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
+
+prompt_via: stdin
+timeout: 20m # remote-served model; matched to the rest of the panel
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # Must hold your OPENROUTER_API_KEY: env.set takes literal values only, so it
+  # cannot forward one variable into another. Export it before the run.
+  #
+  # ANTHROPIC_API_KEY is deliberately NOT passed -- if it reaches the process it
+  # takes precedence over this token and the run silently bills Anthropic for a
+  # model you meant to buy elsewhere.
+    - ANTHROPIC_AUTH_TOKEN
+  set:
+  # No /v1 suffix: the harness appends /v1/messages itself, and ".../api/v1"
+  # becomes ".../api/v1/v1/messages" -- every call then 404s with "the selected
+  # model may not exist or you may not have access to it", which reads like a
+  # model or entitlement problem and is neither.
+    ANTHROPIC_BASE_URL: https://openrouter.ai/api

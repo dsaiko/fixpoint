@@ -5,7 +5,7 @@ One file per agent, referenced from a task config by bare name:
     roles:
       coder: { agent: claude-coder, prompt: fix }
       review:
-        agents: [codex, claude, kimi, glm]
+        agents: [codex, claude, kimi-openrouter, glm-openrouter]
 
 An agent is a command that receives a prompt and prints text to stdout. That is
 the whole provider abstraction — the orchestrator wraps the prompt with role
@@ -62,9 +62,28 @@ panel never configured. Measured against `/v1/messages` on the local ollama prox
 
 Two findings there: both models emit a thinking block whether or not one is asked
 for, and a budget that should bind is ignored outright — the with/without pairs
-differ by under half a percent. So `kimi.yaml` and `glm.yaml` deliberately declare
-no `effort`, and adding one is not a knob, it is a comment that lies. To change how
-hard those models work, change `model` or the prompt.
+differ by under half a percent. So `kimi-ollama.yaml` and `glm-ollama.yaml`
+deliberately declare no `effort`, and adding one is not a knob, it is a comment
+that lies. To change how hard those models work, change `model` or the prompt.
+
+## Naming: the route is part of the identity
+
+An agent whose name carries a provider suffix — `kimi-ollama`, `kimi-openrouter` —
+is the same MODEL reached a different way, and the two are not interchangeable.
+The suffix exists because the route changes behaviour that no other field records:
+
+    ollama       drops cache_control and thinking budgets; 0% cache rate
+    openrouter   honours both; ~99% cache rate through the same harness
+
+Measured on one fix-branch run, the two ollama-routed reviewers spent 41.6M fresh
+input tokens across nine sessions while claude spent 0.4M across five, because
+every turn of an uncached agentic session re-pays for the whole conversation. The
+same request sent to both proxies returns `in=5418` with no cache fields from
+ollama, and `in=16, cacheRead=5604` on the second call from OpenRouter.
+
+Both files are kept for every model that has both routes. The panel points at the
+`-openrouter` ones; switching a name back is the fallback when the key is missing
+or the provider is down, and it is deliberately a one-word edit.
 
 ## env
 
