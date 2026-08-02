@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -537,6 +538,65 @@ func TestRunRejectsSymlinkedLogsDir(t *testing.T) {
 		}
 		t.Errorf("refused run wrote through the symlink: %v", names)
 	}
+}
+
+// The symlink suppression must survive a CANCELED context. recordRunError turns
+// a refusal raised under cancellation into a clean interruption (nil error), so
+// Run recognizes errLogsRedirected BEFORE calling it -- otherwise the marker and
+// its text are gone by the time Run decides whether to write, and the closing
+// journal and summary resume writing through the very link the check refused the
+// run over. Cover it with a review-only directory run so nothing but the symlink
+// guard can stop the run: memoize a successful preflight, then cancel, so the
+// canceled context reaches the refusal instead of aborting an earlier gate.
+func TestRunRejectsSymlinkedLogsDirWhenCanceled(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.cfg.Loop.ReviewOnly = true
+	f.cfg.Logs.Dir = filepath.Join(f.repo, "logs") // logs under the target root
+	o := f.orchestrator()
+	// Memoize the preflight while the context is still live; a canceled one would
+	// fail these git-backed gates first and never reach the symlink check.
+	if err := o.PreflightGuards(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	if err := os.Symlink(dest, filepath.Join(f.repo, "logs")); err != nil {
+		t.Fatal(err)
+	}
+	before := dirNames(t, f.repo)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	sum, err := o.Run(ctx)
+	// The cancellation softens the refusal away -- that is the precondition this
+	// test exists for, not an accident.
+	if err != nil {
+		t.Fatalf("Run() = %v, want nil (cancellation reported as a clean interruption)", err)
+	}
+	if sum.Termination != model.TermInterrupted {
+		t.Fatalf("termination = %q, want interrupted", sum.Termination)
+	}
+	if got := dirNames(t, dest); len(got) != 0 {
+		t.Errorf("canceled refused run wrote through the symlink: %v", got)
+	}
+	// Nor beside it: the store sidesteps the existing "logs" name and would drop
+	// the summary into a fresh logs-N directory in the target instead.
+	if got := dirNames(t, f.repo); !slices.Equal(got, before) {
+		t.Errorf("canceled refused run wrote into the target: before %v, after %v", before, got)
+	}
+}
+
+// dirNames lists the entry names in dir, sorted (os.ReadDir already sorts).
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
 }
 
 func TestCheckLogsNotSymlinked(t *testing.T) {
