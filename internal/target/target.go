@@ -199,12 +199,18 @@ func (c *Collector) Scope(ctx context.Context) (string, error) {
 		out := fmt.Sprintf("base_ref %q -> %s; %s", c.cfg.BaseRef, shortSHA(base), stat)
 		// Untracked files are part of the material too (Collect lists them), so an
 		// estimate that counted only the diff would understate a branch of new files.
-		lsArgs := []string{"ls-files", "--others", "--exclude-standard", "--"}
+		// -z and a NUL-aware scan, not whitespace splitting: git prints one pathname
+		// per record, and a valid filename may contain spaces or newlines. Counting
+		// fields would report "a b" as two untracked files.
+		lsArgs := []string{"ls-files", "--others", "--exclude-standard", "-z", "--"}
 		lsArgs = append(lsArgs, specs...)
-		if untracked, err := c.git(ctx, lsArgs...); err == nil {
-			if n := len(strings.Fields(strings.TrimSpace(untracked))); n > 0 {
-				out += fmt.Sprintf(", plus %d untracked file(s)", n)
+		n := 0
+		if err := c.gitScanNUL(ctx, func(rel string) {
+			if rel != "" {
+				n++
 			}
+		}, lsArgs...); err == nil && n > 0 {
+			out += fmt.Sprintf(", plus %d untracked file(s)", n)
 		}
 		return out, nil
 	case config.ModeDirectory:
