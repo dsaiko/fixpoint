@@ -196,8 +196,9 @@ re-exposing every exported secret to that agent.
 **`verify` commands do not receive credentials.** They are argv the
 target can supply (a bundle inside the target is searched first), so they inherit
 fixpoint's environment *minus* every variable an agent file declares under
-`env.pass` / `env.set`, minus a few exact names whose value is auth material
-(`KUBECONFIG`, `NETRC`, `DOCKER_AUTH_CONFIG`), and minus every variable whose name
+`env.pass` / `env.set`, minus a few exact names whose value is auth material or a
+live connection to it (`KUBECONFIG`, `NETRC`, `DOCKER_AUTH_CONFIG`,
+`SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `GPG_AGENT_INFO`, `GNUPGHOME`), and minus every variable whose name
 is credential-*shaped* — one whose underscore-separated words include `TOKEN`,
 `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL(S)`, `API_KEY`,
 `ACCESS_KEY`, `SECRET_KEY`, `PRIVATE_KEY` or `SIGNING_KEY`. That covers

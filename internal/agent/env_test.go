@@ -211,8 +211,14 @@ func TestEnvWithoutCredentialsStripsCredentialShapedNames(t *testing.T) {
 		"NPM_TOKEN", "DOCKER_PASSWORD", "PYPI_TOKEN", "TWINE_PASSWORD", "SONAR_TOKEN",
 		"GPG_PASSPHRASE", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
 		"SSH_PRIVATE_KEY", "DB_PASSWORD", "ACME_INTERNAL_TOKEN", "SECRETS_FILE",
-		// Exact-match entries: credential material whose name says nothing.
+		// Exact-match entries: credential material whose name says nothing. The
+		// agent sockets are the sharpest of them -- SSH_AUTH_SOCK is a live
+		// connection to the operator's keys, so a build recipe the target just
+		// edited could `git push` or `ssh deploy@prod` as them without reading a
+		// key file. This list is the control for that denylist: dropping an entry
+		// from knownCredentialEnv must fail here.
 		"KUBECONFIG", "NETRC", "DOCKER_AUTH_CONFIG",
+		"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO", "GNUPGHOME",
 	}
 	kept := []string{
 		"GIT_AUTHOR_NAME",        // AUTH is not a word boundary match

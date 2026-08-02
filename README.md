@@ -451,8 +451,11 @@ The `verify` commands are filtered too, from the other direction. They are argv 
 `curl $ANTHROPIC_API_KEY` "build" command every credential the agents deliberately
 do not share. They inherit fixpoint's environment **minus** every variable that
 carries a credential — not just the agents'. That means the names your agent files
-declare (`env.pass`, `env.set`), a few exact names whose value is auth material
-(`KUBECONFIG`, `NETRC`, `DOCKER_AUTH_CONFIG`), and every variable whose name is
+declare (`env.pass`, `env.set`), a few exact names whose value is auth material or
+a live connection to it (`KUBECONFIG`, `NETRC`, `DOCKER_AUTH_CONFIG`,
+`SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `GPG_AGENT_INFO`, `GNUPGHOME` — an inherited
+ssh-agent would let a build command authenticate as you without ever reading a
+key), and every variable whose name is
 credential-*shaped*: one whose underscore-separated words include `TOKEN`,
 `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL(S)`, `API_KEY`,
 `ACCESS_KEY`, `SECRET_KEY`, `PRIVATE_KEY` or `SIGNING_KEY`. Matching the shape

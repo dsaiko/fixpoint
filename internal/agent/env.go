@@ -73,8 +73,18 @@ func BaselineEnvNames() []string {
 // API_KEY are deliberately NOT enumerated here -- credentialNameRE covers those,
 // and a hand-maintained roster of vendor names is exactly the list that is one
 // release behind whatever the operator actually has exported.
+//
+// The agent sockets belong here for the same reason, and are the sharpest case:
+// SSH_AUTH_SOCK is not a key, it is a live connection to one. A verify command
+// that inherits it authenticates as the operator to every host the agent holds a
+// key for (`ssh deploy@prod`, `git push`) without reading a key file at all --
+// exactly the capability this filter is documented as removing -- and the recipe
+// behind the operator's `make lint` is the target's Makefile, which a fix run has
+// by definition just changed. GPG_AGENT_INFO is the signing equivalent, and
+// GNUPGHOME names the keyring directory the way NETRC names its file.
 var knownCredentialEnv = []string{
 	"KUBECONFIG", "NETRC", "DOCKER_AUTH_CONFIG",
+	"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO", "GNUPGHOME",
 }
 
 // credentialNameRE matches a variable name that is credential-SHAPED, whichever
