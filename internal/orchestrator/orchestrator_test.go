@@ -4753,6 +4753,86 @@ func TestCommitPolicyPerRoundSquashesASalvagedRound(t *testing.T) {
 	}
 }
 
+// The other half of per_round's salvage rule: a round whose ONLY commit is the
+// salvage commit has nothing to regroup, and re-squashing it would rewrite a commit
+// that already carries exactly the right message -- adding an empty "Fixed:" section
+// to a round where, by definition, nobody reported a verdict.
+func TestCommitPolicyPerRoundLeavesALoneSalvageCommitAlone(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRound})
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	// The round's single session edits and then dies without reporting.
+	f.editRepoOn(2)
+	f.respond(2, "I changed files but forgot the <fix> envelope.")
+	f.respond(3, reviewResponse(t)) // round 2: clean
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want salvage + continue", err)
+	}
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + the salvage commit)", got)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "(partial, coder failed)") || !strings.Contains(msg, "bug") {
+		t.Errorf("salvage commit message = %q", msg)
+	}
+	if strings.Contains(msg, "Fixed:") {
+		t.Errorf("the lone salvage commit was re-squashed and now claims a verdict section:\n%s", msg)
+	}
+	if len(sum.Rounds[0].Commits) != 1 {
+		t.Errorf("round 1 Commits = %v, want just the salvage commit", sum.Rounds[0].Commits)
+	}
+}
+
+// The DEFAULT per_fix policy must leave a salvaged round's commits standing apart.
+// This is the round shape salvage exists for -- a coder that fixes one issue, commits,
+// then dies on the next -- so squashing here would be the common case, not an edge: it
+// would drop the per-fix granularity the policy is asked for AND relabel a verified fix
+// as "(partial, coder failed)", work nobody reported a verdict for.
+func TestCommitPolicyPerFixKeepsASalvagedRoundsCommitsApart(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "nil deref"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded"}))
+	// The second session edits and then dies without reporting: its work is salvaged.
+	f.editRepoOn(3)
+	f.respond(3, "I changed files but forgot the <fix> envelope.")
+	f.respond(4, reviewResponse(t)) // round 2: clean
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want salvage + continue", err)
+	}
+	if got := f.commitCount(); got != 3 {
+		t.Errorf("repo has %d commits, want 3 (initial + the per-fix commit + the salvage commit)", got)
+	}
+	if got := sum.Rounds[0].Commits; len(got) != 2 {
+		t.Errorf("round 1 Commits = %v, want the per-fix commit and the salvage commit kept separate", got)
+	}
+	// The per-fix commit keeps its OWN message: it names the issue it fixed, and no
+	// squash has folded it under the salvage header.
+	subjects := gitRun(t, f.repo, "log", "--format=%s")
+	if !strings.Contains(subjects, "fixpoint: i1 — nil deref") {
+		t.Errorf("the verified per-fix commit lost its own message:\n%s", subjects)
+	}
+	// HEAD is the salvage commit, and it accounts only for the issue left undecided.
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "(partial, coder failed)") {
+		t.Errorf("HEAD message = %q, want the salvage commit on top", msg)
+	}
+	assertNoVerdictSection(t, msg, []string{"off by one"}, []string{"nil deref"})
+	head := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	if sum.Rounds[0].CommitSHA != head {
+		t.Errorf("round 1 CommitSHA = %q, want the salvage commit %q", sum.Rounds[0].CommitSHA, head)
+	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("working tree left dirty after the salvaged round: %q", status)
+	}
+}
+
 // assertNoVerdictSection checks the "Issues left without a verdict" section of a
 // salvage commit message names exactly the undecided issues: an issue an earlier
 // session of the same round fixed appears in the Fixed section, and listing it
@@ -4869,6 +4949,72 @@ func TestCommitPolicyPerRunKeepsASalvagedRoundVisible(t *testing.T) {
 	if sum.Rounds[0].CoderError == "" {
 		t.Error("round 1 CoderError not recorded; the squash must not lose the coder failure")
 	}
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("tree left dirty by the squash: %q", status)
+	}
+}
+
+// A run can salvage more than once, and per_run collapses every one of those rounds
+// into the SAME commit. The coder error and the issues left undecided differ per
+// round, so the one message must carry a section per salvaged round: a reader given
+// only the first (or only the last) would believe the run's other rounds were fully
+// accounted for by the Fixed/Rejected sections.
+func TestCommitPolicyPerRunKeepsEverySalvagedRoundVisible(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRun})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "nil deref"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded"}))
+	// Round 1's second session edits and then dies without reporting: salvage #1.
+	f.editRepoOn(3)
+	f.respond(3, "I changed files but forgot the <fix> envelope.")
+	// Round 2 reports something new -- a title sharing no tokens with round 1's, or the
+	// ledger matches it to an issue already decided -- and its coder dies too: salvage #2.
+	f.respond(4, reviewResponse(t, model.ReviewFinding{
+		Category: "concurrency", Severity: "high", File: "other.go", Line: 42, Title: "unsynchronized map write",
+	}))
+	f.editRepoOn(5)
+	f.respond(5, "I changed files but forgot the <fix> envelope.")
+	f.respond(6, reviewResponse(t)) // round 3: clean
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want two salvages + continue", err)
+	}
+	if len(sum.Rounds) < 3 {
+		t.Fatalf("rounds = %d, want 3 so the run salvages twice before converging", len(sum.Rounds))
+	}
+	for _, r := range []int{0, 1} {
+		if sum.Rounds[r].CoderError == "" {
+			t.Errorf("round %d CoderError not recorded; both rounds must count as salvaged", r+1)
+		}
+	}
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + one for the whole run)", got)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "(partial, coder failed)") {
+		t.Errorf("run commit message = %q, want it labeled partial", msg)
+	}
+	// One section per salvaged round, each carrying its own coder error.
+	for _, want := range []string{"Round 1:", "Round 2:"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("run commit message missing the %q salvage section:\n%s", want, msg)
+		}
+	}
+	if n := strings.Count(msg, "Coder failed before reporting verdicts"); n != 2 {
+		t.Errorf("run commit message reports %d coder failure(s), want one per salvaged round:\n%s", n, msg)
+	}
+	// Each section names only ITS round's undecided issue: round 1 left "off by one"
+	// (its "nil deref" was fixed and verified), round 2 left its own finding.
+	assertNoVerdictSection(t, msg, []string{"off by one"}, []string{"nil deref", "unsynchronized map write"})
+	_, second, ok := strings.Cut(msg, "\nRound 2:")
+	if !ok {
+		t.Fatalf("run commit message has no second salvage section:\n%s", msg)
+	}
+	assertNoVerdictSection(t, second, []string{"unsynchronized map write"}, []string{"nil deref", "off by one"})
 	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Errorf("tree left dirty by the squash: %q", status)
 	}
