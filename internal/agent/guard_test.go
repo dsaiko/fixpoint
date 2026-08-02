@@ -89,6 +89,29 @@ func TestKillProcessGroupReportsProcessDone(t *testing.T) {
 	}
 }
 
+// stubGroupKill makes every process-group signal answer from the test instead of
+// the kernel: sigkill for the containment kill, probe for the signal-0 state
+// probe. Nothing is signaled, so it is the only way to drive KillProcessGroup
+// through an EPERM -- a reply that needs a group member running under other
+// credentials, which a test cannot create. Restoring the real kill is left to
+// t.Cleanup so a failing assertion cannot leak the stub into later tests, which
+// would then kill nothing at all.
+func stubGroupKill(t *testing.T, sigkill, probe error) {
+	t.Helper()
+	orig := groupKill
+	t.Cleanup(func() { groupKill = orig })
+	groupKill = func(_ int, sig syscall.Signal) error {
+		if sig == 0 {
+			return probe
+		}
+		return sigkill
+	}
+}
+
+// stubbedPid is a pid handed to KillProcessGroup while groupKill is stubbed. It
+// only has to pass the pid > 0 guard: no signal reaches it.
+const stubbedPid = 424242
+
 // observeCancelKill replaces the kill Supervise installs as cmd.Cancel with one
 // that runs before (given the command) and then records what the real kill
 // reported, and returns an accessor for those records. They are what makes the

@@ -28,5 +28,5 @@ import (
 // permission check, nothing delivered -- and downgrade only when the kernel now
 // answers ESRCH for the group itself.
 func epermMeansGroupGone(pid int) bool {
-	return errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH)
+	return errors.Is(groupKill(pid, 0), syscall.ESRCH)
 }

@@ -308,6 +308,19 @@ func firstLine(s string) string {
 	return ""
 }
 
+// groupKill signals pid's whole PROCESS GROUP -- the negative-pid form of kill(2)
+// that both the containment kill in KillProcessGroup and the state probe in
+// epermMeansGroupGone go through. It is the single seam for both because the rule
+// they implement together is a composition of the two calls, and that composition
+// is the containment: an EPERM from the kill may only be downgraded to
+// already-finished when the probe then says the group is empty. The reply that
+// makes it matter needs a group member running under other credentials, which a
+// test cannot create, so the seam is what lets the composition be driven end to
+// end. Nothing in production reassigns it.
+var groupKill = func(pid int, sig syscall.Signal) error {
+	return syscall.Kill(-pid, sig)
+}
+
 // KillProcessGroup SIGKILLs the command's whole process group so CLI-spawned
 // children do not linger. It is the cmd.Cancel body, split out so its guards
 // are unit-testable and reusable by other packages that launch process-group
@@ -322,8 +335,7 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil || cmd.Process.Pid <= 0 {
 		return nil
 	}
-	// negative pid = the whole process group
-	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	err := groupKill(cmd.Process.Pid, syscall.SIGKILL)
 	if errors.Is(err, syscall.ESRCH) {
 		// The group is empty: the leader exited AND was reaped, and no descendant is
 		// left to keep the group alive -- there is nothing here that still needs
