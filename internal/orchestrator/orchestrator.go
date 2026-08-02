@@ -781,6 +781,42 @@ func (o *Orchestrator) squashRound(ctx context.Context, rec *model.RoundRecord, 
 	return nil
 }
 
+// squashSalvagedRound applies commit_policy: per_round to a round that ended in a
+// salvage. runRound's salvaged branch returns before squashRound -- the remaining
+// verdicts are unknown, so it skips finalize -- and a round whose earlier issues
+// were each committed before a later coder session failed would otherwise leave
+// those per-fix commits and the salvage commit standing side by side under a policy
+// that asks for one commit per round.
+//
+// The squashed message keeps the salvage header and the coder's error alongside the
+// verdicts that did land, because the resulting commit holds both: verified per-fix
+// work AND partial work nobody reported a verdict for.
+func (o *Orchestrator) squashSalvagedRound(ctx context.Context, rec *model.RoundRecord, base string) error {
+	// One commit since base is the salvage commit alone -- it already carries exactly
+	// this message, so there is nothing to regroup.
+	if len(rec.Commits) < 2 || o.cfg.Loop.CommitPolicy != config.CommitPerRound {
+		return nil
+	}
+	n := len(rec.Commits)
+	var body strings.Builder
+	writeVerdictSection(&body, "Fixed", rec.Findings, model.VerdictFixed)
+	if rec.Rejected > 0 {
+		body.WriteString("\n")
+		writeVerdictSection(&body, "Rejected", rec.Findings, model.VerdictRejected)
+	}
+	// What is still active is what carries no verdict: the issue the coder died on,
+	// plus any it never reached.
+	body.WriteString("\n" + salvageBody(rec.CoderError, activeIssues(rec)))
+	sha, err := o.collector.SquashSince(ctx, base, salvageHeader(rec.Round), agent.RedactSecrets(body.String()), o.gitExclude...)
+	if err != nil {
+		return err
+	}
+	rec.CommitSHA = sha
+	rec.Commits = []string{sha} // the commits it replaced no longer exist
+	o.logf("round %d: squashed %d commit(s), including the partial salvage commit, into %s", rec.Round, n, shortSHA(sha))
+	return nil
+}
+
 // roundCommitMessage is the header for a squashed commit. commit_message defaults
 // to a per-FIX template now that per_fix is the default policy, and rendering that
 // over a squash would produce a header naming one issue for a commit holding many
@@ -1390,7 +1426,12 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	}
 	if salvaged {
 		// The coder failed but its partial edits were committed; verdicts are
-		// unknown, so skip finalize and let the next round re-review.
+		// unknown, so skip finalize and let the next round re-review. The commits
+		// are still regrouped: commit_policy describes how a round's work is laid
+		// down, and a round that ended this way laid down commits like any other.
+		if err := o.squashSalvagedRound(ctx, recP, base); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 	o.logf("round %d: coder fixed %d, rejected %d", round, recP.Fixed, recP.Rejected)
@@ -2461,6 +2502,26 @@ func (o *Orchestrator) reconcileRejectedSession(ctx context.Context, rec *model.
 	return nil
 }
 
+// salvageHeader and salvageBody are the commit message for work a failed coder
+// left behind. Both the salvage commit itself and the per_round squash that may
+// replace it use them, because the fact a reader must not lose is the same in
+// either shape: part of that commit has no verdict behind it.
+func salvageHeader(round int) string {
+	return fmt.Sprintf("fixpoint: round %d (partial, coder failed)", round)
+}
+
+// pending are the issues the coder was handed and left undecided.
+func salvageBody(coderErr string, pending []model.Issue) string {
+	var b strings.Builder
+	// coderErr can quote the coder's own malformed output, so it is flattened like
+	// the finding text below it.
+	fmt.Fprintf(&b, "Coder failed before reporting verdicts: %s\n\nIssues left without a verdict:\n", flattenField(coderErr))
+	for _, it := range pending {
+		fmt.Fprintf(&b, "- [%s] (%s, %s) %s\n", it.ID, flattenField(it.Category), it.Severity, flattenField(it.Title))
+	}
+	return b.String()
+}
+
 // salvagePartialFix handles a coder failure (timeout, session limit,
 // malformed output). The coder edits files before it reports, so a failure
 // can leave real, per-file-complete work in the tree. That work is committed
@@ -2486,17 +2547,10 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 	} else if len(blocking) > 0 {
 		return false, o.rejectUnverifiedSalvage(ctx, rec, runErr, blocking)
 	}
-	header := fmt.Sprintf("fixpoint: round %d (partial, coder failed)", rec.Round)
-	var body strings.Builder
-	// runErr can quote the coder's own malformed output, so it is flattened like
-	// the finding text below it.
-	fmt.Fprintf(&body, "Coder failed before reporting verdicts: %s\n\nIssues it was working on:\n", flattenField(fmt.Sprint(runErr)))
-	for _, it := range active {
-		fmt.Fprintf(&body, "- [%s] (%s, %s) %s\n", it.ID, flattenField(it.Category), it.Severity, flattenField(it.Title))
-	}
 	// Redact reviewer-authored finding text before it lands in the pushed
 	// commit message, mirroring the normal round commit and the logstore.
-	sha, cerr := o.collector.Commit(ctx, header, agent.RedactSecrets(body.String()), o.gitExclude...)
+	sha, cerr := o.collector.Commit(ctx, salvageHeader(rec.Round),
+		agent.RedactSecrets(salvageBody(fmt.Sprint(runErr), active)), o.gitExclude...)
 	if cerr != nil {
 		// A cancellation that lands during the salvage commit is a stop request,
 		// not a salvageable failure. Passing the already-canceled ctx to

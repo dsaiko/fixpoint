@@ -4091,6 +4091,60 @@ func TestCommitPolicyPerRoundSquashesTheRound(t *testing.T) {
 	}
 }
 
+// A round that ends in a salvage still obeys per_round: its earlier issues were
+// each committed before the later coder session failed, so without the squash the
+// round leaves those per-fix commits and the salvage commit standing separately --
+// exactly the layout the policy says not to produce. The squashed message must
+// still say the round is partial, since part of what it holds has no verdict.
+func TestCommitPolicyPerRoundSquashesASalvagedRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerRound})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "nil deref"},
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 9, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded"}))
+	// The second session edits and then dies without reporting: its work is salvaged.
+	f.editRepoOn(3)
+	f.respond(3, "I changed files but forgot the <fix> envelope.")
+	f.respond(4, reviewResponse(t)) // round 2: clean
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want salvage + continue", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want converged after the salvaged round", sum.Termination)
+	}
+	if got := f.commitCount(); got != 2 {
+		t.Errorf("repo has %d commits, want 2 (initial + one squashed round)", got)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	if !strings.Contains(msg, "(partial, coder failed)") {
+		t.Errorf("squashed commit message = %q, want it still labeled partial", msg)
+	}
+	// Both halves of what the commit holds: the verdict that landed, and the issue
+	// left undecided when the coder failed.
+	for _, want := range []string{"nil deref", "off by one", "Coder failed before reporting verdicts"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("squashed commit message missing %q:\n%s", want, msg)
+		}
+	}
+	head := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	if sum.Rounds[0].CommitSHA != head || len(sum.Rounds[0].Commits) != 1 {
+		t.Errorf("round 1 CommitSHA = %q, Commits = %v; want just the squash %q",
+			sum.Rounds[0].CommitSHA, sum.Rounds[0].Commits, head)
+	}
+	if sum.Rounds[0].CoderError == "" {
+		t.Error("round 1 CoderError not recorded; the squash must not lose the coder failure")
+	}
+	// A squash is a `reset --soft`: it cannot change content, and a clean tree is
+	// what proves the commit holds exactly what the per-fix commits verified.
+	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Errorf("tree left dirty by the squash: %q", status)
+	}
+}
+
 // per_run collapses the whole run, loop rounds and closing passes together, into
 // one commit -- and only at the very end, so the closing round still reviews the
 // per-fix history it builds on.
