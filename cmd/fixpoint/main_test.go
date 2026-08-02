@@ -209,7 +209,7 @@ func TestRunCheckReportsGitDiffScope(t *testing.T) {
 // run does, even though it invokes no agent. It is the command an operator is
 // told to run FIRST against an unfamiliar checkout, and a repo-supplied
 // filter.<name>.clean is a program git runs itself while normalizing the worktree
-// for that diff: gitSafeConfig cannot neutralize it (the name is dynamic), so a
+// for that diff: gitenv.SafeConfigArgs cannot neutralize it (the name is dynamic), so a
 // --check exempt from the gate would execute repo-controlled code with fixpoint's
 // inherited environment before any lock, trust gate, or agent.
 func TestRunCheckAppliesTargetGuards(t *testing.T) {

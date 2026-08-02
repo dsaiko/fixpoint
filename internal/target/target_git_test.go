@@ -1024,7 +1024,7 @@ func TestSquashSinceRecoversLandedResetWhenItFailsWithLiveContext(t *testing.T) 
 	}
 }
 
-// gitSafeConfig points core.hooksPath at /dev/null so a hook shipped in an
+// gitenv.SafeConfigArgs points core.hooksPath at /dev/null so a hook shipped in an
 // untrusted target's .git never runs with fixpoint's privileges. Regression
 // guard for that mitigation: a pre-commit hook (also blocked by --no-verify) and
 // a post-commit hook (which --no-verify does NOT skip, so only hooksPath stops
@@ -1058,7 +1058,7 @@ func TestCommitDoesNotRunGitHooks(t *testing.T) {
 
 // gh pr checkout runs git subprocesses that never see c.git's -c overrides, so a
 // repo whose config points core.hooksPath into the worktree could otherwise run a
-// PR-supplied hook. gitHardenedEnv propagates the hooks-disabling override to
+// PR-supplied hook. gitenv.Harden propagates the hooks-disabling override to
 // every subprocess via GIT_CONFIG_*. Regression guard: a checkout run through
 // c.run (the raw path gh's nested git takes -- no -c overrides) must not execute
 // a worktree post-checkout hook.
@@ -1085,7 +1085,7 @@ func TestRunEnvDisablesWorktreeHooks(t *testing.T) {
 		t.Fatalf("checkout: %v: %s", err, out)
 	}
 	if _, err := os.Stat(ran); err == nil {
-		t.Error("post-checkout hook executed; gitHardenedEnv did not disable hooks for a subprocess lacking -c overrides")
+		t.Error("post-checkout hook executed; gitenv.Harden did not disable hooks for a subprocess lacking -c overrides")
 	}
 }
 
@@ -1094,7 +1094,7 @@ func TestRunEnvDisablesWorktreeHooks(t *testing.T) {
 // git itself defaults protocol.ext.allow to "never", but that default is
 // CONFIGURABLE: a crafted .git/config that sets protocol.ext.allow=always turns
 // it back on, and remote.<name>.url is not a key unsafeConfigKey refuses. The
-// gitSafeConfig pin is what beats the repo's own value -- on both paths, since
+// gitenv.SafeConfigArgs pin is what beats the repo's own value -- on both paths, since
 // gh's internal git never sees the -c overrides and gets them from
 // GIT_CONFIG_* instead.
 func TestFetchDoesNotRunAnExtTransportHelper(t *testing.T) {
@@ -1105,12 +1105,12 @@ func TestFetchDoesNotRunAnExtTransportHelper(t *testing.T) {
 		name  string
 		fetch func(*Collector, string) (string, error)
 	}{
-		// c.git prepends gitSafeConfig as -c overrides AND sets the hardened env.
+		// c.git prepends gitenv.SafeConfigArgs as -c overrides AND sets the hardened env.
 		{"git", func(c *Collector, remote string) (string, error) {
 			return c.git(t.Context(), "fetch", "--no-tags", remote)
 		}},
 		// c.run invokes git with NO -c overrides -- the conditions gh's nested git
-		// runs under, where only GIT_CONFIG_* from gitHardenedEnv can protect it.
+		// runs under, where only GIT_CONFIG_* from gitenv.Harden can protect it.
 		{"run", func(c *Collector, remote string) (string, error) {
 			return c.run(t.Context(), "git", "fetch", "--no-tags", remote)
 		}},
@@ -1148,7 +1148,7 @@ func TestFetchDoesNotRunAnExtTransportHelper(t *testing.T) {
 // the tips of every .git/objects/info/alternates entry to seed negotiation and
 // runs this command to do it -- so a crafted checkout that ships an alternates
 // file plus the setting turns pr mode's checkout/fetch into code execution with
-// fixpoint's inherited environment. The gitSafeConfig pin is what beats the
+// fixpoint's inherited environment. The gitenv.SafeConfigArgs pin is what beats the
 // repo's own value, on both the -c path and the GIT_CONFIG_* path gh's internal
 // git takes.
 func TestFetchDoesNotRunAlternateRefsCommand(t *testing.T) {
@@ -1159,12 +1159,12 @@ func TestFetchDoesNotRunAlternateRefsCommand(t *testing.T) {
 		name  string
 		fetch func(*Collector, string) (string, error)
 	}{
-		// c.git prepends gitSafeConfig as -c overrides AND sets the hardened env.
+		// c.git prepends gitenv.SafeConfigArgs as -c overrides AND sets the hardened env.
 		{"git", func(c *Collector, remote string) (string, error) {
 			return c.git(t.Context(), "fetch", "--no-tags", remote)
 		}},
 		// c.run invokes git with NO -c overrides -- the conditions gh's nested git
-		// runs under, where only GIT_CONFIG_* from gitHardenedEnv can protect it.
+		// runs under, where only GIT_CONFIG_* from gitenv.Harden can protect it.
 		{"run", func(c *Collector, remote string) (string, error) {
 			return c.run(t.Context(), "git", "fetch", "--no-tags", remote)
 		}},
@@ -1807,7 +1807,7 @@ func TestStashDirtyStillDirtyAfterStash(t *testing.T) {
 	}
 }
 
-// UnsafeConfig flags the repo-local git settings gitSafeConfig cannot neutralize
+// UnsafeConfig flags the repo-local git settings gitenv.SafeConfigArgs cannot neutralize
 // (content filters, sshCommand, credential helpers) so an untrusted checkout is
 // refused before any worktree-touching git command runs.
 func TestUnsafeConfig(t *testing.T) {
@@ -1882,6 +1882,45 @@ func TestUnsafeConfig(t *testing.T) {
 			if !strings.Contains(got, want) {
 				t.Errorf("UnsafeConfig() = %v, want it to include %q", keys, want)
 			}
+		}
+	})
+
+	// A diff driver is a program git runs on the READ path, and it is the shape an
+	// agent trips rather than fixpoint: Collect passes --no-ext-diff --no-textconv, but
+	// the reviewer and coder CLIs run their own `git diff`/`git log -p`/`git blame`
+	// inside the target, and the driver name is the repository's to choose so no -c
+	// override can disable it.
+	t.Run("flags diff drivers that execute programs", func(t *testing.T) {
+		repo := gitRepo(t)
+		git(t, repo, "config", "diff.external", "./payload")
+		git(t, repo, "config", "diff.evil.command", "./payload")
+		git(t, repo, "config", "diff.evil.textconv", "./payload")
+		keys, err := New(config.Target{Path: repo}).UnsafeConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Join(keys, ",")
+		for _, want := range []string{"diff.external", "diff.evil.command", "diff.evil.textconv"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("UnsafeConfig() = %v, want it to include %q", keys, want)
+			}
+		}
+	})
+
+	// ...but the rest of the diff section configures git's own engine and runs
+	// nothing. Flagging those would refuse ordinary repositories over a stylistic
+	// setting, which is how a security gate stops being used at all.
+	t.Run("ignores diff settings that run no program", func(t *testing.T) {
+		repo := gitRepo(t)
+		git(t, repo, "config", "diff.algorithm", "histogram")
+		git(t, repo, "config", "diff.noprefix", "true")
+		git(t, repo, "config", "diff.evil.cachetextconv", "true")
+		keys, err := New(config.Target{Path: repo}).UnsafeConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(keys) != 0 {
+			t.Fatalf("UnsafeConfig() = %v, want none: these diff settings execute nothing", keys)
 		}
 	})
 
@@ -3080,7 +3119,7 @@ func TestGitScanNULJoinsScanGoroutineOnCancel(t *testing.T) {
 	}
 }
 
-// gitScanNUL hand-copies c.git's hardening (the gitSafeConfig -c overrides and the
+// gitScanNUL hand-copies c.git's hardening (the gitenv.SafeConfigArgs -c overrides and the
 // hardened environment) because it runs git itself. core.fsmonitor names a program
 // git spawns while listing files, and a target's own .git/config can set it -- so a
 // directory-mode collect against a crafted checkout would otherwise be code
@@ -3109,7 +3148,7 @@ func TestCollectDirectoryDoesNotRunFsmonitor(t *testing.T) {
 		t.Errorf("the listing should still be produced:\n%s", material)
 	}
 	if _, err := os.Stat(sentinel); err == nil {
-		t.Error("the repo-configured fsmonitor program ran; the streaming listing lost gitSafeConfig/gitHardenedEnv")
+		t.Error("the repo-configured fsmonitor program ran; the streaming listing lost gitenv.SafeConfigArgs/gitenv.Harden")
 	}
 }
 

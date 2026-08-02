@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -162,7 +163,9 @@ func RedactSecrets(s string) string { return redactSecrets(s) }
 // SECURITY (the process ENVIRONMENT is filtered, not inherited): Run sets cmd.Env
 // to a baseline of non-secret variables plus whatever the agent's own file
 // declares, so an exported secret the agent did not ask for is simply absent from
-// the process. See internal/agent/env.go.
+// the process. See internal/agent/env.go. It also adds internal/gitenv's
+// GIT_CONFIG_* pins, so the git commands the CLI runs inside the target do not
+// honor a repo-supplied setting that would execute a target-controlled program.
 //
 // This closes what was the one exfiltration surface a container could not: the
 // agents' credentials must be inside the container for the CLIs to work, so an
@@ -215,9 +218,19 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	// Filtered environment: the baseline plus what this agent declared, and nothing
-	// else. nil means the agent opted into inherit_all, which exec reads as "inherit
-	// the parent's environment".
-	cmd.Env = buildEnv(a)
+	// else. buildEnv returns nil for inherit_all, which gitenv.Harden expands to
+	// fixpoint's own environment rather than leaving cmd.Env nil -- the git pins below
+	// must hold on that path too.
+	//
+	// gitenv.Harden adds the GIT_CONFIG_* overrides that neutralize the target's own
+	// execution-capable git settings (core.fsmonitor, core.hooksPath, ...). The CLI is
+	// launched with its working directory inside the target and runs its own
+	// `git status`/`git diff`/`git log` while exploring, so without these it would
+	// spawn a target-supplied program with the credential this agent declared -- the
+	// same hole the -c overrides close for fixpoint's own git calls. The keys with
+	// dynamic names, which no override can reach, are refused by the preflight
+	// instead (target.UnsafeConfig).
+	cmd.Env = gitenv.Harden(buildEnv(a))
 	if a.PromptVia == config.PromptViaStdin {
 		cmd.Stdin = strings.NewReader(prompt)
 	}

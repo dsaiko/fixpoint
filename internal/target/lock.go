@@ -41,7 +41,7 @@ func (c *Collector) LockRepo(ctx context.Context) (func(), error) {
 	}
 	path := filepath.Join(strings.TrimSpace(gitDir), lockName)
 	// O_NOFOLLOW: the lock lives in the TARGET's git directory, which fixpoint
-	// already treats as attacker-controllable (see gitSafeConfig, and the logs
+	// already treats as attacker-controllable (see internal/gitenv, and the logs
 	// symlink check). An extracted archive or crafted checkout can ship
 	// .git/fixpoint.lock as a symlink to ~/.ssh/authorized_keys or any other file
 	// the operator can write, and the Truncate(0) below would then destroy it --

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/testfixture"
 )
 
 // envDumper writes an agent script that prints its own environment, so these
@@ -114,6 +116,62 @@ func TestRunInheritAllPassesEverything(t *testing.T) {
 	if !strings.Contains(out, "SOME_UNRELATED_SECRET=visible-by-request") {
 		t.Errorf("inherit_all must pass the whole environment:\n%s", out)
 	}
+}
+
+// The agents run their OWN git inside the target -- `git status`/`git diff`/
+// `git log` while exploring -- so the environment they get must carry the same
+// safe-config pins fixpoint puts on its own git calls. core.fsmonitor is the sharp
+// case: a crafted checkout can point it at a script, the preflight cannot refuse on
+// it (`core.fsmonitor = true` is the legitimate builtin daemon, so refusing would
+// refuse real repos), and gitenv pins it to false instead. Without the pins in the
+// agent's environment, a review-only directory run -- which passes no trust gate --
+// would execute that script with the credential the agent declared.
+func TestRunHardensGitForAgentInvokedGit(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable to run the fsmonitor program")
+	}
+	// runGitStatus points an agent at a repo whose .git/config names an fsmonitor
+	// program, has it run `git status`, and reports whether the program fired.
+	runGitStatus := func(t *testing.T, a config.Agent) bool {
+		t.Helper()
+		repo := testfixture.GitRepo(t)
+		sentinel := filepath.Join(repo, "fsmonitor-ran")
+		evil := filepath.Join(repo, "evil-fsmonitor.sh")
+		// A v1 fsmonitor program prints the paths it considers dirty; the sentinel is
+		// the side effect core.fsmonitor=false must prevent.
+		if err := os.WriteFile(evil, []byte("#!/bin/sh\ntouch '"+sentinel+"'\nprintf '/\\0'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		testfixture.GitRun(t, repo, "config", "core.fsmonitor", evil)
+
+		script := filepath.Join(t.TempDir(), "explore.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\ngit status --porcelain\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		a.Command = []string{script}
+		a.PromptVia = config.PromptViaStdin
+		a.Timeout = config.Duration(time.Minute)
+		if res := Run(t.Context(), a, "prompt", repo); res.Err != nil {
+			t.Fatalf("agent run failed: %v\nstderr: %s", res.Err, res.Stderr)
+		}
+		_, err := os.Stat(sentinel)
+		return err == nil
+	}
+
+	t.Run("filtered environment", func(t *testing.T) {
+		if runGitStatus(t, config.Agent{}) {
+			t.Error("the repo-configured fsmonitor program ran; the agent environment lost gitenv's GIT_CONFIG_* pins")
+		}
+	})
+
+	// inherit_all is about handing the CLI fixpoint's own variables, not about
+	// letting the target run code: buildEnv returns nil there, and Harden must expand
+	// that to the parent environment PLUS the pins rather than leave cmd.Env nil.
+	t.Run("inherit_all", func(t *testing.T) {
+		if runGitStatus(t, config.Agent{Env: config.AgentEnv{InheritAll: true}}) {
+			t.Error("the repo-configured fsmonitor program ran under inherit_all; the pins must survive the escape hatch")
+		}
+	})
 }
 
 // buildEnv returns nil only for inherit_all, because exec reads nil as "inherit

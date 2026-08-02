@@ -24,6 +24,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 )
 
 // maxMaterial caps the material embedded into prompts. Agents are agentic and
@@ -232,8 +233,10 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		// diff.external, or .gitattributes can select a diff driver's textconv, and
 		// generating patch output would otherwise execute either with fixpoint's
 		// credentials -- before any agent sandboxing, even in a review-only run.
-		// gitSafeConfig cannot cover these (there is no single -c that disables a
-		// gitattributes-driven textconv), so they are neutralized per command here.
+		// No -c override can cover these (the driver name is the repository's to
+		// choose), so unsafeConfigKey refuses a target that defines one and these flags
+		// neutralize the command itself -- belt and braces, since the flags also hold on
+		// the operator-configured half a repo-scoped key list cannot see.
 		// Keep the run's own logs out of the diff too, not just the untracked
 		// listing: a tracked file under the logs dir (a committed .prompt from an
 		// earlier run) would otherwise show its full modified content here and be
@@ -441,10 +444,10 @@ const maxGitPath = 1 << 20
 func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, gitOpTimeout)
 	defer cancel()
-	full := append(append([]string{}, gitSafeConfig...), args...)
+	full := append(gitenv.SafeConfigArgs(), args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = c.cfg.Path
-	cmd.Env = gitHardenedEnv()
+	cmd.Env = gitenv.Harden(nil)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return agent.KillProcessGroup(cmd) }
 	// Backstop for a leader that ignores the cancel signal. It has no pipe drain
@@ -1311,7 +1314,7 @@ func (c *Collector) commitStaged(ctx context.Context, header, body string) (stri
 	// Otherwise still attempt the commit -- a commit worth making must not be lost
 	// to a flaky lookup -- but remember the snapshot cannot be used as evidence.
 	usableBefore := err == nil
-	// --no-verify skips pre-commit/commit-msg hooks explicitly (gitSafeConfig
+	// --no-verify skips pre-commit/commit-msg hooks explicitly (gitenv.SafeConfigArgs
 	// already disables them via core.hooksPath, so this is belt-and-suspenders):
 	// an attacker-supplied .git/hooks must never run during a round commit.
 	if out, err := c.git(ctx, "commit", "--no-verify", "-m", header, "-m", body); err != nil {
@@ -1625,83 +1628,6 @@ func (c *Collector) pathInTree(ctx context.Context, tree, p string) (bool, error
 	return strings.TrimSpace(out) != "", nil
 }
 
-// gitSafeConfig neutralizes the repo-controlled git settings that make git
-// itself execute attacker code, prepended to every git invocation as -c
-// overrides (they beat any value in the target's .git/config). A target's .git
-// is not always a clean `git clone` -- an extracted archive or a crafted
-// checkout can ship its own .git/hooks and .git/config -- and running git there
-// would otherwise run those programs with fixpoint's privileges and inherited
-// environment (ANTHROPIC_API_KEY, GITHUB_TOKEN, ...), even in a review-only
-// git-diff run that never passes the fix-round trust gate. core.hooksPath is
-// pointed at a directory that cannot hold an executable hook, and core.fsmonitor
-// (a command status/diff/ls-files would spawn) is disabled. This does not cover
-// gitattributes-driven filters/diff-drivers or gh's own internal git calls; a
-// truly untrusted .git should still be reviewed under an external sandbox.
-//
-// protocol.ext.allow=never kills the ext:: helper protocol, whose URL IS a shell
-// command git runs. git's own default for it is already "never", but that default
-// is CONFIGURABLE: a crafted .git/config setting protocol.ext.allow=always turns
-// the transport back on for exactly the user-initiated fetches fixpoint performs
-// (`gh pr checkout`, the base-object fetch), and remote.<name>.url or a repo-local
-// url.<ext-url>.insteadOf then routes an ordinary-looking remote into it.
-// unsafeConfigKey refuses such a rewrite but does not flag remote.<name>.url; this
-// pin beats the repo's value outright and closes the whole class rather than one
-// key at a time -- including the shapes that reach git through gh's internal
-// calls, since gitHardenedEnv exports these as GIT_CONFIG_*.
-//
-// core.alternateRefsCommand is another value git runs THROUGH THE SHELL. Its
-// documentation describes it as server-side only, but that is not where it fires
-// for us: whenever the repo has a .git/objects/info/alternates entry, the CLIENT
-// side of a fetch enumerates the alternate's tips to seed negotiation, and runs
-// this command instead of git-for-each-ref to do it. A crafted checkout that
-// ships an alternates file plus this setting would therefore execute it during
-// pr mode's `gh pr checkout` or Prepare's base-object fetch. Pinning it to
-// `false` (the same shape as core.fsmonitor) makes the enumeration produce no
-// tips, which only costs negotiation hints, never correctness.
-var gitSafeConfig = []string{
-	"-c", "core.hooksPath=/dev/null",
-	"-c", "core.fsmonitor=false",
-	"-c", "protocol.ext.allow=never",
-	"-c", "core.alternateRefsCommand=false",
-}
-
-// gitHardenedEnv returns the child environment for every git/gh subprocess:
-// os.Environ() plus GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n entries
-// that apply gitSafeConfig to EVERY git process, including the ones gh spawns
-// internally (which the -c overrides in c.git never reach). git reads these env
-// entries exactly as if they were -c key=value overrides. Any GIT_CONFIG_COUNT
-// already in the environment is merged rather than clobbered: its existing
-// KEY/VALUE entries are preserved and ours are appended after them, so a caller
-// that legitimately set its own overrides keeps them.
-func gitHardenedEnv() []string {
-	base := 0
-	env := make([]string, 0, len(os.Environ())+len(gitSafeConfig))
-	for _, e := range os.Environ() {
-		if v, ok := strings.CutPrefix(e, "GIT_CONFIG_COUNT="); ok {
-			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
-				base = n
-			}
-			continue // dropped; re-added below with the merged count
-		}
-		env = append(env, e)
-	}
-	n := base
-	// gitSafeConfig is a flat [-c, key=value, -c, key=value, ...] slice; turn each
-	// key=value into a GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pair.
-	for i := 0; i+1 < len(gitSafeConfig); i += 2 {
-		key, val, _ := strings.Cut(gitSafeConfig[i+1], "=")
-		env = append(env,
-			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", n, key),
-			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, val),
-		)
-		n++
-	}
-	if n > 0 {
-		env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", n))
-	}
-	return env
-}
-
 // unsafeConfigKey reports whether a repo-local git config key names a setting
 // that makes a later git command execute a repo-controlled program: a per-name
 // content filter (filter.<name>.clean/smudge/process) runs when `git diff`
@@ -1714,10 +1640,20 @@ func gitHardenedEnv() []string {
 // runs when a fix round's `git commit` signs. On an untrusted checkout that
 // shipped its own .git/config these turn a git pass into code execution with
 // fixpoint's inherited environment, so callers refuse rather than run git against
-// such a target. gitSafeConfig cannot cover the filter/ssh/credential names (they
-// are dynamic); a signing program COULD be force-disabled with
+// such a target. gitenv's static pins cannot cover the filter/ssh/credential names
+// (they are dynamic); a signing program COULD be force-disabled with
 // -c commit.gpgSign=false, but refusing preserves legitimate signed round commits
 // for a trusted operator instead of silently dropping their signatures.
+//
+// The DIFF settings are the same class on the read path. diff.external replaces
+// git's own diff engine with a program, and diff.<driver>.command/textconv do the
+// same for whatever paths a `diff=<driver>` line in .gitattributes selects --
+// textconv also runs during `git log -p`, `git grep` and `git blame`, not just
+// `git diff`. Collect passes --no-ext-diff --no-textconv so fixpoint's own patch
+// generation never fires them, but that flag pair only covers the command it is on:
+// the reviewer and coder CLIs run their own `git diff`/`git log -p` inside the
+// target, and no -c override can disable a driver whose name the repository
+// chooses. Refusing is the only thing that covers both.
 //
 // The TRANSPORT settings below are the same class on the fetch path this guard
 // exists to protect -- pr mode's `gh pr checkout` and Prepare's `git fetch` of the
@@ -1727,7 +1663,7 @@ func gitHardenedEnv() []string {
 //     `[url "ext::sh -c <cmd>"] insteadOf = https://github.com/` leaves
 //     remote.origin.url an ordinary GitHub URL (so gh still resolves the repo)
 //     while every fetch goes through the ext:: helper protocol, which git runs as
-//     a shell command. gitSafeConfig additionally pins protocol.ext.allow=never so
+//     a shell command. gitenv additionally pins protocol.ext.allow=never so
 //     this particular shape is dead even before the guard sees it, but the rewrite
 //     can target other transports too and the key belongs on the list.
 //   - core.gitProxy is a program git runs for git:// transport.
@@ -1741,6 +1677,11 @@ func unsafeConfigKey(key string) bool {
 	case filterConfigKey(key):
 		return true
 	case key == "core.sshcommand" || key == "core.gitproxy" || key == "core.askpass":
+		return true
+	case key == "diff.external":
+		return true
+	case strings.HasPrefix(key, "diff.") &&
+		(strings.HasSuffix(key, ".command") || strings.HasSuffix(key, ".textconv")):
 		return true
 	case strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"):
 		return true
@@ -1865,7 +1806,7 @@ func (c *Collector) repoScopedConfigKeys(ctx context.Context) ([]string, error) 
 	}
 	keys := make([]string, 0, len(entries))
 	for _, e := range entries {
-		// Everything else (global, system, command -- our own gitSafeConfig -c
+		// Everything else (global, system, command -- our own gitenv.SafeConfigArgs -c
 		// overrides land in `command`) is the operator's configuration, not the
 		// target's, and refusing on it would be a false refusal.
 		if e.scope != "local" && e.scope != "worktree" {
@@ -1908,13 +1849,13 @@ func (c *Collector) scopedConfigKeys(ctx context.Context) ([]configEntry, error)
 }
 
 func (c *Collector) git(ctx context.Context, args ...string) (string, error) {
-	return c.run(ctx, "git", append(append([]string{}, gitSafeConfig...), args...)...)
+	return c.run(ctx, "git", append(gitenv.SafeConfigArgs(), args...)...)
 }
 
 // gitInput runs a git command that reads its input from stdin (currently only
 // `update-index --index-info`), with the same hardening as every other git call.
 func (c *Collector) gitInput(ctx context.Context, stdin string, args ...string) (string, error) {
-	return c.runInput(ctx, strings.NewReader(stdin), "git", append(append([]string{}, gitSafeConfig...), args...)...)
+	return c.runInput(ctx, strings.NewReader(stdin), "git", append(gitenv.SafeConfigArgs(), args...)...)
 }
 
 func (c *Collector) run(ctx context.Context, name string, args ...string) (string, error) {
@@ -1931,12 +1872,12 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = c.cfg.Path
 	// Harden the environment so the git processes gh spawns internally -- which
-	// never see our -c overrides -- still get gitSafeConfig applied. gh pr checkout
-	// runs `git checkout`, and a repo whose config points core.hooksPath into the
-	// worktree (e.g. .githooks) would otherwise run a PR-supplied post-checkout hook
-	// with fixpoint's inherited tokens, even in a review-only PR run before any
+	// never see our -c overrides -- still get the safe-config pins applied. gh pr
+	// checkout runs `git checkout`, and a repo whose config points core.hooksPath into
+	// the worktree (e.g. .githooks) would otherwise run a PR-supplied post-checkout
+	// hook with fixpoint's inherited tokens, even in a review-only PR run before any
 	// sandbox. GIT_CONFIG_COUNT/KEY/VALUE make git treat these as -c overrides.
-	cmd.Env = gitHardenedEnv()
+	cmd.Env = gitenv.Harden(nil)
 	// Stream stdout and stderr into SEPARATE bounded buffers rather than one:
 	// callers parse the returned string as a machine-readable value (a SHA, a PR
 	// base OID, a remote list, a filename list), and a successful git/gh command

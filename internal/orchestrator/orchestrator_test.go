@@ -1261,6 +1261,51 @@ func TestRunRefusesUntrustedDirectoryReviewOnlyConfigFilter(t *testing.T) {
 	})
 }
 
+// A repo-defined diff driver is the same class as a content filter, reached from
+// the other direction: the agents run their own `git diff`/`git log -p`/`git blame`
+// inside the target, and diff.external / diff.<driver>.command / textconv are all
+// programs those commands execute. Nothing else stops it -- Collect's
+// --no-ext-diff --no-textconv only covers fixpoint's own patch generation, and the
+// driver's name is the repository's to choose so no -c override can reach it. So an
+// untrusted review-only DIRECTORY run, the shipped review bundle's own shape, must
+// refuse before an agent is ever launched.
+func TestRunRefusesUntrustedDirectoryReviewOnlyDiffDriver(t *testing.T) {
+	for _, key := range []string{"diff.external", "diff.evil.command", "diff.evil.textconv"} {
+		t.Run(key, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+			f.cfg.Loop.TrustedTarget = false // undo the fixture's trusted default
+			gitRun(t, f.repo, "config", key, "./payload")
+
+			_, err := f.orchestrator().Run(t.Context())
+			if err == nil || !strings.Contains(err.Error(), "repo-controlled programs") {
+				t.Fatalf("Run() err = %v, want refusal citing repo-controlled programs", err)
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("Run() err = %v, want it to name %s", err, key)
+			}
+			if got := f.invocations(); got != 0 {
+				t.Errorf("agent invocations = %d, want 0 (must refuse before launching an agent)", got)
+			}
+		})
+	}
+
+	// core.fsmonitor is deliberately NOT on that list: `core.fsmonitor = true` is
+	// git's own builtin daemon, so refusing the key would refuse legitimate
+	// repositories. gitenv pins it to false in every environment fixpoint hands out
+	// instead -- the agents' included -- which is what makes proceeding here safe
+	// rather than an oversight. TestRunHardensGitForAgentInvokedGit is the other half.
+	t.Run("core.fsmonitor is neutralized, not refused", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		gitRun(t, f.repo, "config", "core.fsmonitor", "./payload")
+		f.respond(1, reviewResponse(t)) // clean review
+
+		if _, err := f.orchestrator().Run(t.Context()); err != nil {
+			t.Fatalf("Run() err = %v, want a pinned setting not to refuse the target", err)
+		}
+	})
+}
+
 // A review-only pr run is gated on the same execution-capable git config. The
 // PR cannot write .git/config, but `gh pr checkout` writes the worktree and git
 // runs a configured smudge/process filter during checkout -- and the PR supplies

@@ -252,7 +252,10 @@ func sortedEnvKeys(m map[string]string) []string {
 
 // EnvNames returns the variable names an agent will actually receive, for the
 // run's provenance log. Reporting what an agent CAN see is worth as much as
-// reporting which prompt drove it.
+// reporting which prompt drove it. The GIT_CONFIG_* pins Run adds on top
+// (internal/gitenv) are deliberately absent: they are fixpoint's own hardening, not
+// something the agent's declaration exposed, and listing four of them per run would
+// bury the names this log exists to show.
 func EnvNames(a config.Agent) []string {
 	if a.Env.InheritAll {
 		return nil

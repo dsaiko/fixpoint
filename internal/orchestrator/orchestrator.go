@@ -1296,8 +1296,9 @@ func (o *Orchestrator) guardRedirectedWorktree(ctx context.Context) error {
 
 // guardUntrustedGitConfig closes the code-execution path opened by the target's
 // own repo-local .git/config: per-name content filters (filter.<n>.clean/
-// smudge/process), core.sshCommand, and credential helpers are programs git runs
-// itself, and gitSafeConfig's -c overrides cannot neutralize them (their names
+// smudge/process), diff drivers (diff.external, diff.<driver>.command/textconv),
+// core.sshCommand, and credential helpers are programs git runs
+// itself, and gitenv's -c overrides cannot neutralize them (their names
 // are dynamic). They fire whenever a git command touches the worktree -- git-diff
 // mode's `git diff` normalizes files through a clean filter even in a review_only
 // run, and every fix round's `git add`/`git status` does the same -- so a target
