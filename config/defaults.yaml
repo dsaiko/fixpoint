@@ -17,8 +17,9 @@ target:
   # caches, and local binaries need no entry here. List only what is COMMITTED
   # but not worth reviewing. Patterns match at any depth unless anchored — use
   # "target/**" rather than "**/target/**" for a build directory, or it will also
-  # match a source package called target. An entry with no wildcard in its last
-  # segment ("config/secrets") excludes that directory's contents too.
+  # match a source package called target. An entry with no wildcard at all
+  # ("config/secrets") excludes that directory's contents too; one with a wildcard
+  # matches names only, so use "**/node_modules/**" to take the contents as well.
   #
   # Credential-shaped paths (.env*, *.pem, *.key, id_rsa, ...) are excluded by
   # fixpoint itself and cannot be re-enabled here.

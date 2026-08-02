@@ -2729,6 +2729,57 @@ func TestCollectDirectoryAlwaysExcludesCredentialFiles(t *testing.T) {
 	})
 }
 
+// The mandatory patterns name FILES, and must not take a directory that happens to
+// share the name with them. "credentials" and "kubeconfig" are ordinary Go package
+// and source names (grpc-go's credentials/, aws-sdk-go's aws/credentials/), the
+// patterns cannot be switched off by any config, and the material carries no signal
+// that something was dropped -- so widening them would silently delete the
+// authentication code, the part a reviewer most needs to see, from every prompt.
+// It would also split the collectors: git matches ":(exclude,glob)**/credentials"
+// with wildmatch, which does not reach inside a directory of that name, so the git
+// diff/PR modes would still review what directory mode had stopped showing.
+func TestCollectDirectoryKeepsSourceUnderCredentialNamedDirectory(t *testing.T) {
+	const src = "internal/credentials/aws.go"
+	writeTree := func(t *testing.T, dir string) {
+		t.Helper()
+		writeFile(t, dir, src, "package credentials\n")
+		writeFile(t, dir, "internal/kubeconfig/load.go", "package kubeconfig\n")
+		// The file the patterns are actually for, in the same tree: the directory
+		// stays, its credential-file namesake still goes.
+		writeFile(t, dir, "home/.aws/credentials", "SECRET=leaked\n")
+	}
+	assert := func(t *testing.T, material string) {
+		t.Helper()
+		for _, want := range []string{src, "internal/kubeconfig/load.go"} {
+			if !strings.Contains(material, want) {
+				t.Errorf("collected material dropped source file %q:\n%s", want, material)
+			}
+		}
+		if strings.Contains(material, "home/.aws/credentials") {
+			t.Errorf("collected material names a credential file:\n%s", material)
+		}
+	}
+	t.Run("git", func(t *testing.T) {
+		repo := gitRepo(t)
+		writeTree(t, repo)
+		git(t, repo, "add", "-A")
+		material, err := New(config.Target{Mode: "directory", Path: repo, Exclude: nil}).Collect(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert(t, material)
+	})
+	t.Run("walk", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTree(t, dir)
+		material, err := New(config.Target{Mode: "directory", Path: dir, Exclude: nil}).Collect(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert(t, material)
+	})
+}
+
 // A target.exclude entry naming a DIRECTORY has to remove that directory's
 // CONTENTS, and has to do it identically on both collection paths. The exclude
 // list is the only filter directory mode has, and the entry is what an operator

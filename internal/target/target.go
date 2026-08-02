@@ -2053,21 +2053,27 @@ func truncate(s string) string {
 // compileGlobs converts **-style globs to regexps: ** matches across path
 // separators, * and ? within a segment.
 //
-// A glob whose last segment names a plain directory -- "config/secrets", spelled
-// with or without a trailing slash -- also matches everything BENEATH it. Without
-// that, such an entry protects nothing where it matters most: the compiled globs
-// are anchored ^...$ against full paths, and listGitFiles (the path taken for any
-// git target) only ever sees FILE paths, because git ls-files emits no directory
-// entries. So "config/secrets" would match neither config/secrets/prod.key nor
-// anything else, silently, while the same entry pruned the directory in the
-// non-git walk -- an operator excluding a directory of committed credentials got
-// the protection only on a non-git target. Descendant matching is also the
-// semantics git pathspecs already give a wildcard-free prefix, so the git modes'
-// :(exclude,glob) specs in collectPathspec agree with the directory collectors.
+// A glob carrying NO wildcard at all names a plain directory -- "config/secrets",
+// spelled with or without a trailing slash -- and so also matches everything
+// BENEATH it. Without that, such an entry protects nothing where it matters most:
+// the compiled globs are anchored ^...$ against full paths, and listGitFiles (the
+// path taken for any git target) only ever sees FILE paths, because git ls-files
+// emits no directory entries. So "config/secrets" would match neither
+// config/secrets/prod.key nor anything else, silently, while the same entry pruned
+// the directory in the non-git walk -- an operator excluding a directory of
+// committed credentials got the protection only on a non-git target.
 //
-// A last segment carrying a wildcard is left alone: "*.go" or "**/vendor/**"
-// describes a file shape, not a directory, and widening those would quietly
-// remove files no one asked to exclude.
+// Wildcard-free is exactly the shape git pathspecs already extend to descendants
+// (match_pathspec_item compares such a spec as a leading-directory prefix), so the
+// git modes' :(exclude,glob) specs in collectPathspec keep agreeing with the
+// directory collectors. A glob carrying a wildcard ANYWHERE is left alone, even
+// when the wildcard is not in its last segment: git matches those with wildmatch
+// under WM_PATHNAME, where "**/credentials" matches a file named credentials and
+// nothing under a directory of that name. Widening them here would both break that
+// agreement and quietly delete whole source trees from review -- "**/credentials"
+// is a mandatory exclude no config can drop, and credentials/ is an ordinary Go
+// package name. Descendants of a matched name need the shape that says so:
+// "**/vendor/**".
 func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 	res := make([]*regexp.Regexp, 0, len(globs))
 	for _, g := range globs {
@@ -2097,7 +2103,7 @@ func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 				i += size
 			}
 		}
-		if last := g[strings.LastIndexByte(g, '/')+1:]; last != "" && !strings.ContainsAny(last, "*?") {
+		if g != "" && !strings.ContainsAny(g, "*?") {
 			// "(/.*)?" and not "/**": it also matches the "dir/" form walkFiles tests
 			// directories with, so the walk still PRUNES the directory instead of
 			// descending it to drop each file one at a time.

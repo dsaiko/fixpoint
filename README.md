@@ -147,11 +147,12 @@ scope. What belongs in `target.exclude` is therefore just what's *committed*
 but not worth reviewing — vendored dependencies, fixtures, and (defensively) a
 committed `.env`.
 
-An entry whose last segment carries no wildcard names a *directory* as well as a
-file: `config/secrets` — or `config/secrets/`, the two are the same entry —
-excludes everything beneath it, the way a git pathspec prefix does. One with a
-wildcard there (`*.env`, `**/vendor/**`) describes a file shape and matches names
-only.
+An entry with no wildcard at all names a *directory* as well as a file:
+`config/secrets` — or `config/secrets/`, the two are the same entry — excludes
+everything beneath it, the way a git pathspec prefix does. One carrying a wildcard
+anywhere (`*.env`, `**/node_modules`) describes a file shape and matches names
+only; to take the contents of every matching directory too, say so:
+`**/node_modules/**`.
 
 ## Review lenses and assignment strategies
 

@@ -28,20 +28,25 @@ func TestCompileGlobs(t *testing.T) {
 		{"internal/**", "cmd/main.go", false},
 		{"?.go", "a.go", true},
 		{"?.go", "ab.go", false},
-		// A wildcard-free last segment names a directory, so it takes the contents
-		// with it -- either spelling, and including the "dir/" form the walk tests
-		// directories with. Anchored at a segment boundary: a sibling whose name
-		// merely starts the same is untouched.
+		// A wildcard-free glob names a directory, so it takes the contents with it --
+		// either spelling, and including the "dir/" form the walk tests directories
+		// with. Anchored at a segment boundary: a sibling whose name merely starts
+		// the same is untouched.
 		{"config/secrets", "config/secrets", true},
 		{"config/secrets", "config/secrets/prod.token", true},
 		{"config/secrets", "config/secrets/", true},
 		{"config/secrets/", "config/secrets/prod.token", true},
 		{"config/secrets/", "config/secrets", true},
 		{"config/secrets", "config/secretsx/prod.token", false},
-		{"**/node_modules", "a/node_modules/pkg/index.js", true},
-		// A wildcard in the last segment describes a file shape, not a directory,
-		// and must not start swallowing whatever sits under a matching name.
+		// A wildcard ANYWHERE describes a file shape, not a directory, and must not
+		// start swallowing whatever sits under a matching name -- git's wildmatch
+		// does not either, and the mandatory "**/credentials" would otherwise drop
+		// every source file under an ordinary credentials/ package.
 		{"*.go", "main.go/notes.txt", false},
+		{"**/credentials", "aws/credentials", true},
+		{"**/credentials", "internal/credentials/aws.go", false},
+		{"**/node_modules", "a/node_modules", true},
+		{"**/node_modules", "a/node_modules/pkg/index.js", false},
 		{"**/café.go", "src/café.go", true}, // multi-byte literals
 		{".github/**/*.yaml", ".github/workflows/ci.yaml", true},
 	}
