@@ -2178,6 +2178,32 @@ func TestWorktreeOutOfScope(t *testing.T) {
 			}
 		}
 	})
+
+	// noWorkTree matches git's English "must be run in a work tree" for the same
+	// reason notARepository matches its own message, and depends on the same
+	// LC_ALL=C pin in probeEnv. Without that pin a bare repository under a
+	// translated git would read as a fault rather than an answer, and this
+	// security check would abort preflight on an ordinary target. The shim stands
+	// in for a git built with NLS -- English only under LC_ALL=C -- so the test
+	// does not depend on which locales the host has installed.
+	t.Run("bare repository under a translated git is not an escape", func(t *testing.T) {
+		bare := t.TempDir()
+		git(t, bare, "init", "-q", "--bare")
+		t.Setenv("LC_ALL", "de_DE.UTF-8")
+		t.Setenv("LANG", "de_DE.UTF-8")
+		t.Setenv("LANGUAGE", "de")
+		shimGit(t, "rev-parse", `    if [ "$LC_ALL" = C ]; then
+      echo 'fatal: this operation must be run in a work tree' >&2
+    else
+      echo 'fatal: Diese Operation muss in einem Arbeitsverzeichnis ausgeführt werden' >&2
+    fi
+    exit 128`)
+
+		got, err := New(config.Target{Path: bare}).WorktreeOutOfScope(t.Context())
+		if err != nil || got != "" {
+			t.Errorf("WorktreeOutOfScope() = %q, %v under a translated git, want \"\" with no error", got, err)
+		}
+	})
 }
 
 // The diff embeds full file CONTENT into every reviewer prompt and into the
