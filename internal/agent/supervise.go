@@ -29,6 +29,14 @@ const pipeDrainGrace = 2 * time.Second
 // Nothing in production reassigns it.
 var cancelKill = KillProcessGroup
 
+// cleanupKill is the process-group kill Supervise runs after cmd.Wait, on every
+// exit path rather than only on cancellation. It is a var for the same reason as
+// cancelKill: the reply that makes its error handling matter -- an EPERM proving
+// the group still holds a descendant this process cannot signal -- needs a
+// descendant running under other credentials, which a test cannot create.
+// Nothing in production reassigns it.
+var cleanupKill = KillProcessGroup
+
 // OutPipe carries one of a child process's output streams into dst through a
 // pipe whose read end THIS process owns.
 //
@@ -297,7 +305,20 @@ func Supervise(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (le
 	waitErr := cmd.Wait()
 	// The leader is gone: kill its group BEFORE draining, so nothing that could
 	// still touch the repository outlives the command by even the drain.
-	_ = KillProcessGroup(cmd)
+	//
+	// What that kill reports is not discardable. Off darwin an EPERM here PROVES
+	// containment failed -- the group still holds a member this process cannot
+	// signal, e.g. a descendant a sudo- or container-based command left behind
+	// under other credentials after its leader exited 0 -- and the group kill is
+	// the only containment there is. Swallow it and the run is reported as a clean
+	// finish while that descendant keeps editing the repository alongside the
+	// verification and the commit that follow, with nothing in the output saying
+	// so. os.ErrProcessDone is the opposite (and ordinary) case: the group is
+	// empty, so there was nothing left to kill.
+	killErr := cleanupKill(cmd)
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
 	cut := drainAll(pipes, stdinPipe)
 	if SucceededDespiteLeakedPipe(cmd, waitErr) {
 		waitErr = nil
@@ -307,6 +328,13 @@ func Supervise(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (le
 		// Torn down by Ctrl-C or by the command's own timeout. The caller reports
 		// that, and a capture cut short by the teardown itself needs no separate note.
 		cut = false
+	}
+	if killErr != nil {
+		// A failed kill outranks the leader's own outcome -- including the success
+		// SucceededDespiteLeakedPipe just restored, since a live descendant is exactly
+		// what holds that pipe open -- so it is joined rather than allowed to lose to
+		// a nil waitErr.
+		return cut, errors.Join(waitErr, fmt.Errorf("kill process group: %w", killErr))
 	}
 	return cut, waitErr
 }

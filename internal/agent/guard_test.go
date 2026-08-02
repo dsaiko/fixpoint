@@ -312,6 +312,50 @@ func TestSuperviseSuccessRacingDeadline(t *testing.T) {
 		base, len(killed), sweepIterations, reaped)
 }
 
+// stubCleanupKill makes the post-Wait cleanup kill report killErr after the real
+// kill has run, so the command is still contained while the test observes what
+// Supervise does with a reply it cannot provoke for real.
+func stubCleanupKill(t *testing.T, killErr error) {
+	t.Helper()
+	orig := cleanupKill
+	t.Cleanup(func() { cleanupKill = orig })
+	cleanupKill = func(cmd *exec.Cmd) error {
+		_ = orig(cmd)
+		return killErr
+	}
+}
+
+// The cleanup kill after cmd.Wait is the ORDINARY path -- it runs on every
+// command, canceled or not, and is the only containment a leader that exited 0
+// ever gets. Off darwin an EPERM from it proves the group still holds a
+// descendant this process cannot signal, so discarding it reports a successful,
+// contained command while that descendant is still live inside the target
+// repository, free to edit it during the verification and commit that follow.
+func TestSuperviseReportsFailedCleanupKill(t *testing.T) {
+	stubCleanupKill(t, syscall.EPERM)
+	cmd := exec.CommandContext(t.Context(), "true")
+	_, err := Supervise(t.Context(), cmd, io.Discard, nil)
+	if err == nil {
+		t.Fatal("Supervise() err = nil for a leader that exited 0 whose group kill failed; the uncontained group must be reported")
+	}
+	if !errors.Is(err, syscall.EPERM) {
+		t.Errorf("Supervise() err = %v, want it to carry the kill's EPERM", err)
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		t.Errorf("leader state = %v, want a clean exit; the failure under test is the kill's, not the leader's", cmd.ProcessState)
+	}
+}
+
+// The other half of that rule: an empty group is what the cleanup kill normally
+// meets, and reporting its os.ErrProcessDone would turn every successful command
+// in the program into a failure.
+func TestSuperviseIgnoresProcessDoneFromCleanupKill(t *testing.T) {
+	stubCleanupKill(t, os.ErrProcessDone)
+	if _, err := Supervise(t.Context(), exec.CommandContext(t.Context(), "true"), io.Discard, nil); err != nil {
+		t.Errorf("Supervise() err = %v for a cleanup kill that found an empty group; want nil", err)
+	}
+}
+
 // Supervise owns the output pipes, so a caller that has already set cmd.Stdout
 // or cmd.Stderr holds a mistaken idea of where the output goes: Supervise would
 // overwrite the writer and silently drop that stream. Fail closed instead of

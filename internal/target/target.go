@@ -434,6 +434,12 @@ func (c *Collector) listGitFiles(ctx context.Context, scope fileScope) (int, str
 // fragment as a path.
 const maxGitPath = 1 << 20
 
+// gitCleanupKill is the process-group kill gitScanNUL runs after cmd.Wait. It is
+// a var solely so a test can make it report the containment failure whose errno
+// cannot be produced on demand -- an EPERM needs a descendant running under
+// credentials this process cannot signal. Nothing in production reassigns it.
+var gitCleanupKill = agent.KillProcessGroup
+
 // gitScanNUL runs a git command whose stdout is a NUL-delimited list and calls
 // fn once per entry as it arrives, so the caller can count an unbounded listing
 // without holding it in memory and without the diagnostic output cap c.run
@@ -499,8 +505,15 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 		// process group -- free to mutate the repository concurrently with a later
 		// clean-tree check or round commit, and, if it inherited stdout, to stall the
 		// scan below until the operation timeout. SIGKILL the group on every exit
-		// path; it is a no-op once the group is empty, which is the common case.
-		_ = agent.KillProcessGroup(cmd)
+		// path; os.ErrProcessDone means the group was already empty, the common case.
+		//
+		// Any other reply is reported rather than dropped, for the reason
+		// agent.Supervise gives: off darwin an EPERM proves the group still holds a
+		// member this process cannot signal, and a listing that reported success would
+		// hand the rest of the round a repository with a live git descendant in it.
+		if killErr := gitCleanupKill(cmd); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			err = errors.Join(err, fmt.Errorf("kill process group: %w", killErr))
+		}
 		waited <- err
 	}()
 	// The scan runs on its own goroutine so this function is never at the mercy of

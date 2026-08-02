@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -3194,6 +3195,52 @@ func TestCollectDirectoryKillsBackgroundedChildOnSuccess(t *testing.T) {
 		t.Error("a backgrounded child survived a successful listing and mutated the directory afterwards")
 	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
+	}
+}
+
+// The kill above is the listing's only containment, and it runs on the ordinary
+// path -- a git that exits 0, no cancellation involved. Off darwin an EPERM from
+// it proves the group still holds a member this process cannot signal, so a
+// listing that reported success would hand the rest of the round a repository
+// with a live git descendant in it. The errno needs a descendant under other
+// credentials, which a test cannot create, so the kill is stubbed after the real
+// one has run and left nothing behind.
+func TestGitScanNULReportsFailedCleanupKill(t *testing.T) {
+	repo := gitRepo(t)
+	orig := gitCleanupKill
+	t.Cleanup(func() { gitCleanupKill = orig })
+	gitCleanupKill = func(cmd *exec.Cmd) error {
+		_ = orig(cmd)
+		return syscall.EPERM
+	}
+	c := New(config.Target{Mode: "directory", Path: repo})
+	var seen int
+	err := c.gitScanNUL(t.Context(), func(string) { seen++ }, "ls-files", "--cached", "-z")
+	if err == nil {
+		t.Fatal("gitScanNUL() = nil after a group kill that reported an uncontained group; want the failure surfaced")
+	}
+	if !errors.Is(err, syscall.EPERM) {
+		t.Errorf("gitScanNUL() err = %v, want it to carry the kill's EPERM", err)
+	}
+	if seen == 0 {
+		t.Error("the listing itself never ran; the test proved nothing about a SUCCESSFUL scan's cleanup")
+	}
+}
+
+// An empty group -- what the cleanup kill meets on essentially every listing --
+// must stay a success: reporting its os.ErrProcessDone would fail every
+// collection in the program.
+func TestGitScanNULIgnoresProcessDoneFromCleanupKill(t *testing.T) {
+	repo := gitRepo(t)
+	orig := gitCleanupKill
+	t.Cleanup(func() { gitCleanupKill = orig })
+	gitCleanupKill = func(cmd *exec.Cmd) error {
+		_ = orig(cmd)
+		return os.ErrProcessDone
+	}
+	c := New(config.Target{Mode: "directory", Path: repo})
+	if err := c.gitScanNUL(t.Context(), func(string) {}, "ls-files", "--cached", "-z"); err != nil {
+		t.Errorf("gitScanNUL() err = %v for a cleanup kill that found an empty group; want nil", err)
 	}
 }
 
