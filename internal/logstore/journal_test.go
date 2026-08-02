@@ -197,3 +197,68 @@ func TestJournalPathMatchesTheClaimedRunDir(t *testing.T) {
 		t.Errorf("JournalPath() = %q, want the claimed run dir's %q", got, want)
 	}
 }
+
+// The suffix only appears when the rendered directory is already taken, and the
+// path is reported at run start -- before any artifact write has claimed one. So
+// JournalPath has to do the claiming itself: reporting the bare template here
+// would name a directory belonging to the other run, whose journal an operator
+// would then read instead of this one's.
+func TestJournalPathClaimsTheSuffixedRunDirBeforeAnyWrite(t *testing.T) {
+	s, _ := newStore(t, "md")
+	// Stand in for a run started within the same timestamp interval.
+	taken := s.runDir
+	if err := os.MkdirAll(taken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got := s.JournalPath()
+	if want := filepath.Join(taken+"-2", JournalName); got != want {
+		t.Fatalf("JournalPath() = %q, want the collision-suffixed %q", got, want)
+	}
+	if err := s.Journal(model.EvRunStarted, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(got); err != nil {
+		t.Errorf("the journal did not land at the reported path: %v", err)
+	}
+}
+
+// JournalPath is called from the run's own goroutine while the reviewer goroutines
+// are already journaling, so the read of the claimed directory must be ordered
+// against the write that claims it -- every caller has to be told the one directory
+// the records are actually in. The collision is what makes that write happen at all,
+// so it has to be set up here too.
+func TestJournalPathIsSafeAlongsideConcurrentAppends(t *testing.T) {
+	s, _ := newStore(t, "md")
+	taken := s.runDir
+	if err := os.MkdirAll(taken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const n = 16
+	paths := make([]string, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			paths[i] = s.JournalPath()
+		}()
+		go func() {
+			defer wg.Done()
+			if err := s.Journal(model.EvRoundStarted, i+1, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	want := filepath.Join(taken+"-2", JournalName)
+	for i, got := range paths {
+		if got != want {
+			t.Errorf("JournalPath() from goroutine %d = %q, want the single claimed %q", i, got, want)
+		}
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("the records did not land at the reported path: %v", err)
+	}
+}
