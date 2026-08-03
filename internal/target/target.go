@@ -541,7 +541,11 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 		errPipe.Drain()
 		return fmt.Errorf("%s: %w", desc, startErr)
 	}
-	waited := make(chan error, 1)
+	// The leader's exit and the cleanup kill's reply travel separately: the scan
+	// error below outranks git's exit status, but must not outrank a kill failure,
+	// so the two cannot be pre-joined into one value here.
+	type gitExit struct{ wait, kill error }
+	waited := make(chan gitExit, 1)
 	go func() {
 		err := cmd.Wait()
 		// Own the whole subprocess lifecycle, not just the leader, exactly as
@@ -556,10 +560,11 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 		// agent.Supervise gives: off darwin an EPERM proves the group still holds a
 		// member this process cannot signal, and a listing that reported success would
 		// hand the rest of the round a repository with a live git descendant in it.
+		var kill error
 		if killErr := gitCleanupKill(cmd); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-			err = errors.Join(err, fmt.Errorf("kill process group: %w", killErr))
+			kill = fmt.Errorf("kill process group: %w", killErr)
 		}
-		waited <- err
+		waited <- gitExit{wait: err, kill: kill}
 	}()
 	// The scan runs on its own goroutine so this function is never at the mercy of
 	// the read. EOF arrives only once EVERY holder of the write end is gone, and a
@@ -579,7 +584,8 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 		}
 		scanned <- sc.Err()
 	}()
-	var scanErr, werr error
+	var scanErr error
+	var exit gitExit
 	var reaped bool
 	// Nothing arms this until the leader has exited AND the group kill has run.
 	// Only a descendant that escaped the group can still hold the write end by
@@ -593,7 +599,7 @@ scan:
 		select {
 		case scanErr = <-scanned:
 			break scan
-		case werr = <-waited:
+		case exit = <-waited:
 			// Received once, so this case simply blocks from here on and the grace is
 			// never re-armed.
 			reaped = true
@@ -630,17 +636,29 @@ scan:
 	// instead, and the scan error below outranks the exit status that produces.
 	_ = pr.Close()
 	if !reaped {
-		werr = <-waited
+		exit = <-waited
 	}
 	// The group is dead by now, so this collects the last of stderr and guarantees
 	// nothing is still writing to errBuf when the error below reads it.
 	errPipe.Drain()
 	// A scan failure comes first: it means the listing was not read in full, which
-	// git's own exit status cannot tell us.
+	// git's own exit status cannot tell us -- including the nonzero exit our own
+	// pr.Close above provokes.
+	//
+	// A failed cleanup kill is not git's exit status, though, and is never demoted
+	// to it. The interleaving that ends a scan by the grace is the very one that
+	// yields an EPERM -- a descendant under other credentials, alive in the group,
+	// still holding the write end -- so letting the scan error win would drop the
+	// one signal proving containment failed and report only that the listing may be
+	// short. It outranks the leader's own outcome for the reason agent.Supervise
+	// gives, so it is joined rather than replaced.
 	if scanErr != nil {
+		if exit.kill != nil {
+			return fmt.Errorf("%s: reading output: %w; and %w", desc, scanErr, exit.kill)
+		}
 		return fmt.Errorf("%s: reading output: %w", desc, scanErr)
 	}
-	if werr != nil {
+	if werr := errors.Join(exit.wait, exit.kill); werr != nil {
 		return fmt.Errorf("%s: %w: %s", desc, werr, strings.TrimSpace(errBuf.String()))
 	}
 	return nil

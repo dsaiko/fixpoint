@@ -3591,6 +3591,45 @@ func TestListGitFilesDetachedChildHoldingStdoutIsBounded(t *testing.T) {
 	}
 }
 
+// The two failures above arrive together on exactly one interleaving -- a
+// descendant under other credentials, alive in the group, holding the stdout
+// write end -- and that interleaving is the whole reason the cleanup kill exists.
+// The scan error outranks git's exit status, but a kill failure is not git's exit
+// status: demoting it would tell the operator only that the listing may be short
+// while a git child keeps running inside the target with fixpoint's hardened
+// environment. Both must survive. The EPERM's errno needs credentials a test
+// cannot arrange, so the kill is stubbed after the real one has run; the held-open
+// stdout is real.
+func TestGitScanNULHeldOpenListingStillReportsFailedCleanupKill(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid unavailable to detach the child from the process group")
+	}
+	repo := gitRepo(t)
+	pidFile := filepath.Join(t.TempDir(), "detached.pid")
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
+	// Same shim as the boundedness test above: the setsid child escapes the group
+	// kill and holds the inherited stdout, so the scan can only be ended by the
+	// grace, and the leader lingers so the kill cannot land mid-fork.
+	shimGit(t, "ls-files", "    printf 'main.go\\0'\n"+
+		"    setsid sh -c 'echo $$ > "+pidFile+"; exec sleep 20' 2>/dev/null &\n"+
+		"    sleep 1\n    exit 0")
+	orig := gitCleanupKill
+	t.Cleanup(func() { gitCleanupKill = orig })
+	gitCleanupKill = func(cmd *exec.Cmd) error {
+		_ = orig(cmd)
+		return syscall.EPERM
+	}
+
+	c := New(config.Target{Mode: "directory", Path: repo})
+	err := c.gitScanNUL(t.Context(), func(string) {}, "ls-files", "--cached", "-z")
+	if !errors.Is(err, errListingHeldOpen) {
+		t.Errorf("gitScanNUL() err = %v, want it to wrap errListingHeldOpen", err)
+	}
+	if !errors.Is(err, syscall.EPERM) {
+		t.Errorf("gitScanNUL() err = %v; the kill's EPERM was masked by the scan error, so the uncontained group goes unreported", err)
+	}
+}
+
 // gitScanNUL's scan runs on its own goroutine and calls fn, which writes the
 // caller's state (listGitFiles' count and builder). On the cancellation path it
 // must JOIN that goroutine rather than abandon it: a caller that returned while fn
