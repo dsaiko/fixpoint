@@ -36,7 +36,6 @@ roles:
   coder: { agent: claude-coder, prompt: fix }
   review:
     strategy: rotate
-    agents: [codex, claude, kimi-ollama, deepseek-ollama]
     prompts:
       - review-bugs
       - review-security
@@ -51,7 +50,12 @@ roles:
       # Advisory: reported for a human, never handed to the coder. Pinned and
       # final, so it is one report on the code that shipped rather than one per
       # round. See fix-code.yaml for the full argument.
-      - { agent: claude, prompt: review-maintainability, advisory: true, final: true }
+      - {
+          agent: claude,
+          prompt: review-maintainability,
+          advisory: true,
+          final: true,
+        }
 
 # review-design is deliberately ABSENT, unlike fix-code. It judges the
 # architecture, and a branch diff is the wrong evidence for that: it shows what

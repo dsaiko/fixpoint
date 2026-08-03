@@ -698,7 +698,10 @@ The main sections of a task config:
 - **`target`** — what to review: mode, path, exclude globs, base ref
   or PR number.
 - **`roles`** — the coder (agent + prompt) and the review lens list with its
-  assignment strategy and agent pool.
+  assignment strategy. The reviewer **pool** lives in `defaults.yaml` and is
+  inherited, so changing who reviews is one edit rather than one per config; a
+  config that sets `roles.review.agents` replaces that pool instead of adding to
+  it.
 - **`agents`** — the command templates described above.
 - **`loop`** — `max_iterations`, `max_final_passes` (how many times the closing
   round may repeat, default 2), `commit_policy` (see

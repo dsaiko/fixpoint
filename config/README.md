@@ -77,6 +77,13 @@ than appending. Replacement is deliberate — appending would make an inherited
 entry impossible to remove — which is why the credential patterns that must never
 be dropped live in fixpoint's code instead of in `target.exclude`.
 
+Per-key reaches inside nested blocks, which is what lets `defaults.yaml` hold the
+reviewer pool: a config that declares `roles.review.strategy` and
+`roles.review.prompts` still inherits `roles.review.agents`, because the child is
+decoded *over* the base and only assigns the keys it actually contains. That is
+also why `roles` in the base does not make it runnable — `--list` decides that on
+`roles.review.prompts`, which a base deliberately omits.
+
 ## Per-lens modifiers
 
 A `roles.review.prompts` entry may be a bare prompt name or a mapping carrying

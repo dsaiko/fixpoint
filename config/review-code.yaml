@@ -14,7 +14,6 @@ roles:
   coder: { agent: claude-coder, prompt: fix }
   review:
     strategy: rotate
-    agents: [codex, claude, kimi-ollama, deepseek-ollama]
     prompts:
       - review-bugs
       - review-security

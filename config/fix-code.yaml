@@ -17,7 +17,6 @@ roles:
     # fixed = pin every lens; all = every lens on every agent (max coverage,
     # pool-size x the cost).
     strategy: rotate
-    agents: [codex, claude, kimi-ollama, deepseek-ollama]
     prompts:
       # The LOOP hunts what has to reach zero for the run to converge.
       - review-bugs # correctness
@@ -60,7 +59,12 @@ roles:
       #   - pinned, not fanned out -- an unpinned final lens runs on every agent,
       #     which for a human-read report means four overlapping documents to read
       #     and corroboration that buys nothing, since nothing gets scheduled.
-      - { agent: claude, prompt: review-maintainability, advisory: true, final: true }
+      - {
+          agent: claude,
+          prompt: review-maintainability,
+          advisory: true,
+          final: true,
+        }
       - { agent: claude, prompt: review-design, advisory: true, final: true }
 
 # The deterministic gate for THIS project. fixpoint runs these itself after the

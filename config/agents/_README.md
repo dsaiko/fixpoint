@@ -1,11 +1,25 @@
 # Agents
 
-One file per agent, referenced from a task config by bare name:
+One file per agent, referenced by bare name. The reviewer POOL lives in
+`defaults.yaml` so that changing who reviews is one edit rather than the same edit
+in every config; a task config names its coder and its lenses, and inherits the
+pool:
 
+    # defaults.yaml
+    roles:
+      review:
+        agents: [claude, kimi-ollama, deepseek-ollama]
+
+    # fix-code.yaml
+    extends: defaults
     roles:
       coder: { agent: claude-coder, prompt: fix }
       review:
-        agents: [codex, claude, kimi-ollama, deepseek-ollama]
+        strategy: rotate
+        prompts: [review-bugs, review-security]
+
+Setting `agents` in a task config REPLACES the inherited list rather than adding
+to it — `review-pr` does that deliberately, narrowing the panel for untrusted code.
 
 An agent is a command that receives a prompt and prints text to stdout. That is
 the whole provider abstraction — the orchestrator wraps the prompt with role

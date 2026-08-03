@@ -29,6 +29,27 @@ target:
     - "**/vendor/**" # committed dependencies
     - "**/testdata/**" # committed fixtures; remove to review them too
 
+roles:
+  # The shared reviewer pool. It lives here so that changing who reviews is ONE
+  # edit rather than the same edit in every config -- which is how the panels
+  # drifted apart before, and how a rename left three files disagreeing.
+  #
+  # This does not make defaults runnable: `--list` decides that on
+  # roles.review.prompts, which is deliberately absent here. A config still has to
+  # declare its own lenses, its own coder, and its own strategy; only the pool is
+  # inherited.
+  #
+  # Inheriting it works because `extends` decodes the child OVER this file: keys
+  # the child does not set survive, so a config that declares
+  # roles.review.strategy and roles.review.prompts keeps this agents list. Setting
+  # `agents` in a config REPLACES this list rather than adding to it -- review-pr
+  # does exactly that, deliberately narrowing the panel for untrusted code.
+  #
+  # codex is absent: its session budget ran out mid-run. Put it back by adding the
+  # name here once that resets.
+  review:
+    agents: [claude, kimi-ollama, deepseek-ollama]
+
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
 

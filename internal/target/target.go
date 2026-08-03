@@ -1609,8 +1609,15 @@ func (c *Collector) StashDirty(ctx context.Context, message string, exclude ...s
 	// outright on such a path, and a checkout+reset would collapse a staged
 	// change to unstaged.
 	for _, p := range protect {
-		if stashed, err := c.restoreProtectedPath(ctx, p); err != nil {
-			return stashed, err
+		if err := c.restoreProtectedPath(ctx, p); err != nil {
+			// stashed=true alongside the error, for every failure here including a
+			// failed lookup: this point is only reached after `git stash push`
+			// succeeded, so the coder's work IS in stash@{0} and recoverable with
+			// `git stash pop` whichever step of the restoration then failed.
+			// Reporting false would make the journal's "stashed: false"
+			// indistinguishable from "there was nothing to stash" and hide the
+			// recovery path during an already abnormal exit.
+			return true, err
 		}
 	}
 	// A clean `git stash` exit does not guarantee the tree actually became clean:
@@ -1754,40 +1761,37 @@ func (c *Collector) symlinkExcludes(ctx context.Context, scope fileScope) ([]str
 // commit (stash@{0}^2), the worktree from the worktree commit (stash@{0}). A
 // path absent from a tree was deleted there at stash time (a plain deletion, or
 // the old side of a rename), so its removal is reproduced rather than the file
-// being resurrected to HEAD content. The returned bool is the value StashDirty
-// should report as "stashed" alongside a non-nil error. It is true for EVERY
-// failure here, lookups included: this runs only after `git stash push`
-// succeeded, so the coder's work is in stash@{0} and recoverable with `git stash
-// pop` no matter which step of the restoration then failed. Reporting false
-// would make the journal's "stashed: false" indistinguishable from "there was
-// nothing to stash" and hide the recovery path during an already abnormal exit.
-func (c *Collector) restoreProtectedPath(ctx context.Context, p string) (bool, error) {
+// being resurrected to HEAD content.
+//
+// Every failure here leaves the stash itself intact -- see the call site, which is
+// what turns that into the "stashed" flag StashDirty reports.
+func (c *Collector) restoreProtectedPath(ctx context.Context, p string) error {
 	// An operational failure here (cancellation, timeout, unreadable stash
 	// object) must abort restoration -- never be mistaken for "the path was
 	// deleted at stash time" and silently git rm / os.Remove an excluded path.
 	inIndex, err := c.pathInTree(ctx, "stash@{0}^2", p)
 	if err != nil {
-		return true, fmt.Errorf("look up excluded path %s in stash index: %w", p, err)
+		return fmt.Errorf("look up excluded path %s in stash index: %w", p, err)
 	}
 	if inIndex {
 		if out, err := c.git(ctx, "restore", "--source=stash@{0}^2", "--staged", "--", p); err != nil {
-			return true, fmt.Errorf("restore excluded path %s index after stash: %w: %s", p, err, out)
+			return fmt.Errorf("restore excluded path %s index after stash: %w: %s", p, err, out)
 		}
 	} else if out, err := c.git(ctx, "rm", "-q", "--cached", "--ignore-unmatch", "--", p); err != nil {
-		return true, fmt.Errorf("stage removal of excluded path %s after stash: %w: %s", p, err, out)
+		return fmt.Errorf("stage removal of excluded path %s after stash: %w: %s", p, err, out)
 	}
 	inWorktree, err := c.pathInTree(ctx, "stash@{0}", p)
 	if err != nil {
-		return true, fmt.Errorf("look up excluded path %s in stash worktree: %w", p, err)
+		return fmt.Errorf("look up excluded path %s in stash worktree: %w", p, err)
 	}
 	if inWorktree {
 		if out, err := c.git(ctx, "restore", "--source=stash@{0}", "--worktree", "--", p); err != nil {
-			return true, fmt.Errorf("restore excluded path %s worktree after stash: %w: %s", p, err, out)
+			return fmt.Errorf("restore excluded path %s worktree after stash: %w: %s", p, err, out)
 		}
 	} else if err := os.Remove(filepath.Join(c.cfg.Path, p)); err != nil && !os.IsNotExist(err) {
-		return true, fmt.Errorf("remove excluded path %s from worktree after stash: %w", p, err)
+		return fmt.Errorf("remove excluded path %s from worktree after stash: %w", p, err)
 	}
-	return true, nil
+	return nil
 }
 
 // pathInTree reports whether p exists in the given git tree-ish. It uses
