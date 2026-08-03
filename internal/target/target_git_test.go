@@ -3647,7 +3647,7 @@ func TestGitScanNULHeldOpenListingStillReportsFailedCleanupKill(t *testing.T) {
 // slowly here and nothing holds stdout, so the listing must be delivered in full.
 func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
 	repo := gitRepo(t)
-	const entries = 60
+	const entries = 100
 	// The whole listing, then an immediate exit: the residue sits in the pipe with the
 	// leader already gone. Nothing escapes the process group, so EOF is waiting behind
 	// that residue -- the scan just has to get to it.
@@ -3656,9 +3656,12 @@ func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
 		"    exit 0", entries))
 
 	var seen int
-	// 60 entries at 50ms is 3s of callback, comfortably past the 2s grace, while every
-	// individual gap stays far short of it: what decides this test is the predicate
-	// under test, not timing noise on a loaded machine.
+	// 100 entries at 50ms is 5s of callback, so the grace armed at the leader's exit has
+	// to be re-armed TWICE before the listing is through -- sustained progress across
+	// more than one window, not the single re-arm a 3s callback would exercise. Every
+	// individual gap stays far short of the 2s grace, so what decides this test is the
+	// predicate under test and not timing noise on a loaded machine: a cut on the second
+	// grace lands around the 80th entry and fails the count below.
 	c := New(config.Target{Mode: "directory", Path: repo})
 	err := c.gitScanNUL(t.Context(), func(string) {
 		seen++
@@ -3669,6 +3672,84 @@ func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
 	}
 	if seen != entries {
 		t.Errorf("gitScanNUL delivered %d of %d entries; the listing was cut short", seen, entries)
+	}
+}
+
+// Re-arming on progress is not permission to keep the scan open indefinitely:
+// entries arriving buy another window, they do not disarm the grace. So the other
+// half of the predicate is a listing that arrives for a while and then genuinely
+// stalls -- consumed past the leader's exit, then a descendant outside the process
+// group holding the write end so EOF is never coming -- which must still be cut, on
+// the grace that follows the last re-arm. Every other held-open test cuts on the
+// FIRST grace, before any re-arm has happened, so nothing else covers the
+// re-arm -> cut transition: a re-arm that lost the cut would leave this scan bounded
+// only by the ten-minute operation timeout, with git long gone.
+func TestGitScanNULReArmedGraceStillCutsAStalledListing(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid unavailable to detach the child from the process group")
+	}
+	repo := gitRepo(t)
+	pidFile := filepath.Join(t.TempDir(), "detached.pid")
+	// The child outlives this test by design, so reap it rather than leave a sleeper
+	// behind on every run.
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
+	const entries = 40
+	// The whole listing up front, then the setsid child that escapes the group kill and
+	// keeps the inherited stdout, so EOF never arrives and only the grace can end the
+	// scan. It publishes its PID for the cleanup above and its stderr goes to /dev/null,
+	// so what is measured is the stdout stall and not the stderr drain. The leader
+	// lingers a second -- both so the kill cannot land while setsid is still forking and
+	// so the grace is armed while the callback below is still working through the
+	// listing, which is what makes the first firing a re-arm rather than a cut.
+	shimGit(t, "ls-files", fmt.Sprintf("    i=0\n"+
+		"    while [ $i -lt %d ]; do printf 'f%%d.go\\0' $i; i=$((i+1)); done\n"+
+		"    setsid sh -c 'echo $$ > "+pidFile+"; exec sleep 30' 2>/dev/null &\n"+
+		"    sleep 1\n    exit 0", entries))
+
+	var seen int
+	// The wall time of the last entry handed to fn, taken where the implementation
+	// counts it (on entry, before the callback's own work), so the gap asserted below is
+	// the same quantity the grace measures.
+	var last time.Time
+	// 40 entries at 50ms is 2s of callback against the leader's 1s linger: consumption is
+	// still going when the grace is armed and is over well before that first window
+	// closes, so the first firing sees progress and re-arms and the second sees none and
+	// must cut.
+	c := New(config.Target{Mode: "directory", Path: repo})
+	start := time.Now()
+	err := c.gitScanNUL(t.Context(), func(string) {
+		seen++
+		last = time.Now()
+		time.Sleep(50 * time.Millisecond)
+	}, "ls-files", "--cached", "-z")
+	elapsed := time.Since(start)
+	// The identity, not merely the presence: the listing could not be read to EOF, so it
+	// may be short, and that is what the operator has to be told.
+	if !errors.Is(err, errListingHeldOpen) {
+		t.Fatalf("gitScanNUL() err = %v, want it to wrap errListingHeldOpen once the re-armed grace found no progress", err)
+	}
+	// A cut that landed while entries were still being consumed would truncate the
+	// listing -- the very failure the re-arm exists to prevent -- and would also make
+	// this test's stall a fiction.
+	if seen != entries {
+		t.Errorf("gitScanNUL delivered %d of %d entries; the grace cut a listing that was still arriving", seen, entries)
+	}
+	// A full grace must have elapsed with nothing consumed, so the cut cannot come
+	// sooner than one grace after the last entry. The tolerance covers only the
+	// microseconds between the implementation's counter increment and the timestamp
+	// above it; a cut on the FIRST grace lands about a second after the last entry here,
+	// nowhere near it.
+	if gap := elapsed - last.Sub(start); gap < agent.PipeDrainGrace-100*time.Millisecond {
+		t.Errorf("the listing was cut %s after its last entry, less than the %s grace; progress did not re-arm it", gap, agent.PipeDrainGrace)
+	}
+	// Two windows behind the leader's one-second linger is five seconds; a cut on the
+	// first grace would land near three. The ceiling proves the stall was still bounded
+	// by the grace and not by the child's own lifetime or gitOpTimeout.
+	if elapsed < 2*agent.PipeDrainGrace {
+		t.Errorf("gitScanNUL returned after %s, too soon to have re-armed: a single grace from the leader's exit would cut here", elapsed)
+	}
+	if elapsed > 20*time.Second {
+		t.Errorf("gitScanNUL took %s; the re-armed grace stopped bounding the scan", elapsed)
 	}
 }
 
