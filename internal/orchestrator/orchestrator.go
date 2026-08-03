@@ -2814,7 +2814,15 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	}
 
 	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, promptName, len(text), res, runErr != nil))
-	md := logstore.RenderFixMD(coder.Agent, rec.Round, rec.Findings, out.Notes, runErr)
+	// The session's OWN observations, not the round's: this artifact is written per
+	// invocation, and the invocation only ever saw `active`. Rendering rec.Findings
+	// would attribute the round's other verdicts to this session -- and disagree with
+	// the .json log beside it, which carries only this session's FixOutput.
+	var seen []model.Finding
+	for _, it := range active {
+		seen = append(seen, issueFindings(rec, it.ID)...)
+	}
+	md := logstore.RenderFixMD(coder.Agent, rec.Round, seen, out.Notes, runErr)
 	o.logStep("fix", coder.Agent, promptName, rec.Round, runErr == nil, out, md, res)
 	o.logf("%s done (%s, output %s)", label, res.Duration.Round(time.Second), logstore.SizeDesc(len(res.Stdout)+len(res.Stderr)))
 	// The coder's self-report, recorded as such. Whether any of it survives is
