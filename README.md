@@ -360,8 +360,12 @@ batch cannot:
 The cost is that the verify gate runs once per fix rather than once per round, so a
 round of eight fixes runs the project's checks eight times. That is the price of
 knowing which fix broke them, and it buys back the eight-fix round that used to be
-discarded whole. Keep `verify.commands` cheapest-first, as the config already
-advises — the gate stops at the first blocking failure.
+discarded whole. Each pass runs every configured command rather than stopping at the
+first failure: the coder gets one bounded correction attempt, so it has to see every
+failure at once — fixing the formatter and only then discovering on the retry that
+the test suite is red too would waste the round. Ordering `verify.commands`
+cheapest-first therefore saves no time, but it still reads best: the log summary and
+the failure block handed to the coder follow the configured order.
 
 Squashing re-commits the index as it stands, so a squashed commit's content is
 byte-for-byte what the per-fix commits already verified one at a time. The

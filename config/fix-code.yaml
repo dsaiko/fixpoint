@@ -49,8 +49,10 @@ roles:
 # coder and refuses to commit a round that fails them, so a fix that breaks the
 # build never becomes a commit later rounds build on.
 #
-# Ordered cheapest-first: a formatting or vet failure stops the round before the
-# slower test suite runs.
+# Every command runs on every pass -- a failure does not stop the pass, because the
+# coder gets one correction attempt and needs all the failures at once. Ordered
+# cheapest-first for readability only: the summary and the coder's failure block
+# follow this order.
 verify:
   policy: no_regressions
   timeout: 15m

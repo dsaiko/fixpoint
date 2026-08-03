@@ -120,8 +120,12 @@ func (r Report) Blocking(policy config.VerifyPolicy, baseline Report) []Result {
 }
 
 // Run executes every configured command in order, in dir, and returns the report.
-// Order is sequential and as configured, so a cheap build check fails before an
-// expensive test suite runs.
+// Order is sequential and as configured; a failure does NOT stop the pass. Two
+// callers need the full set: verifyPass, because the coder gets one bounded
+// correction attempt and must see every failure at once rather than fixing the
+// formatter only to have the test suite fail the retry, and captureVerifyBaseline,
+// because Regressions needs a baseline verdict per command. Ordering commands
+// cheapest-first is therefore about how the summary reads, not about time saved.
 //
 // A command that cannot be started, exits non-zero, or exceeds its timeout is a
 // failure; ctx cancellation stops the pass and is reported as such. The context
