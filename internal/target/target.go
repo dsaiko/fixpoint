@@ -1698,10 +1698,15 @@ func (c *Collector) StashDirty(ctx context.Context, message string, exclude ...s
 	// (under the same exclusions) before reporting a successful reconciliation --
 	// otherwise interruption/salvage handling would treat a still-dirty tree as
 	// clean and the next run would be blocked by dirt this call claimed to clear.
+	// stashed=true alongside the error here for the same reason as the protected-path
+	// restoration above: `git stash push` has already succeeded, so the coder's work
+	// IS in stash@{0} whether the verification failed or found remaining dirt, and a
+	// journaled "stashed: false" would be indistinguishable from "there was nothing
+	// to stash" and hide the recovery path during an already abnormal exit.
 	if clean, err := c.GitClean(ctx, exclude...); err != nil {
-		return false, err
+		return true, err
 	} else if !clean {
-		return false, errors.New("git stash exited cleanly but uncommitted changes remain (e.g. modifications inside a submodule working tree, which a top-level stash does not capture); reconcile the tree manually")
+		return true, errors.New("git stash exited cleanly but uncommitted changes remain (e.g. modifications inside a submodule working tree, which a top-level stash does not capture); reconcile the tree manually")
 	}
 	return true, nil
 }

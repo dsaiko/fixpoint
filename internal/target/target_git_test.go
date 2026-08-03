@@ -1808,7 +1808,9 @@ func TestStashDirtyPreservesStagedThenModifiedExcludedPath(t *testing.T) {
 // A top-level `git stash` cannot capture a modified submodule working tree, so
 // after stashing the tree can still be dirty. StashDirty must detect this in its
 // final clean-verification and return the "uncommitted changes remain" error
-// rather than (false, nil) or claiming a clean reconciliation.
+// rather than (false, nil) or claiming a clean reconciliation -- while still
+// reporting stashed=true, because the stash landed and the edits it holds are
+// recoverable with `git stash pop`.
 func TestStashDirtyStillDirtyAfterStash(t *testing.T) {
 	outer := gitRepo(t)
 	inner := gitRepo(t) // a separate repo to embed as a submodule
@@ -1828,6 +1830,9 @@ func TestStashDirtyStillDirtyAfterStash(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "uncommitted changes remain") {
 		t.Fatalf("StashDirty err = %v; want 'uncommitted changes remain'", err)
+	}
+	if !stashed {
+		t.Fatalf("StashDirty stashed = false; want true -- `git stash push` succeeded, so the edits are in stash@{0}")
 	}
 }
 
