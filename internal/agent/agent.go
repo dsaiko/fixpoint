@@ -391,6 +391,26 @@ var groupKill = func(pid int, sig syscall.Signal) error {
 //
 // A group that is already gone reports os.ErrProcessDone, which is what os/exec
 // requires of a cmd.Cancel: see the ESRCH comment below.
+//
+// It also runs AFTER cmd.Wait on the cleanup paths (Supervise's cleanupKill,
+// target's gitCleanupKill), so it deliberately signals a pid this process has
+// already REAPED -- the guard os.Process.Signal applies for a single process
+// cannot apply here, because containing a leader's descendants is precisely what
+// has to happen once the leader itself is gone. What bounds the pid-recycle
+// hazard that creates is POSIX's reuse rule: a pid is not reused while a process
+// group whose group id equals that pid still exists, so the kernel cannot hand
+// the leader's pid to a new process until every member of its group has left it.
+// A kill that lands on an unrelated group therefore requires that group to have
+// been EMPTY first -- nothing of ours was left to contain, and the kill it
+// displaced would have been the ESRCH no-op below -- plus a full wrap of the pid
+// space onto exactly this pid inside the gap between Wait returning and the kill,
+// with the pid's new holder being a group leader. The residual risk is a signal
+// to a stranger's group, never a descendant of ours left uncontained, and the
+// EPERM probe below carries no signal at all (sig 0), so a stale pid there costs
+// at worst a containment failure reported for a group that was already empty.
+// Closing that last gap needs the group named by something other than a number --
+// a cgroup, a job object, pidfd process-group signaling -- the same OS-level
+// mechanism the escaped-descendant note on Run already tracks.
 func KillProcessGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil || cmd.Process.Pid <= 0 {
 		return nil
