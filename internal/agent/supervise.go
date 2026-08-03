@@ -214,6 +214,23 @@ func drainAll(pipes []*OutPipe, stdinPipe *inPipe) bool {
 	return cut
 }
 
+// KillGroupError is the failure of the post-Wait process-group kill, joined into
+// the error Supervise returns alongside the leader's own.
+//
+// It is a distinct type, not plain error text, because it must survive a caller
+// that RECLASSIFIES Supervise's error rather than passing it along: agent.Run
+// rewrites a failure into "timed out after ..." when the deadline expired, and
+// verify.runOne does the same. Off darwin an EPERM here PROVES containment failed
+// -- a descendant this process cannot signal is still live inside the target
+// repository -- so a caller that replaces the error has to carry this part across
+// (see errors.As on this type in agent.Run), or the run reports a bare timeout
+// while that descendant keeps editing the tree.
+type KillGroupError struct{ Err error }
+
+func (e *KillGroupError) Error() string { return "kill process group: " + e.Err.Error() }
+
+func (e *KillGroupError) Unwrap() error { return e.Err }
+
 // Supervise runs cmd to completion under the process-group discipline every
 // runner in this program needs -- the agent CLIs, the verify commands, and the
 // git/gh subprocesses -- copying its output into stdout and stderr, and returns
@@ -354,7 +371,7 @@ func Supervise(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (le
 		// SucceededDespiteLeakedPipe just restored, since a live descendant is exactly
 		// what holds that pipe open -- so it is joined rather than allowed to lose to
 		// a nil waitErr.
-		return cut, errors.Join(waitErr, fmt.Errorf("kill process group: %w", killErr))
+		return cut, errors.Join(waitErr, &KillGroupError{Err: killErr})
 	}
 	return cut, waitErr
 }

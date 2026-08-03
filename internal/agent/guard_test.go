@@ -379,6 +379,38 @@ func TestSuperviseIgnoresProcessDoneFromCleanupKill(t *testing.T) {
 	}
 }
 
+// Run's timeout reclassification REPLACES Supervise's error, and the leader's own
+// `signal: killed` is all it is meant to replace. A failed group kill joined into
+// that error is a different statement -- off darwin an EPERM proves a descendant
+// this process cannot signal is still live inside the target repository -- and a
+// run reported as nothing but "timed out after ..." hands the round record and the
+// journal a clean-looking timeout while that descendant edits the tree alongside
+// the verification and the commit that follow.
+func TestRunTimeoutKeepsFailedCleanupKill(t *testing.T) {
+	stubCleanupKill(t, syscall.EPERM)
+	a := config.Agent{
+		Command:   []string{script(t, "sleep 60")},
+		PromptVia: "stdin",
+		Timeout:   config.Duration(300 * time.Millisecond),
+	}
+	done := make(chan Result, 1)
+	go func() { done <- Run(t.Context(), a, "", t.TempDir()) }()
+	select {
+	case res := <-done:
+		if res.Err == nil {
+			t.Fatal("Run() err = nil for a timed-out agent whose group kill failed")
+		}
+		if !strings.Contains(res.Err.Error(), "timed out after") {
+			t.Errorf("Run() err = %v, want the timeout phrasing for the leader's own end", res.Err)
+		}
+		if !strings.Contains(res.Err.Error(), "kill process group") || !errors.Is(res.Err, syscall.EPERM) {
+			t.Errorf("Run() err = %v, want the uncontained process group reported too", res.Err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after the timeout")
+	}
+}
+
 // Supervise owns the output pipes, so a caller that has already set cmd.Stdout
 // or cmd.Stderr holds a mistaken idea of where the output goes: Supervise would
 // overwrite the writer and silently drop that stream. Fail closed instead of

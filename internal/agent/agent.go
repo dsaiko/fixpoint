@@ -304,7 +304,21 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 		} else {
 			elapsed = elapsed.Round(time.Millisecond)
 		}
-		err = fmt.Errorf("timed out after %s", elapsed)
+		// A failed process-group kill survives the reclassification. It is the one
+		// part of Supervise's error that is not about the leader at all: off darwin an
+		// EPERM proves the group still holds a member this process cannot signal, so a
+		// descendant is live inside the target repository while the verification and
+		// the commit that follow run. Replacing the error outright would report that
+		// run as nothing but a timeout, with the containment failure nowhere in the
+		// round record or the journal. The leader's own exit error is what the timeout
+		// phrasing replaces -- on this path it is the `signal: killed` the teardown
+		// itself caused.
+		var killErr *KillGroupError
+		if errors.As(err, &killErr) {
+			err = fmt.Errorf("timed out after %s: %w", elapsed, killErr)
+		} else {
+			err = fmt.Errorf("timed out after %s", elapsed)
+		}
 	}
 	raw := stdout.String()
 	// Unwrap here rather than at the call sites: every consumer of Stdout wants
