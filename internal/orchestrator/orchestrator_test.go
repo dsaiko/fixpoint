@@ -126,6 +126,29 @@ func (f *fixture) editRepoOn(n int) { testfixture.EditRepoOn(f.t, f.respDir, f.r
 // invocations reports how many times the mock agent has been called.
 func (f *fixture) invocations() int { return testfixture.Invocations(f.t, f.respDir) }
 
+// promptLogBytes sums the sizes of every prompt log the run wrote for a role,
+// which is the exact number of prompt bytes that role sent to its agent.
+func (f *fixture) promptLogBytes(role string) int {
+	f.t.Helper()
+	dir := strings.NewReplacer("{timestamp}", "*", "{round}", "*").Replace(f.cfg.Logs.Dir)
+	names, err := filepath.Glob(filepath.Join(dir, role+"-*.prompt"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if len(names) == 0 {
+		f.t.Fatalf("no %s prompt logs under %s", role, dir)
+	}
+	total := 0
+	for _, name := range names {
+		fi, err := os.Stat(name)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		total += int(fi.Size())
+	}
+	return total
+}
+
 func (f *fixture) commitCount() int {
 	f.t.Helper()
 	out := gitRun(f.t, f.repo, "rev-list", "--count", "HEAD")
@@ -399,8 +422,10 @@ func TestRunReviewerErrorResetsCleanStreak(t *testing.T) {
 func TestRunSalvagesAReviewerThatBrokeOnlyTheContract(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
 	// The review happened; only its shape is wrong.
-	f.respond(1, "I found an off-by-one in main.go line 1. <review>{not json at all}</review>")
-	f.respond(2, reviewResponse(t, aFinding("off by one")))
+	malformed := "I found an off-by-one in main.go line 1. <review>{not json at all}</review>"
+	restated := reviewResponse(t, aFinding("off by one"))
+	f.respond(1, malformed)
+	f.respond(2, restated)
 	f.editRepoOn(3)
 	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
 
@@ -424,13 +449,24 @@ func TestRunSalvagesAReviewerThatBrokeOnlyTheContract(t *testing.T) {
 	// declares no usage block, so every Usage in these tests is zero. It is covered
 	// by TestParseUsage* in the agent package and by reading reformatReview.)
 	var reviewSteps int
+	var step model.StepStat
 	for _, st := range r.Steps {
 		if st.Role == "review" {
 			reviewSteps++
+			step = st
 		}
 	}
 	if reviewSteps != 1 {
 		t.Errorf("review steps = %d, want 1 step covering both attempts", reviewSteps)
+	}
+	// That one step is billed for BOTH invocations. Reporting only the reformat's
+	// figures would let the scoreboard's time and I/O columns understate a salvaged
+	// review by an entire agent session -- the expensive half.
+	if want := len(malformed) + len(restated); step.OutputBytes != want {
+		t.Errorf("step output bytes = %d, want %d (both replies)", step.OutputBytes, want)
+	}
+	if want := f.promptLogBytes("review"); step.PromptBytes != want {
+		t.Errorf("step prompt bytes = %d, want %d (review prompt + reformat prompt)", step.PromptBytes, want)
 	}
 }
 

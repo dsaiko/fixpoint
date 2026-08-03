@@ -2482,16 +2482,23 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 	}
 	// A reply that broke the CONTRACT rather than the review gets one chance to
 	// restate it. See reformatReview for why this is worth a second invocation.
+	var salvage salvageCost
 	if parseErr != nil && res.Err == nil && ctx.Err() == nil {
-		out, res, parseErr = o.reformatReview(ctx, label, asg, lensName, round, res, parseErr)
+		out, res, salvage, parseErr = o.reformatReview(ctx, label, asg, lensName, round, res, parseErr)
 	}
 
 	// Per-step logs (IDs are assigned later; md/json here carry raw findings).
 	findings := toFindings(out.Findings, asg, lensName, nil, 0)
 	md := logstore.RenderReviewMD(asg.Agent, lensName, round, findings, parseErr)
 	o.logStep("review", asg.Agent, lensName, round, parseErr == nil, out, md, res)
-	o.logf("%s done (%d findings, %s, output %s)", label, len(out.Findings), res.Duration.Round(time.Second), logstore.SizeDesc(len(res.Stdout)+len(res.Stderr)))
-	return out.Findings, stepStat("review", asg.Agent, lensName, len(text), res, parseErr != nil), parseErr
+	outBytes := len(res.Stdout) + len(res.Stderr) + salvage.outputBytes
+	o.logf("%s done (%d findings, %s, output %s)", label, len(out.Findings), res.Duration.Round(time.Second), logstore.SizeDesc(outBytes))
+	// A salvaged step is billed for both invocations: res already carries the
+	// summed usage and duration, and salvage carries the byte counts that cannot
+	// live on a single Result. See reformatReview.
+	stat := stepStat("review", asg.Agent, lensName, len(text)+salvage.promptBytes, res, parseErr != nil)
+	stat.OutputBytes = outBytes
+	return out.Findings, stat, parseErr
 }
 
 // logStep writes one agent invocation's step logs, downgrading a log-write
@@ -2530,16 +2537,24 @@ func (o *Orchestrator) logStep(role, agentName, promptName string, round int, ok
 //
 // On failure the FIRST error is kept, not the second. The first says what the agent
 // actually did wrong; a second failure of the same kind adds nothing and the
-// operator should not have to read two to learn one. Usage from both invocations is
-// summed either way, so the scoreboard never under-reports what a salvage cost.
-func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg model.Assignment, lensName string, round int, first agent.Result, firstErr error) (model.ReviewOutput, agent.Result, error) {
+// operator should not have to read two to learn one. Usage, duration and I/O sizes
+// from both invocations are summed either way, so the scoreboard never
+// under-reports what a salvage cost.
+func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg model.Assignment, lensName string, round int, first agent.Result, firstErr error) (model.ReviewOutput, agent.Result, salvageCost, error) {
 	o.logf("%s output did not meet the contract (%v); asking it to restate the block", label, firstErr)
 	text := prompt.FormatReformat(first.Stdout, firstErr, prompt.ReviewContract)
 	res := o.runAgent(ctx, label+" (reformat)", "review", asg.Agent, lensName+"-reformat", round, text)
 	// Bill both attempts to this step whatever happens: a salvage that fails must
-	// not look cheaper than one that succeeds.
+	// not look cheaper than one that succeeds. Usage and wall clock merge onto the
+	// Result; the byte counts cannot (Stdout is what the parser and the .raw log
+	// read, so it stays the reformat's own reply) and travel in salvageCost.
 	merged := res
 	merged.Usage.Add(first.Usage)
+	merged.Duration += first.Duration
+	cost := salvageCost{
+		promptBytes: len(text),
+		outputBytes: len(first.Stdout) + len(first.Stderr),
+	}
 
 	var out model.ReviewOutput
 	err := res.Err
@@ -2551,10 +2566,19 @@ func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg mod
 	}
 	if err != nil {
 		o.logf("%s reformat also failed (%v); reporting the original contract error", label, err)
-		return model.ReviewOutput{}, merged, firstErr
+		return model.ReviewOutput{}, merged, cost, firstErr
 	}
 	o.logf("%s reformat recovered %d finding(s) from a reply that would have been discarded", label, len(out.Findings))
-	return out, merged, nil
+	return out, merged, cost, nil
+}
+
+// salvageCost is the part of a reformat's cost that cannot be folded into the
+// merged agent.Result: the reformat prompt's size, on top of the original review
+// prompt, and the first attempt's reply size. Both belong to the one step record
+// the salvage is billed to.
+type salvageCost struct {
+	promptBytes int
+	outputBytes int
 }
 
 func validateReviewFindings(findings []model.ReviewFinding) error {
