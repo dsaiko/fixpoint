@@ -751,14 +751,26 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 
 	// A directory argument names no code: the agent CLI neither execs nor reads it,
 	// so --add-dir into the target must keep working in mode pr -- in the bare
-	// spelling and in the explicitly relative one, which reaches the same exemption.
-	for _, arg := range []string{"sub", "./sub", "sub/nested", "./sub/nested"} {
-		t.Run("accepts the directory argument "+arg+" in mode pr", func(t *testing.T) {
+	// spelling, in the explicitly relative one, and absolutely, which is how the flag
+	// is written out of a script. All three reach the same exemption, and only the
+	// absolute one proves the stat looks at tok itself rather than at root+tok.
+	for _, spelling := range []struct {
+		name string
+		arg  func(dir string) string
+	}{
+		{"sub", func(string) string { return "sub" }},
+		{"./sub", func(string) string { return "./sub" }},
+		{"sub/nested", func(string) string { return "sub/nested" }},
+		{"./sub/nested", func(string) string { return "./sub/nested" }},
+		{"absolute sub", func(dir string) string { return filepath.Join(dir, "sub") }},
+		{"absolute sub/nested", func(dir string) string { return filepath.Join(dir, "sub", "nested") }},
+	} {
+		t.Run("accepts the directory argument "+spelling.name+" in mode pr", func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(dir, "sub", "nested"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := prConfig(t, dir, "echo", "--add-dir", arg).Validate(); err != nil {
+			if err := prConfig(t, dir, "echo", "--add-dir", spelling.arg(dir)).Validate(); err != nil {
 				t.Fatalf("Validate() = %v, want nil for a directory argument", err)
 			}
 		})
