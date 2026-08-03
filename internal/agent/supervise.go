@@ -306,7 +306,7 @@ func Supervise(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (le
 	// The leader is gone: kill its group BEFORE draining, so nothing that could
 	// still touch the repository outlives the command by even the drain.
 	//
-	// What that kill reports is not discardable. Off darwin an EPERM here PROVES
+	// What that kill reports is not discardable. An EPERM here PROVES
 	// containment failed -- the group still holds a member this process cannot
 	// signal, e.g. a descendant a sudo- or container-based command left behind
 	// under other credentials after its leader exited 0 -- and the group kill is

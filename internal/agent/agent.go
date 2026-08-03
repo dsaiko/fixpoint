@@ -351,9 +351,12 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 	}
 	// EPERM is where the kernels disagree about what a vanished group answers, and
 	// the disagreement is not cosmetic: off darwin it is the one reply that PROVES
-	// the group still holds something this process cannot kill, so it may only be
-	// downgraded to already-finished after the state is re-checked. See the two
-	// epermMeansGroupGone implementations.
+	// the group still holds something this process cannot kill, while on darwin an
+	// empty group answers it too. Either way it may only be downgraded to
+	// already-finished once the group's state has been re-checked, so that an EPERM
+	// over a group that still holds a member reaches the caller on both platforms.
+	// The check differs because the kernels do; see the two epermMeansGroupGone
+	// implementations.
 	if errors.Is(err, syscall.EPERM) && epermMeansGroupGone(cmd.Process.Pid) {
 		return os.ErrProcessDone
 	}
