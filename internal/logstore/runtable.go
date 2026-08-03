@@ -556,18 +556,22 @@ func cacheRate(u model.Usage) string {
 
 // humanDuration renders a duration at one useful unit, so a column of them lines up
 // and reads at a glance: 3s, 4m12s, 2h3m.
+// The unit is picked from the rounded value, not the raw one: 59m59.6s rounds up to a
+// full hour, so it must render as "1h00m" rather than the "60m00s" the minutes branch
+// would print.
 func humanDuration(d time.Duration) string {
-	switch {
-	case d <= 0:
+	if d <= 0 {
 		return "-"
-	case d < time.Minute:
-		return d.Round(time.Second).String()
-	case d < time.Hour:
-		d = d.Round(time.Second)
-		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	sec := d.Round(time.Second)
+	switch {
+	case sec < time.Minute:
+		return sec.String()
+	case sec < time.Hour:
+		return fmt.Sprintf("%dm%02ds", int(sec.Minutes()), int(sec.Seconds())%60)
 	default:
-		d = d.Round(time.Minute)
-		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+		m := d.Round(time.Minute)
+		return fmt.Sprintf("%dh%02dm", int(m.Hours()), int(m.Minutes())%60)
 	}
 }
 
