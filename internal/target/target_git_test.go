@@ -3805,6 +3805,96 @@ func TestGitScanNULReArmedGraceStillCutsAStalledListing(t *testing.T) {
 	}
 }
 
+// The re-arm removes the grace as the outer bound on one shape of scan: a writer
+// that escaped the process group and TRICKLES, delivering an entry inside every
+// window, so every firing sees progress and re-arms forever. Nothing about that
+// writer says a listing is still coming -- a looping or stalled git descendant
+// that inherited stdout feeds the pipe exactly this way -- so what ends it is the
+// operation timeout installed at the top of gitScanNUL, and the only thing keeping
+// that from being an unbounded scan is ctx. Every other held-open test cuts on a
+// grace, so nothing else exercises a scan the grace never cuts; this pins ctx as
+// the bound the re-arm now leans on, and the identity of the error, since a
+// listing ended by the deadline was not shown to be held open by anyone.
+func TestGitScanNULTrickledListingIsBoundedByContext(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid unavailable to detach the child from the process group")
+	}
+	repo := gitRepo(t)
+	pidFile := filepath.Join(t.TempDir(), "detached.pid")
+	// The child outlives this test by design, so reap it rather than leave a trickler
+	// behind on every run.
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
+	// Half a grace between entries, derived from the constant so the trickle stays
+	// inside the window whatever it is set to: two entries per window leaves room for
+	// a loaded machine's scheduling noise before a firing could see none and cut.
+	interval := fmt.Sprintf("%g", (agent.PipeDrainGrace / 2).Seconds())
+	// The setsid child escapes the group kill and keeps the inherited stdout, and
+	// unlike the silent holder the other tests use it keeps WRITING, so the scan makes
+	// progress in every window and the grace can only ever re-arm. It publishes its PID
+	// for the cleanup above and its stderr goes to /dev/null, so what is measured is the
+	// stdout trickle. Each entry is printed from a subshell, whose exit flushes it, so
+	// the test does not rest on a particular /bin/sh flushing its printf builtin into a
+	// pipe -- block buffering would starve the scan and cut it on the first grace. The
+	// loop is bounded well past the deadline below so a failed reap still ends on its
+	// own, and the leader lingers a second so the kill cannot land while setsid is
+	// still forking.
+	shimGit(t, "ls-files", fmt.Sprintf("    printf 'f0.go\\0'\n"+
+		"    setsid sh -c 'echo $$ > "+pidFile+"; i=0; while [ $i -lt 60 ]; do (printf \"t%%d.go\\0\" $i); sleep %s; i=$((i+1)); done' 2>/dev/null &\n"+
+		"    sleep 1\n    exit 0", interval))
+
+	// Three graces: the leader's one-second linger puts the first firing at three
+	// seconds and the second at five, so the deadline lands after TWO re-arms -- a
+	// grace that had stopped re-arming would end this scan long before it.
+	deadline := 3 * agent.PipeDrainGrace
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
+	defer cancel()
+
+	var seen int
+	// The wall time of the last entry handed to fn, taken where the implementation
+	// counts progress, so the assertion below reads the same quantity the grace does.
+	var last time.Time
+	c := New(config.Target{Mode: "directory", Path: repo})
+	type result struct {
+		err     error
+		elapsed time.Duration
+	}
+	done := make(chan result, 1)
+	start := time.Now()
+	go func() {
+		err := c.gitScanNUL(ctx, func(string) {
+			seen++
+			last = time.Now()
+		}, "ls-files", "--cached", "-z")
+		done <- result{err: err, elapsed: time.Since(start)}
+	}()
+
+	select {
+	case got := <-done:
+		// errListingHeldOpen here would mean the grace cut after all and the trickle
+		// never reached the scan, which would leave the claim untested rather than
+		// disproved; context.DeadlineExceeded is what proves ctx did the bounding.
+		if !errors.Is(got.err, context.DeadlineExceeded) {
+			t.Fatalf("gitScanNUL() err = %v, want it to wrap context.DeadlineExceeded: the trickled scan is bounded by ctx, not the grace", got.err)
+		}
+		// A scan starved of entries would also end at the deadline, and would look
+		// identical from the outside. Entries arriving after the first firing (the
+		// leader's linger plus one grace) are what prove the re-arm was exercised.
+		if arrived := last.Sub(start); arrived < time.Second+agent.PipeDrainGrace {
+			t.Errorf("the last entry arrived %s in, before the first grace would have fired: the scan was starved, not re-armed", arrived)
+		}
+		if seen < 2 {
+			t.Errorf("gitScanNUL saw %d entries; the escaped writer's trickle never reached the scan", seen)
+		}
+		// The point of the test: bounded by the deadline, nowhere near gitOpTimeout. The
+		// slack covers only joining the scan goroutine and reaping the leader.
+		if got.elapsed > deadline+5*time.Second {
+			t.Errorf("gitScanNUL took %s for a %s deadline; ctx no longer bounds a scan the grace keeps re-arming", got.elapsed, deadline)
+		}
+	case <-time.After(deadline + 30*time.Second):
+		t.Fatal("gitScanNUL hung on a trickling escaped writer; the re-armed grace has no bound left and ctx does not end it")
+	}
+}
+
 // gitScanNUL's scan runs on its own goroutine and calls fn, which writes the
 // caller's state (listGitFiles' count and builder). On the cancellation path it
 // must JOIN that goroutine rather than abandon it: a caller that returned while fn
