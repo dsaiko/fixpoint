@@ -209,7 +209,10 @@ is credential-*shaped* — one whose underscore-separated words include `TOKEN`,
 enumerates (`NPM_TOKEN`, `DOCKER_PASSWORD`, `PYPI_TOKEN`, `SONAR_TOKEN`,
 `GPG_PASSPHRASE`, `GOOGLE_APPLICATION_CREDENTIALS`, …) and your own
 `ACME_INTERNAL_TOKEN`. Matching is on word boundaries, so `GIT_AUTHOR_NAME` and
-`TOKENIZERS_PARALLELISM` survive. Otherwise the gate would be a way around the
+`TOKENIZERS_PARALLELISM` survive — except for `PASSWORD`, `PASSPHRASE` and
+`PASSFILE`, which match with a prefix run into them too, so the database clients'
+`PGPASSWORD`, `PGPASSFILE` and `MYSQL_PWD` are stripped as well. Otherwise the
+gate would be a way around the
 filtering above: a "build" command that curls a key out is not a model's
 misbehavior, it is just argv. This direction is a denylist, because what a build
 needs is project-specific and an allowlist would break checks by dropping what it

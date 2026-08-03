@@ -578,7 +578,10 @@ release tokens of the CI job you ran fixpoint from (`NPM_TOKEN`,
 `DOCKER_PASSWORD`, `PYPI_TOKEN`, `SONAR_TOKEN`, `GPG_PASSPHRASE`,
 `GOOGLE_APPLICATION_CREDENTIALS`, ...) and your own `ACME_INTERNAL_TOKEN`, none of
 which a build check needs to see. Words match on underscore boundaries, so
-`GIT_AUTHOR_NAME` and `TOKENIZERS_PARALLELISM` are untouched.
+`GIT_AUTHOR_NAME` and `TOKENIZERS_PARALLELISM` are untouched. `PASSWORD`,
+`PASSPHRASE` and `PASSFILE` are the exception: they also match with a vendor
+prefix run straight into them, because `PGPASSWORD`, `PGPASSFILE` and `MYSQL_PWD`
+are how the database clients spell it and a boundary rule would miss all three.
 
 What this removes is what the *environment* carries. A verify command still runs
 as you, so a credential file it can name by path — `~/.netrc`, `~/.gnupg`,

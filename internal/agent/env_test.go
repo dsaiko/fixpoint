@@ -364,6 +364,11 @@ func TestEnvWithoutCredentialsStripsCredentialShapedNames(t *testing.T) {
 		"NPM_TOKEN", "DOCKER_PASSWORD", "PYPI_TOKEN", "TWINE_PASSWORD", "SONAR_TOKEN",
 		"GPG_PASSPHRASE", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET",
 		"SSH_PRIVATE_KEY", "DB_PASSWORD", "ACME_INTERNAL_TOKEN", "SECRETS_FILE",
+		// The database clients that spell the word without a separator. A rule
+		// keyed on a leading underscore matches none of these while stripping
+		// DOCKER_PASSWORD beside them, so an operator who exported PGPASSWORD to
+		// run their own suite would hand it to a target-supplied verify command.
+		"PGPASSWORD", "PGPASSFILE", "MYSQL_PWD",
 		// Exact-match entries: credential material whose name says nothing. The
 		// agent sockets are the sharpest of them -- SSH_AUTH_SOCK is a live
 		// connection to the operator's keys, so a build recipe the target just
@@ -379,6 +384,10 @@ func TestEnvWithoutCredentialsStripsCredentialShapedNames(t *testing.T) {
 		"COMPASS_URL",            // nor PASS inside COMPASS
 		"SSH_KEY_ALGORITHMS",     // bare KEY is not a credential word
 		"GOFLAGS", "JAVA_HOME",   // the ordinary build environment
+		// The price of matching PWD without a leading boundary: the working
+		// directory every shell exports. It stays, so the prefix-tolerant branch
+		// must keep requiring the underscore for this one word.
+		"PWD", "OLDPWD",
 		// A pointer, not a capability: HOME stays, so stripping GNUPGHOME does not
 		// remove the keyring, it redirects gpg from whatever the operator isolated
 		// fixpoint with back to ~/.gnupg -- their real keys and a live agent socket.

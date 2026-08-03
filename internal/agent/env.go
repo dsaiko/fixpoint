@@ -120,11 +120,27 @@ var knownCredentialEnv = []string{
 // name a secret are present. AUTH is absent entirely: AUTH_TOKEN already matches
 // on TOKEN, and the standalone word appears in too much non-secret configuration.
 //
+// The second branch is the exception the first one needs, and it exists because
+// PGPASSWORD does not have an underscore in it. libpq (psql, pg_dump, every
+// Postgres client) reads PGPASSWORD and PGPASSFILE, MySQL reads MYSQL_PWD, and a
+// leading-boundary rule matches none of them while stripping DOCKER_PASSWORD from
+// the same environment -- a gap that is invisible precisely because every name an
+// operator thinks to check is underscore-separated. So PASSWORD, PASSPHRASE and
+// PASSFILE match with a vendor prefix run straight into them: they are long enough
+// that no ordinary variable contains one by accident, which is exactly what is not
+// true of the short words above. PWD is the counter-example that keeps this branch
+// honest -- it needs the LEADING underscore, or the filter would eat PWD and
+// OLDPWD, the working directory every shell exports.
+//
 // This over-strips by design where the two conflict -- a check that fails because
 // its credential is gone says so loudly, whereas a leaked credential says nothing
 // at all -- and FIXPOINT_KEEP_ENV is the operator's escape hatch for the cases
 // where a check legitimately needs one (a private-registry NPM_TOKEN, say).
-var credentialNameRE = regexp.MustCompile(`(?i)(?:^|_)(?:api_?keys?|access_keys?|secret_keys?|private_keys?|signing_keys?|tokens?|secrets?|passwords?|passwd|passphrases?|credentials?)(?:$|_)`)
+var credentialNameRE = regexp.MustCompile(`(?i)(?:` +
+	`(?:^|_)(?:api_?keys?|access_keys?|secret_keys?|private_keys?|signing_keys?|tokens?|secrets?|passwd|credentials?)(?:$|_)` +
+	`|(?:passwords?|passphrases?|passfiles?)(?:$|_)` +
+	`|_pwd(?:$|_)` +
+	`)`)
 
 // stripEnvVar and keepEnvVar let the OPERATOR adjust the gate for their own
 // environment: FIXPOINT_STRIP_ENV names extra variables to remove (a bespoke
