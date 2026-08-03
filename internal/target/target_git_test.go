@@ -3671,15 +3671,27 @@ func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
 	// grace lands around the 80th entry and fails the count below.
 	perEntry := 2 * agent.PipeDrainGrace / entries
 	c := New(config.Target{Mode: "directory", Path: repo})
+	start := time.Now()
 	err := c.gitScanNUL(t.Context(), func(string) {
 		seen++
 		time.Sleep(perEntry)
 	}, "ls-files", "--cached", "-z")
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("gitScanNUL() err = %v, want nil: the grace bounded the callback's own work instead of the absence of output", err)
 	}
 	if seen != entries {
 		t.Errorf("gitScanNUL delivered %d of %d entries; the listing was cut short", seen, entries)
+	}
+	// Nothing above can tell a re-armed grace from one that never fired: a listing
+	// delivered before the first firing yields the same nil error and the same count.
+	// The sleeps are floors, never ceilings, so a loaded machine only pushes this
+	// further past the bound -- but a shortened gap, a shrunk entry count, or a grace
+	// raised out from under the derivation would leave the test green while exercising
+	// no re-arm at all. The same guard the one-long-call test below carries, for the
+	// same reason.
+	if elapsed < 2*agent.PipeDrainGrace {
+		t.Errorf("gitScanNUL returned after %s, sooner than the %s of callback it was supposed to span; the grace never fired, so no re-arm was exercised", elapsed, 2*agent.PipeDrainGrace)
 	}
 }
 
