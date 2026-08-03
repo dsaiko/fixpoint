@@ -2309,6 +2309,9 @@ func TestCollectGitDiffAppliesExcludes(t *testing.T) {
 	writeFile(t, repo, ".env", "DB_PASS=hunter2-committed\n")
 	writeFile(t, repo, "production.env", "DB_PASS=hunter2-suffix-spelling\n")
 	writeFile(t, repo, "deploy/id_rsa.pem", "-----BEGIN PRIVATE KEY-----\ncommitted-key\n")
+	// direnv's file, whose exports carry names no shape-based redaction knows.
+	writeFile(t, repo, ".envrc", "export CUSTOM_API_KEY=hunter2-direnv\n")
+	writeFile(t, repo, ".direnv/dump/env", "CUSTOM_API_KEY=hunter2-direnv-cache\n")
 	writeFile(t, repo, "vendor/dep/c.go", "package dep // configured-exclude\n")
 	writeFile(t, repo, "main.go", "package main // reviewed\n")
 	// The same secrets under an upper- or mixed-case name: the mandatory patterns
@@ -2322,6 +2325,7 @@ func TestCollectGitDiffAppliesExcludes(t *testing.T) {
 	// And as untracked files, which are listed by path rather than diffed.
 	writeFile(t, repo, "sub/.env.local", "TOKEN=hunter2-untracked\n")
 	writeFile(t, repo, "sub/.Env", "TOKEN=hunter2-untracked-mixed\n")
+	writeFile(t, repo, "sub/.envrc.local", "export CUSTOM_API_KEY=hunter2-untracked-direnv\n")
 	writeFile(t, repo, "sub/ok.txt", "fine\n")
 
 	material, err := c.Collect(t.Context())
@@ -2338,6 +2342,9 @@ func TestCollectGitDiffAppliesExcludes(t *testing.T) {
 		"mixed-case-key", "Wildcard.PEM",
 		"upper-case-key", "ID_RSA",
 		"hunter2-untracked-mixed", "sub/.Env",
+		"hunter2-direnv", ".envrc",
+		"hunter2-direnv-cache", ".direnv/dump/env",
+		"hunter2-untracked-direnv", "sub/.envrc.local",
 	} {
 		if strings.Contains(material, leak) {
 			t.Errorf("Collect() leaked %q into the review material:\n%s", leak, material)
@@ -2826,6 +2833,7 @@ func TestCollectDirectoryHonorsGitignore(t *testing.T) {
 var credentialFiles = []string{
 	".env", ".env.local", "svc/.env.production",
 	"production.env", "svc/docker.env",
+	".envrc", "svc/.envrc", ".envrc.local", ".direnv/dump/env",
 	"key.pem", "certs/server.pem", "certs/bundle.p12", "certs/bundle.pfx",
 	"server.key", "certs/tls.key",
 	"store.jks", "certs/app.keystore", "keys/deploy.ppk",
@@ -2842,6 +2850,7 @@ var credentialFiles = []string{
 	// tree lays out distinct files on a case-INsensitive filesystem too.
 	"STAGING.ENV", "svc/.Env", "certs/Wildcard.PEM",
 	"home/.ssh/ID_RSA", "deploy/KUBECONFIG", "aws/Credentials",
+	"deploy/.ENVRC",
 }
 
 // writeCredentialTree writes every credential shape plus one ordinary source file

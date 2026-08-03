@@ -1341,6 +1341,14 @@ var mandatoryExcludes = []string{
 	// Both dotenv spellings: .env.local/.env.production, and the equally common
 	// production.env/docker.env -- compose and dotenv tooling read either.
 	"**/.env", "**/.env.*", "**/*.env",
+	// direnv's own file, which none of the dotenv patterns reach: ".envrc" has no
+	// dot after "env", so "**/.env.*" does not match it. It is a shell script that
+	// exports secrets by arbitrary names ("export CUSTOM_API_KEY=..."), and
+	// agent.RedactSecrets only masks fixed-shape tokens, so anything it exports
+	// under a name outside that set survives into the prompt verbatim. .envrc.local
+	// is the sourced-sibling habit .env.local is; .direnv/ is where direnv caches
+	// the dumped environment those exports produce.
+	"**/.envrc", "**/.envrc.*", "**/.direnv/**",
 	"**/*.pem", "**/*.p12", "**/*.pfx", "**/*.key",
 	"**/*.jks", "**/*.keystore", "**/*.ppk", // Java keystores, PuTTY keys
 	"**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",

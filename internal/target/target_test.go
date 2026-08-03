@@ -55,6 +55,15 @@ func TestCompileGlobs(t *testing.T) {
 		{"**/*.env", "PRODUCTION.ENV", true},
 		{"**/*.env", "svc/Docker.Env", true},
 		{"**/.env.*", ".Env.Production", true},
+		// direnv: ".envrc" has no dot after "env", so the dotenv patterns miss it and
+		// it needs its own -- as does the cache directory of dumped exports.
+		{"**/.env.*", "svc/.envrc", false},
+		{"**/*.env", "svc/.envrc", false},
+		{"**/.envrc", "svc/.envrc", true},
+		{"**/.envrc", "deploy/.ENVRC", true},
+		{"**/.envrc.*", "sub/.envrc.local", true},
+		{"**/.direnv/**", ".direnv/dump/env", true},
+		{"**/.direnv/**", "svc/.direnv/bin/ruby", true},
 		{"**/*.pem", "certs/Server.PEM", true},
 		{"**/id_rsa", "home/.ssh/ID_RSA", true},
 		{"**/kubeconfig", "KubeConfig", true},
