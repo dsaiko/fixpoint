@@ -61,8 +61,15 @@ verify:
       run: [make, fmt-check]
     - name: vet
       run: [go, vet, ./...]
+    # -race, not a plain `go test`. review-concurrency is a recurring loop lens, so
+    # the coder edits synchronization code round after round -- and the tests that
+    # guard those invariants only assert on the RESULT, so they stay green if a
+    # mutex or a sync.Once is dropped. Without the detector the gate cannot see a
+    # race it just committed. It costs ~70s against ~15s on the whole module here,
+    # which is far inside the timeout above; narrow to the concurrent packages only
+    # if that ever stops being true.
     - name: test
-      run: [go, test, ./...]
+      run: [go, test, -race, ./...]
     - name: lint
       run: [make, lint]
       optional: true # informative: a pre-existing lint debt should not block a fix

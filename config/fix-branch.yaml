@@ -63,8 +63,11 @@ verify:
       run: [make, fmt-check]
     - name: vet
       run: [go, vet, ./...]
+    # -race, for the reason spelled out in fix-code.yaml: the concurrency lens
+    # recurs every round, and the tests guarding those invariants pass with the
+    # synchronization removed unless the detector is watching.
     - name: test
-      run: [go, test, ./...]
+      run: [go, test, -race, ./...]
     - name: lint
       run: [make, lint]
       optional: true # informative: a pre-existing lint debt should not block a fix
