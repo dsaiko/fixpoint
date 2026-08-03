@@ -672,6 +672,33 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 		}
 	})
 
+	// -allow-untrusted-fix is the other half of the same gate, and the half a fix
+	// run in pr mode actually passes -- so pin it on the shape the flag exists for
+	// (ReviewOnly false), not on the review-only default every subtest above uses.
+	t.Run("accepts a target-relative binary in a pr fix run with -allow-untrusted-fix", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "agent.sh")
+		cfg := prConfig(t, dir, "./agent.sh")
+		cfg.Loop.ReviewOnly = false
+		cfg.Loop.AllowUntrustedFix = true
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil once the operator allows untrusted fixes", err)
+		}
+	})
+
+	// And the refusal still stands on that same fix-run shape when neither flag is
+	// set: it is the run mode with the most to lose, not one the guard skips.
+	t.Run("rejects a target-relative binary in a pr fix run without either flag", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "agent.sh")
+		cfg := prConfig(t, dir, "./agent.sh")
+		cfg.Loop.ReviewOnly = false
+		if err := cfg.Validate(); err == nil ||
+			!strings.Contains(err.Error(), "resolves inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a PR-supplied agent binary in a fix run", err)
+		}
+	})
+
 	// Only pr mode swaps the tree under a validated command; a directory or
 	// git-diff target keeps the target-local form working.
 	t.Run("accepts a target-relative binary in mode directory", func(t *testing.T) {
