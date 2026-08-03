@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -84,39 +85,71 @@ func systemBundleDirs() []string {
 // working directory instead would silently review only the subtree you happened
 // to stand in and scatter artifact directories through the project.
 //
-// It falls back to dir when no marker is found, which is the correct behavior
-// for a non-git directory reviewed in place.
+// It falls back to dir itself when no marker is found, which is the correct
+// behavior for a non-git directory reviewed in place. The path returned is dir's
+// canonical form whenever that can be determined, for the reason below.
 func ProjectRoot(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
 	}
-	home := ""
-	if h, err := os.UserHomeDir(); err == nil {
-		home = filepath.Clean(h)
+	// Walk the REAL directory, not the lexical one. Walking up is a purely lexical
+	// operation, and `cd` through a symlink leaves $PWD pointing at the LINK, which
+	// os.Getwd honors -- so with /tmp/cfg -> <repo>/internal/config the walk visits
+	// /tmp/cfg, then /tmp, then /, finds no marker, and anchors the run to the linked
+	// subtree: a fraction of the repository reviewed, artifacts written beside the
+	// link. Resolving also keeps the root comparable to the canonical paths
+	// everything downstream measures against (see target.fileScope).
+	//
+	// A path that will not resolve -- a directory that does not exist, or one whose
+	// parent cannot be read -- keeps its lexical form: there is nothing better to
+	// walk, and the fallback below still has an answer.
+	start := abs
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		start = resolved
 	}
-	for cur := abs; ; {
-		if isProjectRoot(cur, home) {
+	homes := homeDirs()
+	for cur := start; ; {
+		if isProjectRoot(cur, homes) {
 			return cur, nil
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur { // reached the filesystem root
-			return abs, nil
+			return start, nil
 		}
 		cur = parent
 	}
 }
 
+// homeDirs returns the forms of the user's home directory a walked path can show
+// up as: the lexical one and, when it differs, the symlink-resolved one. Both are
+// needed because ProjectRoot walks resolved paths when the starting directory can
+// be resolved and lexical ones when it cannot, and because home itself may be a
+// symlink (/home/u -> /mnt/data/u). The exclusion it feeds is a safety rule --
+// anchoring a run to $HOME points the review at the whole home directory -- so
+// matching either form is the side to err on. Empty when home is unknown.
+func homeDirs() []string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	homes := []string{filepath.Clean(h)}
+	if resolved, err := filepath.EvalSymlinks(h); err == nil && resolved != homes[0] {
+		homes = append(homes, resolved)
+	}
+	return homes
+}
+
 // isProjectRoot reports whether dir carries a marker that identifies it as the top
-// of a project. home, when known, is excluded from the markers that the user's own
-// files legitimately produce there.
+// of a project. homes, when known, are excluded from the markers that the user's
+// own files legitimately produce there.
 //
 // A marker has to be something that appears once, at the top. The bare bundle
 // directory name is not one: "config" is an extremely common package and directory
 // name (this repository has internal/config), so treating it as a marker would
 // detect internal/ as the project root and review only that subtree. A project
 // bundle therefore counts only when it has a bundle's shape.
-func isProjectRoot(dir, home string) bool {
+func isProjectRoot(dir string, homes []string) bool {
 	// Existence, not directory-ness: in a git worktree or submodule ".git" is a
 	// FILE pointing at the real git dir, and requiring a directory would walk
 	// straight past the root of every worktree.
@@ -132,7 +165,7 @@ func isProjectRoot(dir, home string) bool {
 	// honoring it would anchor every non-git project below home to the whole home
 	// directory -- pointing the review at $HOME, writing artifacts there, and
 	// classifying the user's own bundle as policy shipped by the code under review.
-	if home != "" && filepath.Clean(dir) == home {
+	if slices.Contains(homes, filepath.Clean(dir)) {
 		return false
 	}
 	_, err := os.Lstat(filepath.Join(dir, "."+appName))

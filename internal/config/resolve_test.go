@@ -36,11 +36,24 @@ func bundle(t *testing.T, dir string, configs map[string]string, prompts, agents
 	return dir
 }
 
+// realDir is a temporary directory with every symlink in its path resolved, which
+// is the form ProjectRoot returns. The bare t.TempDir() is not always that form --
+// on macOS $TMPDIR sits under /var -> private/var -- so an expectation built from
+// it would compare two spellings of the same directory.
+func realDir(t *testing.T, dir string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
 // The project root anchors every relative path in a run, so it must be found by
 // walking up -- otherwise the same command reviews a different subtree depending
 // on which directory it was invoked from.
 func TestProjectRootWalksUp(t *testing.T) {
-	root := t.TempDir()
+	root := realDir(t, t.TempDir())
 	deep := filepath.Join(root, "internal", "target", "sub")
 	if err := os.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
@@ -66,7 +79,7 @@ func TestProjectRootWalksUp(t *testing.T) {
 // marker detected internal/ as the project root -- so a run from internal/target
 // reviewed only that subtree and could not find any config.
 func TestProjectRootIgnoresNestedConfigDir(t *testing.T) {
-	root := t.TempDir()
+	root := realDir(t, t.TempDir())
 	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +101,7 @@ func TestProjectRootIgnoresNestedConfigDir(t *testing.T) {
 // otherwise anchor to the whole home directory -- reviewing $HOME, writing
 // artifacts there, and reporting the user's own bundle as project-supplied policy.
 func TestProjectRootIgnoresUserBundleInHome(t *testing.T) {
-	home := t.TempDir()
+	home := realDir(t, t.TempDir())
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, userBundleDir, promptsDir), 0o755); err != nil {
 		t.Fatal(err)
@@ -106,7 +119,7 @@ func TestProjectRootIgnoresUserBundleInHome(t *testing.T) {
 	}
 	// The same directory name IS a marker outside home: it is where a previous
 	// run's artifacts land in a project that is not a git repository.
-	other := t.TempDir()
+	other := realDir(t, t.TempDir())
 	deep := filepath.Join(other, "sub")
 	if err := os.MkdirAll(filepath.Join(other, userBundleDir), 0o755); err != nil {
 		t.Fatal(err)
@@ -123,7 +136,7 @@ func TestProjectRootIgnoresUserBundleInHome(t *testing.T) {
 // root -- the documented <project>/config. It is recognized by the bundle's shape,
 // never by the bare name, so a nested config package cannot pose as one.
 func TestProjectRootFindsNonGitProjectBundle(t *testing.T) {
-	root := t.TempDir()
+	root := realDir(t, t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	bundle(t, filepath.Join(root, projectBundleDir), map[string]string{"fix-code": "description: x\n"}, []string{"fix"}, nil)
 	deep := filepath.Join(root, "internal", "config")
@@ -136,6 +149,36 @@ func TestProjectRootFindsNonGitProjectBundle(t *testing.T) {
 	}
 	if got != root {
 		t.Errorf("ProjectRoot(%s) = %s, want %s; a non-git project's own bundle marks its root, and a config package without a bundle's shape does not", deep, got, root)
+	}
+}
+
+// Walking up is lexical, so the walk has to start from the REAL directory: `cd`
+// through a symlink leaves $PWD on the link and os.Getwd honors it, so a walk from
+// the link's own path climbs the link's parents -- which are not the project's --
+// finds no marker, and anchors the run to the linked subtree: a fraction of the
+// repository reviewed, artifacts written next to the link.
+func TestProjectRootResolvesSymlinkedDir(t *testing.T) {
+	root := realDir(t, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "internal", "config")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The link lives outside the repository, so nothing on ITS parent chain is a
+	// marker -- exactly the case a lexical walk gets wrong.
+	link := filepath.Join(realDir(t, t.TempDir()), "cfg")
+	if err := os.Symlink(nested, link); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProjectRoot(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != root {
+		t.Errorf("ProjectRoot(%s) = %s, want the repository root %s the symlink points into", link, got, root)
 	}
 }
 
