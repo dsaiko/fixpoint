@@ -109,6 +109,16 @@ func (p *OutPipe) Drain() bool {
 		_ = p.r.Close()
 		return false
 	case <-grace.C:
+		// select picks at random when both cases are ready, so a copy that reached
+		// EOF in the same instant the grace fired can land here. Re-check without
+		// blocking: that capture IS complete, and reporting it as cut would annotate
+		// a whole log with a descendant that never existed.
+		select {
+		case <-p.done:
+			_ = p.r.Close()
+			return false
+		default:
+		}
 	}
 	_ = p.r.Close()
 	<-p.done
