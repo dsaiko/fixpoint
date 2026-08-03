@@ -604,7 +604,8 @@ func permissionBypassFlag(argv []string) string {
 // refusal itself lives in Validate.
 //
 // An element counts as a path when it is absolute or explicitly relative
-// ("./x", "../x"), or when it contains a separator and a file sits there now. The
+// ("./x", "../x"), or when it contains a separator and a file sits there now --
+// and, in every spelling, when what sits there now is not a directory. The
 // existence requirement is what keeps the separator-bearing strings that are not
 // paths at all out of the answer -- an OpenRouter model id such as
 // moonshotai/kimi-k2 is one, and refusing it would reject a working config. That
@@ -650,21 +651,33 @@ func pathLikeArg(tok, root string) bool {
 	if tok == "" {
 		return false
 	}
-	if filepath.IsAbs(tok) {
-		return true
-	}
+	explicit := filepath.IsAbs(tok)
 	for _, p := range []string{"./", "../", `.\`, `..\`} {
 		if strings.HasPrefix(tok, p) {
-			return true
+			explicit = true
+			break
 		}
 	}
-	if !strings.ContainsRune(tok, '/') && !strings.ContainsRune(tok, filepath.Separator) {
+	if !explicit && !strings.ContainsRune(tok, '/') && !strings.ContainsRune(tok, filepath.Separator) {
 		return false
 	}
-	st, err := os.Stat(filepath.Join(root, tok))
+	p := tok
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(root, p)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		// Nothing there to inspect. An explicit spelling stays path-like -- a file
+		// only the PR creates is precisely the case to catch -- while the ambiguous
+		// "dir/file" one needs the file to exist to count as a path at all.
+		return explicit
+	}
 	// A directory is not something the command executes or reads as code, and
-	// naming one (--add-dir some/sub) is not the substitution this guards against.
-	return err == nil && !st.IsDir()
+	// naming one (--add-dir some/sub, --add-dir ./sub) is not the substitution this
+	// guards against. The test comes after the explicit spellings rather than
+	// inside the ambiguous branch so both are exempted; it cannot weaken argv[0],
+	// which LookPath has already proven is an executable file.
+	return !st.IsDir()
 }
 
 // Commit policies: how a round's per-fix commits are grouped. The coder always

@@ -722,6 +722,30 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 		}
 	})
 
+	// A directory argument names no code: the agent CLI neither execs nor reads it,
+	// so --add-dir into the target must keep working in mode pr -- in the bare
+	// spelling and in the explicitly relative one, which reaches the same exemption.
+	for _, arg := range []string{"sub", "./sub", "sub/nested", "./sub/nested"} {
+		t.Run("accepts the directory argument "+arg+" in mode pr", func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "sub", "nested"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := prConfig(t, dir, "echo", "--add-dir", arg).Validate(); err != nil {
+				t.Fatalf("Validate() = %v, want nil for a directory argument", err)
+			}
+		})
+	}
+
+	// The exemption is for directories that exist, not for the explicitly relative
+	// spelling: a path the PR alone creates is the case this guard exists for.
+	t.Run("rejects an explicitly relative argument naming nothing yet in mode pr", func(t *testing.T) {
+		if err := prConfig(t, t.TempDir(), "echo", "--config", "./only-the-pr-has-it.json").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "./only-the-pr-has-it.json") {
+			t.Fatalf("Validate() = %v, want rejection of a path only the PR supplies", err)
+		}
+	})
+
 	// The same file named absolutely is the same PR-controlled file.
 	t.Run("rejects an absolute path inside the target in mode pr", func(t *testing.T) {
 		dir := t.TempDir()
