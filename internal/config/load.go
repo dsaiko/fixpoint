@@ -578,10 +578,48 @@ func (l *Loaded) fromProject(path string) bool {
 	if path == "" {
 		return false
 	}
-	if within(path, l.ProjectRoot) {
+	if withinTree(path, l.ProjectRoot) {
 		return true
 	}
-	return l.Config.Target.Path != "" && within(path, l.Config.Target.Path)
+	return l.Config.Target.Path != "" && withinTree(path, l.Config.Target.Path)
+}
+
+// withinTree reports whether path lies inside root either lexically or with every
+// symlink on both sides resolved.
+//
+// The resolved comparison is what makes this gate hold, because a bundle DIRECTORY
+// is deliberately allowed to be a symlink -- withinBundle resolves both sides for
+// exactly that reason, so ~/.fixpoint pointing into a dotfiles checkout keeps
+// working. Point that same link at a directory in the repository under review and
+// every file resolved from the "user" bundle keeps a lexical path under ~/.fixpoint
+// while really living inside the target: a lexical test reads policy the reviewed
+// commit can rewrite as operator-owned, so an inline agent or agents/*.yaml command
+// runs during the preflight ping with no -trusted-target, and
+// rejectProjectSuppliedInheritAll hands it the whole parent environment as well.
+//
+// Both spellings count rather than the resolved one alone: a lexical hit is already
+// proof the file sits in a tree the reviewed code can write, and resolving can only
+// move a path OUT of one tree into another.
+func withinTree(path, root string) bool {
+	if within(path, root) {
+		return true
+	}
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// Every path measured here was resolved from a bundle and read moments ago, so
+		// failing to canonicalize one now means the filesystem changed underneath the
+		// run. The answer decides whether the reviewed code's own policy may execute,
+		// so unknown provenance counts as the project's.
+		return true
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		// A root that cannot be canonicalized -- a target.path that does not exist --
+		// keeps its lexical form's verdict. Target validation reports that far more
+		// clearly than a trust refusal naming an unrelated bundle file would.
+		return false
+	}
+	return within(realPath, realRoot)
 }
 
 // within reports whether path lies inside root.

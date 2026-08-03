@@ -438,6 +438,47 @@ func TestFromProjectIgnoresUnsetPath(t *testing.T) {
 	}
 }
 
+// A bundle ROOT is allowed to be a symlink -- ~/.fixpoint pointing into a dotfiles
+// checkout is a supported setup, and the resolver deliberately keeps it working. So
+// provenance has to be judged by where a file REALLY lives: link the user bundle at
+// a directory in the reviewed repository and every resolved path stays lexically
+// under ~/.fixpoint while the reviewed commit owns the contents, which a lexical
+// test reads as operator-owned. Both gates that ride on it are asserted here: the
+// -trusted-target listing, and the inherit_all refusal no flag can grant.
+func TestProjectSuppliedPolicyThroughSymlinkedBundleRoot(t *testing.T) {
+	root := realDir(t, t.TempDir())
+	inside := filepath.Join(root, "vendor", "policy")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundle(t, inside, map[string]string{
+		"task": "target: {mode: directory}\n" + taskBody,
+	}, []string{"fix", "review-bugs"}, []string{"mock"})
+	// The path an operator's own bundle is searched under, resolving into the project.
+	link := filepath.Join(realDir(t, t.TempDir()), "."+appName)
+	if err := os.Symlink(inside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := LoadBundle(&Resolver{Bundles: []string{link}}, "task", root, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.ProjectSuppliedPolicy(); len(got) == 0 {
+		t.Fatalf("ProjectSuppliedPolicy() reported nothing; %s resolves into the reviewed project at %s, so the reviewed commit owns the agent command the preflight ping runs", link, inside)
+	}
+
+	// The same mismatch decides whether the reviewed code may claim the entire parent
+	// environment, which -trusted-target explicitly does not grant.
+	if err := os.WriteFile(filepath.Join(inside, agentsDir, "mock"+configExt),
+		[]byte("command: [true]\ncan_edit: true\nenv:\n  inherit_all: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadBundle(&Resolver{Bundles: []string{link}}, "task", root, Overrides{TrustedTarget: true}); err == nil {
+		t.Fatalf("LoadBundle() succeeded; an agent file inside %s set env.inherit_all and would receive every exported secret", inside)
+	}
+}
+
 // A bundle inside target.path but outside the project root is target-supplied too:
 // the two boundaries are checked as a union, so neither one being the wrong tree
 // lets a file through.
