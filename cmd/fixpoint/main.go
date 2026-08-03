@@ -387,15 +387,47 @@ func watchSignals(ch <-chan os.Signal, done <-chan struct{}, logf func(string, .
 			}
 			handled++
 			if handled == 1 {
+				// Cancel BEFORE announcing, and announce through announce() rather than
+				// logf: the operator's stop request must not be contingent on a writer that
+				// may never drain.
+				cancel()
 				// Name what the pause is: the run does not stop the instant the signal
 				// lands, it stops the current step and then reconciles the tree.
-				logf("interrupted: stopping after the current step, then stashing any edits so the tree is left clean -- interrupt again to quit immediately")
-				cancel()
+				announce(logf, "interrupted: stopping after the current step, then stashing any edits so the tree is left clean -- interrupt again to quit immediately")
 				continue
 			}
-			logf("interrupted again: quitting now; the working tree may be left dirty (check `git status` and `git stash list`)")
+			announce(logf, "interrupted again: quitting now; the working tree may be left dirty (check `git status` and `git stash list`)")
 			forceQuit()
 		}
+	}
+}
+
+// announceGrace bounds how long the interrupt state machine waits for one of its
+// announcements to reach stderr before carrying on without it. Long enough that
+// an ordinary write to a terminal, file or draining pipe always lands, short
+// enough that a wedged one cannot hold the escape hatch shut.
+const announceGrace = 2 * time.Second
+
+// announce writes an interrupt announcement on its own goroutine and waits at
+// most announceGrace for it, so no step of the interrupt state machine is gated
+// on stderr. logf takes the log mutex and then writes: against a piped stderr
+// whose consumer has stopped reading -- or with a reviewer goroutine already
+// parked inside such a write while holding that lock -- the call never returns.
+// Waiting on it in the watch is what would break the advertised escape, because
+// the second interrupt is precisely the one an operator sends once the process
+// looks wedged: the watch would stall mid-announcement, the second signal would
+// sit in the buffered channel unread, forceQuit would never run, and stop()'s
+// join on the watch would hang with it. The abandoned goroutine still writes if
+// stderr ever drains, and dies with the process if it does not.
+func announce(logf func(string, ...any), format string, args ...any) {
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		logf(format, args...)
+	}()
+	select {
+	case <-written:
+	case <-time.After(announceGrace):
 	}
 }
 

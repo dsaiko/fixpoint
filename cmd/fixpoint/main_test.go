@@ -637,6 +637,57 @@ func TestWatchSignalsTeardownIgnoresQueuedSignal(t *testing.T) {
 	t.Fatal("the watch never took its queued-signal arm, so the teardown tie-break this test exists to pin never ran")
 }
 
+// Neither interrupt may be gated on stderr. The announcements go through the log
+// mutex to a writer that can block indefinitely -- a piped stderr whose consumer
+// stopped reading, or a reviewer goroutine already parked inside such a write
+// while holding the lock. Announcing inline would mean the first signal never
+// cancels, the second sits unread in the buffered channel instead of reaching
+// forceQuit, and stop()'s join hangs on the stalled watch: the escape would fail
+// exactly when the process is already wedged, which is when it is used.
+func TestWatchSignalsSurvivesBlockedLogging(t *testing.T) {
+	quit := make(chan struct{}, 1)
+	orig := forceQuit
+	forceQuit = func() { quit <- struct{}{} }
+	t.Cleanup(func() { forceQuit = orig })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ch := make(chan os.Signal, 2)
+	done := make(chan struct{})
+
+	// A log call that never returns, released only once the test is over.
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		watchSignals(ch, done, func(string, ...any) { <-blocked }, cancel)
+	}()
+
+	ch <- syscall.SIGTERM
+	select {
+	case <-ctx.Done():
+	case <-time.After(announceGrace / 2):
+		t.Fatal("the first interrupt did not cancel the run while stderr was blocked; cancellation must not wait on the announcement")
+	}
+
+	ch <- syscall.SIGTERM
+	select {
+	case <-quit:
+	case <-time.After(4 * announceGrace):
+		t.Fatal("the second interrupt never reached forceQuit while stderr was blocked; the escape must not wait on a writer that may never drain")
+	}
+
+	// And teardown still joins: a watch that cannot be left waiting on stderr is
+	// also a watch stop() cannot deadlock behind.
+	close(done)
+	select {
+	case <-stopped:
+	case <-time.After(4 * announceGrace):
+		t.Fatal("watchSignals never returned while stderr was blocked; stop() would deadlock on its join")
+	}
+}
+
 // The wiring around watchSignals: stop() must return rather than deadlock on its
 // join with the watch goroutine, and must cancel the context it handed out.
 func TestNotifySignalsStopCancels(t *testing.T) {
