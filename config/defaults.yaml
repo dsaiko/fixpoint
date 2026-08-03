@@ -162,3 +162,16 @@ logs:
   pattern: "{role}-{agent}-{prompt}-{timestamp}.{ext}"
   summary_pattern: "summary-{timestamp}.{ext}"
   timestamp_format: "20060102-150405" # Go layout (ref: Mon Jan 2 15:04:05 2006)
+
+  # Extra Go regular expressions masked in every artifact and log line, on top of
+  # the built-in credential shapes (sk-ant-…, ghp_…, JWTs, key/secret/password
+  # assignments, PEM blocks, connection-string passwords). The built-ins recognize
+  # shapes, so a site's own opaque token matches none of them and is written
+  # verbatim — name yours here. A capture group is kept and the rest of the match
+  # is masked, so the line stays readable:
+  #   redact:
+  #     - '(?i)(x-internal-auth\s*:\s*)\S+'
+  #     - 'ACME-[A-Z0-9]{24}'
+  # A pattern matching the empty string is rejected at startup: it would match at
+  # every position and mask the whole of every artifact.
+  redact: []

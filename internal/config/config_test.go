@@ -415,6 +415,23 @@ func TestValidate(t *testing.T) {
 		{"summary_pattern without {ext}", func(c *Config) {
 			c.Logs.SummaryPattern = "summary.md"
 		}, "must contain {ext}"},
+		// logs.redact is the operator's escape hatch from the shape-based built-in
+		// redaction rules, so a pattern that cannot do its job must be rejected at
+		// startup: otherwise the failure surfaces on the write that was supposed to
+		// mask a secret, or (for an empty-matching pattern) only by reading the
+		// destroyed artifacts of a finished run.
+		{"logs.redact valid patterns accepted", func(c *Config) {
+			c.Logs.Redact = []string{`(?i)(x-internal-auth\s*:\s*)\S+`, `ACME-[A-Z0-9]{24}`}
+		}, ""},
+		{"logs.redact uncompilable pattern rejected", func(c *Config) {
+			c.Logs.Redact = []string{`ACME-[A-Z`}
+		}, "does not compile"},
+		{"logs.redact empty entry rejected", func(c *Config) {
+			c.Logs.Redact = []string{"  "}
+		}, "logs.redact[0] is empty"},
+		{"logs.redact empty-matching pattern rejected", func(c *Config) {
+			c.Logs.Redact = []string{`[A-Z0-9]*`}
+		}, "matches the empty string"},
 		// env.pass names variables to inherit, so a `FOO=bar` entry passes nothing
 		// and silently starves the agent of the credential it needed. The error must
 		// name the offending VARIABLE and its index -- an earlier version shadowed

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,6 +77,12 @@ const redactionMask = "[REDACTED]"
 // a guarantee; the operator guidance in fixpoint.yaml (keep the logs dir out
 // of any sync/backup/commit, or drop `raw`) still applies. Rules with a capture
 // group keep that visible prefix and mask only the value.
+//
+// These rules are SHAPES, which is the limit of what a shipped list can be: a
+// site's own bearer format, an opaque internal token, or a secret paired with a
+// key that looks like nothing match none of them and are written verbatim. That
+// is what logs.redact is for -- see config.Logs.Redact and SetExtraRedactions --
+// and why the directory permissions, not this pass, are the access control.
 var redactRules = []struct {
 	re   *regexp.Regexp
 	repl string
@@ -129,11 +136,40 @@ var redactRules = []struct {
 	{regexp.MustCompile(`(?i)((?:\\?["'])?(?:api[_-]?key|secret|token|password|passwd)(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)[^\s"'\\]{8,}`), "${1}" + redactionMask},
 }
 
-// redactSecrets applies redactRules in order; later rules see already-masked
-// text, which only ever over-redacts (acceptable for a debug artifact).
+// extraRedactions holds the operator's own patterns (logs.redact), installed
+// once at startup by SetExtraRedactions. An atomic pointer rather than a plain
+// slice because redactSecrets runs from the reviewer goroutines, the journal
+// writer and the log writers concurrently, and a test that installs patterns
+// does so while nothing else is running -- so the store is uncontended but must
+// still be race-free.
+var extraRedactions atomic.Pointer[[]*regexp.Regexp]
+
+// SetExtraRedactions installs site-specific patterns that redactSecrets applies
+// after the built-in rules, replacing any previously installed set. Call it once,
+// before the run starts anything that logs.
+//
+// It exists because the built-in rules are shape-based: they cannot recognize a
+// site's own opaque token, so only the operator can name it. Matches are masked
+// whole, except that a pattern with a capture group keeps group 1 -- the same
+// prefix-keeping convention the built-in rules use. See config.Logs.Redact.
+func SetExtraRedactions(res []*regexp.Regexp) {
+	extraRedactions.Store(&res)
+}
+
+// redactSecrets applies redactRules in order, then the operator's own patterns;
+// later rules see already-masked text, which only ever over-redacts (acceptable
+// for a debug artifact).
 func redactSecrets(s string) string {
 	for _, r := range redactRules {
 		s = r.re.ReplaceAllString(s, r.repl)
+	}
+	if extra := extraRedactions.Load(); extra != nil {
+		for _, re := range *extra {
+			// ${1} is empty for a pattern without a capture group, so the same
+			// replacement covers both shapes: mask the whole match, or keep the visible
+			// prefix the operator captured and mask the value after it.
+			s = re.ReplaceAllString(s, "${1}"+redactionMask)
+		}
 	}
 	return s
 }
@@ -142,7 +178,8 @@ func redactSecrets(s string) string {
 // any on-disk log. It is the exported entry point so every persisted format
 // (raw, prompt, md, json) shares one redaction pass, not just raw output. Same
 // best-effort caveat as redactRules -- keeping the logs dir private is the real
-// control. Applying it twice is harmless (masked text does not re-match).
+// control, and logs.redact is how a site adds what the shapes cannot know.
+// Applying it twice is harmless (masked text does not re-match).
 func RedactSecrets(s string) string { return redactSecrets(s) }
 
 // Run executes the agent with the prompt, in dir, honoring the configured

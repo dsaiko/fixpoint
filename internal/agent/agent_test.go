@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -236,6 +237,42 @@ func TestRedactSecretsPreservesJSONEscaping(t *testing.T) {
 	}
 	if !strings.HasSuffix(back["detail"], `"`) {
 		t.Errorf("the trailing quote was eaten by redaction: %q", back["detail"])
+	}
+}
+
+// The built-in rules are shapes, so a site's own opaque token is exactly what
+// they cannot recognize; logs.redact is the operator's answer and must reach
+// every persisted format, not just Raw. Both spellings are asserted: a bare
+// pattern masks its whole match, and a pattern with a capture group keeps the
+// visible prefix -- the convention the built-in rules use, and the one that keeps
+// the surrounding log line readable.
+func TestSetExtraRedactions(t *testing.T) {
+	t.Cleanup(func() { SetExtraRedactions(nil) })
+	SetExtraRedactions([]*regexp.Regexp{
+		regexp.MustCompile(`(?i)(x-internal-auth\s*:\s*)\S+`),
+		regexp.MustCompile(`ACME-[A-Z0-9]{8}`),
+	})
+	// A shape no built-in rule matches: an opaque token under a header name that
+	// is not "authorization", and a bare site-specific key with no keyword at all.
+	const line = "x-internal-auth: opaqueTOKENvalue and ACME-ABCD1234 seen\n"
+	if got := RedactSecrets(line); strings.Contains(got, "opaqueTOKENvalue") ||
+		strings.Contains(got, "ACME-ABCD1234") ||
+		!strings.Contains(got, "x-internal-auth: ") ||
+		!strings.Contains(got, redactionMask) {
+		t.Errorf("RedactSecrets with extra patterns = %q; want both secrets masked and the header name kept", got)
+	}
+	// Raw shares the one pass, so the .raw log -- the artifact that keeps the
+	// subprocess's verbatim stderr, where a leaked token actually lands -- is
+	// covered by the same install.
+	raw := Result{Stdout: "ok", Stderr: line}.Raw([]string{"agent"})
+	if strings.Contains(raw, "opaqueTOKENvalue") {
+		t.Errorf("Raw() = %q; want the extra patterns applied to the raw log too", raw)
+	}
+	// Uninstalling restores the built-in-only behavior, so one test's patterns
+	// cannot leak into another's expectations.
+	SetExtraRedactions(nil)
+	if got := RedactSecrets(line); !strings.Contains(got, "opaqueTOKENvalue") {
+		t.Errorf("RedactSecrets after clearing = %q; want the extra patterns gone", got)
 	}
 }
 

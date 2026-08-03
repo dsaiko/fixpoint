@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -789,6 +790,91 @@ func TestRunRedactsSecretsInLoggedErrors(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "[REDACTED]") {
 		t.Errorf("stderr missing the redaction mask (error was not redacted):\n%s", buf.String())
+	}
+}
+
+// logs.redact is the operator's answer to the built-in redactor being
+// shape-based: a site's own opaque token matches none of the shipped rules and
+// would otherwise be written verbatim into the artifacts. The patterns are
+// installed process-wide from main, so this asserts the wiring where it actually
+// has to hold -- the persisted artifacts and the console -- not just the redactor
+// unit. ACME-ABCD1234 is a synthetic value in nobody's rule set: without the
+// config key it survives every existing masking pass.
+func TestRunAppliesConfiguredRedactionPatterns(t *testing.T) {
+	const siteToken = "ACME-ABCD1234"
+	f := newFixture(t)
+	cfgYAML := fmt.Sprintf(`target:
+  mode: directory
+  path: %q
+roles:
+  coder:
+    agent: mock
+    prompt: %q
+  review:
+    strategy: fixed
+    prompts:
+      - {agent: mock-rev, prompt: %q}
+agents:
+  mock:
+    command: [%q]
+    prompt_via: stdin
+    timeout: 1m
+    can_edit: true
+  mock-rev:
+    command: [%q]
+    prompt_via: stdin
+    timeout: 1m
+    can_edit: false
+loop:
+  review_only: true
+logs:
+  dir: %q
+  redact: ['ACME-[A-Z0-9]{8}']
+ping_agents: false
+`, f.repo, f.fixPrompt, f.reviewPrompt, f.script, f.script, f.logsDir)
+	cfgPath := filepath.Join(t.TempDir(), "fixpoint.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The reviewer quotes the token into a finding, the way a prompt-injected one
+	// quotes a value it read: it then reaches the .md/.json step logs, the journal,
+	// and the summary.
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "bugs", File: "main.go", Line: 1, Severity: "low",
+		Title: "leaked " + siteToken, Description: "value " + siteToken,
+	}))
+	var buf bytes.Buffer
+	if got := run([]string{"-config", cfgPath}, &buf, &buf); got != 0 {
+		t.Fatalf("run() = %d, want 0; stderr:\n%s", got, buf.String())
+	}
+	if strings.Contains(buf.String(), siteToken) {
+		t.Errorf("stderr leaked the site-specific token:\n%s", buf.String())
+	}
+	// Walk every artifact the run wrote: the point of the key is that it covers
+	// each persisted format, so a format that bypassed the pass must fail here.
+	base := strings.Split(filepath.ToSlash(f.logsDir), "/{")[0]
+	masked := false
+	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(b), siteToken) {
+			t.Errorf("artifact %s leaked the site-specific token:\n%s", path, b)
+		}
+		if strings.Contains(string(b), "[REDACTED]") {
+			masked = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !masked {
+		t.Error("no artifact contains the redaction mask; the configured pattern elided instead of masking, or nothing was written")
 	}
 }
 

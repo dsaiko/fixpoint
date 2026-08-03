@@ -130,6 +130,19 @@ Flags:
 		return 1
 	}
 
+	// Install the operator's own redaction patterns before anything that can carry
+	// a secret is logged or persisted. It happens here, after validation, because
+	// Validate is what proves the patterns compile -- and this is still ahead of
+	// every path below, so --check and --check-live get them too. The config-loading
+	// errors logged above ran under the built-in rules alone; they quote bundle
+	// paths, not agent or target content.
+	extraRedactions, err := cfg.Logs.RedactPatterns()
+	if err != nil {
+		logf("config: %v", err)
+		return 1
+	}
+	agent.SetExtraRedactions(extraRedactions)
+
 	o, err := orchestrator.New(loaded, logf)
 	if err != nil {
 		logf("startup validation: %v", err)

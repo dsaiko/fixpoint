@@ -1025,7 +1025,24 @@ Read this before pointing the tool at code you did not write.
 - **Logs can contain secrets.** The reviewed material, raw agent output, and
   reviewer-authored text are all persisted; redaction is heuristic, not a
   guarantee. Keep the logs directory out of any sync, backup, or commit (the
-  run's own logs dir is always excluded from round commits automatically).
+  run's own logs dir is always excluded from round commits automatically) — the
+  owner-only permissions on it are the real access control, not the redactor. The
+  built-in rules match credential *shapes* (`sk-ant-…`, `ghp_…`, JWTs,
+  `password: …`, PEM blocks), so a site's own opaque token — an
+  `x-internal-auth` header, a bearer string in a vendor format, a connection URL
+  under a name that looks like nothing — matches none of them and is written
+  verbatim. Add your own patterns under `logs.redact`:
+
+  ```yaml
+  logs:
+    redact:
+      - '(?i)(x-internal-auth\s*:\s*)\S+'  # capture group kept, rest masked
+      - 'ACME-[A-Z0-9]{24}'                # no group: whole match masked
+  ```
+
+  They apply to every artifact and every log line, after the built-in rules, and
+  are compiled at startup so a bad pattern fails the run rather than the write
+  that was supposed to mask something.
 - **One run owns the repository.** A fix run (and any `pr` run, which checks out a
   branch) takes an exclusive `flock` on a file in the target's git directory for its
   whole duration, and a second run on the same checkout is refused at preflight

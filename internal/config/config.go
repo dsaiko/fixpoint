@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -700,6 +701,53 @@ type Logs struct {
 	Pattern         string   `yaml:"pattern"`
 	SummaryPattern  string   `yaml:"summary_pattern"`
 	TimestampFormat string   `yaml:"timestamp_format"`
+	// Redact holds extra Go regular expressions whose matches are masked in every
+	// persisted artifact and log line, on top of the built-in credential shapes.
+	//
+	// The built-in rules recognize SHAPES (sk-ant-..., ghp_..., a JWT, a
+	// key/secret/token/password assignment), so a site's own opaque token -- an
+	// x-internal-auth header, a bare bearer string in a vendor format, a
+	// connection URL under a name that looks like nothing -- matches none of them
+	// and lands in the .raw log verbatim. No shape list can close that; only the
+	// operator knows what their secrets look like. A pattern with a capture group
+	// keeps group 1 and masks the rest of the match, which is how a site-specific
+	// key gets masked while the surrounding line stays readable.
+	Redact []string `yaml:"redact"`
+}
+
+// RedactPatterns compiles logs.redact. Validate rejects a config whose patterns
+// do not compile, so a run installs these once at startup and can treat a
+// failure here as impossible.
+func (l Logs) RedactPatterns() ([]*regexp.Regexp, error) {
+	out := make([]*regexp.Regexp, 0, len(l.Redact))
+	for i, p := range l.Redact {
+		re, err := redactPattern(i, p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, re)
+	}
+	return out, nil
+}
+
+// redactPattern compiles one logs.redact entry and rejects the two ways an
+// operator's pattern can make the artifacts worse instead of safer.
+func redactPattern(i int, p string) (*regexp.Regexp, error) {
+	if strings.TrimSpace(p) == "" {
+		return nil, fmt.Errorf("logs.redact[%d] is empty; every entry must be a regular expression matching the secret to mask", i)
+	}
+	re, err := regexp.Compile(p)
+	if err != nil {
+		return nil, fmt.Errorf("logs.redact[%d] %q does not compile: %w", i, p, err)
+	}
+	// A pattern that matches "" matches at every position, so the replacement is
+	// spliced between every character of every artifact -- the logs are destroyed
+	// and, worse, they still look redacted. Rejected at startup because the damage
+	// is only visible by reading a finished run's artifacts.
+	if re.MatchString("") {
+		return nil, fmt.Errorf("logs.redact[%d] %q matches the empty string, so it would match at every position and mask the whole of every artifact; anchor it or require at least one character (e.g. use + instead of *)", i, p)
+	}
+	return re, nil
 }
 
 // StepPath renders logs.pattern into a per-step artifact path (relative to the
@@ -1217,6 +1265,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Logs.SummaryPattern != "" && !strings.Contains(c.Logs.SummaryPattern, "{ext}") {
 		return fmt.Errorf("logs.summary_pattern %q must contain {ext}, else the JSON summary overwrites the Markdown one (and its path is returned as the Markdown path)", c.Logs.SummaryPattern)
+	}
+	// The extra redaction patterns are compiled here, at startup, rather than on
+	// first use: a pattern that does not compile would otherwise be discovered by
+	// the write that was supposed to mask a secret, with the run already underway.
+	if _, err := c.Logs.RedactPatterns(); err != nil {
+		return err
 	}
 	if err := c.Verify.validate(); err != nil {
 		return err
