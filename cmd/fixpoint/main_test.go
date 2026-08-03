@@ -1077,6 +1077,59 @@ func TestListPorcelainDropsUnsafeConfigNames(t *testing.T) {
 	}
 }
 
+// Both listings walk every bundle on the search path, and the first is
+// <project>/config, inside the repository under review. One directory nobody can
+// read must not blank the whole listing: the failure is a warning and the configs
+// that did resolve are still printed. Completion parses the porcelain form with
+// stderr discarded, so treating that error as fatal would leave TAB offering
+// nothing, with no explanation anywhere the operator could see.
+func TestListDegradesWhenOneBundleIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory whatever its mode, so there is nothing to deny here")
+	}
+	root := t.TempDir()
+	closed, open := filepath.Join(root, "closed"), filepath.Join(root, "open")
+	for _, dir := range []string{closed, open} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const body = "roles:\n  review:\n    prompts: [review-bugs]\n"
+	if err := os.WriteFile(filepath.Join(open, "review-code.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Restored before TempDir's own cleanup, which cannot remove a directory it is
+	// not allowed to read.
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
+	newResolver := func() *config.Resolver { return &config.Resolver{Bundles: []string{closed, open}} }
+
+	t.Run("human listing", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		if code := listConfigs(newResolver(), open, &out, &errOut); code != 0 {
+			t.Fatalf("listConfigs() = %d, want 0: the readable bundle still has a config; stderr:\n%s", code, errOut.String())
+		}
+		if !strings.Contains(out.String(), "review-code") {
+			t.Errorf("the config that resolved must still be listed:\n%s", out.String())
+		}
+		if !strings.Contains(errOut.String(), "warning") {
+			t.Errorf("the unreadable bundle must be reported as a warning:\n%s", errOut.String())
+		}
+	})
+
+	t.Run("porcelain listing", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		if code := listPorcelain(newResolver(), &out, &errOut); code != 0 {
+			t.Fatalf("listPorcelain() = %d, want 0; stderr:\n%s", code, errOut.String())
+		}
+		if got := out.String(); got != "review-code\trunnable\t\n" {
+			t.Errorf("porcelain listing =\n%q\nwant the config completion can still offer", got)
+		}
+	})
+}
+
 // A description and a filename are repository-controlled: bundles resolve from
 // <project>/config FIRST, and listing runs before any provenance or trust gate. So
 // merely asking a hostile clone what it offers must not let it drive the terminal

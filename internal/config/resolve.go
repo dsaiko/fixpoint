@@ -418,17 +418,25 @@ type Entry struct {
 // with the file it resolved from. Shadowed copies are omitted: the entry is the one
 // a run would actually use. Backs both `--list` and shell completion -- which
 // should offer only the runnable ones.
+//
+// The error is a PARTIAL failure, never a total one: the entries returned with it
+// are still the ones a run would use, so callers must report it as a warning and
+// go on printing them rather than treating it as "the listing failed".
 func (r *Resolver) ListConfigs() ([]Entry, error) {
 	seen := map[string]bool{}
 	var out []Entry
 	var errs []error
 	for _, b := range r.Bundles {
+		// A missing bundle is normal, not an error. An unreadable one is reported but
+		// not fatal, for the same reason as the out-of-bundle symlink below: listing
+		// walks every bundle, so one directory nobody can read -- a mode-000
+		// <project>/config shipped by the target, a root-owned ~/.fixpoint -- must not
+		// take `--list` down for all of them. ReadDir hands back the names it managed
+		// to read alongside the error, so the loop runs over them either way rather
+		// than discarding a partly-read directory with its error.
 		entries, err := os.ReadDir(b)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				errs = append(errs, err)
-			}
-			continue // a missing bundle is normal, not an error
+		if err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
 		}
 		for _, e := range entries {
 			if filepath.Ext(e.Name()) != configExt {

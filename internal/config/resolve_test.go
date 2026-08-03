@@ -413,6 +413,34 @@ func TestBundleFileReadIsCapped(t *testing.T) {
 	}
 }
 
+// An unreadable bundle directory -- a mode-000 <project>/config shipped by the
+// target, a stale root-owned ~/.fixpoint -- is a PARTIAL failure. The error is
+// reported, but the configs the other bundles offered come back with it: listing
+// walks every bundle, so one directory nobody can read must not take `--list` and
+// completion down for all of them.
+func TestListConfigsSurvivesUnreadableBundle(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory whatever its mode, so there is nothing to deny here")
+	}
+	root := t.TempDir()
+	closed := bundle(t, filepath.Join(root, "project"), map[string]string{"hidden": runnableBody}, nil, nil)
+	open := bundle(t, filepath.Join(root, "system"), map[string]string{"task": runnableBody}, nil, nil)
+	if err := os.Chmod(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Restored before TempDir's own cleanup, which cannot remove a directory it is
+	// not allowed to read.
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
+
+	got, err := (&Resolver{Bundles: []string{closed, open}}).ListConfigs()
+	if err == nil {
+		t.Error("an unreadable bundle must still be reported, not swallowed")
+	}
+	if len(got) != 1 || got[0].Name != "task" {
+		t.Fatalf("got %+v, want the readable bundle's config returned alongside the error", got)
+	}
+}
+
 // link creates a symlink at name pointing at target, replacing whatever is there.
 func link(t *testing.T, target, name string) {
 	t.Helper()

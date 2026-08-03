@@ -512,8 +512,10 @@ func sortedKeys(m map[string]string) []string {
 func listConfigs(r *config.Resolver, projectRoot string, stdout, stderr io.Writer) int {
 	configs, err := r.ListConfigs()
 	if err != nil {
-		fmt.Fprintf(stderr, "listing configs: %v\n", err)
-		return 1
+		// A warning, because the error is a partial one: an unreadable bundle
+		// directory on the search path must not hide the configs that did resolve. The
+		// empty case below is what reports a listing that found nothing at all.
+		fmt.Fprintf(stderr, "warning: listing configs: %v\n", err)
 	}
 	if len(configs) == 0 {
 		// A failure, so it belongs on stderr: nothing is runnable here.
@@ -555,8 +557,14 @@ func listConfigs(r *config.Resolver, projectRoot string, stdout, stderr io.Write
 func listPorcelain(r *config.Resolver, stdout, stderr io.Writer) int {
 	configs, err := r.ListConfigs()
 	if err != nil {
-		fmt.Fprintf(stderr, "listing configs: %v\n", err)
-		return 1
+		// Completion parses this form with stderr discarded, so an unreadable bundle
+		// directory reported as fatal here would silently leave completion offering
+		// nothing at all. Warn and emit what resolved; only a listing that came up
+		// completely empty behind an error is a failure worth a status code.
+		fmt.Fprintf(stderr, "warning: listing configs: %v\n", err)
+		if len(configs) == 0 {
+			return 1
+		}
 	}
 	for _, c := range configs {
 		if !bundleNameRE.MatchString(c.Name) {
