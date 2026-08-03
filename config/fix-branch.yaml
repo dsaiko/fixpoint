@@ -36,7 +36,12 @@ roles:
   coder: { agent: claude-coder, prompt: fix }
   review:
     strategy: rotate
-    agents: [codex, claude, kimi-openrouter]
+    # kimi-codex, not kimi-openrouter, DELIBERATELY out of step with fix-code and
+    # review-code: this panel is the live arm of a harness comparison, and those
+    # two keep kimi-openrouter as the control. Same model, same route, only the
+    # harness differs -- see kimi-codex.yaml for why that is the variable worth
+    # isolating. Promote or revert once a full run has been measured on both.
+    agents: [codex, claude, kimi-codex]
     prompts:
       - review-bugs
       - review-security
