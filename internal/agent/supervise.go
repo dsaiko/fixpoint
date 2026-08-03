@@ -102,11 +102,13 @@ func (p *OutPipe) CloseChild() { _ = p.child.Close() }
 // once. That is a wait, not an abandonment; the guarantee above holds on both
 // paths.
 func (p *OutPipe) Drain() bool {
+	grace := time.NewTimer(PipeDrainGrace)
+	defer grace.Stop()
 	select {
 	case <-p.done:
 		_ = p.r.Close()
 		return false
-	case <-time.After(PipeDrainGrace):
+	case <-grace.C:
 	}
 	_ = p.r.Close()
 	<-p.done
@@ -165,10 +167,12 @@ func (p *inPipe) closeChild() { _ = p.child.Close() }
 // that escaped the group and still holds one, and closing the write end unblocks
 // the copy so the wait that follows returns at once.
 func (p *inPipe) join() {
+	grace := time.NewTimer(PipeDrainGrace)
+	defer grace.Stop()
 	select {
 	case <-p.done:
 		return
-	case <-time.After(PipeDrainGrace):
+	case <-grace.C:
 	}
 	_ = p.w.Close()
 	<-p.done
