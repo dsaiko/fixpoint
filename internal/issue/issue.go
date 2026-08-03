@@ -218,9 +218,19 @@ func fileTitleMatch(it model.Issue, obs model.Finding) bool {
 // face value.
 //
 // It may, for every issue this round will still hand to the coder: absorbing a
-// re-report is the whole point of the declaration, attach re-anchors the issue onto
-// the new observation's location and text, and the worst a wrong id costs is one
-// cap slot spent on two problems.
+// re-report is the whole point of the declaration, and only the reviewer can
+// recognize a reword whose wording AND file have both moved -- no lexical rule
+// reaches that, which is why the declaration is taken on its own here.
+//
+// A wrong id is not free, and costs more than one cap slot spent on two problems:
+// attach re-anchors the issue onto the declaring observation's location and text, so
+// the coder is handed THAT reading and the verdict is recorded against it. What it
+// cannot do is bury the defect the issue was about. Once the verdict lands, the
+// canonical title is no longer that defect's, so an honest re-report of it agrees
+// with neither the fingerprint's title nor the file's -- the evidence both match
+// paths require -- and is minted as its own issue; and an honest declaration citing
+// the now rejected id is refused by the rule below. A redirect therefore costs a
+// coder session and restarted aging, not the finding.
 //
 // It may NOT when the named issue was REJECTED in an earlier round, because that is
 // the one state where attaching an observation SUPPRESSES it: forRound carries the

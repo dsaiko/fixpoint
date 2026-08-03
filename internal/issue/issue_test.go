@@ -338,6 +338,49 @@ func TestAbsorbHonorsADeclarationOnADeferredIssueWithoutLexicalEvidence(t *testi
 	}
 }
 
+// A declaration is taken on the reviewer's word for any issue the round will still
+// hand over, so a reviewer that is steered -- or merely confused about which id it
+// is citing -- can point an open issue's canonical text at something else and spend
+// its coder session on that. What it cannot do is bury the defect the issue was
+// about: the redirect replaces the canonical title, so once a verdict lands on the
+// wrong reading, an honest re-report of the real defect agrees with neither the
+// fingerprint's title nor the file's -- the evidence both match paths require -- and
+// is minted as its own issue rather than inheriting the verdict. This is what prices
+// a wrong id at a coder session and restarted aging; see declarationHolds.
+func TestARedirectedDeclarationCannotBuryTheOriginalDefect(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{obs("a", "review-security", "security", "high",
+		"internal/auth/token.go", 91, "Session token is compared with a non-constant-time equality")})
+	id := r1[0].ID
+	l.Record(id, model.VerdictDeferred, "capped")
+
+	// Round 2: the id is honored on the reviewer's word alone, so this reading
+	// becomes the canonical one and the coder answers about it.
+	redirect := obs("b", "review-style", "style", "low", "internal/auth/token.go", 12, "typo in a comment")
+	redirect.IssueID = id
+	r2 := l.Absorb(2, []model.Finding{redirect})
+	if len(r2) != 1 || r2[0].ID != id || r2[0].Title != redirect.Title {
+		t.Fatalf("round 2 = %+v, want the declaration honored and the issue re-anchored onto it", r2)
+	}
+	l.Record(id, model.VerdictRejected, "there is no typo there")
+
+	// Round 3: the real defect, reported honestly at the location it was first seen.
+	r3 := l.Absorb(3, []model.Finding{obs("c", "review-security", "security", "high",
+		"internal/auth/token.go", 91, "Session token is compared with a non-constant-time equality")})
+	if len(r3) != 1 {
+		t.Fatalf("got %d issues, want the re-report kept", len(r3))
+	}
+	if r3[0].ID == id {
+		t.Fatalf("the re-report joined %s, whose verdict was about the typo; a rejection must not close it", id)
+	}
+	if r3[0].Verdict != "" {
+		t.Errorf("Verdict = %q, want empty so the coder is handed the real defect", r3[0].Verdict)
+	}
+	if r3[0].Severity != "high" {
+		t.Errorf("Severity = %q, want high: the redirect's low reading must not have followed it", r3[0].Severity)
+	}
+}
+
 // Deferral counts are now exact, which is what the cap's aging consumes. The
 // previous approximation could only guess from (file, category).
 func TestRecordTracksDeferralsAndStatus(t *testing.T) {
