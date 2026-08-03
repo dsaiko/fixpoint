@@ -2,7 +2,9 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,6 +116,35 @@ func TestRunTimesOutAndKillsTheCommand(t *testing.T) {
 	}
 	if !strings.Contains(r.Err, "timed out") {
 		t.Errorf("Err = %q, want a timeout diagnostic", r.Err)
+	}
+}
+
+// The timeout branch REPLACES Supervise's error, and the leader's own
+// `signal: killed` is all it is meant to replace. A failed process-group kill
+// joined into that error is a different statement: it proves the group still
+// holds a descendant fixpoint cannot signal, so a child of the build or test
+// command is live inside the target repository while the clean-tree check and the
+// round commit run over it. Reported as nothing but "timed out after ...", that
+// containment failure reaches neither the Result, the round record, nor the
+// journal.
+func TestRunTimeoutKeepsFailedKillProcessGroup(t *testing.T) {
+	orig := supervise
+	t.Cleanup(func() { supervise = orig })
+	supervise = func(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (bool, error) {
+		leaked, err := orig(ctx, cmd, stdout, stderr)
+		return leaked, errors.Join(err, &agent.KillGroupError{Err: syscall.EPERM})
+	}
+
+	rep := Run(t.Context(), cfg(300*time.Millisecond,
+		config.VerifyCommand{Name: "hang", Run: []string{"sleep", "60"}},
+	), t.TempDir(), nil)
+
+	r := rep.Results[0]
+	if !strings.Contains(r.Err, "timed out after") {
+		t.Errorf("Err = %q, want the timeout phrasing for the leader's own end", r.Err)
+	}
+	if !strings.Contains(r.Err, "kill process group") || !strings.Contains(r.Err, syscall.EPERM.Error()) {
+		t.Errorf("Err = %q, want the uncontained process group reported too", r.Err)
 	}
 }
 

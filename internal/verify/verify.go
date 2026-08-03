@@ -28,6 +28,13 @@ import (
 // or blow the coder's context.
 const maxOutput = 64 << 10
 
+// supervise is agent.Supervise, wrapped for the same reason agent wraps its own
+// process-group kill: the reply that makes runOne's error handling matter -- a
+// failed group kill proving a descendant of a gate command survived it -- needs a
+// process running under other credentials, which a test cannot create.
+// Nothing in production reassigns it.
+var supervise = agent.Supervise
+
 // Result is one command's outcome. Aliased to the shared shape in model so the
 // round record, the summary, and this package cannot drift apart.
 type Result = model.VerifyResult
@@ -183,7 +190,7 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 	// BEFORE draining the output, so the window in which such a child can still
 	// touch the tree does not outlast the command. A nil stderr means one combined
 	// capture: a failure's cause is often split across both streams.
-	leakedPipe, err := agent.Supervise(cmdCtx, cmd, &buf, nil)
+	leakedPipe, err := supervise(cmdCtx, cmd, &buf, nil)
 	res.Duration = time.Since(start)
 	// Output can quote anything the build printed, including a secret from the
 	// environment, and it is persisted and fed back to the coder.
@@ -209,7 +216,21 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 			res.Output += "\n[fixpoint: the command exited 0 but a descendant held its output pipe open; the capture ends where fixpoint closed the pipe]\n"
 		}
 	case cmdCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
-		res.Err = fmt.Sprintf("timed out after %s", timeout)
+		// The leader's own exit error is all this phrasing is meant to replace -- on
+		// this path it is the `signal: killed` the teardown itself caused. A failed
+		// process-group kill joined into the same error is a different statement, and
+		// it has to survive: off darwin an EPERM proves the group still holds a member
+		// this process cannot signal, so a descendant of the build or test command is
+		// live inside the target repository while the clean-tree check and the round
+		// commit run over it. Reduced to a bare timeout, that containment failure
+		// reaches neither the Result, the round record, nor the journal. Same carry as
+		// agent.Run's reclassification.
+		var killErr *agent.KillGroupError
+		if errors.As(err, &killErr) {
+			res.Err = fmt.Sprintf("timed out after %s: %v", timeout, killErr)
+		} else {
+			res.Err = fmt.Sprintf("timed out after %s", timeout)
+		}
 	default:
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
