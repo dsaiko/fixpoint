@@ -220,6 +220,24 @@ func TestValidate(t *testing.T) {
 			a.Command = []string{"echo", "--yolo"}
 			c.Agents["rev"] = a
 		}, "--yolo"},
+		// A bypass switch spelled =true is the same grant written differently, while
+		// =false is an opt-out no parser reads as on -- rejecting that one would
+		// refuse a config for asking for the safe thing.
+		{"read-only reviewer passing --yolo=true rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--yolo=true"}
+			c.Agents["rev"] = a
+		}, "--yolo"},
+		{"read-only reviewer passing --yolo=false accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--yolo=false"}
+			c.Agents["rev"] = a
+		}, ""},
+		{"read-only reviewer passing a permission-skip flag =false accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--dangerously-skip-permissions=FALSE", "-p"}
+			c.Agents["rev"] = a
+		}, ""},
 		{"read-only reviewer passing bypassPermissions as a mode value rejected", func(c *Config) {
 			a := c.Agents["rev"]
 			a.Command = []string{"echo", "--permission-mode bypassPermissions"}

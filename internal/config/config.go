@@ -530,7 +530,17 @@ func permissionBypassFlag(argv []string) string {
 	for i, tok := range argv {
 		key, val, hasVal := strings.Cut(tok, "=")
 		if _, ok := permissionBypassFlags[key]; ok {
-			return key
+			// A standalone switch spelled with an explicit =false is an opt-OUT, not
+			// a grant: no CLI parser these flags belong to reads "false" as on (yargs
+			// and Go's flag read it as off; clap, commander and argparse reject the
+			// spelling outright and never start), so reporting it as a write grant
+			// would be a false positive on a config that asked for the safe thing.
+			// Only that one literal is excused -- the bare flag, =true, and any value
+			// fixpoint cannot interpret all still count as a bypass.
+			if !hasVal || !strings.EqualFold(val, "false") {
+				return key
+			}
+			continue
 		}
 		if setting, value, isSetting := configSetting(tok); isSetting {
 			for _, mode := range writeGrantingConfigSettings[setting] {
