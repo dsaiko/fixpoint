@@ -100,44 +100,6 @@ func TestRenderCrossRolePlaceholderFails(t *testing.T) {
 	}
 }
 
-func TestFormatFindings(t *testing.T) {
-	findings := []model.Finding{
-		{
-			ID: "r1.1", Agent: "claude", Lens: "review-bugs",
-			Category: "correctness", Severity: "high",
-			File: "a/b.go", Line: 42,
-			Title:       "off by one",
-			Description: "loop misses the last element",
-			Suggestion:  "use <=",
-		},
-		{
-			ID: "r1.2", Agent: "codex", Lens: "review-tests",
-			Category: "tests", Severity: "low",
-			File:  "c.go", // no line, no description/suggestion
-			Title: "missing test",
-		},
-	}
-	got := FormatFindings(findings)
-	for _, want := range []string{
-		"### [r1.1] (correctness, high) a/b.go:42 — off by one",
-		"loop misses the last element",
-		"Suggested: use <=",
-		"(reported by claude via review-bugs)",
-		"### [r1.2] (tests, low) c.go — missing test",
-		"(reported by codex via review-tests)",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("FormatFindings missing %q:\n%s", want, got)
-		}
-	}
-	if strings.HasSuffix(got, "\n") {
-		t.Error("FormatFindings should not end with a newline")
-	}
-	if FormatFindings(nil) != "" {
-		t.Error("FormatFindings(nil) should be empty")
-	}
-}
-
 // A finding is written by an agent that has just read the code under review, so a
 // payload planted in a reviewed file can ride into the NEXT agent's prompt inside a
 // description. It has to arrive there as a quotation: marked on every line, unable

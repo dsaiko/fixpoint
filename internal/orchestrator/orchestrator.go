@@ -1795,6 +1795,18 @@ func mirrorCarriedVerdicts(rec *model.RoundRecord) {
 	}
 }
 
+// issueFindings returns the round's observations of one issue -- the
+// finding-level view of it, for logs that speak in the terms reviewers used.
+func issueFindings(rec *model.RoundRecord, issueID string) []model.Finding {
+	var out []model.Finding
+	for _, f := range rec.Findings {
+		if f.IssueID == issueID {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // setIssueVerdict records a verdict on one of the round's issues, in the ledger,
 // and on every observation that reported it -- so history and the run summary keep
 // speaking in the terms reviewers used while the coder works from issues.
@@ -3202,13 +3214,21 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 	res := agent.Run(ctx, a, text, o.cfg.Target.Path)
 	var out model.FixOutput
 	parseErr := agent.ExtractJSON(res.Stdout, "fix", &out)
+	stepErr := res.Err
+	if stepErr == nil {
+		stepErr = parseErr
+	}
 	// Failed the same way logStep gates below: a run whose output would not parse
 	// produced nothing usable, so the step summary must not report it as a success.
-	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, lens, len(text), res, res.Err != nil || parseErr != nil))
+	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, lens, len(text), res, stepErr != nil))
+	// Rendered like the fix step it corrects, so the one attempt where a coder is
+	// re-invoked with the gate's failures in hand has a human-readable record: the
+	// issue under correction, the coder's notes, and the failure if there was one.
+	md := logstore.RenderFixMD(coder.Agent, rec.Round, issueFindings(rec, fixed.ID), out.Notes, stepErr)
 	// Routed through logStep so the correction attempt gets the same ok-gating as
 	// every other step: a run that failed or whose output would not parse must not
 	// persist a zero FixOutput that reads back as a clean "no results" report.
-	o.logStep("fix", coder.Agent, lens, rec.Round, res.Err == nil && parseErr == nil, out, prompt.FormatFindings(nil), res)
+	o.logStep("fix", coder.Agent, lens, rec.Round, stepErr == nil, out, md, res)
 	// A failed or unparseable correction attempt is not fatal here: the caller
 	// re-verifies regardless, and the gate -- not the coder's self-report -- decides
 	// whether the round proceeds.

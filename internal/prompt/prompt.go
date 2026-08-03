@@ -285,27 +285,6 @@ func FormatIssues(issues []model.Issue) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// FormatFindings renders findings as the markdown block handed to the coder.
-func FormatFindings(findings []model.Finding) string {
-	if len(findings) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	sb.WriteString(untrustedNote)
-	for _, f := range findings {
-		fmt.Fprintf(&sb, "### [%s] (%s, %s) %s — %s\n",
-			f.ID, Flatten(f.Category), Flatten(f.Severity), Flatten(f.Loc()), Flatten(f.Title))
-		if f.Description != "" {
-			sb.WriteString(Quote(f.Description) + "\n")
-		}
-		if f.Suggestion != "" {
-			sb.WriteString(Quote("Suggested: "+f.Suggestion) + "\n")
-		}
-		fmt.Fprintf(&sb, "(reported by %s via %s)\n\n", Flatten(f.Agent), Flatten(f.Lens))
-	}
-	return strings.TrimRight(sb.String(), "\n")
-}
-
 // historyRoundsInFull is how many of the most recent rounds FormatHistory renders
 // with titles and verdict details. Older rounds collapse to one line per finding:
 // id, location, and verdict.

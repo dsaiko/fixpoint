@@ -3394,12 +3394,12 @@ func TestShortSHA(t *testing.T) {
 }
 
 // artifact reads one per-step artifact the run wrote, by its rendered filename
-// under round-<n>/. Reading the file from disk is the point: it is both what an
-// operator inspects afterwards and, for a prompt, the only record of what an agent
-// was actually told.
-func (f *fixture) artifact(round int, name string) string {
+// (which carries its own round, so the round-<n>/ directory need not be named).
+// Reading the file from disk is the point: it is both what an operator inspects
+// afterwards and, for a prompt, the only record of what an agent was actually told.
+func (f *fixture) artifact(name string) string {
 	f.t.Helper()
-	glob := filepath.Join(f.cfg.Logs.StaticBase(), "*", fmt.Sprintf("round-%d", round), name)
+	glob := filepath.Join(f.cfg.Logs.StaticBase(), "*", "round-*", name)
 	matches, err := filepath.Glob(glob)
 	if err != nil {
 		f.t.Fatal(err)
@@ -3443,7 +3443,7 @@ func TestVerifyCorrectionPromptCarriesFailures(t *testing.T) {
 	}
 	// The correction artifact is qualified by the issue whose fix is being corrected:
 	// the gate runs per fix, so a round can produce several corrections.
-	got := f.artifact(1, "fix-mock-fix-verify-i1-round-1.prompt")
+	got := f.artifact("fix-mock-fix-verify-i1-round-1.prompt")
 	for _, want := range []string{
 		"## Verification failed",          // the block's header
 		"### build",                       // which check failed, by its configured name
@@ -3456,6 +3456,17 @@ func TestVerifyCorrectionPromptCarriesFailures(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("fix-verify prompt is missing %q:\n%s", want, got)
+		}
+	}
+	// The .md is the human-readable record of the attempt an operator reads first.
+	// An empty one is indistinguishable from a step that produced nothing at all.
+	md := f.artifact("fix-mock-fix-verify-i1-round-1.md")
+	for _, want := range []string{
+		"# Fix — mock (round 1)", // the step it belongs to
+		"off by one",             // the issue under correction, in the reviewer's terms
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("fix-verify md is missing %q:\n%s", want, md)
 		}
 	}
 }
@@ -3997,12 +4008,12 @@ func TestFixSessionIsWarnedWhenItsFilesMovedEarlierInTheRound(t *testing.T) {
 	}
 	// The FIRST session runs against the tree its reviewers read, so it must not be
 	// told anything moved -- a warning on every session would be ignored on all of them.
-	first := f.artifact(1, filepath.Base(prompts[0]))
+	first := f.artifact(filepath.Base(prompts[0]))
 	if strings.Contains(first, "may already be out of date") {
 		t.Errorf("the first session of a round was warned about a tree that had not moved yet:\n%s", first)
 	}
 	// The SECOND session opens its finding after session 1 committed to main.go.
-	second := f.artifact(1, filepath.Base(prompts[1]))
+	second := f.artifact(filepath.Base(prompts[1]))
 	for _, want := range []string{"may already be out of date", "main.go", "Read the CURRENT contents"} {
 		if !strings.Contains(second, want) {
 			t.Errorf("the second session's prompt is missing %q:\n%s", want, second)
