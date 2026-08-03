@@ -135,9 +135,11 @@ func (r Report) Blocking(policy config.VerifyPolicy, baseline Report) []Result {
 // cheapest-first is therefore about how the summary reads, not about time saved.
 //
 // A command that cannot be started, exits non-zero, or exceeds its timeout is a
-// failure; ctx cancellation stops the pass and is reported as such. The context
-// error is the caller's cue to distinguish "the run was interrupted" from "the
-// checks failed", which are very different outcomes for a round.
+// failure; ctx cancellation stops the pass and is reported as such -- both by the
+// loop, which starts no further command, and in the Result of the command the
+// teardown killed, which records the interruption rather than an exit status. The
+// context error is the caller's cue to distinguish "the run was interrupted" from
+// "the checks failed", which are very different outcomes for a round.
 //
 // SECURITY: env is the environment every command receives, as exec.Cmd.Env -- the
 // caller passes agent.EnvWithoutCredentials so a verify command cannot read the
@@ -230,6 +232,26 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 			res.Err = fmt.Sprintf("timed out after %s: %v", timeout, killErr)
 		} else {
 			res.Err = fmt.Sprintf("timed out after %s", timeout)
+		}
+	case ctx.Err() != nil:
+		// The RUN ended -- typically Ctrl-C -- well inside this command's own timeout,
+		// so cmdCtx (a WithTimeout child) reports Canceled and the branch above does not
+		// apply. What Supervise returns here is the `signal: killed` the teardown itself
+		// caused, and left to fall through it matches *exec.ExitError: the Result would
+		// carry exit -1 with an empty Err, asserting that the check RAN and FAILED.
+		// verifyPass records and journals the pass BEFORE its own cancellation check, so
+		// the round record, the verify_finished event and the summary's Verification
+		// block would all blame the fix for a gate the operator stopped. Every consumer
+		// re-checks ctx immediately, so no round is wrongly rejected; the cost is the
+		// durable artifact. A non-empty Err instead records a check that did not
+		// complete, which is also the safe direction for a baseline entry -- Regressions
+		// reads it as having no baseline rather than as a pre-existing pass or failure.
+		// Same KillGroupError carry as the timeout branch, for the same reason: a
+		// containment failure is not about the leader and has to survive.
+		res.Err = fmt.Sprintf("interrupted after %s: %v", res.Duration.Round(time.Millisecond), ctx.Err())
+		var killErr *agent.KillGroupError
+		if errors.As(err, &killErr) {
+			res.Err += "; " + killErr.Error()
 		}
 	default:
 		var ee *exec.ExitError

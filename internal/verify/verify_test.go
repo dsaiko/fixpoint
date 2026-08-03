@@ -148,6 +148,81 @@ func TestRunTimeoutKeepsFailedKillProcessGroup(t *testing.T) {
 	}
 }
 
+// A run-cancellation kill is an interruption, not a check that ran and failed.
+// Ctrl-C well inside the command's own timeout leaves cmdCtx -- a WithTimeout child
+// -- reporting Canceled rather than DeadlineExceeded, so the timeout branch does
+// not fire and the `signal: killed` the teardown caused matches *exec.ExitError.
+// Read that way the Result carries exit -1 with an empty Err, asserting the check
+// RAN and FAILED, and verifyPass records and journals the pass before its own
+// cancellation check: the round record, the verify_finished event and the summary's
+// Verification block would all blame the fix for a gate the operator stopped. The
+// non-empty Err also keeps such an entry out of Regressions' baseline, which is the
+// safe direction.
+func TestRunRecordsCancellationAsInterruption(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		killFail bool
+	}{
+		{name: "plain"},
+		// The interruption phrasing REPLACES Supervise's error, and a failed
+		// process-group kill joined into it is a different statement that has to survive
+		// for the same reason it does on the timeout path: it proves a descendant of the
+		// check is live in the target repository, which an operator's Ctrl-C does not
+		// make untrue.
+		{name: "uncontained group", killFail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.killFail {
+				orig := supervise
+				t.Cleanup(func() { supervise = orig })
+				supervise = func(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (bool, error) {
+					leaked, err := orig(ctx, cmd, stdout, stderr)
+					return leaked, errors.Join(err, &agent.KillGroupError{Err: syscall.EPERM})
+				}
+			}
+			dir := t.TempDir()
+			started := filepath.Join(dir, "started")
+			script := filepath.Join(dir, "hang.sh")
+			body := fmt.Sprintf("#!/bin/sh\ntouch '%s'\nsleep 60\n", started)
+			if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			// Cancel only once the command is actually running: canceled before Start, the
+			// pass never reaches the teardown kill this test is about.
+			go func() {
+				for range 600 {
+					if _, err := os.Stat(started); err == nil {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				cancel()
+			}()
+
+			// A timeout far beyond the command's own runtime: only the run context ends it.
+			rep := Run(ctx, cfg(time.Hour,
+				config.VerifyCommand{Name: "hang", Run: []string{script}},
+			), dir, nil)
+
+			r := rep.Results[0]
+			if r.Passed {
+				t.Fatal("a command the teardown killed must not pass")
+			}
+			if !strings.Contains(r.Err, "interrupted after") {
+				t.Errorf("Err = %q, want the interruption recorded; an empty Err with an exit status blames the fix for a gate the operator stopped", r.Err)
+			}
+			if r.ExitCode != 0 {
+				t.Errorf("ExitCode = %d, want no exit status for a check that did not complete", r.ExitCode)
+			}
+			if tc.killFail && (!strings.Contains(r.Err, "kill process group") || !strings.Contains(r.Err, syscall.EPERM.Error())) {
+				t.Errorf("Err = %q, want the uncontained process group reported too", r.Err)
+			}
+		})
+	}
+}
+
 // no_regressions is what makes fixpoint usable on a repository that is already
 // red: a check failing before the run may keep failing, but one that passed must
 // not start failing.
