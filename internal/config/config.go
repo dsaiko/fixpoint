@@ -508,6 +508,20 @@ var writeGrantingConfigSettings = map[string][]string{
 	"sandbox_mode": {"workspace-write", "danger-full-access"},
 }
 
+// dataScopeFlags are the flags whose value is a directory the CLI merely adds to
+// what the model may READ. That is the one argv position where a directory under
+// the target is not the substitution TargetSuppliedArg guards against: no code is
+// executed from it and no file in it is read as the CLI's own configuration.
+//
+// Same admission rule as the maps above, and it matters more here because being
+// wrong opens a hole rather than closing one: only flags documented to take a
+// plain scope directory go in, and a CLI fixpoint does not know about keeps the
+// guard.
+var dataScopeFlags = map[string]string{
+	"--add-dir":             "claude, agy",
+	"--include-directories": "gemini-cli, qwen-code",
+}
+
 // configOverridePrefixes are the config-override spellings that pack the flag and
 // the assignment into ONE argument. The separated form ("-c" "k=v") needs no
 // prefix: the assignment is a token of its own and is matched as one.
@@ -604,19 +618,29 @@ func permissionBypassFlag(argv []string) string {
 // refusal itself lives in Validate.
 //
 // An element counts as a path when it is absolute or explicitly relative
-// ("./x", "../x"), or when it contains a separator and a file sits there now --
-// and, in every spelling, when what sits there now is not a directory. The
-// existence requirement is what keeps the separator-bearing strings that are not
-// paths at all out of the answer -- an OpenRouter model id such as
-// moonshotai/kimi-k2 is one, and refusing it would reject a working config. That
-// makes the plain "dir/file" spelling best-effort, since existence is measured
-// before any `gh pr checkout`: a path only the PR creates is missed there, while
-// the explicitly relative form -- how a target-local script is normally written,
-// and the only form that can name argv[0], which LookPath has already proven
-// exists -- is always caught.
+// ("./x", "../x"), or when it contains a separator and something sits there now.
+// The one exemption is an existing DIRECTORY named as the value of a data-scope
+// flag (see dataScopeFlags), in any spelling. The existence requirement is what
+// keeps the separator-bearing strings that are not paths at all out of the answer
+// -- an OpenRouter model id such as moonshotai/kimi-k2 is one, and refusing it
+// would reject a working config. That makes the plain "dir/file" spelling
+// best-effort, since existence is measured before any `gh pr checkout`: a path
+// only the PR creates is missed there, while the explicitly relative form -- how
+// a target-local script is normally written, and the only form that can name
+// argv[0], which LookPath has already proven exists -- is always caught outside
+// that one exemption.
 func TargetSuppliedArg(argv []string, root string) string {
-	for _, tok := range argv {
-		if !pathLikeArg(tok, root) {
+	for i, tok := range argv {
+		// Whether a directory here is only a read scope is decided by the element
+		// BEFORE it, which pathLikeArg cannot see. Matched as a whole token: the
+		// packed "--add-dir=./sub" spelling carries its value itself, so reading a
+		// prefix off it would exempt the NEXT element, which the flag says nothing
+		// about. argv[0] has no predecessor and so is never exempt.
+		dataScope := false
+		if i > 0 {
+			_, dataScope = dataScopeFlags[argv[i-1]]
+		}
+		if !pathLikeArg(tok, root, dataScope) {
 			continue
 		}
 		// Only a relative element resolves against the working directory; joining
@@ -643,11 +667,13 @@ func TargetSuppliedArg(argv []string, root string) string {
 
 // pathLikeArg reports whether tok should be read as a filesystem path at all.
 // See TargetSuppliedArg for why existence decides the ambiguous spelling.
+// dataScope says tok sits in the one position where a directory is merely a read
+// scope rather than something the command can run.
 //
 // Both '/' and filepath.Separator count, as in Validate's binary resolution:
 // Windows accepts a forward slash too, so checking only the native separator
 // would let "./reviewer.sh" pass unexamined there.
-func pathLikeArg(tok, root string) bool {
+func pathLikeArg(tok, root string, dataScope bool) bool {
 	if tok == "" {
 		return false
 	}
@@ -672,12 +698,20 @@ func pathLikeArg(tok, root string) bool {
 		// "dir/file" one needs the file to exist to count as a path at all.
 		return explicit
 	}
-	// A directory is not something the command executes or reads as code, and
-	// naming one (--add-dir some/sub, --add-dir ./sub) is not the substitution this
-	// guards against. The test comes after the explicit spellings rather than
-	// inside the ambiguous branch so both are exempted; it cannot weaken argv[0],
-	// which LookPath has already proven is an executable file.
-	return !st.IsDir()
+	// A directory behind a data-scope flag (--add-dir some/sub, --add-dir ./sub) is
+	// not the substitution this guards against: that flag widens what the model may
+	// read and nothing more, and a subdirectory of the tree under review is a normal
+	// thing to widen it to. The test comes after the explicit spellings rather than
+	// inside the ambiguous branch so every spelling of that argument is exempted.
+	//
+	// Anywhere else a directory IS a code path and keeps the guard: `node ./lib`
+	// executes ./lib/index.js, and a CLI handed a config DIRECTORY reads what it
+	// finds there. Both are PR-authored content running as the agent process once
+	// `gh pr checkout` has written the branch, which is exactly what this refuses.
+	if dataScope && st.IsDir() {
+		return false
+	}
+	return true
 }
 
 // Commit policies: how a round's per-fix commits are grouped. The coder always

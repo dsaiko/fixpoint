@@ -749,11 +749,12 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 		}
 	})
 
-	// A directory argument names no code: the agent CLI neither execs nor reads it,
-	// so --add-dir into the target must keep working in mode pr -- in the bare
-	// spelling, in the explicitly relative one, and absolutely, which is how the flag
-	// is written out of a script. All three reach the same exemption, and only the
-	// absolute one proves the stat looks at tok itself rather than at root+tok.
+	// A directory behind a data-scope flag names no code -- the agent CLI only widens
+	// what it may read -- so --add-dir into the target must keep working in mode pr:
+	// in the bare spelling, in the explicitly relative one, and absolutely, which is
+	// how the flag is written out of a script. All three reach the same exemption, and
+	// only the absolute one proves the stat looks at tok itself rather than at
+	// root+tok.
 	for _, spelling := range []struct {
 		name string
 		arg  func(dir string) string
@@ -775,6 +776,49 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 			}
 		})
 	}
+
+	// The exemption is for a directory the CLI only READS UNDER, and that is decided
+	// by the flag in front of it -- not by it being a directory. A directory is an
+	// entry point for a node-style command (`node ./lib` runs ./lib/index.js) and a
+	// config root for a CLI pointed at one, and after `gh pr checkout` the PR owns
+	// what is inside it, so those positions keep the refusal. argv[0] is "echo" in
+	// each case because it must resolve on PATH for validation to reach the guard;
+	// the element under test is the one the real command would execute or read.
+	for _, pos := range []struct {
+		name string
+		argv []string
+	}{
+		{"a node-style directory entry point", []string{"echo", "./lib"}},
+		{"a bare directory entry point", []string{"echo", "lib/inner"}},
+		{"a config directory", []string{"echo", "--config", "./lib"}},
+		{"a directory after a flag fixpoint does not know", []string{"echo", "--workdir", "./lib"}},
+	} {
+		t.Run("rejects "+pos.name+" in mode pr", func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "lib", "inner"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := prConfig(t, dir, pos.argv...).Validate(); err == nil ||
+				!strings.Contains(err.Error(), "resolves inside target") {
+				t.Fatalf("Validate() = %v, want rejection of a PR-owned directory the command runs or reads", err)
+			}
+		})
+	}
+
+	// The exemption belongs to the flag, so it cannot leak past the flag's own value:
+	// the packed spelling carries its directory itself, and the element after it is
+	// not something --add-dir said anything about.
+	t.Run("rejects a script argument after a packed --add-dir in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeExec(t, dir, "reviewer.cjs")
+		if err := prConfig(t, dir, "echo", "--add-dir=./sub", "./reviewer.cjs").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "./reviewer.cjs") {
+			t.Fatalf("Validate() = %v, want rejection of a PR-supplied script after a packed flag", err)
+		}
+	})
 
 	// The exemption is for directories that exist, not for the explicitly relative
 	// spelling: a path the PR alone creates is the case this guard exists for.
