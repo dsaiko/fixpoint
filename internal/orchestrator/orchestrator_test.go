@@ -468,6 +468,36 @@ func TestRunSalvagesAReviewerThatBrokeOnlyTheContract(t *testing.T) {
 	if want := f.promptLogBytes("review"); step.PromptBytes != want {
 		t.Errorf("step prompt bytes = %d, want %d (review prompt + reformat prompt)", step.PromptBytes, want)
 	}
+	// The step writes one .raw, and it is the fidelity record -- so for a salvaged
+	// step it has to hold BOTH replies. An operator asking why a review was
+	// salvaged is asking about the reply that failed the contract; keeping only the
+	// reformat's output would drop the one thing they came to read.
+	raw := f.stepRaw("review")
+	if !strings.Contains(raw, malformed) {
+		t.Errorf("review .raw omits the first attempt's output, the reply whose failure caused the salvage:\n%s", raw)
+	}
+	if !strings.Contains(raw, restated) {
+		t.Errorf("review .raw omits the reformat's output:\n%s", raw)
+	}
+}
+
+// stepRaw reads the single .raw step log a role wrote: the fidelity record, the
+// verbatim record of what an agent printed.
+func (f *fixture) stepRaw(role string) string {
+	f.t.Helper()
+	glob := filepath.Join(f.cfg.Logs.StaticBase(), "*", "round-*", role+"-*.raw")
+	matches, err := filepath.Glob(glob)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		f.t.Fatalf("glob %s matched %d files, want 1", glob, len(matches))
+	}
+	b, err := os.ReadFile(matches[0])
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return string(b)
 }
 
 // When the reformat fails too, the FIRST error is what the operator sees: it says

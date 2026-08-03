@@ -2490,7 +2490,7 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 	// Per-step logs (IDs are assigned later; md/json here carry raw findings).
 	findings := toFindings(out.Findings, asg, lensName, nil, 0)
 	md := logstore.RenderReviewMD(asg.Agent, lensName, round, findings, parseErr)
-	o.logStep("review", asg.Agent, lensName, round, parseErr == nil, out, md, res)
+	o.logStep("review", asg.Agent, lensName, round, parseErr == nil, out, md, res, salvage.raw)
 	outBytes := len(res.Stdout) + len(res.Stderr) + salvage.outputBytes
 	o.logf("%s done (%d findings, %s, output %s)", label, len(out.Findings), res.Duration.Round(time.Second), logstore.SizeDesc(outBytes))
 	// A salvaged step is billed for both invocations: res already carries the
@@ -2505,12 +2505,28 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 // failure to a WARNING (a run must not abort because a log file could not be
 // written). parsed is persisted only when ok, so a failed step never writes a
 // JSON payload that would read as a clean result.
-func (o *Orchestrator) logStep(role, agentName, promptName string, round int, ok bool, out any, md string, res agent.Result) {
+//
+// priorRaw is a preceding invocation billed to this same step -- currently only a
+// salvaged review's first attempt (see reformatReview) -- and is written ahead of
+// res in the .raw log. Empty for a step that ran once. Without it the .raw of a
+// salvaged step would hold only the reformat's reply and silently omit the very
+// output whose failure triggered the salvage, which is precisely what the
+// fidelity record exists to show.
+func (o *Orchestrator) logStep(role, agentName, promptName string, round int, ok bool, out any, md string, res agent.Result, priorRaw string) {
 	var parsed any
 	if ok {
 		parsed = out
 	}
-	if err := o.logs.Step(role, agentName, promptName, round, parsed, md, res.Raw(o.cfg.Agents[agentName].Argv())); err != nil {
+	raw := res.Raw(o.cfg.Agents[agentName].Argv())
+	if priorRaw != "" {
+		// Both attempts, in the order they ran, each under its own banner. res's
+		// duration line is the step's summed wall clock (reformatReview merges it),
+		// so the second banner says so rather than leaving it to be misread as the
+		// reformat's own.
+		raw = "=== attempt 1 (output did not meet the contract) ===\n" + priorRaw +
+			"\n\n=== attempt 2 (reformat; duration below is the step total) ===\n" + raw
+	}
+	if err := o.logs.Step(role, agentName, promptName, round, parsed, md, raw); err != nil {
 		o.logf("WARNING: writing %s log: %v", role, err)
 	}
 }
@@ -2539,14 +2555,16 @@ func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg mod
 	res := o.runAgent(ctx, label+" (reformat)", "review", asg.Agent, config.ReformatLensName(lensName), round, text)
 	// Bill both attempts to this step whatever happens: a salvage that fails must
 	// not look cheaper than one that succeeds. Usage and wall clock merge onto the
-	// Result; the byte counts cannot (Stdout is what the parser and the .raw log
-	// read, so it stays the reformat's own reply) and travel in salvageCost.
+	// Result; the byte counts cannot (Stdout is what the parser reads, so it stays
+	// the reformat's own reply) and travel in salvageCost -- as does the first
+	// attempt's rendered output, which the step's .raw log would otherwise lose.
 	merged := res
 	merged.Usage.Add(first.Usage)
 	merged.Duration += first.Duration
 	cost := salvageCost{
 		promptBytes: len(text),
 		outputBytes: len(first.Stdout) + len(first.Stderr),
+		raw:         first.Raw(o.cfg.Agents[asg.Agent].Argv()),
 	}
 
 	var out model.ReviewOutput
@@ -2567,11 +2585,15 @@ func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg mod
 
 // salvageCost is the part of a reformat's cost that cannot be folded into the
 // merged agent.Result: the reformat prompt's size, on top of the original review
-// prompt, and the first attempt's reply size. Both belong to the one step record
-// the salvage is billed to.
+// prompt, the first attempt's reply size, and the first attempt's rendered .raw
+// text. All of it belongs to the one step record the salvage is billed to.
 type salvageCost struct {
 	promptBytes int
 	outputBytes int
+	// raw is the first attempt's Result.Raw rendering (already redacted), written
+	// ahead of the reformat's in the step's .raw log so the fidelity record still
+	// contains the reply that failed the contract.
+	raw string
 }
 
 // validateReviewFindings enforces the review contract's required fields before
@@ -2847,7 +2869,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		seen = append(seen, issueFindings(rec, it.ID)...)
 	}
 	md := logstore.RenderFixMD(coder.Agent, rec.Round, seen, out.Notes, runErr)
-	o.logStep("fix", coder.Agent, promptName, rec.Round, runErr == nil, out, md, res)
+	o.logStep("fix", coder.Agent, promptName, rec.Round, runErr == nil, out, md, res, "")
 	o.logf("%s done (%s, output %s)", label, res.Duration.Round(time.Second), logstore.SizeDesc(len(res.Stdout)+len(res.Stderr)))
 	// The coder's self-report, recorded as such. Whether any of it survives is
 	// decided by the verify_finished record that follows.
@@ -3410,7 +3432,7 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 	// Routed through logStep so the correction attempt gets the same ok-gating as
 	// every other step: a run that failed or whose output would not parse must not
 	// persist a zero FixOutput that reads back as a clean "no results" report.
-	o.logStep("fix", coder.Agent, lens, rec.Round, stepErr == nil, out, md, res)
+	o.logStep("fix", coder.Agent, lens, rec.Round, stepErr == nil, out, md, res, "")
 	// A failed or unparseable correction attempt is not fatal here: the caller
 	// re-verifies regardless, and the gate -- not the coder's self-report -- decides
 	// whether the round proceeds.
