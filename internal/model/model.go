@@ -279,8 +279,11 @@ type RunSummary struct {
 // the CLI cannot disagree about what a run meant.
 //
 // all-rejected is deliberately NOT 0: "the coder rejected every finding" could
-// equally mean the reviewers are miscalibrated or the coder was unwilling, and
-// nothing changed -- automation keying on 0 would read a no-op as a clean run.
+// equally mean the reviewers are miscalibrated or the coder was unwilling --
+// automation keying on 0 would read a stalled run as a clean one. It does not
+// mean the run committed nothing: the verdict covers the LAST loop round, so
+// earlier rounds and the closing round may both have landed fixes. Read Rounds
+// for that, not the exit status.
 func ExitCode(termination string) int {
 	switch termination {
 	case TermConverged, TermReviewOnly:

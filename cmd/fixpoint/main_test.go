@@ -428,6 +428,37 @@ func TestRunAllRejectedExits3(t *testing.T) {
 	if !strings.Contains(buf.String(), "done: "+model.TermAllRejected) {
 		t.Errorf("stderr missing all-rejected termination line:\n%s", buf.String())
 	}
+	if !strings.Contains(buf.String(), "no changes were made") {
+		t.Errorf("a run that committed nothing must say so:\n%s", buf.String())
+	}
+}
+
+// all-rejected is a verdict on the LAST loop round, so a run that committed
+// fixes in an earlier round (or in the closing round, which commits after the
+// outcome is decided) still ends there -- and must NOT claim "no changes were
+// made". Automation reading that line would skip pushing commits already in
+// history. Round 1 fixes an issue and commits it; round 2 reports a different
+// issue and the coder rejects it, which ends the loop as all-rejected.
+func TestRunAllRejectedAfterCommitDoesNotClaimNoChanges(t *testing.T) {
+	f := newFixture(t)
+	f.respond(1, reviewResponse(t, aFinding("first bug")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t, aFinding("second bug")))
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i2", Verdict: "rejected", Detail: "by design"}))
+	var buf bytes.Buffer
+	cfg := f.configFile("directory", "", "  max_iterations: 3\n  clean_rounds_to_stop: 1")
+	// Still exit 3: the closing verdict is unchanged, only the claim about what
+	// landed is.
+	if got := run([]string{"-config", cfg, "-trusted-target"}, &buf, &buf); got != 3 {
+		t.Fatalf("run() = %d, want 3 for all-rejected; stderr:\n%s", got, buf.String())
+	}
+	if strings.Contains(buf.String(), "no changes were made") {
+		t.Errorf("run committed a fix in round 1, so the outcome line must not claim nothing changed:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "1 commit(s)") {
+		t.Errorf("the outcome line must report the commits that remain in history:\n%s", buf.String())
+	}
 }
 
 // An interrupted run ends as TermInterrupted with a NIL error from o.Run; run()

@@ -173,16 +173,31 @@ Flags:
 		logf("run failed: %v", err)
 		return 1
 	}
-	// Keep the one-line, timestamped, greppable outcome as well as the table: the
-	// table is for a human reading the tail, this is what a log scraper matches.
+	logOutcome(sum, logf)
+	return model.ExitCode(sum.Termination)
+}
+
+// logOutcome prints the one-line, timestamped, greppable outcome that goes
+// alongside the scoreboard: the table is for a human reading the tail, this is
+// what a log scraper matches.
+func logOutcome(sum *model.RunSummary, logf func(string, ...any)) {
 	// The closing round is counted separately -- it runs after the outcome is
 	// decided, so folding it in would overstate how long convergence took.
-	loopRounds, closing := 0, 0
+	loopRounds, closing, commits := 0, 0, 0
 	for _, r := range sum.Rounds {
 		if r.Final {
 			closing++
 		} else {
 			loopRounds++
+		}
+		// Counted the way the scoreboard counts (logstore/runtable.go): every commit
+		// the round made, falling back to CommitSHA only when Commits is empty, so the
+		// outcome line and the table above it cannot disagree about whether the run
+		// committed anything.
+		if n := len(r.Commits); n > 0 {
+			commits += n
+		} else if r.CommitSHA != "" {
+			commits++
 		}
 	}
 	done := fmt.Sprintf("done: %s after %d round(s)", sum.Termination, loopRounds)
@@ -190,14 +205,25 @@ Flags:
 		done += " + closing round"
 	}
 	logf("%s", done)
-	if sum.Termination == model.TermAllRejected {
-		// Exit 3, NOT 0. "The coder rejected every finding" is not "the code is
-		// clean" -- it could equally mean the reviewers are miscalibrated or the
-		// coder was unwilling. Nothing changed, so automation keying on exit 0 would
-		// read a no-op as a converged run.
-		logf("no changes were made: the coder rejected every finding this round")
+	if sum.Termination != model.TermAllRejected {
+		return
 	}
-	return model.ExitCode(sum.Termination)
+	// Exit 3, NOT 0. "The coder rejected every finding" is not "the code is clean"
+	// -- it could equally mean the reviewers are miscalibrated or the coder was
+	// unwilling, so automation keying on exit 0 would read a stalled run as a
+	// converged one.
+	//
+	// It does NOT follow that nothing changed, and saying so when something did is
+	// worse than saying nothing: all-rejected is a verdict on the LAST loop round
+	// only, so earlier rounds may have committed fixes, and the closing round's
+	// actionable lenses commit after the outcome is already decided. In either case
+	// those commits are in history, and an operator told "no changes were made"
+	// would not push or report them.
+	if commits > 0 {
+		logf("the loop rejected every finding in its last round; %d commit(s) from earlier rounds and the closing round remain", commits)
+		return
+	}
+	logf("no changes were made: the coder rejected every finding this round")
 }
 
 // checkOnly implements --check: report how much material a run would review
