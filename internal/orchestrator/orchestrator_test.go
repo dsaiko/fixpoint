@@ -867,6 +867,61 @@ func dirNames(t *testing.T, dir string) []string {
 	return names
 }
 
+// logsDirWithin decides whether the run's own artifacts are kept out of round
+// commits, collected material, and clean checks, so it has to recognize the logs
+// dir as in-target even when the two paths spell the same directory differently.
+func TestLogsDirWithin(t *testing.T) {
+	// A symlinked target.path (/tmp -> /private/tmp) against the canonical logs
+	// path a relative logs.dir gets anchored to: one physical directory, and the
+	// exclusion must survive.
+	t.Run("symlinked target path", func(t *testing.T) {
+		base := t.TempDir()
+		target := filepath.Join(base, "target")
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(base, "link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		// The logs dir itself does not exist yet, as on a real first round.
+		rel, err := logsDirWithin(filepath.Join(target, ".fixpoint"), link)
+		if err != nil {
+			t.Fatalf("logsDirWithin() error = %v", err)
+		}
+		if rel != ".fixpoint" {
+			t.Errorf("logsDirWithin() = %q, want %q", rel, ".fixpoint")
+		}
+	})
+	// A logs dir that is lexically inside the target but is itself a symlink must
+	// still claim the exclusion: that is what lets checkLogsNotSymlinked see the
+	// path and refuse the run instead of writing artifacts through the link.
+	t.Run("lexically inside via a symlink still claims the exclusion", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Symlink(t.TempDir(), filepath.Join(root, ".fixpoint")); err != nil {
+			t.Fatal(err)
+		}
+		rel, err := logsDirWithin(filepath.Join(root, ".fixpoint"), root)
+		if err != nil {
+			t.Fatalf("logsDirWithin() error = %v", err)
+		}
+		if rel != ".fixpoint" {
+			t.Errorf("logsDirWithin() = %q, want %q", rel, ".fixpoint")
+		}
+	})
+	// Genuinely separate trees stay out: logs outside the target is a supported
+	// configuration and must not gain a bogus exclusion.
+	t.Run("outside the target", func(t *testing.T) {
+		rel, err := logsDirWithin(t.TempDir(), t.TempDir())
+		if err != nil {
+			t.Fatalf("logsDirWithin() error = %v", err)
+		}
+		if rel != "" {
+			t.Errorf("logsDirWithin() = %q, want %q for a logs dir outside the target", rel, "")
+		}
+	})
+}
+
 func TestCheckLogsNotSymlinked(t *testing.T) {
 	// A real logs directory inside the target is accepted.
 	t.Run("real directory accepted", func(t *testing.T) {

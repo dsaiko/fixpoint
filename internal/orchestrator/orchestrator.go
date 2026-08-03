@@ -228,6 +228,27 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 
 // logsDirWithin returns the logs dir as a path relative to the target root if
 // it lives inside it, "" otherwise.
+//
+// It measures twice. The LEXICAL form comes first and wins whenever it says
+// "inside", because it is the form checkLogsNotSymlinked walks: a logs path that
+// is lexically inside the target but reached through a symlink must still set the
+// exclusion, so that check can see it and refuse the run.
+//
+// Only when the lexical form says "outside" is the CANONICAL form tried, because
+// the two operands are not normalized the same way: config.ProjectRoot returns a
+// symlink-resolved root (which a relative logs.dir is anchored to), while
+// Config.anchor leaves an absolute target.path exactly as written. So
+// `target.path: /tmp/checkout` with the default logs.dir compares
+// /private/tmp/checkout/.fixpoint against /tmp/checkout -- one physical directory
+// under two spellings, which Rel reads as two separate trees. Dropping the
+// exclusion there is not benign: git runs with cmd.Dir = target.path, i.e. the
+// same physical repository, so the run's own prompts and raw outputs would be
+// staged into a round commit, collected as material for later rounds, and read as
+// dirt by the clean checks. internal/target resolves both sides for exactly this
+// case (fileScope, WorktreeOutOfScope).
+//
+// Retrying canonically can only ADD an exclusion, never remove one, so it cannot
+// weaken either check that consumes the result.
 func logsDirWithin(logsDir, root string) (string, error) {
 	absLogs, err := filepath.Abs(logsDir)
 	if err != nil {
@@ -237,11 +258,44 @@ func logsDirWithin(logsDir, root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rel, err := filepath.Rel(absRoot, absLogs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", err
+	if rel, ok := relWithin(absRoot, absLogs); ok {
+		return rel, nil
 	}
-	return filepath.ToSlash(rel), nil
+	rel, _ := relWithin(resolveExisting(absRoot), resolveExisting(absLogs))
+	return rel, nil
+}
+
+// relWithin returns child as a slash-separated path relative to parent, and
+// whether it lies inside parent at all. "." (child IS parent) counts as inside;
+// the caller refuses that shape with its own message.
+func relWithin(parent, child string) (string, bool) {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// resolveExisting returns path with the symlinks in it resolved, resolving the
+// deepest leading part that exists on disk and re-appending the rest.
+// filepath.EvalSymlinks refuses a path with a missing component, and the logs
+// directory usually does not exist yet -- the first round creates it -- while the
+// symlinked component that makes two spellings of one directory disagree
+// (/tmp -> /private/tmp) is always one that does exist. A path where nothing
+// resolves keeps its lexical form: there is nothing better to compare.
+func resolveExisting(path string) string {
+	rest := ""
+	for cur := path; ; {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 // errLogsRedirected marks the symlinked-logs refusal so Run can recognize it and
