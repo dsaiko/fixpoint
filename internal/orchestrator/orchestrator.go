@@ -2120,6 +2120,9 @@ func deferredFindings(rec *model.RoundRecord) int {
 // reaches clean_rounds_to_stop (setting TermConverged). A round with reviewer
 // errors RESETS the streak: "consecutive clean rounds" means consecutive
 // fully-successful clean rounds.
+//
+// Convergence is also where the run's last chance to mention withheld work is, so
+// warnConvergedWithUnresolved is consulted before the verdict is set.
 func (o *Orchestrator) checkCleanStreak(rec *model.RoundRecord, round int, sum *model.RunSummary, cleanStreak *int) (done bool) {
 	if len(rec.ReviewErrors) == 0 {
 		*cleanStreak++
@@ -2135,11 +2138,51 @@ func (o *Orchestrator) checkCleanStreak(rec *model.RoundRecord, round int, sum *
 		ReviewErrors: len(rec.ReviewErrors),
 	})
 	if *cleanStreak >= o.cfg.Loop.CleanRoundsToStop {
+		o.warnConvergedWithUnresolved()
 		sum.Termination = model.TermConverged
 		return true
 	}
 	o.logf("clean round (%d/%d consecutive needed)", *cleanStreak, o.cfg.Loop.CleanRoundsToStop)
 	return false
+}
+
+// warnConvergedWithUnresolved names the issues the LEDGER still holds unresolved
+// at the moment the loop declares convergence.
+//
+// The clean-round streak is computed from THIS round's observations, so it only
+// knows what reviewers reported now. An issue the cap deferred was withheld from
+// the coder deliberately, and it reaches the coder only through a reviewer
+// re-reporting it in a later round -- if none does (a `once` lens that already had
+// its turn, a rotated panel, a reviewer that simply stopped mentioning it), the
+// round reads as clean and the run converges and exits 0 over work fixpoint itself
+// held back. An issue a dead coder left with no verdict at all is dropped the same
+// way.
+//
+// The loop is NOT extended for them: they are not in this round's issue list, so a
+// further round has nothing to hand over and would only re-ask the review that
+// just came back empty. Silence is what costs here, so the record is what this
+// restores -- the same job warnFinalPhaseCapped does for the closing phase. FIXED
+// and REJECTED are decided and not counted; advisory findings never enter the
+// ledger at all.
+func (o *Orchestrator) warnConvergedWithUnresolved() {
+	issues := o.ledger.Issues()
+	parts := make([]string, 0, len(issues))
+	for _, it := range issues {
+		st := it.StatusOrDefault()
+		if st == model.VerdictFixed || st == model.VerdictRejected {
+			continue
+		}
+		loc := it.Loc()
+		if loc != "" {
+			loc = " " + loc
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)%s: %s", it.ID, st, loc, it.Title))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	o.logf("WARNING: converged with %d issue(s) never resolved -- deferred by the per-round cap or left undecided, and not re-reported since, so no round handed them to the coder: %s",
+		len(parts), strings.Join(parts, "; "))
 }
 
 // unrejectedIssues counts the round's issues that reached the coder and did NOT

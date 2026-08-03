@@ -4666,6 +4666,60 @@ func TestFinalPhaseContinuesForDeferredWhenActiveAllRejected(t *testing.T) {
 	}
 }
 
+// An issue the cap deferred never reached the coder, and it only gets there if a
+// later round's reviewers report it again. When they do not, the round reads as
+// clean and the loop converges -- exit 0 over work fixpoint itself withheld. The
+// streak is decided from one round's observations, so only the ledger can see it,
+// and the run must at least say so out loud.
+func TestConvergenceWarnsAboutIssuesTheCapNeverHandedOver(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	bug := model.ReviewFinding{Category: "correctness", Severity: "high", File: "a.go", Line: 1, Title: "off by one"}
+	starved := model.ReviewFinding{Category: "docs", Severity: "low", File: "README.md", Line: 3, Title: "stale flag name"}
+	f.respond(1, reviewResponse(t, bug, starved)) // cap 1 -> i1 active, i2 deferred
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean, and i2 is never mentioned again
+
+	o, logs := f.capturingOrchestrator()
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want converged", sum.Termination)
+	}
+	log := logs()
+	if !strings.Contains(log, "WARNING") || !strings.Contains(log, "i2") || !strings.Contains(log, "deferred") {
+		t.Errorf("converged run said nothing about the deferred issue it withheld; log:\n%s", log)
+	}
+}
+
+// The counterpart: a run whose every issue was decided converges quietly. A
+// warning on a clean finish would train operators to ignore it.
+func TestConvergenceQuietWhenEveryIssueWasDecided(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	bug := model.ReviewFinding{Category: "correctness", Severity: "high", File: "a.go", Line: 1, Title: "off by one"}
+	naming := model.ReviewFinding{Category: "style", Severity: "low", File: "b.go", Line: 2, Title: "bad name"}
+	f.respond(1, reviewResponse(t, bug, naming))
+	// One session per issue: the first fixes, the second rejects.
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i2", Verdict: "rejected", Detail: "intentional"}))
+	f.respond(4, reviewResponse(t)) // round 2: clean
+
+	o, logs := f.capturingOrchestrator()
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want converged", sum.Termination)
+	}
+	if log := logs(); strings.Contains(log, "never resolved") {
+		t.Errorf("warned about unresolved work on a run where every issue was fixed or rejected; log:\n%s", log)
+	}
+}
+
 // The closing round runs after max-iterations too: the loop is equally done
 // editing, whether it converged or ran out of rounds.
 func TestFinalLensRunsAfterMaxIterations(t *testing.T) {
