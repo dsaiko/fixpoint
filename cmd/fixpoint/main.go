@@ -64,6 +64,11 @@ Flags:
 	checkLive := fs.Bool("check-live", false, "validate the configuration, ping every agent, and exit without running")
 	positionals, err := parseArgs(fs, args)
 	if err != nil {
+		// -h/-help is a request that was served, not a usage error: flag has
+		// already printed the usage text, so exit successfully.
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 

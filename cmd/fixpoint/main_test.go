@@ -139,6 +139,22 @@ func TestRunBadFlagExits2(t *testing.T) {
 	}
 }
 
+// -h is a served request, not a usage error, so it must not look like a failure
+// to shells and automation.
+func TestRunHelpExits0(t *testing.T) {
+	for _, flag := range []string{"-h", "-help", "--help"} {
+		t.Run(flag, func(t *testing.T) {
+			var buf bytes.Buffer
+			if got := run([]string{flag}, &buf, &buf); got != 0 {
+				t.Errorf("run(%s) = %d, want 0; stderr:\n%s", flag, got, buf.String())
+			}
+			if !strings.Contains(buf.String(), "Usage:") {
+				t.Errorf("run(%s) printed no usage text:\n%s", flag, buf.String())
+			}
+		})
+	}
+}
+
 func TestRunMissingConfigExits1(t *testing.T) {
 	var buf bytes.Buffer
 	if got := run([]string{"-config", filepath.Join(t.TempDir(), "missing.yaml")}, &buf, &buf); got != 1 {
