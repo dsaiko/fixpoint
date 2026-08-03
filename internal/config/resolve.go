@@ -168,8 +168,13 @@ func isProjectRoot(dir string, homes []string) bool {
 	if slices.Contains(homes, filepath.Clean(dir)) {
 		return false
 	}
-	_, err := os.Lstat(filepath.Join(dir, "."+appName))
-	return err == nil
+	// Directory-ness, unlike the ".git" case above: only an artifact DIRECTORY is
+	// that marker. A regular file that happens to be named "."+appName -- an
+	// editor's dotfile, a stray note -- would otherwise outrank the real .git root
+	// above it, anchoring the run to a nested subtree and then failing to create
+	// the default artifact directory because the name is already taken by a file.
+	st, err := os.Stat(filepath.Join(dir, "."+appName))
+	return err == nil && st.IsDir()
 }
 
 // isBundle reports whether dir has the shape of a config bundle: at least one of

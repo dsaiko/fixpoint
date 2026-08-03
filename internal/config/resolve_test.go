@@ -132,6 +132,32 @@ func TestProjectRootIgnoresUserBundleInHome(t *testing.T) {
 	}
 }
 
+// Only an artifact DIRECTORY is a marker. A regular file of the same name -- an
+// editor's dotfile, a stray note -- must be ignored: honoring it would outrank the
+// repository root above it, anchoring the run to a nested subtree and then failing
+// to create the default artifact directory because a file already holds the name.
+func TestProjectRootIgnoresArtifactFile(t *testing.T) {
+	root := realDir(t, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "internal", "target")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, userBundleDir), []byte("note\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProjectRoot(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != root {
+		t.Errorf("ProjectRoot(%s) = %s, want the repository root %s; a regular %s file must not mark a project root", nested, got, root, userBundleDir)
+	}
+}
+
 // A project that ships its own bundle but is not a git repository still has a
 // root -- the documented <project>/config. It is recognized by the bundle's shape,
 // never by the bare name, so a nested config package cannot pose as one.
