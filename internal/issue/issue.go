@@ -386,13 +386,23 @@ func (l *Ledger) create(round int, obs model.Finding) int {
 // average: it decides scheduling under the per-round cap, and one reviewer
 // spotting that a defect is exploitable should not be outvoted by two who did not.
 //
-// A LATER round's report re-anchors the issue: its location and text describe the
-// code as it is now. Without that, a reviewer-declared re-report of a defect that
-// moved (the fix shifted it, or an earlier round edited around it) at equal or
-// lower severity would leave the canonical file and line pointing at the old
-// code -- and FormatIssues prints only that canonical location, so the coder would
-// be sent to a line that no longer holds the defect. Severity still keeps the worst
-// value ever seen, because that is what drives scheduling.
+// The CANONICAL text and location come from the worst reading of the LATEST round,
+// chosen independently of that lifetime severity, and adopted together:
+//
+//   - Latest round, because its location and text describe the code as it is now.
+//     Without that, a reviewer-declared re-report of a defect that moved (the fix
+//     shifted it, or an earlier round edited around it) at equal or lower severity
+//     would leave the canonical file and line pointing at the old code -- and
+//     FormatIssues prints only that canonical location, so the coder would be sent
+//     to a line that no longer holds the defect.
+//   - Worst within that round, so simultaneous readings are decided by how bad the
+//     defect is rather than by reviewer completion order.
+//   - Independently of the lifetime severity, because comparing against it instead
+//     silently drops the round's worst reading whenever an EARLIER round already
+//     recorded that severity: the strict comparison then fails and the first, milder
+//     observation of the round keeps the headline.
+//   - Together, because a location from one observation under the title, body and
+//     category of another is a headline no reviewer wrote.
 func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 	it := &l.issues[idx]
 	obs.IssueID = it.ID
@@ -400,34 +410,43 @@ func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 	// the whole run, and forRound needs to tell this round's reports from earlier
 	// ones to scope the corroboration claim.
 	obs.Round = round
-	reanchor := round > it.LastRound
+	firstOfRound := round > it.LastRound
+	// The round's worst reading so far, taken BEFORE this observation joins it.
+	roundWorst := worstSeverityIn(it.Observations, round)
 	it.Observations = append(it.Observations, *obs)
 	it.LastRound = round
-	if reanchor {
-		// Only the FIRST observation of a new round re-anchors: within one round the
-		// worst-severity rule below decides between simultaneous readings, which keeps
-		// the result independent of reviewer completion order.
-		if obs.File != "" {
-			it.File = obs.File
-			it.Line = obs.Line
-		}
-		adoptText(it, obs)
+	if firstOfRound || model.WorseSeverity(obs.Severity, roundWorst) {
+		adopt(it, obs)
 	}
 	if model.WorseSeverity(obs.Severity, it.Severity) {
 		it.Severity = obs.Severity
-		adoptText(it, obs) // keep the title and body from the worst reading
-		if obs.Category != "" {
-			it.Category = obs.Category
-		}
 	}
 }
 
-// adoptText copies an observation's text onto the issue field by field, keeping
-// whatever the issue already has wherever the observation left a field blank.
-// Only the title is validated as required when findings are ingested, so an
-// observation that omits the description or the suggestion must not erase the
-// detail that explains the defect to the coder.
-func adoptText(it *model.Issue, obs *model.Finding) {
+// worstSeverityIn returns the worst severity any observation of one round carries,
+// or "" when the round has none -- which SeverityRank sorts last, so any severity
+// beats it.
+func worstSeverityIn(obs []model.Finding, round int) string {
+	worst := ""
+	for _, o := range obs {
+		if o.Round == round && model.WorseSeverity(o.Severity, worst) {
+			worst = o.Severity
+		}
+	}
+	return worst
+}
+
+// adopt makes one observation the issue's canonical reading: its location, text
+// and category, field by field, keeping whatever the issue already has wherever
+// the observation left a field blank. Only the title is validated as required when
+// findings are ingested, so an observation that omits the description, the
+// suggestion or the file must not erase the detail that explains the defect to the
+// coder -- or the location that sends the coder to it.
+func adopt(it *model.Issue, obs *model.Finding) {
+	if obs.File != "" {
+		it.File = obs.File
+		it.Line = obs.Line
+	}
 	if obs.Title != "" {
 		it.Title = obs.Title
 	}
@@ -436,6 +455,9 @@ func adoptText(it *model.Issue, obs *model.Finding) {
 	}
 	if obs.Suggestion != "" {
 		it.Suggestion = obs.Suggestion
+	}
+	if obs.Category != "" {
+		it.Category = obs.Category
 	}
 }
 

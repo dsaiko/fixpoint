@@ -617,3 +617,51 @@ func TestAbsorbDoesNotReanchorWithinARound(t *testing.T) {
 		t.Errorf("issue = %q (%s), want the worst reading within the round", got[0].Title, got[0].Severity)
 	}
 }
+
+// The round's worst reading contributes its LOCATION as well as its text. Taking
+// the text from one observation and the line from another builds a headline no
+// reviewer wrote, and FormatIssues prints that location as the place to fix.
+func TestAbsorbTakesLocationFromTheWorstReadingInARound(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "tests", "tests", "low", "main.go", 200, "config pointer may be nil"),
+		obs("b", "bugs", "bug", "high", "main.go", 10, "nil deref on the config pointer"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1", len(got))
+	}
+	it := got[0]
+	if it.Line != 10 || it.Title != "nil deref on the config pointer" || it.Category != "bug" {
+		t.Errorf("issue = %s %q (%s), want the worst reading's location, title and category together",
+			it.Loc(), it.Title, it.Category)
+	}
+}
+
+// The round's worst reading wins even when an EARLIER round already recorded that
+// severity. Comparing a later observation against the LIFETIME severity instead
+// makes the strict comparison fail, so the round's milder first report keeps the
+// headline and the coder is sent to its location -- while the issue still carries
+// the severity of the report it is no longer describing.
+func TestAbsorbPrefersTheWorstReadingOfTheRoundNotOfTheRun(t *testing.T) {
+	l := NewLedger()
+	if got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "main.go", 10, "nil deref on the config pointer"),
+	}); len(got) != 1 {
+		t.Fatalf("got %d issues, want 1", len(got))
+	}
+	got := l.Absorb(2, []model.Finding{
+		obs("b", "tests", "tests", "low", "main.go", 200, "config pointer may be nil"),
+		obs("c", "bugs", "bug", "high", "main.go", 120, "nil deref on the config pointer"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want the re-reports to join the existing issue", len(got))
+	}
+	it := got[0]
+	if it.Line != 120 || it.Title != "nil deref on the config pointer" || it.Category != "bug" {
+		t.Errorf("issue = %s %q (%s), want this round's worst reading despite the run already being high",
+			it.Loc(), it.Title, it.Category)
+	}
+	if it.Severity != "high" {
+		t.Errorf("Severity = %q, want high", it.Severity)
+	}
+}
