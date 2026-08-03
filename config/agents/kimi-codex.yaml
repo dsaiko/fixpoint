@@ -2,6 +2,20 @@
 # Same model and same route as kimi-openrouter.yaml -- the harness is the only
 # variable, which is the point: this file exists to be compared against that one.
 #
+# NOT PANEL-READY. It works on macOS and fails on the Linux host the runs happen
+# on, where OpenRouter answers every request with HTTP 400 "Server tool request
+# failed" and codex retries it fifteen times before giving up. Same codex build
+# (0.146.0), same model, same route, same key, and `codex features list` is
+# byte-identical between the two machines. Ruled out so far: sandbox mode
+# (read-only and workspace-write both fail), the hosted-tool feature flags
+# (--disable browser_use/browser_use_external/computer_use/apps changes nothing),
+# `tools.web_search=false`, and a missing credential (OPENROUTER_API_KEY is
+# exported and the claude-routed agents on the same box work).
+#
+# So the difference is real, reproducible, and unexplained. Left in the bundle
+# because the comparison is still worth finishing -- but confirm it runs on the
+# target host before putting it in a panel, or a run dies at the first ping.
+#
 # WHY. Caching was not the cost driver; turn count is. Measured on the same lens
 # in one round, kimi through the claude harness against claude through its own:
 #
