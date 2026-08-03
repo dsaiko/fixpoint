@@ -142,6 +142,45 @@ var credentialNameRE = regexp.MustCompile(`(?i)(?:` +
 	`|_pwd(?:$|_)` +
 	`)`)
 
+// credentialValueRE matches a VALUE that carries a credential whatever its
+// variable is called, and it exists because the largest class of secret-bearing
+// variables is named after the service rather than the secret: DATABASE_URL,
+// MONGODB_URI, REDIS_URL, CELERY_BROKER_URL, SENTRY_DSN. credentialNameRE cannot
+// see those -- `postgres://user:pass@db` is a password in a variable whose name
+// says "url" -- so without this rule a target-supplied verify command inherits
+// every connection string the operator (or their CI job) exported.
+//
+// It matches the value's SHAPE, not the name's, and that is what makes it safe to
+// be this broad. The obvious alternative -- adding *_URL / *_URI / *_DSN to
+// credentialNameRE -- strips by name and so eats SONAR_HOST_URL, CI_API_V4_URL and
+// COMPASS_URL, ordinary endpoint configuration that carries nothing and whose
+// removal breaks a check for no gain. Keying on the value instead splits the class
+// exactly where the risk is: DATABASE_URL=postgres://db/app survives,
+// DATABASE_URL=postgres://user:pass@db does not.
+//
+// Two shapes, because a connection string has two spellings:
+//
+//   - URI userinfo (scheme://user:pass@host). The user is optional and the
+//     password must be non-empty, so `redis://cache:6379` -- host and PORT, not
+//     user and password -- does not match: a port follows the HOST, with no `@`
+//     after it. This is the same shape redactSecrets masks in agent output.
+//   - A `password=` / `pwd=` keyword inside the value, which is how libpq
+//     ("host=db user=u password=s"), JDBC ("...?user=u&password=s") and ODBC
+//     ("...;Uid=u;Pwd=s;") spell a DSN. Only the long unambiguous words plus ODBC's
+//     PWD, and each needs a non-space value after it, so a variable that merely
+//     mentions the word is left alone.
+//
+// A value match is rescueable with FIXPOINT_KEEP_ENV exactly like a name match --
+// a test suite that genuinely needs its DATABASE_URL is the expected case, and it
+// fails loudly with the variable absent. The one match an operator is likely to
+// hit without having exported a secret on purpose is an authenticated proxy
+// (HTTPS_PROXY=http://user:pass@proxy): it is a credential by the same reading, so
+// a verify command loses network unless they keep it back deliberately.
+var credentialValueRE = regexp.MustCompile(`(?i)(?:` +
+	`[a-z][a-z0-9+.\-]*://[^\s:/@]*:[^\s:/@]+@` +
+	`|(?:^|[^a-z0-9_])(?:password|passwd|pwd)\s*=\s*\S` +
+	`)`)
+
 // stripEnvVar and keepEnvVar let the OPERATOR adjust the gate for their own
 // environment: FIXPOINT_STRIP_ENV names extra variables to remove (a bespoke
 // credential whose name says nothing about being one), FIXPOINT_KEEP_ENV names
@@ -174,9 +213,11 @@ func envNameList(v string) []string {
 
 // EnvWithoutCredentials returns fixpoint's own environment minus every variable
 // that carries a credential: the names the configured agents declare (env.pass
-// and env.set), knownCredentialEnv, the operator's FIXPOINT_STRIP_ENV list, and
-// any name whose SHAPE says credential (credentialNameRE), except the names the
-// operator spared in FIXPOINT_KEEP_ENV.
+// and env.set), knownCredentialEnv, the operator's FIXPOINT_STRIP_ENV list, any
+// name whose SHAPE says credential (credentialNameRE) and any VALUE whose shape
+// does (credentialValueRE, the connection strings whose name says only which
+// service they point at), except the names the operator spared in
+// FIXPOINT_KEEP_ENV.
 //
 // It exists because the verify gate runs argv the TARGET supplies (a bundle file
 // inside the target shadows the operator's), and inheriting fixpoint's whole
@@ -218,10 +259,10 @@ func EnvWithoutCredentials(agents map[string]config.Agent) []string {
 	env := os.Environ()
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
-		k, _, ok := strings.Cut(kv, "=")
+		k, v, ok := strings.Cut(kv, "=")
 		// An entry with no "=" cannot be attributed to a name; pass it through
 		// rather than guess, exactly as before.
-		if ok && (deny[k] || (credentialNameRE.MatchString(k) && !keep[k])) {
+		if ok && (deny[k] || (!keep[k] && (credentialNameRE.MatchString(k) || credentialValueRE.MatchString(v)))) {
 			continue
 		}
 		out = append(out, kv)

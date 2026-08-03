@@ -222,7 +222,12 @@ enumerates (`NPM_TOKEN`, `DOCKER_PASSWORD`, `PYPI_TOKEN`, `SONAR_TOKEN`,
 `ACME_INTERNAL_TOKEN`. Matching is on word boundaries, so `GIT_AUTHOR_NAME` and
 `TOKENIZERS_PARALLELISM` survive — except for `PASSWORD`, `PASSPHRASE` and
 `PASSFILE`, which match with a prefix run into them too, so the database clients'
-`PGPASSWORD`, `PGPASSFILE` and `MYSQL_PWD` are stripped as well. Otherwise the
+`PGPASSWORD`, `PGPASSFILE` and `MYSQL_PWD` are stripped as well. A variable also
+goes when its *value* is a connection string carrying a password
+(`scheme://user:pass@host`, or a `password=` / `Pwd=` keyword in a libpq, JDBC or
+ODBC DSN): `DATABASE_URL`, `MONGODB_URI` and `SENTRY_DSN` are named after the
+service, not the secret, so only the value gives them away — and a
+`DATABASE_URL=postgres://db/app` with no password in it survives. Otherwise the
 gate would be a way around the
 filtering above: a "build" command that curls a key out is not a model's
 misbehavior, it is just argv. This direction is a denylist, because what a build

@@ -411,6 +411,56 @@ func TestEnvWithoutCredentialsStripsCredentialShapedNames(t *testing.T) {
 	}
 }
 
+// The biggest class of secret-bearing variables is named after the SERVICE, not
+// the secret -- DATABASE_URL, MONGODB_URI, SENTRY_DSN -- so the name rule cannot
+// see it and a target-supplied verify command would inherit every connection
+// string the operator exported. The gate therefore also matches the value's shape,
+// and this test pins the split that makes that safe: a connection string WITH a
+// password goes, the same variable without one (ordinary endpoint configuration,
+// which is most of what is called *_URL) stays.
+func TestEnvWithoutCredentialsStripsCredentialShapedValues(t *testing.T) {
+	stripped := map[string]string{
+		"DATABASE_URL":      "postgres://appuser:s3cret@db.internal:5432/app",
+		"MONGODB_URI":       "mongodb+srv://admin:s3cret@cluster0.example.net",
+		"CELERY_BROKER_URL": "amqp://guest:guest@rabbit:5672//",
+		"REDIS_URL":         "redis://:s3cret@cache:6379/0", // no user, password only
+		// The keyword spellings a DSN uses instead of URI userinfo: libpq, JDBC
+		// query parameters, ODBC semicolon lists.
+		"PG_CONN":     "host=db.internal user=appuser password=s3cret sslmode=require",
+		"JDBC_URL":    "jdbc:postgresql://db.internal/app?user=appuser&password=s3cret",
+		"ODBC_DSN":    "Driver={PostgreSQL};Server=db;Database=app;Uid=appuser;Pwd=s3cret;",
+		"HTTPS_PROXY": "http://proxyuser:s3cret@proxy.corp:3128",
+	}
+	kept := map[string]string{
+		// The same names without a credential in them. Stripping by name (*_URL,
+		// *_URI) would take these too, which is why the rule reads the value.
+		"DATABASE_URL":   "postgres://db.internal:5432/app",
+		"SONAR_HOST_URL": "https://sonar.example.com",
+		"CI_API_V4_URL":  "https://gitlab.example.com/api/v4",
+		"REDIS_HOST":     "redis://cache:6379", // host:PORT, not user:password
+		"GIT_REMOTE":     "ssh://git@github.com/acme/app.git",
+		// Mentions the word, assigns nothing: the keyword branch needs a value.
+		"HELP_TEXT": "usage: login --password <pw>",
+	}
+	for name, value := range stripped {
+		t.Setenv(name, value)
+	}
+	names := verifyEnvNames(t, nil)
+	for gone := range stripped {
+		if names[gone] {
+			t.Errorf("%s survived with a credential in its value; a verify command the target supplies must not receive a connection string's password", gone)
+		}
+	}
+	// Checked one at a time: DATABASE_URL appears in both maps on purpose (same
+	// name, credential or not), so the kept values cannot all be set at once.
+	for name, value := range kept {
+		t.Setenv(name, value)
+		if !verifyEnvNames(t, nil)[name] {
+			t.Errorf("%s=%q was stripped; the value rule must match a credential in the value, not merely a URL-shaped one", name, value)
+		}
+	}
+}
+
 // FIXPOINT_STRIP_ENV / FIXPOINT_KEEP_ENV are the operator's adjustments, and they
 // are environment variables rather than config keys because a bundle inside the
 // target shadows the operator's -- so a keep list in YAML would let the reviewed
@@ -421,8 +471,9 @@ func TestEnvWithoutCredentialsOperatorLists(t *testing.T) {
 	t.Setenv("SPARE_ME_TOKEN", "the-check-really-needs-this")
 	t.Setenv("MY_HOUSE_TOKEN", "declared-by-an-agent")
 	t.Setenv("KUBECONFIG", "explicitly-denied")
+	t.Setenv("SPARE_ME_URL", "postgres://appuser:s3cret@db.internal/app")
 	t.Setenv(stripEnvVar, "HOUSE_BLEND, KUBECONFIG")
-	t.Setenv(keepEnvVar, "SPARE_ME_TOKEN MY_HOUSE_TOKEN KUBECONFIG")
+	t.Setenv(keepEnvVar, "SPARE_ME_TOKEN SPARE_ME_URL MY_HOUSE_TOKEN KUBECONFIG")
 
 	names := verifyEnvNames(t, map[string]config.Agent{
 		"house": {Env: config.AgentEnv{Pass: []string{"MY_HOUSE_TOKEN"}}},
@@ -430,6 +481,11 @@ func TestEnvWithoutCredentialsOperatorLists(t *testing.T) {
 
 	if !names["SPARE_ME_TOKEN"] {
 		t.Error("SPARE_ME_TOKEN was stripped; FIXPOINT_KEEP_ENV must spare a name the shape rule matched, else an over-broad match leaves a legitimate check unfixable")
+	}
+	// A value match is rescueable too: a test suite that really needs its
+	// DATABASE_URL is the expected case for the connection-string rule.
+	if !names["SPARE_ME_URL"] {
+		t.Error("SPARE_ME_URL was stripped; FIXPOINT_KEEP_ENV must spare a variable the VALUE rule matched, not only a name match")
 	}
 	for _, gone := range []string{"HOUSE_BLEND", "MY_HOUSE_TOKEN", "KUBECONFIG"} {
 		if names[gone] {

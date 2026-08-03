@@ -642,6 +642,18 @@ which a build check needs to see. Words match on underscore boundaries, so
 prefix run straight into them, because `PGPASSWORD`, `PGPASSFILE` and `MYSQL_PWD`
 are how the database clients spell it and a boundary rule would miss all three.
 
+A variable is also removed when its **value** is a credential-carrying connection
+string — `scheme://user:pass@host`, or a `password=` / `Pwd=` keyword inside a
+libpq, JDBC or ODBC DSN. Connection strings are named after the service rather than
+the secret (`DATABASE_URL`, `MONGODB_URI`, `CELERY_BROKER_URL`, `SENTRY_DSN`), so no
+name rule can see them, and stripping `*_URL` by name instead would take
+`SONAR_HOST_URL` and every other endpoint setting with it. Reading the value splits
+the class where the risk actually is: `DATABASE_URL=postgres://db/app` survives,
+`DATABASE_URL=postgres://user:pass@db` does not. An authenticated proxy
+(`HTTPS_PROXY=http://user:pass@proxy`) is a credential by the same reading and goes
+too, which costs a verify command its network access unless you keep it back
+deliberately.
+
 What this removes is what the *environment* carries. A verify command still runs
 as you, so a credential file it can name by path — `~/.netrc`, `~/.gnupg`,
 `~/.aws/credentials` — stays readable; `KUBECONFIG` and `NETRC` are pointers, and
