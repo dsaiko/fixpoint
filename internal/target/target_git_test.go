@@ -1909,6 +1909,62 @@ func TestUnsafeConfig(t *testing.T) {
 		}
 	})
 
+	// The http section reroutes the very fetch the guard exists for without running
+	// any program: resolve github.com to an attacker's address, drop certificate
+	// verification, and `gh pr checkout` hands the operator's github.com credential
+	// to whoever answers -- while remote.origin.url still reads as ordinary GitHub.
+	// The URL-specific forms are included because git prefers the most specific
+	// match, so they beat any generic pin gitenv could carry.
+	t.Run("flags http settings that reroute or weaken a fetch", func(t *testing.T) {
+		repo := gitRepo(t)
+		git(t, repo, "config", "http.curloptResolve", "github.com:443:203.0.113.7")
+		git(t, repo, "config", "http.proxy", "http://203.0.113.7:8080")
+		git(t, repo, "config", "http.sslVerify", "false")
+		git(t, repo, "config", "http.sslCAInfo", "./ca.pem")
+		git(t, repo, "config", "http.pinnedPubkey", "sha256//AAAA")
+		git(t, repo, "config", "http.sslCert", "./client.pem")
+		git(t, repo, "config", "http.cookieFile", "./cookies")
+		git(t, repo, "config", "http.emptyAuth", "true")
+		git(t, repo, "config", "http.followRedirects", "true")
+		git(t, repo, "config", "http.extraHeader", "Authorization: Basic Zm9v")
+		git(t, repo, "config", "http.https://github.com/.sslVerify", "false")
+		keys, err := New(config.Target{Path: repo}).UnsafeConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Join(keys, ",")
+		for _, want := range []string{
+			"http.curloptresolve", "http.proxy", "http.sslverify", "http.sslcainfo",
+			"http.pinnedpubkey", "http.sslcert", "http.cookiefile", "http.emptyauth",
+			"http.followredirects", "http.extraheader",
+			"http.https://github.com/.sslverify",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("UnsafeConfig() = %v, want it to include %q", keys, want)
+			}
+		}
+	})
+
+	// ...but an http setting that only tunes how the transfer runs changes neither
+	// where git connects nor what it trusts or sends, and repositories do carry those
+	// (http.postBuffer is the standard workaround for a large push). Refusing them
+	// would be a refusal over a performance knob.
+	t.Run("ignores http settings that only tune the transfer", func(t *testing.T) {
+		repo := gitRepo(t)
+		git(t, repo, "config", "http.postBuffer", "524288000")
+		git(t, repo, "config", "http.lowSpeedLimit", "1000")
+		git(t, repo, "config", "http.lowSpeedTime", "60")
+		git(t, repo, "config", "http.version", "HTTP/1.1")
+		git(t, repo, "config", "http.userAgent", "git/fixpoint")
+		keys, err := New(config.Target{Path: repo}).UnsafeConfig(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(keys) != 0 {
+			t.Fatalf("UnsafeConfig() = %v, want none: these http settings only tune the transfer", keys)
+		}
+	})
+
 	// A diff driver is a program git runs on the READ path, and it is the shape an
 	// agent trips rather than fixpoint: Collect passes --no-ext-diff --no-textconv, but
 	// the reviewer and coder CLIs run their own `git diff`/`git log -p`/`git blame`

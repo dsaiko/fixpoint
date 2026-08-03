@@ -1429,6 +1429,14 @@ func (o *Orchestrator) guardRedirectedWorktree(ctx context.Context) error {
 // that ships its own .git/config (an extracted archive, a crafted checkout) can
 // run a repo-controlled program with fixpoint's inherited secrets.
 //
+// The same key list also covers the settings that execute nothing but redirect
+// git's network access -- the http.* section (curloptResolve, proxy, sslVerify, CA
+// and pinned-key overrides, client certificates, cookie jars) and the transport
+// rewrites next to it -- because the outcome is the same class of loss: a fetch
+// that looks like github.com contacts an attacker's host, which the operator's own
+// credential helper then authenticates to, and serves whatever objects it likes as
+// the reviewed PR. See target.unsafeConfigKey.
+//
 // The gate applies wherever such a command runs against a target-controlled repo:
 // git-diff mode always (its Collect runs `git diff`), directory fix rounds (their
 // commits run `git add`/`git status`), and pr mode always -- Prepare's
@@ -1479,9 +1487,9 @@ func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context, agentsInTarg
 	}
 	if len(keys) > 0 {
 		if !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
-			return fmt.Errorf("target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that would run repo-controlled programs fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status/checkout, so this is a code-execution path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or pass -trusted-target if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
+			return fmt.Errorf("target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that would run repo-controlled programs, or redirect git's authenticated network access, in ways fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status/checkout and honors them on every fetch, so this is a code-execution and credential-disclosure path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or pass -trusted-target if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
 		}
-		o.warnGuardOnce(fmt.Sprintf("WARNING: target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that runs repo-controlled programs during git diff/add/status/checkout (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", ")))
+		o.warnGuardOnce(fmt.Sprintf("WARNING: target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that runs repo-controlled programs during git diff/add/status/checkout, or redirects git's authenticated fetches (%s), which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution and credential-disclosure path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", ")))
 	}
 	return o.guardActivatableFilters(ctx, agentsInTarget)
 }

