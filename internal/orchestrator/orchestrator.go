@@ -2515,13 +2515,6 @@ func (o *Orchestrator) logStep(role, agentName, promptName string, round int, ok
 	}
 }
 
-// validateReviewFindings enforces the review contract's required fields before
-// findings are accepted. It also closes a subtle failure mode in ExtractJSON:
-// when a reviewer echoes its prompt and then emits no valid output, extraction
-// can fall back to the contract's own example block -- whose placeholder
-// severity ("critical|high|medium|low") is not a real value. Rejecting invalid
-// severities turns that silent placeholder into an honest reviewer error
-// instead of a fabricated finding handed to the coder.
 // reformatReview asks a reviewer whose reply broke the output contract to restate
 // it, and returns whichever attempt to believe.
 //
@@ -2581,6 +2574,13 @@ type salvageCost struct {
 	outputBytes int
 }
 
+// validateReviewFindings enforces the review contract's required fields before
+// findings are accepted. It also closes a subtle failure mode in ExtractJSON:
+// when a reviewer echoes its prompt and then emits no valid output, extraction
+// can fall back to the contract's own example block -- whose placeholder
+// severity ("critical|high|medium|low") is not a real value. Rejecting invalid
+// severities turns that silent placeholder into an honest reviewer error
+// instead of a fabricated finding handed to the coder.
 func validateReviewFindings(findings []model.ReviewFinding) error {
 	for _, f := range findings {
 		if strings.TrimSpace(f.Title) == "" {
