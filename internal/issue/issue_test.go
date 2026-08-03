@@ -426,8 +426,8 @@ func TestFingerprintNormalizesPaths(t *testing.T) {
 func TestAbsorbTagsObservationsWithIssueID(t *testing.T) {
 	l := NewLedger()
 	in := []model.Finding{
-		obs("a", "bugs", "bug", "high", "x.go", 1, "one"),
-		obs("b", "tests", "tests", "low", "x.go", 1, "one again"),
+		obs("a", "bugs", "bug", "high", "x.go", 1, "the retry budget is never asserted"),
+		obs("b", "tests", "tests", "low", "x.go", 1, "retry budget never asserted"),
 	}
 	l.Absorb(1, in)
 	if in[0].IssueID == "" || in[0].IssueID != in[1].IssueID {
@@ -476,6 +476,55 @@ func TestAbsorbMergesTitlesThatDifferOnlyByInflection(t *testing.T) {
 	})
 	if len(got) != 1 {
 		t.Fatalf("got %d issues, want 1: ordinal/ordinals and allocation/allocated are the same words", len(got))
+	}
+}
+
+// A title with one distinctive word must not swallow a longer one that happens to
+// mention it. Overlap used to be measured only against the SHORTER title, so a
+// single shared word cleared the bar -- and since the file matches at any line
+// distance, two unrelated defects became one issue carrying one title, one
+// suggestion and one verdict, so deciding either buried the other for the run.
+func TestAbsorbKeepsAOneWordTitleFromSwallowingALongerOne(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "scheduler.go", 40, "Deadlock"),
+		obs("b", "concurrency", "concurrency", "high", "scheduler.go", 120,
+			"Unbounded goroutine growth risks deadlock"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: one shared word is a subject, not evidence of one defect", len(got))
+	}
+}
+
+// The same, one word further along: agreeing on a word or two of a title that is
+// mostly words the other never mentions is not agreement.
+func TestAbsorbKeepsATerseTitleApartFromAMostlyDifferentOne(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "scheduler.go", 40, "queue deadlock"),
+		obs("b", "concurrency", "concurrency", "high", "scheduler.go", 120,
+			"unbounded goroutine growth starves the queue and can deadlock the worker pool"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: two of eleven distinctive words is not one defect", len(got))
+	}
+}
+
+// ...but a terse title that does not CHANGE is still one issue when the code moves
+// under it. Refusing this on word count alone would mint a fresh id every round,
+// restarting the deferral count -- the aging failure the package exists to fix.
+func TestAbsorbMatchesAnUnchangedTerseTitleAcrossRounds(t *testing.T) {
+	l := NewLedger()
+	first := l.Absorb(1, []model.Finding{obs("a", "bugs", "bug", "high", "scheduler.go", 40, "Deadlock")})
+	id := first[0].ID
+	l.Record(id, model.VerdictDeferred, "over cap")
+
+	second := l.Absorb(2, []model.Finding{obs("b", "bugs", "bug", "high", "scheduler.go", 96, "deadlock")})
+	if len(second) != 1 || second[0].ID != id {
+		t.Fatalf("got %+v, want the moved re-report to join %s: the same word set is the same title", second, id)
+	}
+	if got := l.Deferrals(id); got != 1 {
+		t.Errorf("Deferrals(%s) = %d, want 1; a fresh id restarts aging and the issue is deferred forever", id, got)
 	}
 }
 

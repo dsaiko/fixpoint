@@ -265,14 +265,29 @@ func (l *Ledger) TakeConflicts() []string {
 }
 
 // titlesAgree reports whether two titles describe the same thing, by overlap of
-// their distinctive words relative to the shorter one.
+// their distinctive words -- measured against BOTH titles, not only the shorter.
 //
-// The threshold is deliberately above half: "low prio" and "high prio" share
-// exactly half their words and are NOT the same issue, while "nil deref on the
-// config pointer" and "config pointer can be nil here" share three of four and
-// are. This decides every merge -- neighbors in one file, and two lenses naming
-// the same statement -- so a genuine cross-round reword that clears no lexical
-// bar at all remains the reviewer's job to declare.
+// The bar on the shorter title is deliberately above half: "low prio" and "high
+// prio" share exactly half their words and are NOT the same issue, while "nil
+// deref on the config pointer" and "config pointer can be nil here" share three of
+// four and are. This decides every merge -- neighbors in one file, and two lenses
+// naming the same statement -- so a genuine cross-round reword that clears no
+// lexical bar at all remains the reviewer's job to declare.
+//
+// That bar alone is one the SHORTER title sets, though, and a terse enough title
+// sets it at nothing: a one-word title is cleared by a SINGLE shared word. Since
+// fileTitleMatch asks nothing of the line, "Deadlock" at scheduler.go:40 and
+// "Unbounded goroutine growth risks deadlock" at scheduler.go:120 then became one
+// issue -- one title, description and suggestion for two defects, and one verdict
+// closing both, which is the outcome the file header prices as strictly worse than
+// a surviving duplicate. So the overlap must also be a real fraction of the LONGER
+// title, and must reach minSharedWords: one distinctive word is a topic, not
+// evidence of one defect.
+//
+// The same words on BOTH sides is the exception, whatever the count. That is one
+// title, not an overlap, and refusing it would mint a fresh issue every round for a
+// defect whose short title never changes but whose line moves -- the aging-restarts
+// failure this file exists to prevent.
 //
 // Counting runs over the SHORTER title, so one word cannot be matched twice and
 // push the overlap past the length it is measured against.
@@ -290,8 +305,31 @@ func titlesAgree(a, b string) bool {
 			shared++
 		}
 	}
-	return float64(shared) > 0.5*float64(len(short))
+	if shared == len(short) && len(short) == len(long) {
+		return true
+	}
+	if shared < minSharedWords {
+		return false
+	}
+	return float64(shared) > shortTitleShare*float64(len(short)) &&
+		float64(shared) > longTitleShare*float64(len(long))
 }
+
+const (
+	// minSharedWords is the fewest distinctive words whose overlap is evidence that
+	// two titles name one defect. Two reports of one file sharing a single word
+	// share a subject ("deadlock", "config"), which one file is expected to have
+	// several defects about.
+	minSharedWords = 2
+	// shortTitleShare is the share of the shorter title the overlap must exceed:
+	// above half, so a title that agrees on exactly half its words does not match.
+	shortTitleShare = 0.5
+	// longTitleShare is the share of the longer title the overlap must exceed. It is
+	// far below half on purpose -- reviewers do write one defect up in four words and
+	// in fourteen -- and only rules out the case where the longer title is mostly
+	// words the shorter one never mentions.
+	longTitleShare = 0.25
+)
 
 // hasInflection reports whether a set holds a word that is the same word as w in
 // another form.
