@@ -258,7 +258,16 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	// Overwriting a nil err there would discard a complete review or fix for a run
 	// that actually succeeded, exactly what SucceededDespiteLeakedPipe prevents.
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
-		err = fmt.Errorf("timed out after %s", a.Timeout.Std())
+		// Report the elapsed time, not a.Timeout: the deadline that fired may be an
+		// OUTER one with less time left (a whole-run budget), and printing the
+		// configured agent timeout there claims a wait that never happened.
+		elapsed := time.Since(start)
+		if elapsed >= time.Second {
+			elapsed = elapsed.Round(time.Second)
+		} else {
+			elapsed = elapsed.Round(time.Millisecond)
+		}
+		err = fmt.Errorf("timed out after %s", elapsed)
 	}
 	raw := stdout.String()
 	// Unwrap here rather than at the call sites: every consumer of Stdout wants
