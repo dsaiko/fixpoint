@@ -47,6 +47,10 @@ type Collector struct {
 	// kept out of directory walks and untracked-file listings so later rounds
 	// never review the run's own prompts and outputs.
 	logsExclude string
+	// hidden is a set of target-relative paths kept out of collection because THIS
+	// RUN wrote them. Set by HideRunEdits for the closing round only; empty for
+	// every loop round, where reviewing what an earlier round changed is the point.
+	hidden map[string]bool
 	// afterCheckout is called by Prepare the moment `gh pr checkout` has switched
 	// branches, before Prepare issues another git command. Set via OnCheckout.
 	afterCheckout func(context.Context) error
@@ -73,6 +77,59 @@ func (c *Collector) OnCheckout(fn func(context.Context) error) { c.afterCheckout
 // path) so Collect omits it from directory walks and untracked-file listings.
 // An empty rel (logs live outside the target) disables the exclusion.
 func (c *Collector) ExcludeLogs(rel string) { c.logsExclude = rel }
+
+// HideRunEdits keeps files THIS RUN wrote out of every later collection: of the
+// paths in changed, the ones matching globs are hidden, and the sorted list of
+// them is returned so the caller can say what a reviewer will not be shown.
+// Empty globs (or no changed paths) hide nothing and clear any earlier call, which
+// is how the closing phase restores full scope when it is done.
+//
+// It exists for one measured failure. review-tests is a closing-round lens, and a
+// closing pass re-reviews the tree the previous pass just edited -- so a reviewer
+// asks for a test, the coder writes it, and the next pass reviews THAT TEST: "the
+// assertion claims more than it proves", "the timing is decided by wall-clock
+// noise", "only one of the two branches is exercised". In a measured seven-round
+// run, 5 of the closing phase's first 7 findings and 2 of its next 7 were of
+// exactly that shape, all against test files the run itself had just committed.
+// The lens cannot run out of those, so the phase does not converge; it is stopped
+// by loop.max_final_passes instead.
+//
+// The filter is a glob list rather than "everything this run touched" because that
+// wider rule costs far more than it saves: the same run modified 27 of the
+// project's 57 source files, so hiding all of them would have blinded the closing
+// round to half the tree -- including every line the run had just written, which is
+// precisely the code most worth a coverage review. Hiding only the run's own TEST
+// files leaves the loop's production changes fully in scope, and in that run it
+// preserved the phase's one high-severity finding: a regression a closing fix had
+// introduced in non-test code.
+//
+// Paths are compared as target-relative slash paths, the same spelling the
+// collectors and ChangedSince produce.
+func (c *Collector) HideRunEdits(changed map[string]bool, globs []string) ([]string, error) {
+	c.hidden = nil
+	if len(globs) == 0 || len(changed) == 0 {
+		return nil, nil
+	}
+	res, err := compileGlobs(globs)
+	if err != nil {
+		return nil, err
+	}
+	var hidden []string
+	for p := range changed {
+		if matchAny(res, p) {
+			hidden = append(hidden, p)
+		}
+	}
+	if len(hidden) == 0 {
+		return nil, nil
+	}
+	sort.Strings(hidden)
+	c.hidden = make(map[string]bool, len(hidden))
+	for _, p := range hidden {
+		c.hidden[p] = true
+	}
+	return hidden, nil
+}
 
 // resolveBase turns target.base_ref into the concrete commit the whole run diffs
 // against.
@@ -338,13 +395,27 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// excludes returns the repo-relative paths to keep out of collection (currently
-// just the run's own logs dir when it lives inside the target).
+// excludes returns the target-relative paths to keep out of collection: the run's
+// own logs dir when it lives inside the target, plus whatever HideRunEdits is
+// currently hiding. Both are concrete paths, which is why pathspec renders them
+// with `literal` magic rather than as globs.
+//
+// COLLECTION ONLY -- collectPathspec is the single caller. The hidden set says
+// "do not show this to a reviewer", never "do not commit this": a fix that edits a
+// hidden file must still be committed and verified like any other.
 func (c *Collector) excludes() []string {
-	if c.logsExclude == "" {
-		return nil
+	var out []string
+	if c.logsExclude != "" {
+		out = append(out, c.logsExclude)
 	}
-	return []string{c.logsExclude}
+	// Sorted so the git command line is identical across runs with the same hidden
+	// set; map order would otherwise reshuffle the argv on every call.
+	hidden := make([]string, 0, len(c.hidden))
+	for p := range c.hidden {
+		hidden = append(hidden, p)
+	}
+	sort.Strings(hidden)
+	return append(out, hidden...)
 }
 
 // listFiles enumerates the files in scope. There is no include/allowlist option
@@ -784,6 +855,9 @@ func scanNUL(data []byte, atEOF bool) (int, []byte, error) {
 // the logs check per directory (and prunes there); a git listing yields only file
 // paths, so the same rule is applied by prefix here.
 func (c *Collector) skipFile(rel string, excludes []*regexp.Regexp) bool {
+	if c.hidden[rel] {
+		return true
+	}
 	if c.logsExclude != "" && (rel == c.logsExclude || strings.HasPrefix(rel, c.logsExclude+"/")) {
 		return true
 	}
@@ -1514,8 +1588,15 @@ func (c *Collector) ChangedSince(ctx context.Context, base string) (map[string]b
 	if head == "" || head == base {
 		return changed, nil
 	}
+	// --relative: `git diff` reports repo-root-relative paths regardless of the
+	// working directory, while every path a caller compares these against --
+	// a finding's File, a name from the collectors' listings -- is relative to
+	// target.path. The two spellings are the same string only when target.path IS
+	// the repository root; below it, an unrelativized listing matches nothing and
+	// the answer is silently "nothing moved". It also drops changes outside
+	// target.path, which is right for both callers: those files are not in scope.
 	if err := c.gitScanNUL(ctx, func(p string) { changed[p] = true },
-		"diff", "--name-only", "-z", base, head); err != nil {
+		"diff", "--name-only", "--relative", "-z", base, head); err != nil {
 		return nil, fmt.Errorf("list paths changed since %s: %w", base, err)
 	}
 	return changed, nil

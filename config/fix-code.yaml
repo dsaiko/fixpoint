@@ -45,6 +45,14 @@ roles:
       # still in the bundle, so re-adding either is one line -- see the git history
       # for the shape that worked (advisory + final + pinned to one agent).
 
+# Everything else in `loop` is inherited from defaults.yaml -- `extends` is per-key
+# and reaches inside nested blocks, so setting one key here keeps the rest.
+loop:
+  # The Go spelling of "a test file", for the closing round's do-not-review-your-own-
+  # tests rule (see defaults.yaml for the measurement). Applies ONLY to files this
+  # run's own commits wrote: a test file the run did not touch stays in scope.
+  final_skip_run_edits: ["**/*_test.go"]
+
 # The deterministic gate for THIS project. fixpoint runs these itself after the
 # coder and refuses to commit a round that fails them, so a fix that breaks the
 # build never becomes a commit later rounds build on.

@@ -182,6 +182,12 @@ func TestValidate(t *testing.T) {
 		{"negative max findings", func(c *Config) { c.Loop.MaxFindingsPerRound = -1 }, "must not be negative"},
 		{"negative max iterations", func(c *Config) { c.Loop.MaxIterations = -1 }, "must not be negative"},
 		{"negative clean rounds", func(c *Config) { c.Loop.CleanRoundsToStop = -1 }, "must not be negative"},
+		// An empty glob compiles to ^$ and matches no real path, so it would sit in
+		// the config looking like an active rule while hiding nothing -- and the
+		// closing round would review the run's own output with the operator believing
+		// it had been told not to.
+		{"empty skip pattern", func(c *Config) { c.Loop.FinalSkipRunEdits = []string{"**/*_test.go", "  "} }, "empty pattern"},
+		{"skip patterns accepted", func(c *Config) { c.Loop.FinalSkipRunEdits = []string{"**/*_test.go"} }, ""},
 		// commit_policy decides whether history is rewritten, so a typo must not
 		// silently fall back to a default that squashes (or does not).
 		{"unknown commit policy", func(c *Config) { c.Loop.CommitPolicy = "per-fix" }, "unknown policy"},
@@ -1041,5 +1047,28 @@ func TestEffectiveExcludesAlwaysCarriesTheMandatoryPatterns(t *testing.T) {
 	// The list itself is the control, so an empty one is a broken control.
 	if len(mandatoryExcludes) == 0 {
 		t.Fatal("mandatoryExcludes is empty: nothing keeps credential files out of directory-mode collection")
+	}
+}
+
+// The closing phase's default is ONE pass, and the number is load-bearing enough to
+// pin: it was 2, and the second pass was measured doing the wrong work -- 4 of its 7
+// findings critiqued the tests pass 1 had just written, 2 repeated pass 1, and the
+// one real defect it found had been introduced by pass 1's own fix. A silent return
+// to 2 would restore an hour of that per run.
+//
+// Zero must NOT be read as "run it zero times": a Loop built in code (tests,
+// embedders) never passes through defaulting, and treating its zero literally would
+// skip a configured closing lens entirely.
+func TestClosingPhaseDefaultsToOnePass(t *testing.T) {
+	if DefaultMaxFinalPasses != 1 {
+		t.Errorf("DefaultMaxFinalPasses = %d, want 1", DefaultMaxFinalPasses)
+	}
+	c := validConfig(t)
+	c.Loop.MaxFinalPasses = 0
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.Loop.MaxFinalPasses != 0 {
+		t.Errorf("Validate() changed max_final_passes to %d; defaulting is Load's job", c.Loop.MaxFinalPasses)
 	}
 }

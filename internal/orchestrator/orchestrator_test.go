@@ -4595,7 +4595,10 @@ func TestWarnFinalPhaseCappedAlwaysReportsExhaustion(t *testing.T) {
 }
 
 func TestFinalLensRunsAfterTheLoopAndStopsWhenClean(t *testing.T) {
-	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	// MaxFinalPasses set explicitly: the default is 1, and "stops when clean" is a
+	// claim about the phase ending ON ITS OWN -- which only a second pass can show,
+	// since a single-pass phase would end at the cap either way.
+	f := newFixture(t, config.Loop{MaxIterations: 3, MaxFinalPasses: 2, CleanRoundsToStop: 1})
 	f.finalLens()
 	f.respond(1, reviewResponse(t, aFinding("off by one"))) // round 1 reviewer
 	f.editRepoOn(2)
@@ -4654,7 +4657,9 @@ func TestFinalLensRunsAfterTheLoopAndStopsWhenClean(t *testing.T) {
 // round following the closing one, a single capped pass would fix the cap's worth
 // and silently drop the rest. Two gaps arrive under a cap of one, and both get fixed.
 func TestFinalPhaseProcessesMoreThanTheCapAcrossPasses(t *testing.T) {
-	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	// MaxFinalPasses set explicitly: the default is 1, and what this test exercises
+	// is the REPEAT -- pass 2 is the subject, not the default.
+	f := newFixture(t, config.Loop{MaxIterations: 4, MaxFinalPasses: 2, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
 	f.finalLens()
 	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged immediately
 
@@ -4695,7 +4700,9 @@ func TestFinalPhaseProcessesMoreThanTheCapAcrossPasses(t *testing.T) {
 // those findings are dropped without even the cap warning, which is exactly the
 // silent partial closing round this phase exists to prevent.
 func TestFinalPhaseContinuesForDeferredWhenActiveAllRejected(t *testing.T) {
-	f := newFixture(t, config.Loop{MaxIterations: 4, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	// MaxFinalPasses set explicitly: the default is 1, and what this test exercises
+	// is the REPEAT -- pass 2 is the subject, not the default.
+	f := newFixture(t, config.Loop{MaxIterations: 4, MaxFinalPasses: 2, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
 	f.finalLens()
 	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged immediately
 
@@ -4963,7 +4970,7 @@ func TestClosingPhaseInterruptionIsReportedAsAnInterruption(t *testing.T) {
 		cancel()
 
 		sum := &model.RunSummary{Termination: model.TermConverged}
-		if err := f.orchestrator().runFinalPhase(ctx, sum); err != nil {
+		if err := f.orchestrator().runFinalPhase(ctx, sum, ""); err != nil {
 			t.Fatalf("runFinalPhase() err = %v, want nil: skipping the phase is not a run failure", err)
 		}
 		if f.invocations() != 0 {
@@ -6082,5 +6089,63 @@ func TestVerifyBaselineNarrationMatchesThePolicy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// End to end: the closing round is not shown the test files the run itself wrote.
+//
+// This is the wiring that makes loop.final_skip_run_edits mean anything -- the glob
+// has to be matched against THIS RUN's commits, computed at the point the loop stops
+// editing, and applied to the material the closing reviewers actually receive. The
+// unit test in the target package proves the collector narrows; only a whole run
+// proves the orchestrator hands it the right paths at the right moment.
+//
+// Everything else stays in scope on purpose: the run's non-test edits (where a
+// regression a closing fix introduced would show up) and pre-existing test files.
+func TestClosingRoundIsNotShownTheTestFilesThisRunWrote(t *testing.T) {
+	f := newFixture(t, config.Loop{
+		MaxIterations:     3,
+		CleanRoundsToStop: 1,
+		FinalSkipRunEdits: []string{"**/*_test.go"},
+	})
+	f.finalLens()
+	// A test file that was already there when the run started: it matches the glob,
+	// but the run did not write it, so the closing round must still see it.
+	if err := os.WriteFile(filepath.Join(f.repo, "old_test.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repo, "add", ".")
+	gitRun(t, f.repo, "commit", "-q", "-m", "pre-existing test")
+
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	// The fix writes both a test file and a source file, exactly as a real coder
+	// asked for a regression test would.
+	testfixture.WriteSide(t, f.respDir, 2, fmt.Sprintf(
+		"#!/bin/sh\necho 'package main' > '%s'\necho '// fixed' >> '%s'\n",
+		filepath.Join(f.repo, "new_test.go"), filepath.Join(f.repo, "main.go")))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "fixed with a test"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean -> converged
+	f.respond(4, reviewResponse(t)) // closing pass: nothing left
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	closing := f.reviewPrompt(3)
+	if closing == "" {
+		t.Fatal("no closing-round reviewer prompt was written")
+	}
+	if strings.Contains(closing, "new_test.go") {
+		t.Errorf("the closing round was shown a test file this run wrote:\n%s", closing)
+	}
+	for _, want := range []string{"main.go", "old_test.go"} {
+		if !strings.Contains(closing, want) {
+			t.Errorf("the closing round lost %q, which final_skip_run_edits must not hide:\n%s", want, closing)
+		}
+	}
+	// The loop's own rounds keep full scope: reviewing what an earlier round changed
+	// is how a fix's own bug gets caught, and narrowing that was never the point.
+	if r2 := f.reviewPrompt(2); r2 != "" && !strings.Contains(r2, "new_test.go") {
+		t.Errorf("a LOOP round lost the run's own test file; only the closing round narrows:\n%s", r2)
 	}
 }

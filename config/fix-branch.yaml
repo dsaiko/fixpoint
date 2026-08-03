@@ -51,6 +51,14 @@ roles:
       # here and review-design deliberately absent; both are gone now, because an
       # unread report costs a session per run.
 
+# Inherited from defaults.yaml except for this one key -- see fix-code.yaml.
+loop:
+  # Keep the closing round off the test files this run itself wrote. It matters
+  # MORE here than in fix-code: the material is already only what the branch
+  # changed, so without this the closing pass is looking at almost nothing but the
+  # run's own commits.
+  final_skip_run_edits: ["**/*_test.go"]
+
 # The deterministic gate. Identical to fix-code on purpose: a fix is committed
 # only if the WHOLE project still builds and passes, never merely the files the
 # branch touched. A change confined to one package can break another, and a gate

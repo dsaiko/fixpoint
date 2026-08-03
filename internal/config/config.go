@@ -733,7 +733,15 @@ var commitPolicies = []string{CommitPerFix, CommitPerRound, CommitPerRun}
 // loop.max_final_passes is unset. Exported because a Loop built in code rather
 // than loaded from YAML never passes through the defaulting step, and a zero there
 // must not silently mean "run the closing phase zero times".
-const DefaultMaxFinalPasses = 2
+//
+// One, lowered from two on measurement. Pass 2's premise was "confirm the fix did
+// not open something new", and in a seven-round run it did not do that: its 7
+// findings were 4 critiques of the tests pass 1 had just written, 2 restatements of
+// what pass 1 had already reported, and 1 real regression -- which pass 1's OWN fix
+// had introduced. A pass whose main yield is repairing the previous pass is not
+// converging on the code; the verify gate (which runs the project's tests, with
+// -race here) is the check that catches what a fix broke, and it runs per fix.
+const DefaultMaxFinalPasses = 1
 
 // Loop controls how the review->fix cycle iterates, terminates, and commits,
 // and holds the trust gates that permit fix rounds at all.
@@ -758,6 +766,26 @@ type Loop struct {
 	// to confirm the fix did not open something new. A third pass is reviewing the
 	// second pass's tests, which is where the yield goes negative.
 	MaxFinalPasses int `yaml:"max_final_passes"`
+
+	// FinalSkipRunEdits hides files THIS RUN wrote from the CLOSING round's review
+	// material: a glob list, matched against the paths the run's own commits changed.
+	// Empty (the default) hides nothing, which is the behavior every project had
+	// before this existed.
+	//
+	// It is aimed at one specific non-convergence, not at self-review in general.
+	// Reviewing what an earlier round changed is productive inside the loop -- that is
+	// how a fix's own bug gets caught -- so this deliberately does not apply there.
+	// The closing round is different only because review-tests lives there: it asks
+	// for a test, the coder writes one, and the next pass reviews THAT TEST rather
+	// than the code. A measured run produced 7 such findings out of 14 across two
+	// closing passes, every one of them against a test file the run had committed
+	// minutes earlier.
+	//
+	// Set it to the test-file shape of the project's language ("**/*_test.go",
+	// "**/test_*.py", "**/*.spec.ts"); see target.Collector.HideRunEdits for why the
+	// blunter "hide everything this run touched" was measured and rejected. Patterns
+	// use the same syntax as target.exclude.
+	FinalSkipRunEdits []string `yaml:"final_skip_run_edits"`
 
 	// MaxFindingsPerRound caps how many ISSUES a round hands to the coder
 	// (0 = unlimited, the default). Ordered worst-severity-first; the overflow is
@@ -1151,6 +1179,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Loop.CleanRoundsToStop < 0 {
 		return fmt.Errorf("loop.clean_rounds_to_stop: must not be negative, got %d", c.Loop.CleanRoundsToStop)
+	}
+	for i, g := range c.Loop.FinalSkipRunEdits {
+		// An empty pattern compiles to ^$, which matches no real path -- so it would
+		// sit in the config looking like an active rule and hide nothing. Refused for
+		// the same reason logs.redact refuses one: a silently inert entry is worse
+		// than a load error.
+		if strings.TrimSpace(g) == "" {
+			return fmt.Errorf("loop.final_skip_run_edits[%d]: empty pattern; remove the entry or give it a glob", i)
+		}
 	}
 
 	if len(c.Roles.Review.Prompts) == 0 {

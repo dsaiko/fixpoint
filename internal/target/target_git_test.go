@@ -4243,3 +4243,87 @@ func TestScopeReportsFailedCleanupKillFromUntrackedScan(t *testing.T) {
 		t.Errorf("Scope() err = %v, want it to carry the kill's EPERM", err)
 	}
 }
+
+// The closing round must not be shown the test files the run itself just wrote:
+// review-tests then reports on its own output ("this assertion claims more than it
+// proves"), which is a loop with no fixed point. HideRunEdits is what narrows it,
+// and it must narrow ONLY that -- a matching file the run did not touch, and a
+// run-written file that does not match, both stay in scope.
+func TestHideRunEditsHidesOnlyTheRunsOwnMatchingFiles(t *testing.T) {
+	repo := gitRepo(t)
+	writeFile(t, repo, "old_test.go", "package main\n") // matches, but not ours
+	writeFile(t, repo, "new_test.go", "package main\n") // matches and ours
+	writeFile(t, repo, "helper.go", "package main\n")   // ours, does not match
+	c := New(config.Target{Mode: "directory", Path: repo})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exactly what the orchestrator passes: the paths this run's commits changed.
+	changed := map[string]bool{"new_test.go": true, "helper.go": true}
+	hidden, err := c.HideRunEdits(changed, []string{"**/*_test.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden) != 1 || hidden[0] != "new_test.go" {
+		t.Fatalf("HideRunEdits() = %v, want exactly [new_test.go]", hidden)
+	}
+
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(material, "new_test.go") {
+		t.Errorf("a test file this run wrote is still in the closing round's material:\n%s", material)
+	}
+	for _, want := range []string{"old_test.go", "helper.go", "main.go"} {
+		if !strings.Contains(material, want) {
+			t.Errorf("Collect() dropped %q, which HideRunEdits must not touch:\n%s", want, material)
+		}
+	}
+
+	// Cleared again: the collector outlives the closing phase, and a hidden set left
+	// behind would silently narrow every later collection and clean check too.
+	if _, err := c.HideRunEdits(nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	material, err = c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(material, "new_test.go") {
+		t.Errorf("clearing HideRunEdits did not restore full scope:\n%s", material)
+	}
+}
+
+// The same narrowing has to reach git-diff mode, where it matters more: that mode
+// embeds full file CONTENT in the prompt, so an unhidden file costs tokens as well
+// as attention. The pathspec is where it happens, and a concrete path must be
+// excluded literally -- a filename containing pathspec metacharacters would
+// otherwise be reinterpreted as a glob and quietly stay in the diff.
+func TestHideRunEditsAppliesToTheGitDiffPathspec(t *testing.T) {
+	repo := gitRepo(t)
+	base := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	writeFile(t, repo, "x_test.go", "package main\n// written by this run\n")
+	writeFile(t, repo, "x.go", "package main\n// also written by this run\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "the run's own work")
+
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: base})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.HideRunEdits(map[string]bool{"x_test.go": true}, []string{"**/*_test.go"}); err != nil {
+		t.Fatal(err)
+	}
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(material, "x_test.go") {
+		t.Errorf("the diff still carries a test file this run wrote:\n%s", material)
+	}
+	if !strings.Contains(material, "x.go") {
+		t.Errorf("the diff lost the non-test file this run wrote, which stays in scope:\n%s", material)
+	}
+}

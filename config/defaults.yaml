@@ -58,14 +58,39 @@ loop:
   # catches a lens that never runs out of things to say -- and review-tests is that
   # lens: coverage can always be wanted more of.
   #
-  # 2, not max_iterations, which it used to borrow. In a measured run the closing
-  # phase took 51 minutes over two passes and the second still produced four NEW
-  # issues, because each pass reviews the tests the previous pass just wrote. Every
-  # repeated issue id in that run came from here -- a real bug fixed in the loop,
-  # re-opened as "the test for that fix is flaky", then as "the test for the test".
-  # One pass to fix what the finished tree needs, one to confirm it opened nothing;
-  # a third is reviewing the second pass's tests.
-  max_final_passes: 2
+  # 1, lowered from 2 on measurement. The argument for a second pass was "confirm the
+  # first did not open something new", and a seven-round run showed what it actually
+  # did: of pass 2's 7 findings, 4 critiqued the tests pass 1 had just written, 2
+  # repeated what pass 1 already said, and 1 was a real regression -- introduced by
+  # pass 1's own fix. Repairing the previous pass is not convergence, and the thing
+  # that reliably catches a broken fix is the verify gate, which runs per fix.
+  #
+  # Raise it to 2 if your closing lenses are genuinely list-shaped (a fixed set of
+  # coverage gaps to work through) rather than opinion-shaped; pair that with
+  # final_skip_run_edits below, which is what keeps pass 2 off pass 1's own output.
+  max_final_passes: 1
+
+  # Files THIS RUN wrote that the CLOSING round must not be shown, as globs matched
+  # against the paths the run's own commits changed. Empty means show everything,
+  # which is what every version before this did.
+  #
+  # Empty HERE on purpose: the pattern is per-language, so a shipped default would
+  # be wrong everywhere it is not Go -- the same reason verify.commands is empty.
+  # fix-code.yaml and fix-branch.yaml set the Go shape.
+  #
+  # This is NOT a general "do not review your own work" rule. Inside the loop that
+  # review is productive: it is how a fix's own bug gets caught, and a measured run's
+  # single high-severity closing finding was exactly that. It is aimed at one
+  # feedback loop that does not converge: review-tests asks for a test, the coder
+  # writes one, and the next look reviews THAT TEST -- "the assertion claims more
+  # than it proves", "the timing is wall-clock noise", "only one branch is
+  # exercised". Seven of one run's 14 closing findings were that, every one against a
+  # test file the run had committed minutes earlier.
+  #
+  # Hiding everything the run touched was measured and rejected: that run changed 27
+  # of 57 source files, so the blunt rule blinds the closing round to half the tree,
+  # including the newest code -- the code most worth a coverage review.
+  final_skip_run_edits: []
 
   # ISSUES handed to the coder per round; 0 = unlimited, and unlimited is now the
   # default because the reason for a cap is gone. It was sized to ONE coder

@@ -628,7 +628,7 @@ func (o *Orchestrator) resolveRunBase(ctx context.Context) (string, error) {
 // cache, or on a fresh context as the reconcile paths do -- would silently start
 // rewriting history over exactly the tree squashRun says must not be rewritten.
 func (o *Orchestrator) finishRun(ctx context.Context, sum *model.RunSummary, runBase string) error {
-	if err := o.runFinalPhase(ctx, sum); err != nil {
+	if err := o.runFinalPhase(ctx, sum, runBase); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
@@ -1079,7 +1079,7 @@ func (o *Orchestrator) squashTo(ctx context.Context, rec *model.RoundRecord, bas
 // -- to interrupted, with the loop's outcome moved to LoopTermination -- because
 // that is a statement about the RUN rather than a verdict on the code: see
 // markInterrupted.
-func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary) error {
+func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary, runBase string) error {
 	actionable, advisory := o.finalAssignments()
 	// Nothing configured for this phase: the run is over exactly as the loop left it.
 	if len(actionable)+len(advisory) == 0 || o.cfg.Loop.ReviewOnly {
@@ -1094,8 +1094,15 @@ func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary)
 	// run the operator cut short.
 	if ctx.Err() != nil {
 		markInterrupted(sum)
-		return nil //nolint:nilerr // see above: an interruption is a termination, not a run failure
+		// An interruption is a termination, not a run failure -- see above.
+		return nil
 	}
+	// Narrow what this phase is shown, for the whole phase including the advisory
+	// report, then restore full scope: the collector outlives the phase (squashRun
+	// and any later reconcile use it), and a hidden set left behind would silently
+	// narrow them too.
+	defer func() { _, _ = o.collector.HideRunEdits(nil, nil) }()
+	o.hideRunEdits(ctx, runBase)
 	if err := o.runFinalFixPasses(ctx, sum, actionable); err != nil {
 		return err
 	}
@@ -1105,13 +1112,46 @@ func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary)
 	if len(advisory) > 0 {
 		if ctx.Err() != nil {
 			markInterrupted(sum)
-			return nil //nolint:nilerr // as above
+			// As above: not a run failure.
+			return nil
 		}
 		if _, err := o.runFinalPass(ctx, sum, advisory, "report"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// hideRunEdits applies loop.final_skip_run_edits: the files this run's own commits
+// wrote, matching those globs, are kept out of the closing round's material. See
+// target.Collector.HideRunEdits for the measurement behind it.
+//
+// Best-effort, like staleFiles: it narrows a review for economy, so a git failure
+// here means the closing round sees the whole tree -- the behavior every earlier
+// version had -- rather than the run failing at its last step. What it must not do
+// is stay quiet: a reviewer that is not shown a file reports no findings about it,
+// which is indistinguishable from a clean bill of health, so both the hidden count
+// and a failure to compute it are logged.
+func (o *Orchestrator) hideRunEdits(ctx context.Context, runBase string) {
+	globs := o.cfg.Loop.FinalSkipRunEdits
+	if len(globs) == 0 || runBase == "" {
+		return
+	}
+	changed, err := o.collector.ChangedSince(ctx, runBase)
+	if err != nil {
+		o.logf("WARNING: could not list this run's own edits (%v); the closing round reviews the whole tree, including files it wrote (loop.final_skip_run_edits)", err)
+		return
+	}
+	hidden, err := o.collector.HideRunEdits(changed, globs)
+	if err != nil {
+		o.logf("WARNING: loop.final_skip_run_edits: %v; the closing round reviews the whole tree, including files it wrote", err)
+		return
+	}
+	if len(hidden) == 0 {
+		return
+	}
+	o.logf("closing round: hiding %d file(s) this run wrote (loop.final_skip_run_edits): %s",
+		len(hidden), strings.Join(hidden, ", "))
 }
 
 // runFinalFixPasses repeats the actionable half of the closing round until it has

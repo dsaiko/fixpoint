@@ -95,6 +95,14 @@ this). `once` and `final` are mutually exclusive. See the
 per-lens modifiers section in the [root README](../README.md) for when to reach for
 each.
 
+The closing round is bounded by `loop.max_final_passes` (default **1**) and narrowed
+by `loop.final_skip_run_edits`: globs matched against the paths this run's own
+commits changed, whose matches are hidden from the closing round's material only.
+Both exist for the same measured failure — `review-tests` asks for a test, the coder
+writes it, and the next look reviews *that test* rather than the code. The shipped Go
+configs set `["**/*_test.go"]`; the base leaves it empty, because the pattern is
+per-language for the same reason `verify.commands` is.
+
 ## Commits
 
 Every fix is made in its own coder session and committed on its own.
