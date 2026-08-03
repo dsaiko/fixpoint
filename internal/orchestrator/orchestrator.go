@@ -69,10 +69,20 @@ type Orchestrator struct {
 	// preflightAgents records the STRENGTH of the memoized answer: --check runs the
 	// weaker no-agent variant (see PreflightGuardsNoAgent), and that answer must not
 	// satisfy a later agent-invoking caller, which inspects strictly more.
+	//
+	// The memo is deliberately INVALIDATED once, by recheckPreflightGuards, at the
+	// `gh pr checkout` inside Prepare: "the target does not change mid-run" does not
+	// hold across a branch switch, because git config is branch-conditional.
 	preflightMu     sync.Mutex
 	preflightDone   bool
 	preflightAgents bool
 	preflightErr    error
+	// warnedGuard keeps each guard warning to one line per run. The guards run a
+	// second time after a pr checkout (recheckPreflightGuards), and a target whose
+	// trust the operator asserted would otherwise print the identical warning
+	// twice; a checkout that ACTIVATES further settings produces a different
+	// message, which still gets printed.
+	warnedGuard map[string]bool
 	// heartbeatEvery is how often runAgent's progress line fires. It is a field
 	// defaulting to heartbeatDefault rather than a bare const so a test can shorten
 	// it: the tick body is the only thing that makes the heartbeat goroutine touch
@@ -195,6 +205,9 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 
 		heartbeatEvery: heartbeatDefault,
 	}
+	// A `gh pr checkout` invalidates the preflight's verdict on the target, so the
+	// gates run again the moment it lands -- before Prepare's own next git command.
+	o.collector.OnCheckout(o.recheckPreflightGuards)
 	// Exclude the template's literal prefix, not the rendered path: the rendered
 	// path changes every run (and every round), so only the static base is a
 	// stable pathspec for commits, clean checks, and collection.
@@ -457,6 +470,12 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 		}
 	}
 
+	// Prepare can switch branches (pr mode runs gh pr checkout), which invalidates
+	// what the preflight above learned: git config is branch-conditional, so an
+	// includeIf "onbranch:..." can activate an execution-capable setting that was
+	// inert on the branch the preflight inspected. The gates therefore run again
+	// from inside Prepare, the instant the checkout lands and before Prepare's own
+	// next git command -- see recheckPreflightGuards, wired in New.
 	if err := o.collector.Prepare(ctx); err != nil {
 		return err
 	}
@@ -1324,6 +1343,34 @@ func (o *Orchestrator) PreflightGuardsNoAgent(ctx context.Context) error {
 	return o.preflightGuards(ctx, false)
 }
 
+// recheckPreflightGuards discards the memoized preflight answer and runs the
+// gates again. It is registered with the collector (Collector.OnCheckout) so it
+// fires at the one point where the target changes under them: Prepare's
+// `gh pr checkout`.
+//
+// The memo holds because the guards read a target that does not change mid-run --
+// except across a branch switch. Git config is branch-conditional: an
+// `includeIf "onbranch:<pattern>"` in .git/config (or in a file it includes)
+// pulls in a whole config file only while that branch is checked out, so a
+// crafted checkout can park a filter.<name>.clean, core.sshCommand, credential
+// helper or core.worktree redirect in a file that is INERT on the branch the
+// preflight inspects and ACTIVE on the PR branch `gh pr checkout` switches to.
+// Every git command after the checkout -- the rest of Prepare (its base fetch runs
+// a credential helper or ssh command), the post-Prepare `git status`, the
+// `git diff` that collects the PR, and each agent's own git commands -- would then
+// run that repo-controlled program with fixpoint's inherited environment, in a
+// review-only run that passed no trust gate.
+//
+// It always asks the agent-invoking variant, whatever entry point led here: only
+// run() prepares a target, and it goes on to launch agents with their working
+// directory inside the checked-out tree.
+func (o *Orchestrator) recheckPreflightGuards(ctx context.Context) error {
+	o.preflightMu.Lock()
+	o.preflightDone, o.preflightAgents, o.preflightErr = false, false, nil
+	o.preflightMu.Unlock()
+	return o.PreflightGuards(ctx)
+}
+
 func (o *Orchestrator) preflightGuards(ctx context.Context, agentsInTarget bool) error {
 	o.preflightMu.Lock()
 	defer o.preflightMu.Unlock()
@@ -1434,7 +1481,7 @@ func (o *Orchestrator) guardUntrustedGitConfig(ctx context.Context, agentsInTarg
 		if !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
 			return fmt.Errorf("target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that would run repo-controlled programs fixpoint cannot neutralize (%s); git normalizes worktree files through these during diff/add/status/checkout, so this is a code-execution path with fixpoint's inherited environment. Review it under an external sandbox (container/VM), or pass -trusted-target if you trust this checkout", o.cfg.Target.Path, strings.Join(keys, ", "))
 		}
-		o.logf("WARNING: target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that runs repo-controlled programs during git diff/add/status/checkout (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", "))
+		o.warnGuardOnce(fmt.Sprintf("WARNING: target %s has repo-supplied git config (.git/config, a file it includes, or .git/config.worktree) that runs repo-controlled programs during git diff/add/status/checkout (%s) which fixpoint cannot neutralize; -trusted-target/-allow-untrusted-fix accepts this code-execution path (with fixpoint's inherited environment) in addition to coder prompt-injection. Review untrusted checkouts (extracted archives, crafted .git) under an external sandbox.", o.cfg.Target.Path, strings.Join(keys, ", ")))
 	}
 	return o.guardActivatableFilters(ctx, agentsInTarget)
 }
@@ -1483,8 +1530,23 @@ func (o *Orchestrator) guardActivatableFilters(ctx context.Context, agentsInTarg
 	if agentsInTarget && o.cfg.Target.Mode == config.ModePR && !o.cfg.Loop.TrustedTarget && !o.cfg.Loop.AllowUntrustedFix {
 		return fmt.Errorf("mode pr: content filters configured outside target %s -- in your global or system git config (%s) -- are selected by REPOSITORY content, and in pr mode that content is the PR's: `gh pr checkout` writes the branch's .gitattributes (plus any worktree script the filter runs, and the .lfsconfig that redirects where a git-lfs filter talks), so git would run your filter program over PR-authored file content with fixpoint's inherited environment, before any agent sandbox. fixpoint cannot neutralize them (their names are dynamic) and cannot inspect the attributes before the checkout that brings them. Review the PR under an external sandbox (container/VM), unset the filter for this run, or pass -trusted-target/-allow-untrusted-fix to accept this path", o.cfg.Target.Path, strings.Join(filters, ", "))
 	}
-	o.logf("WARNING: content filters configured outside target %s -- in your global or system git config (%s) -- are selected by REPOSITORY content: a .gitattributes naming one (in the checkout, or in a PR branch `gh pr checkout` writes) makes git run it over repo-controlled file content during checkout/add/status/diff, and a repo-supplied .lfsconfig redirects where a git-lfs filter talks. fixpoint cannot neutralize them (their names are dynamic). Review untrusted checkouts under an external sandbox.", o.cfg.Target.Path, strings.Join(filters, ", "))
+	o.warnGuardOnce(fmt.Sprintf("WARNING: content filters configured outside target %s -- in your global or system git config (%s) -- are selected by REPOSITORY content: a .gitattributes naming one (in the checkout, or in a PR branch `gh pr checkout` writes) makes git run it over repo-controlled file content during checkout/add/status/diff, and a repo-supplied .lfsconfig redirects where a git-lfs filter talks. fixpoint cannot neutralize them (their names are dynamic). Review untrusted checkouts under an external sandbox.", o.cfg.Target.Path, strings.Join(filters, ", ")))
 	return nil
+}
+
+// warnGuardOnce logs msg unless the identical guard warning has already been
+// logged this run; see warnedGuard for why the guards can produce one twice.
+// Callers hold preflightMu (the guards' only entry point takes it), so the map
+// needs no lock of its own.
+func (o *Orchestrator) warnGuardOnce(msg string) {
+	if o.warnedGuard[msg] {
+		return
+	}
+	if o.warnedGuard == nil {
+		o.warnedGuard = map[string]bool{}
+	}
+	o.warnedGuard[msg] = true
+	o.logf("%s", msg)
 }
 
 // checkFixTrust enforces the fix-round trust gate. Fix rounds run the coder --

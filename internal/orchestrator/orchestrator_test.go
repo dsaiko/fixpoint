@@ -1652,6 +1652,93 @@ func TestRunRefusesUntrustedPRConfigFilter(t *testing.T) {
 	})
 }
 
+// Git config is BRANCH-CONDITIONAL, so the preflight's answer expires at the
+// checkout: an `includeIf "onbranch:<pattern>"` in .git/config pulls in a config
+// file only while a matching branch is checked out. A crafted checkout can
+// therefore park a filter.<name>.clean in a file that is inert on the branch the
+// preflight inspects and active on the PR branch `gh pr checkout` switches to --
+// after which the post-Prepare `git status`, the `git diff` that collects the PR,
+// and every agent's own git commands run that repo-controlled program with
+// fixpoint's inherited environment, in a review-only run that asserted no trust.
+// So the gates must run AGAIN on the checked-out branch, and their memoized
+// pre-checkout answer must not stand in for that.
+func TestRunRechecksConfigGuardAfterPRCheckout(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.cfg.Loop.TrustedTarget = false // undo the fixture's trusted default
+	f.cfg.Target.Mode = "pr"
+	f.cfg.Target.PR = 7
+
+	// A clean feature branch for gh to check out, plus the base oid gh reports.
+	gitRun(t, f.repo, "branch", "-M", "main")
+	mainSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(f.repo, "main.go"), []byte("package main\n\nfunc pr() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repo, "commit", "-aqm", "pr change")
+	gitRun(t, f.repo, "checkout", "-q", "main")
+
+	// The payload: a clean filter that only exists while `feature` is checked out.
+	// Written straight into .git (a crafted checkout's own doing -- a PR cannot
+	// write there), and left unselected by any .gitattributes so this test never
+	// actually runs it.
+	evil := filepath.Join(f.repo, ".git", "evil-config")
+	if err := os.WriteFile(evil, []byte("[filter \"evil\"]\n\tclean = sh -c 'id'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(f.repo, ".git", "config")
+	existing, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, append(existing, []byte("[includeIf \"onbranch:feature\"]\n\tpath = evil-config\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The include really is invisible from the branch the preflight sees; without
+	// that the test would pass on the pre-checkout gate alone.
+	if keys, err := target.New(f.cfg.Target).UnsafeConfig(t.Context()); err != nil || len(keys) != 0 {
+		t.Fatalf("UnsafeConfig() = %v, %v on the pre-checkout branch, want none (an onbranch include is inert there)", keys, err)
+	}
+
+	// The stub logs each call, so the test can tell WHEN the recheck ran: the rest
+	// of Prepare (`gh pr view`, then the base fetch, which would run an activated
+	// credential helper or ssh command) must never happen.
+	binDir := t.TempDir()
+	ghCalls := filepath.Join(t.TempDir(), "gh-calls")
+	stub := "#!/bin/sh\n" +
+		`echo "$1 $2" >> "` + ghCalls + `"` + "\n" +
+		`case "$1 $2" in` + "\n" +
+		`"pr checkout") git checkout -q feature ;;` + "\n" +
+		`"pr view") echo ` + mainSHA + " ;;\n" +
+		`*) echo "unexpected gh call: $@" >&2; exit 1 ;;` + "\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err = f.orchestrator().Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "repo-controlled programs") {
+		t.Fatalf("Run() err = %v, want the post-checkout recheck to refuse, citing repo-controlled programs", err)
+	}
+	if !strings.Contains(err.Error(), "filter.evil.clean") {
+		t.Errorf("Run() err = %v, want it to name the setting the checkout activated", err)
+	}
+	if branch := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "--abbrev-ref", "HEAD")); branch != "feature" {
+		t.Fatalf("HEAD is on %q, want feature: the checkout must have happened, or this tests the pre-checkout gate", branch)
+	}
+	calls, err := os.ReadFile(ghCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(strings.TrimSpace(string(calls))); len(got) != 2 || got[1] != "checkout" {
+		t.Errorf("gh calls = %q, want the checkout alone: the recheck must refuse before the rest of Prepare runs git", got)
+	}
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0 (must refuse before any agent runs in the checked-out tree)", got)
+	}
+}
+
 // A filter the OPERATOR configured globally is a program the PR can still reach:
 // it does not define the filter, it ships the .gitattributes that SELECTS it (and
 // the worktree script it may run, and the .lfsconfig that redirects where a

@@ -46,10 +46,27 @@ type Collector struct {
 	// kept out of directory walks and untracked-file listings so later rounds
 	// never review the run's own prompts and outputs.
 	logsExclude string
+	// afterCheckout is called by Prepare the moment `gh pr checkout` has switched
+	// branches, before Prepare issues another git command. Set via OnCheckout.
+	afterCheckout func(context.Context) error
 }
 
 // New returns a collector for the configured target.
 func New(cfg config.Target) *Collector { return &Collector{cfg: cfg} }
+
+// OnCheckout registers a callback Prepare runs immediately after `gh pr checkout`
+// switches branches. An error from it aborts the rest of Prepare.
+//
+// It exists because a branch switch invalidates what a caller learned about the
+// target BEFORE it. Git config is branch-conditional -- an
+// `includeIf "onbranch:<pattern>"` in .git/config pulls in a whole config file
+// only while a matching branch is checked out -- so a checkout can activate a
+// core.sshCommand, credential helper, content filter or core.worktree redirect
+// that was inert when the caller's trust gates inspected the target. Prepare's own
+// remaining commands are enough to fire some of those (it may `git fetch` the PR's
+// base commit, which runs a credential helper or ssh command), so the re-check
+// cannot wait for Prepare to return. See orchestrator.recheckPreflightGuards.
+func (c *Collector) OnCheckout(fn func(context.Context) error) { c.afterCheckout = fn }
 
 // ExcludeLogs records the run's logs directory (as a target-relative slash
 // path) so Collect omits it from directory walks and untracked-file listings.
@@ -111,6 +128,14 @@ func (c *Collector) Prepare(ctx context.Context) error {
 		out, err := c.run(ctx, "gh", "pr", "checkout", strconv.Itoa(c.cfg.PR))
 		if err != nil {
 			return fmt.Errorf("gh pr checkout %d: %w: %s", c.cfg.PR, err, out)
+		}
+		// The tree is now the PR's, and so is whatever branch-conditional git config
+		// the checkout activated: re-gate before the next git command below (the base
+		// fetch can run a credential helper or ssh command). See OnCheckout.
+		if c.afterCheckout != nil {
+			if err := c.afterCheckout(ctx); err != nil {
+				return err
+			}
 		}
 		// Pin the PR's exact base commit from GitHub. A hard-coded
 		// origin/<baseRefName> fails when the GitHub remote is not named origin
