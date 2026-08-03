@@ -478,6 +478,50 @@ var writeGrantingModes = map[string][]string{
 	"--approval-mode": {"yolo", "auto_edit"},
 }
 
+// writeGrantingConfigSettings are the same grants spelled as a SETTING rather
+// than as a flag, for a CLI that exposes its whole config file on the command
+// line -- codex's `-c key=value` / `--config key=value`. A setting override
+// outranks nothing here: `codex exec --sandbox read-only -c sandbox_mode=danger-full-access`
+// runs unsandboxed, so checking only the flag spelling leaves the check evadable
+// by writing the same grant one argument differently.
+//
+// Same admission rule as the maps above: only settings whose documented values
+// permit writes. What this cannot see is indirection -- `-c profile=<name>`, or a
+// profile chosen with --profile, selects a sandbox_mode from ~/.codex/config.toml,
+// which is not on argv and is not fixpoint's to read. can_edit: false remains a
+// claim about the whole command; argv is only the part fixpoint can check.
+var writeGrantingConfigSettings = map[string][]string{
+	// codex: the setting --sandbox sets. read-only is the enforced no-write value
+	// that earns a read-only claim; both others permit writes.
+	"sandbox_mode": {"workspace-write", "danger-full-access"},
+}
+
+// configOverridePrefixes are the config-override spellings that pack the flag and
+// the assignment into ONE argument. The separated form ("-c" "k=v") needs no
+// prefix: the assignment is a token of its own and is matched as one.
+var configOverridePrefixes = []string{"--config=", "--config", "-c"}
+
+// configSetting reports the setting a token assigns, in every spelling a
+// config-override flag accepts: "sandbox_mode=v" (the argument after -c/--config),
+// "-csandbox_mode=v", "--config=sandbox_mode=v", and "--configsandbox_mode=v".
+// Quotes are stripped because the value is TOML, so a string may arrive quoted.
+func configSetting(tok string) (key, val string, ok bool) {
+	for _, p := range configOverridePrefixes {
+		if strings.HasPrefix(tok, p) && len(tok) > len(p) {
+			tok = strings.TrimPrefix(tok, p)
+			break
+		}
+	}
+	key, val, ok = strings.Cut(tok, "=")
+	if !ok {
+		return "", "", false
+	}
+	unquote := func(s string) string {
+		return strings.Trim(strings.TrimSpace(s), `"'`)
+	}
+	return unquote(key), unquote(val), true
+}
+
 // permissionBypassFlag returns the write-granting token in argv, or "" when there
 // is none. Flags are matched in both spellings a CLI may accept (--flag=value and
 // --flag value), because the check is worth nothing if it can be evaded by
@@ -487,6 +531,13 @@ func permissionBypassFlag(argv []string) string {
 		key, val, hasVal := strings.Cut(tok, "=")
 		if _, ok := permissionBypassFlags[key]; ok {
 			return key
+		}
+		if setting, value, isSetting := configSetting(tok); isSetting {
+			for _, mode := range writeGrantingConfigSettings[setting] {
+				if strings.EqualFold(value, mode) {
+					return setting + "=" + mode
+				}
+			}
 		}
 		modes, ok := writeGrantingModes[key]
 		if !ok {

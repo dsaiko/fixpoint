@@ -262,6 +262,49 @@ func TestValidate(t *testing.T) {
 			a.Command = []string{"echo", "exec", "-s workspace-write"}
 			c.Agents["rev"] = a
 		}, "-s workspace-write"},
+		// codex spells every flag as a settings override too, and the override wins
+		// over --sandbox read-only, so each -c/--config spelling of sandbox_mode has
+		// to be refused as well -- otherwise the check is one argument away from
+		// being bypassed while still declaring can_edit: false.
+		{"read-only reviewer passing codex -c sandbox_mode rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "-c sandbox_mode=workspace-write", "-"}
+			c.Agents["rev"] = a
+		}, "sandbox_mode=workspace-write"},
+		{"read-only reviewer passing codex --config sandbox_mode rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "--config sandbox_mode=danger-full-access", "-"}
+			c.Agents["rev"] = a
+		}, "sandbox_mode=danger-full-access"},
+		{"read-only reviewer passing codex --config=sandbox_mode rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "--config=sandbox_mode=workspace-write"}
+			c.Agents["rev"] = a
+		}, "sandbox_mode=workspace-write"},
+		{"read-only reviewer passing codex -c with the value attached rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "-csandbox_mode=workspace-write"}
+			c.Agents["rev"] = a
+		}, "sandbox_mode=workspace-write"},
+		// The value is TOML, so a string may be quoted; the quotes must not hide it.
+		{"read-only reviewer passing a quoted codex sandbox_mode rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", `-c sandbox_mode="workspace-write"`, "-"}
+			c.Agents["rev"] = a
+		}, "sandbox_mode=workspace-write"},
+		// An override that grants nothing is ordinary configuration: config/agents/codex.yaml
+		// itself passes -c model_reasoning_effort, and read-only is the value it earns
+		// its can_edit: false with.
+		{"read-only reviewer passing an unrelated codex override accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "--sandbox read-only", "-c model_reasoning_effort=high"}
+			c.Agents["rev"] = a
+		}, ""},
+		{"read-only reviewer passing codex -c sandbox_mode=read-only accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", `-c sandbox_mode="read-only"`, "-"}
+			c.Agents["rev"] = a
+		}, ""},
 		{"read-only reviewer passing agy --mode accept-edits rejected", func(c *Config) {
 			a := c.Agents["rev"]
 			a.Command = []string{"echo", "--mode accept-edits"}
