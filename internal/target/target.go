@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -574,12 +575,19 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// leader and no further, so a scan waiting on that pipe would outlive git
 	// indefinitely, hanging the whole collection. Closing the read end out from
 	// under it is the only way to end it, exactly as OutPipe.Drain does for stderr.
+
+	// Entries taken off the pipe, published so the grace below can bound the ABSENCE
+	// of data rather than the scan's completion. Incremented BEFORE fn: what the
+	// grace has to distinguish is a listing still arriving from one that never will,
+	// and fn's cost per entry is the caller's, not the pipe's.
+	var consumed atomic.Uint64
 	scanned := make(chan error, 1)
 	go func() {
 		sc := bufio.NewScanner(pr)
 		sc.Buffer(make([]byte, 0, 64<<10), maxGitPath)
 		sc.Split(scanNUL)
 		for sc.Scan() {
+			consumed.Add(1)
 			fn(sc.Text())
 		}
 		scanned <- sc.Err()
@@ -595,9 +603,13 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// already finished and its exit status sitting in `waited` unread.
 	var grace <-chan time.Time
 	var graceTimer *time.Timer
-	// Armed at most once, so one Stop covers every exit path -- and the usual one is
-	// the scan reaching EOF before the grace fires, which would otherwise leave a
-	// live timer behind for every listing this function performs.
+	// Entry count at the instant the grace was last armed, so a fired grace can ask
+	// whether anything arrived during it.
+	var mark uint64
+	// One timer, re-armed in place while the scan keeps making progress, so one Stop
+	// covers every exit path -- and the usual one is the scan reaching EOF before the
+	// grace fires, which would otherwise leave a live timer behind for every listing
+	// this function performs.
 	defer func() {
 		if graceTimer != nil {
 			graceTimer.Stop()
@@ -609,12 +621,29 @@ scan:
 		case scanErr = <-scanned:
 			break scan
 		case exit = <-waited:
-			// Received once, so this case simply blocks from here on and the grace is
-			// never re-armed.
+			// Received once, so this case simply blocks from here on: the grace is armed
+			// here and only ever re-armed by the case below.
 			reaped = true
+			mark = consumed.Load()
 			graceTimer = time.NewTimer(agent.PipeDrainGrace)
 			grace = graceTimer.C
 		case <-grace:
+			// What this grace bounds is a scan getting NOTHING, not one that is merely
+			// slow. By the time git exits it has handed its whole listing to the pipe, so
+			// up to a pipe buffer plus the scanner's own buffer of it -- thousands of
+			// entries -- can still be unread, and unlike OutPipe.Drain's copy goroutine
+			// this one runs the CALLER's fn per entry: listGitFiles' costs a glob sweep,
+			// an Lstat, and for a symlink an EvalSymlinks, which on a network filesystem
+			// or a cold cache can easily outlast one grace. Cutting there would discard a
+			// listing that was arriving fine and blame an escaped writer that does not
+			// exist. So re-arm while entries keep arriving; a scan blocked on a write end
+			// held outside the group consumes nothing and is still cut after a single
+			// grace, and one fed slowly forever remains bounded by ctx below.
+			if now := consumed.Load(); now != mark {
+				mark = now
+				graceTimer.Reset(agent.PipeDrainGrace)
+				continue
+			}
 			_ = pr.Close()
 			scanErr = <-scanned
 			// The listing could not be read to EOF, so a complete one is

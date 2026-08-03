@@ -3635,6 +3635,43 @@ func TestGitScanNULHeldOpenListingStillReportsFailedCleanupKill(t *testing.T) {
 	}
 }
 
+// The grace exists for a write end no EOF is ever coming through, so what it has
+// to bound is the ABSENCE of output -- not the scan's own work. git hands its whole
+// listing to the pipe before it exits, so by the time the leader is reaped (which
+// is when the grace is armed) a pipe buffer plus a scanner buffer of it can still be
+// unread, and every one of those entries costs fn a glob sweep, an Lstat and
+// sometimes an EvalSymlinks: on a network filesystem or a cold page cache that
+// residue outlasts one grace. Deadlining the scan there would fail a listing that
+// was complete, with an error blaming an escaped descendant that never existed --
+// and would truncate the listing to make its own diagnosis true. Entries arrive
+// slowly here and nothing holds stdout, so the listing must be delivered in full.
+func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
+	repo := gitRepo(t)
+	const entries = 60
+	// The whole listing, then an immediate exit: the residue sits in the pipe with the
+	// leader already gone. Nothing escapes the process group, so EOF is waiting behind
+	// that residue -- the scan just has to get to it.
+	shimGit(t, "ls-files", fmt.Sprintf("    i=0\n"+
+		"    while [ $i -lt %d ]; do printf 'f%%d.go\\0' $i; i=$((i+1)); done\n"+
+		"    exit 0", entries))
+
+	var seen int
+	// 60 entries at 50ms is 3s of callback, comfortably past the 2s grace, while every
+	// individual gap stays far short of it: what decides this test is the predicate
+	// under test, not timing noise on a loaded machine.
+	c := New(config.Target{Mode: "directory", Path: repo})
+	err := c.gitScanNUL(t.Context(), func(string) {
+		seen++
+		time.Sleep(50 * time.Millisecond)
+	}, "ls-files", "--cached", "-z")
+	if err != nil {
+		t.Fatalf("gitScanNUL() err = %v, want nil: the grace bounded the callback's own work instead of the absence of output", err)
+	}
+	if seen != entries {
+		t.Errorf("gitScanNUL delivered %d of %d entries; the listing was cut short", seen, entries)
+	}
+}
+
 // gitScanNUL's scan runs on its own goroutine and calls fn, which writes the
 // caller's state (listGitFiles' count and builder). On the cancellation path it
 // must JOIN that goroutine rather than abandon it: a caller that returned while fn
