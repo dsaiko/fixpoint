@@ -367,9 +367,13 @@ func TestRunMaxIterations(t *testing.T) {
 func TestRunReviewerErrorResetsCleanStreak(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 5, CleanRoundsToStop: 2})
 	f.respond(1, reviewResponse(t)) // clean (streak 1)
+	// A contract failure now gets one reformat attempt, so BOTH invocations of
+	// round 2 have to fail for the round to count as a reviewer error -- a single
+	// malformed reply is salvaged and the round comes back clean.
 	f.respond(2, "no review block") // reviewer error: streak resets
-	f.respond(3, reviewResponse(t)) // clean (streak 1)
-	f.respond(4, reviewResponse(t)) // clean (streak 2 -> converged)
+	f.respond(3, "still no review block")
+	f.respond(4, reviewResponse(t)) // clean (streak 1)
+	f.respond(5, reviewResponse(t)) // clean (streak 2 -> converged)
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -383,6 +387,71 @@ func TestRunReviewerErrorResetsCleanStreak(t *testing.T) {
 	}
 	if len(sum.Rounds[1].ReviewErrors) != 1 {
 		t.Errorf("round 2 review errors = %v, want 1", sum.Rounds[1].ReviewErrors)
+	}
+}
+
+// A reply that broke the FORMAT rather than the review is worth one follow-up
+// asking for the block again, because the alternative discards a whole agentic
+// session -- tens of turns and millions of tokens -- and counts a reviewer error
+// that resets the convergence streak. Three reviews in this project's history died
+// that way: a missing block, a bare array where the schema wants an object, a
+// string where a line number belongs.
+func TestRunSalvagesAReviewerThatBrokeOnlyTheContract(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	// The review happened; only its shape is wrong.
+	f.respond(1, "I found an off-by-one in main.go line 1. <review>{not json at all}</review>")
+	f.respond(2, reviewResponse(t, aFinding("off by one")))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v; the reformat should have recovered the round", err)
+	}
+	r := sum.Rounds[0]
+	if len(r.ReviewErrors) != 0 {
+		t.Errorf("review errors = %v, want none: a salvaged contract failure is not a failed reviewer", r.ReviewErrors)
+	}
+	if len(r.Findings) != 1 || r.Findings[0].Title != "off by one" {
+		t.Fatalf("findings = %+v, want the one the reformat restated", r.Findings)
+	}
+	if r.Fixed != 1 {
+		t.Errorf("fixed = %d, want 1: the recovered finding must reach the coder", r.Fixed)
+	}
+	// One step for the lens, not two: the salvage is part of the same review, and a
+	// second row would double-count the lens in the scoreboard. (That the step also
+	// SUMS both attempts' usage is not asserted here -- the fixture's mock agent
+	// declares no usage block, so every Usage in these tests is zero. It is covered
+	// by TestParseUsage* in the agent package and by reading reformatReview.)
+	var reviewSteps int
+	for _, st := range r.Steps {
+		if st.Role == "review" {
+			reviewSteps++
+		}
+	}
+	if reviewSteps != 1 {
+		t.Errorf("review steps = %d, want 1 step covering both attempts", reviewSteps)
+	}
+}
+
+// When the reformat fails too, the FIRST error is what the operator sees: it says
+// what the agent actually did wrong, and a second failure of the same kind adds
+// nothing to read.
+func TestRunReportsTheOriginalContractErrorWhenReformatAlsoFails(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.respond(1, "no review block at all")
+	f.respond(2, "<review>[]</review>") // valid JSON, wrong shape: array, not object
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err == nil {
+		t.Fatal("Run() err = nil, want the reviewer failure to surface after a failed salvage")
+	}
+	if len(sum.Rounds) != 1 || len(sum.Rounds[0].ReviewErrors) != 1 {
+		t.Fatalf("want exactly one reviewer error recorded, got %+v", sum.Rounds)
+	}
+	got := sum.Rounds[0].ReviewErrors[0]
+	if !strings.Contains(got, "no <review> block") {
+		t.Errorf("review error = %q, want the FIRST attempt's diagnosis (the missing block), not the second's", got)
 	}
 }
 

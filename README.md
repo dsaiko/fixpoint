@@ -75,6 +75,23 @@ that is known to be broken. A coder that died mid-edit is the case most likely t
 leave a tree that does not compile, so this is the path that most needs the gate;
 reviewers are models reading content, not a substitute for a compiler.
 
+**Reviewers are told not to build or test.** They were doing it — `go test ./...`
+inside a *review* — and every line of that output returns as input tokens on the
+next turn of a session whose turn count is already what drives the bill. It buys
+nothing either: the gate above is fixpoint's own run, and a reviewer's private one
+does not feed it. The rule lives in code (`prompt.ReviewWorkingRules`) so a new lens
+inherits it, and it rides in the shared prelude so it costs nothing per lens.
+
+**A reply that breaks the format gets one chance to restate it.** When an agent
+exits cleanly but its `<review>` block is missing or malformed, fixpoint asks it to
+emit the findings again in the required shape — without re-sending the material and
+without letting it redo the review, so the second pass cannot quietly report
+different findings. The alternative is what used to happen: a whole agentic session
+discarded over its punctuation, plus a reviewer error that resets the convergence
+streak and denies the run a clean round it had earned. Both attempts' usage is
+billed to the one step. A crashed, timed-out or rate-limited agent is *not* retried
+this way — it has nothing to restate.
+
 ## Target modes
 
 What gets reviewed is controlled by `target.mode`:
@@ -158,6 +175,28 @@ enforces on top of them do not: `PRODUCTION.ENV` and `ID_RSA` are dropped the
 same way their lowercase spellings are.
 
 ## Review lenses and assignment strategies
+
+### Write a lens prelude-first, or the round pays per lens
+
+Every shipped lens template opens with `{{.Prelude}}` and puts its own
+instructions *after* it. That ordering is load-bearing rather than stylistic.
+
+Anthropic's prompt cache matches on an exact **leading prefix**, so a template that
+opens with its own role line ("You are an expert security reviewer…") diverges from
+its siblings at byte one, and the round pays for the material once per reviewer.
+`{{.Prelude}}` is every part that is identical for all lenses in a round — target
+header, mode guidance, working rules, material, history — rendered from one place
+so that prefix is shared. Measured through the harness with a ~47k-token prompt:
+two calls sharing only a prefix and differing in their tail, and the second read
+39,552 tokens from cache. In `git-diff` mode the material alone runs to 220 KB.
+
+It also puts the instructions after the document, which is what Anthropic
+recommends for long inputs anyway.
+
+The individual fields (`{{.Target}}`, `{{.History}}`, …) stay available if you want
+to lay a prompt out yourself — at the cost of that sharing.
+`TestShippedLensesShareARenderedPrefix` renders every shipped lens and fails if one
+emits anything before the prelude, because the only symptom otherwise is a bill.
 
 Prompts under [config/prompts/](config/prompts/) are a library you can grow freely; only the
 ones referenced in the configuration are used. The shipped lenses:

@@ -1,11 +1,6 @@
+{{.Prelude}}
+## Your pass
 You are an expert code reviewer. Your ONLY focus this pass is correctness.
-
-Target: {{.Mode}} in `{{.Path}}` — review round {{.Round}}.
-{{.ModeGuidance}}
-
-## Material to review
-{{.Target}}
-{{.History}}
 
 ## Focus: correctness defects
 Hunt for bugs that change behavior or crash:

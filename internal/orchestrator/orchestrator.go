@@ -2452,14 +2452,18 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 	lensName := config.LensName(asg.Lens)
 	label := fmt.Sprintf("review: %s via %s", asg.Agent, lensName)
 	d := prompt.ReviewData{
-		Mode:           o.cfg.Target.Mode,
-		Path:           o.cfg.Target.Path,
-		Round:          round,
-		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
-		Target:         material,
-		History:        prompt.FormatHistory(history),
+		Mode:         o.cfg.Target.Mode,
+		Path:         o.cfg.Target.Path,
+		Round:        round,
+		ModeGuidance: prompt.ModeGuidance(o.cfg.Target.Mode),
+		Target:       material,
+		History:      prompt.FormatHistory(history),
+		// Nothing lens- or agent-specific may reach the prelude: it is what the
+		// round's reviewers share a cache prefix on, and one varying byte costs all
+		// of it. asg is deliberately not consulted here.
 		OutputContract: prompt.ReviewContract,
 	}
+	d.Prelude = prompt.FormatPrelude(d)
 	text, err := prompt.Render(o.templates[asg.Lens], d)
 	if err != nil {
 		// No agent ran, so there is no output/duration to record; route through
@@ -2475,6 +2479,11 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 	}
 	if parseErr == nil {
 		parseErr = validateReviewFindings(out.Findings)
+	}
+	// A reply that broke the CONTRACT rather than the review gets one chance to
+	// restate it. See reformatReview for why this is worth a second invocation.
+	if parseErr != nil && res.Err == nil && ctx.Err() == nil {
+		out, res, parseErr = o.reformatReview(ctx, label, asg, lensName, round, res, parseErr)
 	}
 
 	// Per-step logs (IDs are assigned later; md/json here carry raw findings).
@@ -2506,6 +2515,48 @@ func (o *Orchestrator) logStep(role, agentName, promptName string, round int, ok
 // severity ("critical|high|medium|low") is not a real value. Rejecting invalid
 // severities turns that silent placeholder into an honest reviewer error
 // instead of a fabricated finding handed to the coder.
+// reformatReview asks a reviewer whose reply broke the output contract to restate
+// it, and returns whichever attempt to believe.
+//
+// Only a CONTRACT failure reaches here -- res.Err == nil, so the agent ran and
+// exited cleanly, and what failed was the extractor or the finding validator.
+// A crashed, timed-out or rate-limited agent is a different thing and is not
+// retried: it has nothing to restate.
+//
+// The trade is a few hundred tokens against a whole session. Three reviews in this
+// project's history were lost to the format rather than the work, each one tens of
+// turns and millions of tokens, and each also counted as a reviewer error -- which
+// resets the convergence streak and denies the run a clean round it had earned.
+//
+// On failure the FIRST error is kept, not the second. The first says what the agent
+// actually did wrong; a second failure of the same kind adds nothing and the
+// operator should not have to read two to learn one. Usage from both invocations is
+// summed either way, so the scoreboard never under-reports what a salvage cost.
+func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg model.Assignment, lensName string, round int, first agent.Result, firstErr error) (model.ReviewOutput, agent.Result, error) {
+	o.logf("%s output did not meet the contract (%v); asking it to restate the block", label, firstErr)
+	text := prompt.FormatReformat(first.Stdout, firstErr, prompt.ReviewContract)
+	res := o.runAgent(ctx, label+" (reformat)", "review", asg.Agent, lensName+"-reformat", round, text)
+	// Bill both attempts to this step whatever happens: a salvage that fails must
+	// not look cheaper than one that succeeds.
+	merged := res
+	merged.Usage.Add(first.Usage)
+
+	var out model.ReviewOutput
+	err := res.Err
+	if err == nil {
+		err = agent.ExtractJSON(res.Stdout, "review", &out)
+	}
+	if err == nil {
+		err = validateReviewFindings(out.Findings)
+	}
+	if err != nil {
+		o.logf("%s reformat also failed (%v); reporting the original contract error", label, err)
+		return model.ReviewOutput{}, merged, firstErr
+	}
+	o.logf("%s reformat recovered %d finding(s) from a reply that would have been discarded", label, len(out.Findings))
+	return out, merged, nil
+}
+
 func validateReviewFindings(findings []model.ReviewFinding) error {
 	for _, f := range findings {
 		if strings.TrimSpace(f.Title) == "" {

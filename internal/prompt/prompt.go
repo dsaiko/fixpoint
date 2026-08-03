@@ -21,12 +21,21 @@ import (
 // referencing the other role's placeholder fails at execution instead of
 // silently rendering an empty value.
 type ReviewData struct {
-	Mode           config.Mode
-	Path           string
-	Round          int
-	ModeGuidance   string
-	Target         string // the collected material
-	History        string // prior rounds' findings + verdicts
+	Mode         config.Mode
+	Path         string
+	Round        int
+	ModeGuidance string
+	Target       string // the collected material
+	History      string // prior rounds' findings + verdicts
+	// Prelude is every part of a review prompt that is IDENTICAL for all lenses in
+	// a round -- the target header, the mode guidance, the working rules, the
+	// material and the history -- rendered as one block so a template can put it
+	// first and share a cache prefix with the round's other lenses. See
+	// FormatPrelude.
+	//
+	// The individual fields above stay available: a template is free to lay them
+	// out itself, at the cost of that sharing.
+	Prelude        string
 	OutputContract string
 }
 
@@ -67,6 +76,104 @@ func Render(t *template.Template, d any) (string, error) {
 		return "", fmt.Errorf("render %s: %w", t.Name(), err)
 	}
 	return sb.String(), nil
+}
+
+// FormatPrelude renders the part of a review prompt that every lens in a round
+// shares, byte for byte, so that the three or four reviewer sessions of one round
+// hit the same prompt cache instead of each paying for the material separately.
+//
+// The ordering is the whole point and it is the opposite of what reads naturally.
+// Anthropic's cache matches on an exact leading prefix, so a template that opens
+// with its own role line ("You are an expert reviewer focused ONLY on ...")
+// diverges from its siblings at byte one and shares nothing -- which is what every
+// lens here did until this existed. Measured through the harness with a ~47k-token
+// prompt: two calls sharing only a prefix, differing in their tail, and the second
+// read 39,552 tokens from cache. In git-diff mode the material alone runs to 220 KB,
+// so this is the difference between paying for it once a round and paying per lens.
+//
+// It also means the instructions land AFTER the material, which is what Anthropic
+// recommends for long inputs anyway: a model attends to a trailing instruction over
+// a leading one when the document between them is large.
+//
+// Keep this cheap to render and free of anything lens- or agent-specific. A single
+// varying byte -- a timestamp, an agent name, a per-lens hint -- costs the whole
+// round's sharing, silently, because the only symptom is a token bill.
+func FormatPrelude(d ReviewData) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Target: %s in `%s` — review round %d.\n", d.Mode, d.Path, d.Round)
+	if d.ModeGuidance != "" {
+		sb.WriteString(d.ModeGuidance + "\n")
+	}
+	sb.WriteString("\n" + ReviewWorkingRules + "\n")
+	sb.WriteString("\n## Material to review\n")
+	sb.WriteString(d.Target + "\n")
+	if d.History != "" {
+		sb.WriteString(d.History + "\n")
+	}
+	return sb.String()
+}
+
+// ReviewWorkingRules constrains HOW a reviewer works, as opposed to what it looks
+// for. It lives in code rather than in each lens file so a new lens inherits it and
+// cannot forget it, and it sits in the shared prelude so it costs nothing per lens.
+//
+// The build/test prohibition is the substantive one. Reviewers were running
+// `go test ./...` during REVIEW -- observed in the raw logs -- and every line of
+// that output comes back as input tokens on the next turn, in a session whose turn
+// count is already what drives the bill (one reviewer took 168 turns to another's
+// 37). It buys nothing either: fixpoint runs the project's own build, test and
+// static checks ITSELF after the coder, as the one signal in the loop no model
+// produced, and a reviewer's private test run does not feed that gate. Reading the
+// code is the job; proving the build is not.
+const ReviewWorkingRules = `## How to work
+Read the code. You are running inside the repository, so open any file you need --
+the material below is an index or a diff, not the whole story.
+
+Do NOT run the build, the test suite, linters, or formatters, and do not install
+anything. fixpoint runs the project's own checks itself after the coder, and it is
+that run -- not yours -- which decides whether a fix lands. A reviewer's own build
+is time and tokens spent on an answer nobody reads. Reason from the source instead;
+if a claim really cannot be made without executing something, say so in the finding
+and let the fixer settle it.
+
+Report only defects you can point at. A finding needs a file, a line, and a
+concrete consequence -- not a suggestion to investigate.`
+
+// FormatReformat builds the follow-up sent to an agent whose reply did not satisfy
+// the output contract, asking only for the block again. contractErr is what the
+// extractor or the validator said; prev is the reply that failed.
+//
+// It exists because the alternative throws away a whole session. Three reviewer
+// sessions in this project's history died on the format rather than the work -- a
+// missing <review> block, a bare JSON array where the schema wants an object, a
+// string where a line number belongs -- and each of those was a full agentic review
+// (tens of turns, millions of tokens) discarded, plus a reviewer error that resets
+// the convergence streak and so denies the run a clean round it had earned. This
+// asks for a few hundred tokens instead.
+//
+// It deliberately does NOT re-send the material or ask for the review again. The
+// findings already exist in prev; the only thing missing is their shape. Re-running
+// the review would cost what the salvage is meant to save, and would also let the
+// second pass quietly report DIFFERENT findings, which is not a reformat but a
+// re-review with the first result hidden.
+//
+// The truncation of prev is a guard rather than a saving: a reply that ran away is
+// exactly the kind that fails to parse, and echoing all of it back could exceed the
+// window on the retry too.
+func FormatReformat(prev string, contractErr error, contract string) string {
+	const maxEcho = 60_000
+	if len(prev) > maxEcho {
+		prev = prev[:maxEcho] + "\n[... truncated ...]"
+	}
+	var sb strings.Builder
+	sb.WriteString("Your previous reply did not satisfy the required output format, so it could not be read:\n\n")
+	fmt.Fprintf(&sb, "    %v\n\n", contractErr)
+	sb.WriteString("Do NOT redo the review and do NOT change your conclusions. Take the findings you " +
+		"already reported below and emit them again, once, in the exact format required. If you " +
+		"genuinely reported no findings, say so with an empty list rather than omitting the block.\n\n")
+	sb.WriteString("Your previous reply:\n<<<\n" + prev + "\n>>>\n\n")
+	sb.WriteString(contract)
+	return sb.String()
 }
 
 // ModeGuidance returns the one-paragraph steer that differs per target mode.
