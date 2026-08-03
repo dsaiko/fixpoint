@@ -214,7 +214,7 @@ func TestValidate(t *testing.T) {
 			a := c.Agents["rev"]
 			a.Command = []string{"echo", "--dangerously-bypass-approvals-and-sandbox"}
 			c.Agents["rev"] = a
-		}, "auto-approves every tool request"},
+		}, "lets the agent write files"},
 		{"read-only reviewer passing --yolo rejected", func(c *Config) {
 			a := c.Agents["rev"]
 			a.Command = []string{"echo", "--yolo"}
@@ -230,11 +230,65 @@ func TestValidate(t *testing.T) {
 			a.Command = []string{"echo", "--permission-mode=bypassPermissions"}
 			c.Agents["rev"] = a
 		}, "--permission-mode bypassPermissions"},
-		// A mode value that is not the bypass one is ordinary configuration, and a
+		// A write-granting mode need not be the full bypass: acceptEdits auto-approves
+		// the edit tools alone, which is the whole of what can_edit: false forbids.
+		{"read-only reviewer passing acceptEdits as a mode value rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--permission-mode acceptEdits", "-p"}
+			c.Agents["rev"] = a
+		}, "--permission-mode acceptEdits"},
+		{"read-only reviewer passing acceptEdits with = rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--permission-mode=acceptEdits"}
+			c.Agents["rev"] = a
+		}, "--permission-mode acceptEdits"},
+		{"read-only reviewer passing codex --full-auto rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "--full-auto"}
+			c.Agents["rev"] = a
+		}, "--full-auto"},
+		{"read-only reviewer passing codex --sandbox workspace-write rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "--sandbox workspace-write"}
+			c.Agents["rev"] = a
+		}, "--sandbox workspace-write"},
+		{"read-only reviewer passing codex --sandbox danger-full-access rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "--sandbox=danger-full-access"}
+			c.Agents["rev"] = a
+		}, "--sandbox danger-full-access"},
+		{"read-only reviewer passing codex's short sandbox spelling rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "-s workspace-write"}
+			c.Agents["rev"] = a
+		}, "-s workspace-write"},
+		{"read-only reviewer passing agy --mode accept-edits rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--mode accept-edits"}
+			c.Agents["rev"] = a
+		}, "--mode accept-edits"},
+		{"read-only reviewer passing gemini --approval-mode auto_edit rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--approval-mode auto_edit"}
+			c.Agents["rev"] = a
+		}, "--approval-mode auto_edit"},
+		// A mode value that is not write-granting is ordinary configuration, and a
 		// bypass flag on the write-capable coder is exactly what it is there for.
 		{"read-only reviewer in a non-bypass permission mode accepted", func(c *Config) {
 			a := c.Agents["rev"]
 			a.Command = []string{"echo", "--permission-mode plan"}
+			c.Agents["rev"] = a
+		}, ""},
+		{"read-only reviewer in codex's read-only sandbox accepted", func(c *Config) {
+			// What config/agents/codex.yaml ships: the enforced no-write sandbox is
+			// how a codex reviewer earns its can_edit: false.
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "--sandbox read-only"}
+			c.Agents["rev"] = a
+		}, ""},
+		{"read-only reviewer in agy plan mode accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "--mode plan"}
 			c.Agents["rev"] = a
 		}, ""},
 		{"coder passing a permission-skip flag accepted", func(c *Config) {

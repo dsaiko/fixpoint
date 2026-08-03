@@ -22,14 +22,19 @@ enforced read-only modes (`can_edit: false`); only an agent whose command allows
 writing files may be assigned as `roles.coder`, and validation enforces that.
 
 A read-only claim the command contradicts is rejected: `can_edit: false` fails
-validation when the command passes a permission-bypass flag
+validation when the command passes a flag that grants the write tools. That
+covers the flags which auto-approve every tool request
 (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`,
-`--yolo`, `--permission-mode bypassPermissions`), since those auto-approve every
-tool request including the write tools. Earn read-only from the command itself —
-omit the flag, or use an enforced sandbox like `codex --sandbox read-only` — or
-declare `can_edit: true`, which keeps the agent out of reviewer pools. A mode
-flag alone (`--mode plan`) is not enough: fixpoint cannot verify it, and a
-reviewer reading untrusted code is exactly where an unenforced claim fails.
+`--yolo`, `--full-auto`, `--permission-mode bypassPermissions`) AND the modes
+that auto-approve only the edits (`--permission-mode acceptEdits`,
+`--sandbox workspace-write`, `--sandbox danger-full-access`,
+`--mode accept-edits`, `--approval-mode auto_edit`) — an edits-only mode is no
+safe middle ground here, since writing files is precisely what `can_edit: false`
+denies. Earn read-only from the command itself — omit the flag, or use an
+enforced sandbox like `codex --sandbox read-only` — or declare `can_edit: true`,
+which keeps the agent out of reviewer pools. A plan-mode flag alone
+(`--mode plan`) is not enough either: fixpoint cannot verify it, and a reviewer
+reading untrusted code is exactly where an unenforced claim fails.
 
 ## effort (claude)
 

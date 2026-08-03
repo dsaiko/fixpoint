@@ -251,7 +251,7 @@ type Agent struct {
 	// reviewer pool, and the fix-round trust gate exists precisely because the
 	// coder edits with permission checks off. permissionBypassFlag below refuses
 	// the one contradiction fixpoint can see from here -- a read-only claim made
-	// by a command that switches the permission system off.
+	// by a command that grants the write tools anyway.
 	CanEdit bool `yaml:"can_edit"`
 
 	// Env controls what this agent's process can see of fixpoint's environment.
@@ -436,37 +436,70 @@ func expandToken(tok string, values map[string]string) (sub string, keep bool) {
 	return tok, true
 }
 
-// permissionBypassFlags are the flags whose whole purpose is to switch a coding
-// CLI's permission system off, so that every tool request -- reads, shell, and
-// writes alike -- is auto-approved. The list is short and literal on purpose: it
-// names the flags fixpoint's own agent files use or could plausibly grow, and a
-// CLI it does not know about simply is not checked. Missing one costs nothing
-// that is not already the status quo; a false positive would reject a working
-// config, so nothing goes in here on suspicion.
+// permissionBypassFlags are the standalone switches that hand a coding CLI's
+// write tools to the model: either by turning the permission system off outright,
+// so that every tool request -- reads, shell, and writes alike -- is
+// auto-approved, or by selecting a preset that auto-approves the edits. The list
+// is short and literal on purpose: it names the flags fixpoint's own agent files
+// use or could plausibly grow, and a CLI it does not know about simply is not
+// checked. Missing one costs nothing that is not already the status quo; a false
+// positive would reject a working config, so nothing goes in here on suspicion.
 var permissionBypassFlags = map[string]string{
 	"--dangerously-skip-permissions":             "claude, agy",
 	"--dangerously-bypass-approvals-and-sandbox": "codex",
 	"--yolo": "gemini-cli, qwen-code",
+	// codex's full-auto preset: workspace-write sandbox plus on-failure approvals,
+	// i.e. edits inside the target land without ever being asked about.
+	"--full-auto": "codex",
 }
 
-// permissionBypassFlag returns the permission-bypass token in argv, or "" when
-// there is none. Flags are matched in both spellings a CLI may accept
-// (--flag=value and --flag value), because the check is worth nothing if it can
-// be evaded by writing the same argument differently.
+// writeGrantingModes are the flags a CLI spells as a mode VALUE rather than as a
+// standalone switch, mapped to the values that let the model write files. Same
+// admission rule as permissionBypassFlags: only values the CLI documents as
+// permitting writes, never a value that merely looks permissive.
+//
+// A mode is enough on its own -- it need not be the full bypass. A reviewer whose
+// only granted tools are Edit and Write is exactly the outcome can_edit: false is
+// there to prevent, and in -p/exec mode there is no interactive approver left to
+// stop it.
+var writeGrantingModes = map[string][]string{
+	// claude: bypassPermissions drops every check; acceptEdits auto-approves the
+	// edit tools specifically, which reads like a safe middle ground and is not one.
+	"--permission-mode": {"bypassPermissions", "acceptEdits"},
+	// codex: read-only is the enforced no-write sandbox that earns a read-only
+	// claim (see config/agents/codex.yaml); both other modes permit writes.
+	// Matched under the short spelling too -- `-s` is codex's own alias, and the
+	// value is specific enough that no other CLI collides with it.
+	"--sandbox": {"workspace-write", "danger-full-access"},
+	"-s":        {"workspace-write", "danger-full-access"},
+	// agy: --mode takes only plan or accept-edits (see config/agents/agy.yaml).
+	"--mode": {"accept-edits"},
+	// gemini-cli, qwen-code: the value form of --yolo, plus its edits-only preset.
+	"--approval-mode": {"yolo", "auto_edit"},
+}
+
+// permissionBypassFlag returns the write-granting token in argv, or "" when there
+// is none. Flags are matched in both spellings a CLI may accept (--flag=value and
+// --flag value), because the check is worth nothing if it can be evaded by
+// writing the same argument differently.
 func permissionBypassFlag(argv []string) string {
 	for i, tok := range argv {
 		key, val, hasVal := strings.Cut(tok, "=")
 		if _, ok := permissionBypassFlags[key]; ok {
 			return key
 		}
-		// claude spells the same switch as a mode value, which is the flag form
-		// most likely to be reached for once the --dangerously- one is rejected.
-		if key == "--permission-mode" {
-			if !hasVal && i+1 < len(argv) {
-				val = argv[i+1]
-			}
-			if strings.EqualFold(val, "bypassPermissions") {
-				return "--permission-mode bypassPermissions"
+		modes, ok := writeGrantingModes[key]
+		if !ok {
+			continue
+		}
+		if !hasVal && i+1 < len(argv) {
+			val = argv[i+1]
+		}
+		for _, mode := range modes {
+			if strings.EqualFold(val, mode) {
+				// Report the flag and the offending value: with several accepted
+				// values per flag, the flag name alone would not say which one.
+				return key + " " + mode
 			}
 		}
 	}
@@ -972,12 +1005,12 @@ func (c *Config) Validate() error {
 		// run concurrently against the shared worktree, and a review-only run
 		// asserts no trust flag at all -- so this declaration is the only thing
 		// standing between a prompt injection and the write tools. Do not take it
-		// on faith when the command auto-approves every tool request: whatever
-		// remains (a --mode/--plan style flag) is the CLI's business to enforce,
-		// not something fixpoint can check or has verified.
+		// on faith when the command hands the write tools to the model: whatever
+		// remains (a --plan style flag) is the CLI's business to enforce, not
+		// something fixpoint can check or has verified.
 		if !a.CanEdit {
 			if flag := permissionBypassFlag(argv); flag != "" {
-				return fmt.Errorf("agents.%s: can_edit: false, but the command passes %s, which auto-approves every tool request -- writes included; a read-only claim must be backed by the command itself (drop the flag, or use the CLI's enforced read-only sandbox such as codex --sandbox read-only), otherwise declare can_edit: true so the agent is kept out of roles.review", name, flag)
+				return fmt.Errorf("agents.%s: can_edit: false, but the command passes %s, which lets the agent write files without being asked; a read-only claim must be backed by the command itself (drop the flag, or use the CLI's enforced read-only sandbox such as codex --sandbox read-only), otherwise declare can_edit: true so the agent is kept out of roles.review", name, flag)
 			}
 		}
 		if err := a.Usage.validate(name); err != nil {
