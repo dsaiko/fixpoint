@@ -163,7 +163,13 @@ concrete consequence -- not a suggestion to investigate.`
 func FormatReformat(prev string, contractErr error, contract string) string {
 	const maxEcho = 60_000
 	if len(prev) > maxEcho {
-		prev = prev[:maxEcho] + "\n[... truncated ...]"
+		// Back off to a rune boundary: cutting inside a multibyte character
+		// would embed invalid UTF-8 into the prompt.
+		cut := maxEcho
+		for cut > 0 && !utf8.RuneStart(prev[cut]) {
+			cut--
+		}
+		prev = prev[:cut] + "\n[... truncated ...]"
 	}
 	var sb strings.Builder
 	sb.WriteString("Your previous reply did not satisfy the required output format, so it could not be read:\n\n")
