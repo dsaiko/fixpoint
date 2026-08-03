@@ -3527,8 +3527,11 @@ func TestCollectDirectoryChildHoldingStdoutDoesNotStallScan(t *testing.T) {
 // The group kill reaches only the group. A descendant that left it -- setsid, or a
 // git that daemonizes -- keeps the inherited stdout open, so the listing pipe never
 // reaches EOF and the scan blocks on a writer nothing in this process can signal.
-// The context deadline has to cut it loose; otherwise the collection hangs for as
-// long as that escaped child cares to live, which is not bounded at all.
+// The leader's own exit has to bound that wait, at the drain grace stderr gets:
+// leaving it to the operation timeout stalls the whole round for ten minutes on the
+// interleaving that costs stderr two seconds, with git already finished. The
+// listing cannot be shown to be complete, so it must fail rather than narrow the
+// scope silently.
 func TestListGitFilesDetachedChildHoldingStdoutIsBounded(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
 		t.Skip("setsid unavailable to detach the child from the process group")
@@ -3555,31 +3558,36 @@ func TestListGitFilesDetachedChildHoldingStdoutIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A short deadline standing in for gitOpTimeout, which the operation's own
-	// timeout is derived from: what matters is that SOME deadline ends the scan, not
-	// that this one is ten minutes. Asserted on listGitFiles rather than Collect so
-	// the deadline bounds the listing alone and not the git commands leading up to it.
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-
+	// No deadline of its own: the context here is as live as the run's would be, so
+	// the grace is the only thing that can end the scan. A test that raced a short
+	// deadline against it would pass on a scan still bounded only by gitOpTimeout.
+	// Asserted on listGitFiles rather than Collect so what is timed is the listing
+	// alone and not the git commands leading up to it.
 	done := make(chan error, 1)
+	start := time.Now()
 	go func() {
-		_, _, err := c.listGitFiles(ctx, scope)
+		_, _, err := c.listGitFiles(t.Context(), scope)
 		done <- err
 	}()
 	select {
 	case err := <-done:
-		// The identity, not merely the presence: the deadline is WHY the listing
-		// ended, and an operator reading this error has to be told that rather than
-		// the mechanism (the read end closed under the blocked scan) used to end it.
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("listGitFiles() err = %v, want it to wrap context.DeadlineExceeded", err)
+		// The identity, not merely the presence: an escaped writer holding stdout is
+		// WHY the listing ended, and an operator reading this error has to be told
+		// that rather than the mechanism (the read end closed under the blocked scan)
+		// used to end it.
+		if !errors.Is(err, errListingHeldOpen) {
+			t.Fatalf("listGitFiles() err = %v, want it to wrap errListingHeldOpen", err)
 		}
 		if strings.Contains(err.Error(), os.ErrClosed.Error()) {
 			t.Errorf("the error reports the mechanism instead of the cause: %v", err)
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("listGitFiles hung on a detached descendant holding stdout; the scan has no deadline escape")
+		// The leader lingers a second and the grace is two; a generous ceiling still
+		// far below both the child's 20s and the 10-minute operation timeout.
+		if elapsed := time.Since(start); elapsed > 15*time.Second {
+			t.Errorf("listGitFiles took %s; the drain grace did not bound the scan on the escaped writer", elapsed)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("listGitFiles hung on a detached descendant holding stdout; the leader's exit does not bound the scan")
 	}
 }
 

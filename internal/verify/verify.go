@@ -191,7 +191,7 @@ func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, 
 
 	// The leader's own status comes FIRST, exactly as in agent.Run. Supervise
 	// returns only after cmd.Wait, the process-group kill and the drain -- and that
-	// drain can burn pipeDrainGrace when a descendant escaped the group -- so the
+	// drain can burn PipeDrainGrace when a descendant escaped the group -- so the
 	// deadline can expire in the window after a check exited 0. Reading cmdCtx.Err
 	// before err would record such a check as timed out, sending a passing gate back
 	// to the coder for a correction it does not need and ultimately discarding valid

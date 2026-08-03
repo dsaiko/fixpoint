@@ -11,13 +11,18 @@ import (
 	"time"
 )
 
-// pipeDrainGrace bounds how long Supervise waits for a child's output pipes to
+// PipeDrainGrace bounds how long Supervise waits for a child's output pipes to
 // drain AFTER the leader has exited and its process group has been killed.
 // Everything still in that group is dead by then, so the write ends are closed
 // and the drain finishes at once; the grace exists only for a descendant that
 // escaped the group (setsid/setpgrp) and holds a write end open, which would
 // otherwise wedge the run for as long as that process lives.
-const pipeDrainGrace = 2 * time.Second
+//
+// It is exported alongside OutPipe, for target's streaming git listing: that
+// consumes stdout itself and so has to apply the same bound by hand, and the
+// same interleaving must not cost one stream two seconds and the other the whole
+// operation timeout.
+const PipeDrainGrace = 2 * time.Second
 
 // cancelKill is the process-group kill Supervise installs as cmd.Cancel. It is a
 // var solely so a test can wrap it: the interleaving that makes KillProcessGroup's
@@ -101,7 +106,7 @@ func (p *OutPipe) Drain() bool {
 	case <-p.done:
 		_ = p.r.Close()
 		return false
-	case <-time.After(pipeDrainGrace):
+	case <-time.After(PipeDrainGrace):
 	}
 	_ = p.r.Close()
 	<-p.done
@@ -163,7 +168,7 @@ func (p *inPipe) join() {
 	select {
 	case <-p.done:
 		return
-	case <-time.After(pipeDrainGrace):
+	case <-time.After(PipeDrainGrace):
 	}
 	_ = p.w.Close()
 	<-p.done
@@ -252,7 +257,7 @@ func Supervise(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (le
 	// Backstop only: with no pipe of exec's own left -- neither output nor stdin --
 	// WaitDelay's remaining job is to kill a leader that ignored the cancel signal,
 	// so Wait cannot block forever.
-	cmd.WaitDelay = pipeDrainGrace
+	cmd.WaitDelay = PipeDrainGrace
 
 	// Take over stdin unless exec hands it to the child as a descriptor and runs no
 	// copy goroutine of its own: a nil Stdin (which exec makes /dev/null) or an

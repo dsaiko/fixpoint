@@ -253,7 +253,7 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	leakedPipe, err := Supervise(ctx, cmd, stdout, stderr)
 	// Reclassify a FAILURE as a timeout, never a success. Supervise returns only
 	// after cmd.Wait, the process-group kill and drainAll -- and drainAll can burn
-	// pipeDrainGrace when a descendant escaped the group -- so the deadline can
+	// PipeDrainGrace when a descendant escaped the group -- so the deadline can
 	// expire in the window after a leader exited 0 with its whole reply captured.
 	// Overwriting a nil err there would discard a complete review or fix for a run
 	// that actually succeeded, exactly what SucceededDespiteLeakedPipe prevents.

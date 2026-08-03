@@ -468,6 +468,13 @@ func (c *Collector) listGitFiles(ctx context.Context, scope fileScope) (int, str
 // fragment as a path.
 const maxGitPath = 1 << 20
 
+// errListingHeldOpen is what a streaming listing reports when its scan had to be
+// ended by the drain grace: git exited, its process group was killed, and some
+// descendant outside that group still held the stdout write end, so no EOF was
+// ever going to arrive. What was read cannot be shown to be the whole listing,
+// and git's own exit status says nothing about it.
+var errListingHeldOpen = errors.New("stdout held open past the drain grace by a process outside git's process group; the listing may be incomplete")
+
 // gitCleanupKill is the process-group kill gitScanNUL runs after cmd.Wait. It is
 // a var solely so a test can make it report the containment failure whose errno
 // cannot be produced on demand -- an EPERM needs a descendant running under
@@ -478,9 +485,11 @@ var gitCleanupKill = agent.KillProcessGroup
 // fn once per entry as it arrives, so the caller can count an unbounded listing
 // without holding it in memory and without the diagnostic output cap c.run
 // applies. Everything else -- the safe-config overrides, the hardened
-// environment, the operation timeout, the process-group kill -- matches c.run,
-// since the reason each of those exists does not change with how stdout is
-// consumed. stderr is still buffered, for the error message.
+// environment, the operation timeout, the process-group kill, the drain grace on
+// the output pipes -- matches c.run, since the reason each of those exists does
+// not change with how stdout is consumed. stderr is still buffered, for the error
+// message. A listing whose stdout never reached EOF fails with
+// errListingHeldOpen even when git itself exited 0.
 func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, gitOpTimeout)
 	defer cancel()
@@ -510,7 +519,9 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// close -- and Wait cannot be called until the scan finishes. A descendant git
 	// left behind holding the write end would then block the scan for the whole
 	// gitOpTimeout. Owning both ends lets the waiter below unblock the scan as soon
-	// as the leader is gone, and lets the scan drop the pipe on any exit path.
+	// as the leader is gone -- immediately for a descendant the group kill reaches,
+	// after agent.PipeDrainGrace for one that escaped it -- and lets the scan drop
+	// the pipe on any exit path.
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		errPipe.CloseChild()
@@ -554,10 +565,10 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// the read. EOF arrives only once EVERY holder of the write end is gone, and a
 	// descendant that left our process group -- setsid, or a git that daemonizes --
 	// survives the kill above and can hold it open for as long as it likes. Nothing
-	// else can interrupt a blocked pr.Read: the operation timeout reaches the leader
-	// and no further, so a scan waiting on that pipe would outlive git indefinitely,
-	// hanging the whole collection. Closing the read end out from under it is the
-	// only way to end it, exactly as OutPipe.Drain does for stderr.
+	// reaches a blocked pr.Read from the outside: the operation timeout reaches the
+	// leader and no further, so a scan waiting on that pipe would outlive git
+	// indefinitely, hanging the whole collection. Closing the read end out from
+	// under it is the only way to end it, exactly as OutPipe.Drain does for stderr.
 	scanned := make(chan error, 1)
 	go func() {
 		sc := bufio.NewScanner(pr)
@@ -568,26 +579,59 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 		}
 		scanned <- sc.Err()
 	}()
-	var scanErr error
-	select {
-	case scanErr = <-scanned:
-	case <-ctx.Done():
-		_ = pr.Close()
-		// Still join the goroutine rather than abandon it: fn writes the caller's
-		// state, so nothing may still be calling it once this returns. The close
-		// above bounds that wait -- a blocked read fails immediately.
-		scanErr = <-scanned
-		// Report why the listing ended, not the mechanism that ended it. A scan that
-		// had already finished (nil) or failed on its own keeps its own outcome.
-		if errors.Is(scanErr, os.ErrClosed) {
-			scanErr = ctx.Err()
+	var scanErr, werr error
+	var reaped bool
+	// Nothing arms this until the leader has exited AND the group kill has run.
+	// Only a descendant that escaped the group can still hold the write end by
+	// then, which is precisely what OutPipe.Drain's grace covers -- so the scan gets
+	// the same grace rather than being left to the operation timeout. Without it the
+	// one interleaving costs stderr two seconds and stdout ten minutes, with git
+	// already finished and its exit status sitting in `waited` unread.
+	var grace <-chan time.Time
+scan:
+	for {
+		select {
+		case scanErr = <-scanned:
+			break scan
+		case werr = <-waited:
+			// Received once, so this case simply blocks from here on and the grace is
+			// never re-armed.
+			reaped = true
+			grace = time.After(agent.PipeDrainGrace)
+		case <-grace:
+			_ = pr.Close()
+			scanErr = <-scanned
+			// The listing could not be read to EOF, so a complete one is
+			// indistinguishable from one cut off mid-entry -- and git's exit status
+			// cannot tell them apart either, since git itself succeeded. Report it
+			// rather than hand the round a scope that may be silently narrow. A scan
+			// that reached EOF in the same instant the grace fired keeps its own (nil)
+			// outcome: that listing IS known complete.
+			if errors.Is(scanErr, os.ErrClosed) {
+				scanErr = errListingHeldOpen
+			}
+			break scan
+		case <-ctx.Done():
+			_ = pr.Close()
+			// Still join the goroutine rather than abandon it: fn writes the caller's
+			// state, so nothing may still be calling it once this returns. The close
+			// above bounds that wait -- a blocked read fails immediately.
+			scanErr = <-scanned
+			// Report why the listing ended, not the mechanism that ended it. A scan that
+			// had already finished (nil) or failed on its own keeps its own outcome.
+			if errors.Is(scanErr, os.ErrClosed) {
+				scanErr = ctx.Err()
+			}
+			break scan
 		}
 	}
 	// Stop reading on every exit path. A scan that stopped early would otherwise
 	// leave git blocked on a full pipe; closing the read end fails its next write
 	// instead, and the scan error below outranks the exit status that produces.
 	_ = pr.Close()
-	werr := <-waited
+	if !reaped {
+		werr = <-waited
+	}
 	// The group is dead by now, so this collects the last of stderr and guarantees
 	// nothing is still writing to errBuf when the error below reads it.
 	errPipe.Drain()
