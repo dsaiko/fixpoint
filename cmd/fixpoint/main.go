@@ -419,6 +419,16 @@ const announceGrace = 2 * time.Second
 // sit in the buffered channel unread, forceQuit would never run, and stop()'s
 // join on the watch would hang with it. The abandoned goroutine still writes if
 // stderr ever drains, and dies with the process if it does not.
+//
+// Abandoning it while it holds the log mutex costs nothing extra, which is why
+// the announcement keeps going through logf rather than around the lock. Every
+// other writer -- reviewer heartbeats, the end-of-run scoreboard -- targets the
+// SAME stderr, and writes to one descriptor serialize in the kernel anyway: a
+// consumer that has stopped reading blocks them at the write whether or not the
+// mutex is free, and one that resumes lets the parked announcement finish and
+// release it. Writing announcements off-mutex would therefore not rescue a
+// single line of output, and would forfeit what the one lock buys (newLogger):
+// a concurrent line splitting the scoreboard's columns.
 func announce(logf func(string, ...any), format string, args ...any) {
 	written := make(chan struct{})
 	go func() {
