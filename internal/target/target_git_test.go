@@ -3915,8 +3915,11 @@ func TestGitScanNULTrickledListingIsBoundedByContext(t *testing.T) {
 
 // gitScanNUL's scan runs on its own goroutine and calls fn, which writes the
 // caller's state (listGitFiles' count and builder). On the cancellation path it
-// must JOIN that goroutine rather than abandon it: a caller that returned while fn
-// was mid-call would be racing a goroutine still filling state it owns.
+// must JOIN that goroutine rather than abandon it while it still can: a caller
+// that returned while fn was mid-call would be racing a goroutine still filling
+// state it owns. That join is bounded -- see the test below, which pins the other
+// side of the same behavior -- and the window checked here is well inside the
+// bound, so what fails this test is dropping the join, not the bound.
 //
 // The handshake below is what pins that guarantee rather than assuming it: fn
 // signals that it is genuinely in flight and then blocks, so the cancel provably
@@ -3970,6 +3973,65 @@ func TestGitScanNULJoinsScanGoroutineOnCancel(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("gitScanNUL did not return once fn was released")
+	}
+}
+
+// The other side of that join, and the case the re-arming grace created: an fn that
+// NEVER returns. With the progress counter bumped on both sides of the callback, an
+// odd reading re-arms the grace on every firing, so a scan sitting inside fn is
+// never cut -- by design, since cutting would only join the same call. ctx is the
+// only bound left on it, which is exactly what gitScanNUL's own comment claims.
+//
+// That claim holds only if the cancellation path's join is itself bounded. Closing
+// the read end ends a scan blocked on pr.Read at once, but says nothing to one
+// blocked inside fn -- listGitFiles' does an Lstat and, for a symlink, an
+// EvalSymlinks, either of which blocks uninterruptibly on a hard-mounted export.
+// An unbounded join there would spend the last bound waiting on the very call ctx
+// fired over: gitScanNUL would never return, and with gitOpTimeout already spent as
+// its ctx, Collect would hang the round with nothing above it left to cut.
+//
+// The handshake makes the wedge deterministic rather than raced against a deadline:
+// fn signals that it is in flight and then blocks forever, so the cancel provably
+// lands mid-call and the goroutine is provably still in it when gitScanNUL returns.
+func TestGitScanNULWedgedCallbackStillReturnsOnCancel(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "directory", Path: repo})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	// Released only once the assertions are done, so fn is wedged for the whole test
+	// and the scan goroutine still ends rather than being leaked into the next one.
+	t.Cleanup(func() { close(release) })
+	var once sync.Once
+	done := make(chan error, 1)
+	go func() {
+		done <- c.gitScanNUL(ctx, func(string) {
+			once.Do(func() { close(entered) })
+			<-release
+		}, "ls-files", "--cached", "-z")
+	}()
+
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("gitScanNUL returned before delivering a listing entry: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("git never delivered a listing entry to fn")
+	}
+	cancel()
+
+	// One grace is the bound on the join, so the return lands a grace after the
+	// cancel; the slack covers reaping the leader and draining stderr behind it.
+	// Anything past this is the hang, not a slow worker: the alternative the current
+	// shape replaced waits on fn, which here never returns at all.
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("gitScanNUL() err = %v, want it to wrap context.Canceled: the listing ended because ctx did", err)
+		}
+	case <-time.After(agent.PipeDrainGrace + 30*time.Second):
+		t.Fatal("gitScanNUL never returned with fn wedged; the cancellation path joins a goroutine that is inside fn, so ctx bounds nothing and the round hangs")
 	}
 }
 

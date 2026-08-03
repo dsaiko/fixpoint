@@ -490,6 +490,42 @@ func scanProgressed(now, mark uint64) bool {
 	return now != mark || now%2 == 1
 }
 
+// endScanOnCancel ends gitScanNUL's scan once its context is done and reports why
+// the listing stopped. pr is the read end the scan is consuming and scanned is
+// where that scan reports its own outcome.
+//
+// Closing the read end first ends a scan blocked on pr.Read at once, so the join
+// below is immediate in the usual case -- and joining is what we want, since fn
+// writes the caller's state and preferably nothing is still calling it once
+// gitScanNUL returns.
+//
+// The close says nothing to a scan blocked INSIDE fn, though, and that is exactly
+// the case the drain grace no longer bounds: the progress counter is bumped on both
+// sides of the callback, so an odd reading re-arms the grace on every firing and ctx
+// is the only bound left on a wedged callback -- one stuck in an Lstat or an
+// EvalSymlinks on a hard-mounted export, say. An unbounded join here would spend
+// that last bound waiting for the very call ctx fired over: gitScanNUL would not
+// return at all, and with gitOpTimeout already spent as its ctx there is nothing
+// above it left to cut. So the wait is itself bounded, and past it the goroutine is
+// left to finish on its own. The listing is failed either way, so the state fn built
+// is already something no caller may use -- and none does: every one of them
+// discards it when this function's caller returns an error.
+func endScanOnCancel(ctx context.Context, pr *os.File, scanned <-chan error) error {
+	_ = pr.Close()
+	var scanErr error
+	select {
+	case scanErr = <-scanned:
+	case <-time.After(agent.PipeDrainGrace):
+		return ctx.Err()
+	}
+	// Report why the listing ended, not the mechanism that ended it. A scan that had
+	// already finished (nil) or failed on its own keeps its own outcome.
+	if errors.Is(scanErr, os.ErrClosed) {
+		return ctx.Err()
+	}
+	return scanErr
+}
+
 // gitScanNUL runs a git command whose stdout is a NUL-delimited list and calls
 // fn once per entry as it arrives, so the caller can count an unbounded listing
 // without holding it in memory and without the diagnostic output cap c.run
@@ -677,16 +713,7 @@ scan:
 			}
 			break scan
 		case <-ctx.Done():
-			_ = pr.Close()
-			// Still join the goroutine rather than abandon it: fn writes the caller's
-			// state, so nothing may still be calling it once this returns. The close
-			// above bounds that wait -- a blocked read fails immediately.
-			scanErr = <-scanned
-			// Report why the listing ended, not the mechanism that ended it. A scan that
-			// had already finished (nil) or failed on its own keeps its own outcome.
-			if errors.Is(scanErr, os.ErrClosed) {
-				scanErr = ctx.Err()
-			}
+			scanErr = endScanOnCancel(ctx, pr, scanned)
 			break scan
 		}
 	}
