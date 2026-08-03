@@ -594,6 +594,15 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// one interleaving costs stderr two seconds and stdout ten minutes, with git
 	// already finished and its exit status sitting in `waited` unread.
 	var grace <-chan time.Time
+	var graceTimer *time.Timer
+	// Armed at most once, so one Stop covers every exit path -- and the usual one is
+	// the scan reaching EOF before the grace fires, which would otherwise leave a
+	// live timer behind for every listing this function performs.
+	defer func() {
+		if graceTimer != nil {
+			graceTimer.Stop()
+		}
+	}()
 scan:
 	for {
 		select {
@@ -603,7 +612,8 @@ scan:
 			// Received once, so this case simply blocks from here on and the grace is
 			// never re-armed.
 			reaped = true
-			grace = time.After(agent.PipeDrainGrace)
+			graceTimer = time.NewTimer(agent.PipeDrainGrace)
+			grace = graceTimer.C
 		case <-grace:
 			_ = pr.Close()
 			scanErr = <-scanned
