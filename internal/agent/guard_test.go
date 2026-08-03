@@ -400,6 +400,59 @@ func TestSuperviseRejectsPresetOutputWriters(t *testing.T) {
 	}
 }
 
+// The cut-capture flag is suppressed when the teardown itself ended the command,
+// because the caller reports that -- but a LEADER THAT EXITED 0 is not such a
+// case, and it is reachable exactly through the drain: the escaped pipe-holder
+// makes drainAll burn the grace after the clean exit, and a command running close
+// to its timeout has its deadline expire inside those two seconds. Supervise
+// returns a nil error there, so no caller compensates -- both agent.Run's timeout
+// reclassification and verify.runOne's DeadlineExceeded branch are gated on a
+// non-nil error -- and dropping the flag leaves a truncated capture recorded as an
+// unqualified success.
+//
+// The end of the context is driven through the cleanupKill seam, which runs after
+// cmd.Wait has reaped the leader and before the drain, so it lands in that window
+// every time rather than when a wall clock happens to cooperate. A cancel stands
+// in for the deadline: Supervise reads ctx.Err() alone, so both reach this rule by
+// the same line, and only a cancel can be timed to the seam.
+func TestSuperviseKeepsCutCaptureWhenContextEndsDuringDrain(t *testing.T) {
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("perl unavailable to spawn a detached pipe-holder")
+	}
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	origCleanup := cleanupKill
+	t.Cleanup(func() { cleanupKill = origCleanup })
+	cleanupKill = func(cmd *exec.Cmd) error {
+		err := origCleanup(cmd)
+		// The leader is reaped and the group is dead; only the escapee still holds the
+		// write end. End the context here so it happens inside the drain that follows.
+		cancel()
+		return err
+	}
+	// perl puts itself in a fresh process group (setpgrp) and inherits stdout, so
+	// neither kill reaches it and it holds the write end past the grace. It publishes
+	// its PID only after that escape, and the leader waits for the file before
+	// exiting 0: leave that out and the leader's immediate exit races the escape, so
+	// the group kill can reach perl and the drain then ends at a real EOF.
+	cmd := exec.CommandContext(ctx, script(t, "perl -e 'setpgrp(0,0); open(F,\">\",$ARGV[0]) or die; print F $$; close F; sleep 60' "+
+		pidFile+" &\ni=0\nwhile [ ! -s "+pidFile+" ] && [ $i -lt 250 ]; do i=$((i+1)); sleep 0.02; done\nexit 0"))
+	cmd.Dir = t.TempDir()
+	leakedPipe, err := Supervise(ctx, cmd, io.Discard, nil)
+
+	if err != nil {
+		t.Fatalf("Supervise() err = %v for a leader that exited 0; want nil", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the context was never canceled; the interleaving under test was not reached")
+	}
+	if !leakedPipe {
+		t.Error("Supervise() leakedPipe = false for a capture cut short by an escaped pipe-holder; the note the operator needs was dropped because the deadline expired during the drain")
+	}
+}
+
 // The drain grace must bound how long Run blocks when a grandchild in its OWN
 // process group survives the process-group kill and keeps the stdout pipe open.
 // Unbounded, the copy goroutine would wait for EOF until that grandchild exits

@@ -333,9 +333,20 @@ func Supervise(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer) (le
 		waitErr = nil
 		cut = true
 	}
-	if ctx.Err() != nil {
-		// Torn down by Ctrl-C or by the command's own timeout. The caller reports
-		// that, and a capture cut short by the teardown itself needs no separate note.
+	if ctx.Err() != nil && waitErr != nil {
+		// Torn down by Ctrl-C or by the command's own timeout, and the leader's own
+		// result was lost with it: the caller reports the cancellation, and a capture
+		// cut short by the teardown itself needs no separate note.
+		//
+		// Only then. A LEADER THAT EXITED 0 keeps the note, because that combination is
+		// reachable precisely through the drain this flag is about: a descendant escaped
+		// the group and holds a write end, so drainAll burns PipeDrainGrace after the
+		// leader's clean exit, and the deadline of a command that ran close to its
+		// timeout expires inside those two seconds. waitErr is nil there, so neither
+		// caller compensates -- agent.Run's timeout reclassification and verify.runOne's
+		// DeadlineExceeded branch are both gated on a non-nil error -- and a truncated
+		// reply would be recorded as an unqualified success with nothing naming the
+		// escaped descendant that truncated it.
 		cut = false
 	}
 	if killErr != nil {
