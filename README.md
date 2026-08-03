@@ -1002,6 +1002,18 @@ Read this before pointing the tool at code you did not write.
   came from inside the target and refuses until you assert trust — or point
   `-config` at a bundle outside it. The check is per *file*, not per key, so it
   cannot go stale as configuration grows new surface.
+- **In `pr` mode an agent command may not resolve into the target.** An agent's
+  `command` is argv fixpoint execs with that agent's declared credentials, and it
+  runs with its working directory inside `target.path` — so a relative element
+  (`./reviewer.sh`, or the script in `[node, ./reviewer.cjs]`) names a file the
+  branch `gh pr checkout` writes, *after* validation confirmed the one that was
+  there before. That is target-controlled code execution rather than the prompt
+  injection the `pr` path is built to contain, and it needs no model's
+  cooperation, so fixpoint refuses the combination at startup unless you assert
+  `-trusted-target`/`-allow-untrusted-fix` (with the assertion it warns instead).
+  Point such a command at a bare name on `PATH` or a path outside the target.
+  Every other mode keeps the target-relative form: nothing replaces the file
+  between validation and the run.
 - **Reviewers can read anything, even in review-only mode.** Read-only agent
   flags block edits but do not confine reads: a reviewer fed untrusted content
   can be prompt-injected into reading a host secret (`~/.ssh`,

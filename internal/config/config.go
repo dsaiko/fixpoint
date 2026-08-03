@@ -591,6 +591,82 @@ func permissionBypassFlag(argv []string) string {
 	return ""
 }
 
+// TargetSuppliedArg returns the first element of argv that names a file inside
+// root, or "" when none does. Relative elements are resolved the way both the OS
+// and the agent CLI itself resolve them: against the process working directory,
+// which agent.Run sets to target.path -- so what this reports is the part of an
+// agent command whose CONTENT the code under review gets to supply. argv[0] is
+// the executable fixpoint execs; a later element is a script or config file the
+// CLI reads, which for a `node ./reviewer.cjs` style command is the same code
+// path by one more step.
+//
+// Exported for the orchestrator's warning on the trust-asserted path; the
+// refusal itself lives in Validate.
+//
+// An element counts as a path when it is absolute or explicitly relative
+// ("./x", "../x"), or when it contains a separator and a file sits there now. The
+// existence requirement is what keeps the separator-bearing strings that are not
+// paths at all out of the answer -- an OpenRouter model id such as
+// moonshotai/kimi-k2 is one, and refusing it would reject a working config. That
+// makes the plain "dir/file" spelling best-effort, since existence is measured
+// before any `gh pr checkout`: a path only the PR creates is missed there, while
+// the explicitly relative form -- how a target-local script is normally written,
+// and the only form that can name argv[0], which LookPath has already proven
+// exists -- is always caught.
+func TargetSuppliedArg(argv []string, root string) string {
+	for _, tok := range argv {
+		if !pathLikeArg(tok, root) {
+			continue
+		}
+		// Only a relative element resolves against the working directory; joining
+		// root onto an absolute one would fabricate a path under the target and
+		// report every absolute command as target-supplied.
+		p := tok
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(root, p)
+		}
+		if within(p, root) {
+			return tok
+		}
+		// A path that is outside the target lexically can still LAND inside it
+		// through a symlink, which withinTree resolves -- but withinTree answers
+		// "inside" for a path it cannot canonicalize at all, so ask it only about
+		// one that exists. Otherwise an absolute argument naming no file
+		// (--config /etc/absent.toml) would be reported as PR-supplied.
+		if _, err := os.Lstat(p); err == nil && withinTree(p, root) {
+			return tok
+		}
+	}
+	return ""
+}
+
+// pathLikeArg reports whether tok should be read as a filesystem path at all.
+// See TargetSuppliedArg for why existence decides the ambiguous spelling.
+//
+// Both '/' and filepath.Separator count, as in Validate's binary resolution:
+// Windows accepts a forward slash too, so checking only the native separator
+// would let "./reviewer.sh" pass unexamined there.
+func pathLikeArg(tok, root string) bool {
+	if tok == "" {
+		return false
+	}
+	if filepath.IsAbs(tok) {
+		return true
+	}
+	for _, p := range []string{"./", "../", `.\`, `..\`} {
+		if strings.HasPrefix(tok, p) {
+			return true
+		}
+	}
+	if !strings.ContainsRune(tok, '/') && !strings.ContainsRune(tok, filepath.Separator) {
+		return false
+	}
+	st, err := os.Stat(filepath.Join(root, tok))
+	// A directory is not something the command executes or reads as code, and
+	// naming one (--add-dir some/sub) is not the substitution this guards against.
+	return err == nil && !st.IsDir()
+}
+
 // Commit policies: how a round's per-fix commits are grouped. The coder always
 // works one issue at a time; only the grouping differs.
 const (
@@ -1131,6 +1207,30 @@ func (c *Config) Validate() error {
 		}
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Errorf("agents.%s: binary %q not found on PATH", name, argv[0])
+		}
+		// SECURITY (mode pr): the LookPath check above proves the file exists NOW,
+		// on the pre-checkout tree, but agent.Run re-resolves the same relative argv
+		// against Cmd.Dir at EVERY invocation -- and in pr mode Prepare's
+		// `gh pr checkout` has replaced that tree with the PR's by the time round 1
+		// runs. A command element that lands inside target.path is therefore chosen
+		// by the code under review: the PR ships (or edits) the script at that path
+		// and fixpoint execs it as the agent process itself, with the credentials the
+		// agent declares and no sandbox at all -- a stronger primitive than the
+		// prompt injection the pr path is built to contain, and it fires even in the
+		// shipped review-only configuration, which passes no other trust gate.
+		//
+		// Refused here rather than warned about, for the same reason
+		// orchestrator.guardActivatableConfig refuses pr mode: the content that
+		// decides what runs is not on disk yet, so there is nothing for a preflight
+		// to inspect and "continue anyway" means running PR-authored code sight
+		// unseen. Every other mode keeps the target-relative form working -- no
+		// checkout swaps the tree under those, and the file LookPath just validated
+		// is the one that will run. With trust asserted the run proceeds and
+		// orchestrator.warnTargetSuppliedCommand says what was accepted.
+		if c.Target.Mode == ModePR && !c.Loop.TrustedTarget && !c.Loop.AllowUntrustedFix {
+			if tok := TargetSuppliedArg(argv, c.Target.Path); tok != "" {
+				return fmt.Errorf("agents.%s: command element %q resolves inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Point the command at a binary outside the target (a bare name on PATH, or an absolute path), or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, tok, c.Target.Path)
+			}
 		}
 		// A read-only claim contradicted by the command's own argv. Reviewers are
 		// the agents that carry can_edit: false, they read untrusted content, they

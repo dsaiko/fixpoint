@@ -2814,6 +2814,80 @@ func TestWarnArgModePrompts(t *testing.T) {
 	})
 }
 
+// config.Validate refuses an agent command that resolves into a pr-mode target;
+// with trust asserted the run proceeds, and warnTargetSuppliedCommand is the only
+// place the operator learns the assertion also accepted PR-authored code running
+// AS the agent process. It must fire only in pr mode, and only for a command
+// element inside the target.
+func TestWarnTargetSuppliedCommand(t *testing.T) {
+	collect := func(t *testing.T, f *fixture) []string {
+		t.Helper()
+		var lines []string
+		logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+		o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o.warnTargetSuppliedCommand()
+		var warnings []string
+		for _, l := range lines {
+			if strings.Contains(l, "inside target") {
+				warnings = append(warnings, l)
+			}
+		}
+		return warnings
+	}
+	// targetLocal points the mock agent at a script inside the target, spelled
+	// relative to it -- the form `gh pr checkout` gets to replace.
+	targetLocal := func(t *testing.T, f *fixture) {
+		t.Helper()
+		script := testfixture.WriteMockScript(t, f.respDir)
+		data, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.repo, "reviewer.sh"), data, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		a := f.cfg.Agents["mock"]
+		a.Command = []string{"./reviewer.sh"}
+		f.cfg.Agents["mock"] = a
+	}
+
+	t.Run("pr mode warns for a target-supplied command", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Target.Mode = config.ModePR
+		f.cfg.Target.PR = 7
+		targetLocal(t, f)
+		warnings := collect(t, f)
+		if len(warnings) != 1 {
+			t.Fatalf("warnings = %v, want exactly one", warnings)
+		}
+		for _, want := range []string{`"mock"`, "./reviewer.sh", "gh pr checkout", "-trusted-target"} {
+			if !strings.Contains(warnings[0], want) {
+				t.Errorf("warning missing %q: %q", want, warnings[0])
+			}
+		}
+	})
+
+	t.Run("directory mode does not warn", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		targetLocal(t, f)
+		if warnings := collect(t, f); len(warnings) != 0 {
+			t.Errorf("warnings = %v, want none outside mode pr (no checkout swaps the file)", warnings)
+		}
+	})
+
+	t.Run("pr mode with a command outside the target does not warn", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Target.Mode = config.ModePR
+		f.cfg.Target.PR = 7
+		if warnings := collect(t, f); len(warnings) != 0 {
+			t.Errorf("warnings = %v, want none for a command outside the target", warnings)
+		}
+	})
+}
+
 // Startup validation must check every (prompt, role) pairing: a file shared by
 // both roles gets rendered with both data types, so a fix-only placeholder in
 // a shared template fails at New, not mid-run in the review round.

@@ -476,6 +476,7 @@ func markInterrupted(sum *model.RunSummary) {
 func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	o.warnArgModePrompts()
 	o.warnInheritedEnv()
+	o.warnTargetSuppliedCommand()
 
 	// Enforce the fix-round trust gate; see checkFixTrust for the rationale.
 	if err := o.checkFixTrust(); err != nil {
@@ -2298,6 +2299,29 @@ func (o *Orchestrator) warnArgModePrompts() {
 			continue
 		}
 		o.logf("WARNING: agent %q uses prompt_via: arg -- the full prompt (reviewed material, plus any secret quoted into a finding) is placed on the process argument list and is readable by other local users via ps / /proc for the run's duration, bypassing the 0600 log permissions and on-disk redaction; prefer prompt_via: stdin for material that may contain secrets", n)
+	}
+}
+
+// warnTargetSuppliedCommand reports an agent command element that resolves inside
+// target.path while the target is a pull request. config.Validate REFUSES that
+// combination absent a trust assertion (the PR's `gh pr checkout` decides what
+// fixpoint execs as the agent process); with -trusted-target/-allow-untrusted-fix
+// the run proceeds, and this is where the operator learns that the assertion also
+// accepted direct target-controlled code execution -- not merely the coder
+// prompt-injection risk the flags are documented for.
+//
+// Only pr mode, matching the refusal: in every other mode no checkout replaces
+// the file between validation and the invocation that runs it.
+func (o *Orchestrator) warnTargetSuppliedCommand() {
+	if o.cfg.Target.Mode != config.ModePR {
+		return
+	}
+	for _, n := range o.activeAgentNames() {
+		tok := config.TargetSuppliedArg(o.cfg.Agents[n].Argv(), o.cfg.Target.Path)
+		if tok == "" {
+			continue
+		}
+		o.logf("WARNING: agent %q has command element %q inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so PR-authored code runs as the agent process itself, with the credentials this agent declares and before any reviewer sandbox; -trusted-target/-allow-untrusted-fix accepts that on top of coder prompt-injection. Point the command at a binary outside the target, or review under an external sandbox (container/VM)", n, tok, o.cfg.Target.Path)
 	}
 }
 

@@ -617,6 +617,120 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 			t.Fatalf("Validate() = %v, want rejection of a binary absent from target.path", err)
 		}
 	})
+
+	// In mode pr the tree that supplies the file is the PR's: `gh pr checkout`
+	// replaces it after this validation and before the first invocation, so a
+	// command resolving into the target is PR-chosen code running as the agent
+	// process -- refused unless the operator asserts trust.
+	prConfig := func(t *testing.T, path string, cmd ...string) *Config {
+		t.Helper()
+		cfg := withRevCommand(t, path, cmd...)
+		cfg.Target.Mode = ModePR
+		cfg.Target.PR = 7
+		cfg.Loop.ReviewOnly = true
+		return cfg
+	}
+
+	t.Run("rejects a target-relative binary in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "agent.sh")
+		if err := prConfig(t, dir, "./agent.sh").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "resolves inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a PR-supplied agent binary", err)
+		}
+	})
+
+	t.Run("rejects a target-relative script argument in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "reviewer.cjs")
+		// argv[0] is a PATH binary; the code that actually runs is the PR's file.
+		if err := prConfig(t, dir, "echo", "./reviewer.cjs").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "./reviewer.cjs") {
+			t.Fatalf("Validate() = %v, want rejection of a PR-supplied script argument", err)
+		}
+	})
+
+	t.Run("rejects a bare relative script argument that exists in the target", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeExec(t, filepath.Join(dir, "bin"), "reviewer.js")
+		if err := prConfig(t, dir, "echo", "bin/reviewer.js").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "bin/reviewer.js") {
+			t.Fatalf("Validate() = %v, want rejection of a PR-supplied script argument", err)
+		}
+	})
+
+	t.Run("accepts a target-relative binary in mode pr with trust asserted", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "agent.sh")
+		cfg := prConfig(t, dir, "./agent.sh")
+		cfg.Loop.TrustedTarget = true
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil once the operator asserts trust", err)
+		}
+	})
+
+	// Only pr mode swaps the tree under a validated command; a directory or
+	// git-diff target keeps the target-local form working.
+	t.Run("accepts a target-relative binary in mode directory", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "agent.sh")
+		if err := withRevCommand(t, dir, "./agent.sh").Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil outside mode pr", err)
+		}
+	})
+
+	// Not every separator-bearing argument is a path: an OpenRouter-style model id
+	// resolves under the target lexically and must not be read as PR-supplied code.
+	t.Run("accepts a model id containing a slash in mode pr", func(t *testing.T) {
+		if err := prConfig(t, t.TempDir(), "echo", "--model", "moonshotai/kimi-k2").Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for a model id argument", err)
+		}
+	})
+
+	// An absolute command must not be reported as target-supplied because
+	// joining it onto target.path would fabricate a path inside the target.
+	t.Run("accepts an absolute binary outside the target in mode pr", func(t *testing.T) {
+		bin := t.TempDir()
+		writeExec(t, bin, "agent.sh")
+		if err := prConfig(t, t.TempDir(), filepath.Join(bin, "agent.sh")).Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for a binary outside the target", err)
+		}
+	})
+
+	// An absolute argument naming no file at all is not target-supplied; the
+	// symlink resolution must not answer "inside" for a path it cannot resolve.
+	t.Run("accepts an absolute argument naming no file in mode pr", func(t *testing.T) {
+		if err := prConfig(t, t.TempDir(), "echo", "--config", filepath.Join(t.TempDir(), "absent.toml")).Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for an absolute path outside the target", err)
+		}
+	})
+
+	// A symlink under the target that points outside it is still the PR's to
+	// repoint, so the element is reported on its lexical position.
+	t.Run("rejects a relative path through a target symlink in mode pr", func(t *testing.T) {
+		dir, outside := t.TempDir(), t.TempDir()
+		writeExec(t, outside, "agent.sh")
+		if err := os.Symlink(filepath.Join(outside, "agent.sh"), filepath.Join(dir, "agent.sh")); err != nil {
+			t.Fatal(err)
+		}
+		if err := prConfig(t, dir, "./agent.sh").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "resolves inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a PR-supplied symlink", err)
+		}
+	})
+
+	// The same file named absolutely is the same PR-controlled file.
+	t.Run("rejects an absolute path inside the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "agent.sh")
+		if err := prConfig(t, dir, filepath.Join(dir, "agent.sh")).Validate(); err == nil ||
+			!strings.Contains(err.Error(), "resolves inside target") {
+			t.Fatalf("Validate() = %v, want rejection of an absolute PR-supplied binary", err)
+		}
+	})
 }
 
 func TestValidateRejectsNegativeTimeout(t *testing.T) {
