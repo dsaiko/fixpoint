@@ -26,6 +26,13 @@ func TestCompileGlobs(t *testing.T) {
 		{"**/vendor/**", "avendor/y.go", false},
 		{"internal/**", "internal/config/config.go", true},
 		{"internal/**", "cmd/main.go", false},
+		// The separator in front of a "**" is a literal, so an expansion can never
+		// reach past the segment that precedes it: a sibling directory whose name
+		// merely starts the same keeps its files, and "foo/**/bar" is two boundaries
+		// and a gap rather than a substring search.
+		{"internal/**", "internalx/main.go", false},
+		{"foo/**/bar", "foobar", false},
+		{"foo/**/bar", "foo/x/bar", true},
 		{"?.go", "a.go", true},
 		{"?.go", "ab.go", false},
 		// A wildcard-free glob names a directory, so it takes the contents with it --
