@@ -1755,14 +1755,19 @@ func (c *Collector) symlinkExcludes(ctx context.Context, scope fileScope) ([]str
 // path absent from a tree was deleted there at stash time (a plain deletion, or
 // the old side of a rename), so its removal is reproduced rather than the file
 // being resurrected to HEAD content. The returned bool is the value StashDirty
-// should report as "stashed" alongside a non-nil error.
+// should report as "stashed" alongside a non-nil error. It is true for EVERY
+// failure here, lookups included: this runs only after `git stash push`
+// succeeded, so the coder's work is in stash@{0} and recoverable with `git stash
+// pop` no matter which step of the restoration then failed. Reporting false
+// would make the journal's "stashed: false" indistinguishable from "there was
+// nothing to stash" and hide the recovery path during an already abnormal exit.
 func (c *Collector) restoreProtectedPath(ctx context.Context, p string) (bool, error) {
 	// An operational failure here (cancellation, timeout, unreadable stash
 	// object) must abort restoration -- never be mistaken for "the path was
 	// deleted at stash time" and silently git rm / os.Remove an excluded path.
 	inIndex, err := c.pathInTree(ctx, "stash@{0}^2", p)
 	if err != nil {
-		return false, fmt.Errorf("look up excluded path %s in stash index: %w", p, err)
+		return true, fmt.Errorf("look up excluded path %s in stash index: %w", p, err)
 	}
 	if inIndex {
 		if out, err := c.git(ctx, "restore", "--source=stash@{0}^2", "--staged", "--", p); err != nil {
@@ -1773,7 +1778,7 @@ func (c *Collector) restoreProtectedPath(ctx context.Context, p string) (bool, e
 	}
 	inWorktree, err := c.pathInTree(ctx, "stash@{0}", p)
 	if err != nil {
-		return false, fmt.Errorf("look up excluded path %s in stash worktree: %w", p, err)
+		return true, fmt.Errorf("look up excluded path %s in stash worktree: %w", p, err)
 	}
 	if inWorktree {
 		if out, err := c.git(ctx, "restore", "--source=stash@{0}", "--worktree", "--", p); err != nil {
