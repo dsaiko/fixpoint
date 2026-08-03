@@ -837,7 +837,7 @@ landed.
  target     directory · /home/coder/fixpoint
  settings   review+fix · strategy rotate · no per-round cap · max 5 round(s)
  flags      trusted_target=true
- verify     fmt, vet, test, lint · passed in 5/5 round(s)
+ verify     fmt, vet, test, lint · passed in 39/39 gate run(s)
 
  REVIEWER  issues  fixed  rejected  deferred  advisory  errors    time
  claude        27     18         0         9        23       1  48m47s

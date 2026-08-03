@@ -56,10 +56,14 @@ func twoAgentRun() *model.RunSummary {
 			Fixed: 1, Rejected: 1,
 			CommitSHA: "abcdef0123456789",
 			Commits:   []string{"abcdef0123456789"},
-			Verify: []model.VerifyResult{
-				{Name: "test", Passed: true},
-				{Name: "lint", Passed: false, Optional: true},
-			},
+			Verify: []model.VerifyRun{{
+				Issue:   "i1",
+				Attempt: model.VerifyAttemptInitial,
+				Results: []model.VerifyResult{
+					{Name: "test", Passed: true},
+					{Name: "lint", Passed: false, Optional: true},
+				},
+			}},
 			Steps: []model.StepStat{
 				{Role: "review", Agent: "codex", Lens: "review-bugs", DurationMS: 60000},
 				{Role: "fix", Agent: "claude-coder", DurationMS: 120000},
@@ -191,23 +195,38 @@ func TestRunTableSaysTheCoderNeverRanInAReviewOnlyRun(t *testing.T) {
 }
 
 // Under no_regressions a check that was already red before the run fails without
-// blocking, and the orchestrator commits the round. Counting failures instead of
-// blockers would report "passed in 0/N round(s)" for a run whose gate cleared every
-// round -- on exactly the already-red repository the policy exists to support.
-func TestRunTableCountsRoundsTheGateClearedNotChecksThatFailed(t *testing.T) {
+// blocking, and the orchestrator commits the fix. Counting failures instead of
+// blockers would report "passed in 0/N gate run(s)" for a run whose gate cleared
+// every time -- on exactly the already-red repository the policy exists to support.
+func TestRunTableCountsGateRunsTheGateClearedNotChecksThatFailed(t *testing.T) {
 	sum := twoAgentRun()
-	// A pre-existing failure: reported as failed, but nothing blocked the round.
-	sum.Rounds[0].Verify = []model.VerifyResult{
+	// A pre-existing failure: reported as failed, but nothing blocked the fix.
+	sum.Rounds[0].Verify[0].Results = []model.VerifyResult{
 		{Name: "test", Passed: false},
 		{Name: "lint", Passed: true},
 	}
-	if got := RenderRunTable(sum); !strings.Contains(got, "passed in 1/1 round(s)") {
-		t.Errorf("a round nothing blocked must count as passed:\n%s", got)
+	if got := RenderRunTable(sum); !strings.Contains(got, "passed in 1/1 gate run(s)") {
+		t.Errorf("a gate run nothing blocked must count as passed:\n%s", got)
 	}
 
-	sum.Rounds[0].VerifyBlocking = []string{"test"}
-	if got := RenderRunTable(sum); !strings.Contains(got, "passed in 0/1 round(s)") {
-		t.Errorf("a round the gate blocked must not count as passed:\n%s", got)
+	sum.Rounds[0].Verify[0].Blocking = []string{"test"}
+	if got := RenderRunTable(sum); !strings.Contains(got, "passed in 0/1 gate run(s)") {
+		t.Errorf("a gate run that blocked must not count as passed:\n%s", got)
+	}
+}
+
+// The gate runs once per FIX, so one round holds N runs. Counting per round would
+// report one of them and drop the rest -- and under commit_policy: per_fix that is
+// the normal case, not an edge one.
+func TestRunTableCountsEveryGateRunOfARoundNotJustTheLast(t *testing.T) {
+	sum := twoAgentRun()
+	sum.Rounds[0].Verify = []model.VerifyRun{
+		{Issue: "i1", Attempt: model.VerifyAttemptInitial, Results: []model.VerifyResult{{Name: "test", Passed: true}}},
+		{Issue: "i2", Attempt: model.VerifyAttemptInitial, Results: []model.VerifyResult{{Name: "test", Passed: false}}, Blocking: []string{"test"}},
+		{Issue: "i2", Attempt: model.VerifyAttemptCorrection, Results: []model.VerifyResult{{Name: "test", Passed: true}}},
+	}
+	if got := RenderRunTable(sum); !strings.Contains(got, "passed in 2/3 gate run(s)") {
+		t.Errorf("every gate run of the round must be counted:\n%s", got)
 	}
 }
 
@@ -330,7 +349,7 @@ func TestRunTableEscapesTerminalControlsInErrorsAndContributorNames(t *testing.T
 func TestRunTableEscapesTerminalControlsInVerifyAndCoderNames(t *testing.T) {
 	sum := twoAgentRun()
 	// CSI erase-line + cursor-up, as a hostile verify command name could carry.
-	sum.Rounds[0].Verify[0].Name = "te\x1b[2K\x1b[Ast"
+	sum.Rounds[0].Verify[0].Results[0].Name = "te\x1b[2K\x1b[Ast"
 	// A bidi override plus an OSC that retitles the operator's terminal.
 	sum.Coder = "cla\u202eude\x1b]0;pwned\x07-coder"
 	sum.Rounds[0].Steps[1].Agent = sum.Coder
@@ -352,7 +371,7 @@ func TestRunTableEscapesTerminalControlsInVerifyAndCoderNames(t *testing.T) {
 	}
 	// Escaping is per field, so the rows below these two are still where they were.
 	benign := twoAgentRun()
-	benign.Rounds[0].Verify[0].Name = "test-alt"
+	benign.Rounds[0].Verify[0].Results[0].Name = "test-alt"
 	benign.Coder = "claude-alt-coder"
 	benign.Rounds[0].Steps[1].Agent = benign.Coder
 	if a, b := len(strings.Split(got, "\n")), len(strings.Split(RenderRunTable(benign), "\n")); a != b {

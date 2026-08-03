@@ -463,6 +463,48 @@ func TestSummaryRendersAllRoundSections(t *testing.T) {
 	}
 }
 
+// The gate runs once per FIX, so a round of N fixes has N gate runs (plus one more
+// for each correction attempt). The summary must render every one of them, labeled
+// with the fix it gated: rendering only the last would describe one fix's checks
+// while claiming to describe the round, and could not say WHICH fix needed the
+// correction attempt.
+func TestSummaryRendersEveryGateRunOfARound(t *testing.T) {
+	s, dir := newStore(t, "md")
+	sum := &model.RunSummary{
+		Termination: model.TermConverged,
+		Rounds: []model.RoundRecord{{
+			Round: 1,
+			Verify: []model.VerifyRun{
+				{Issue: "i1", Attempt: model.VerifyAttemptInitial,
+					Results: []model.VerifyResult{{Name: "test", Argv: []string{"go", "test"}, Passed: true}}},
+				{Issue: "i2", Attempt: model.VerifyAttemptInitial,
+					Results:  []model.VerifyResult{{Name: "test", Argv: []string{"go", "test"}, ExitCode: 1}},
+					Blocking: []string{"test"}},
+				{Issue: "i2", Attempt: model.VerifyAttemptCorrection,
+					Results: []model.VerifyResult{{Name: "test", Argv: []string{"go", "test"}, Passed: true}}},
+			},
+			Fixed: 2,
+		}},
+	}
+	if _, err := s.Summary(sum); err != nil {
+		t.Fatal(err)
+	}
+	md := filesIn(t, singleRunDir(t, dir))["summary.md"]
+	for _, want := range []string{
+		"Verification (fixing i1):",
+		"Verification (fixing i2):",
+		"Verification (fixing i2, after one coder correction attempt):",
+		"- test: FAIL (exit 1) — `go test`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("summary md missing %q:\n%s", want, md)
+		}
+	}
+	if n := strings.Count(md, "Verification"); n != 3 {
+		t.Errorf("summary md has %d verification blocks, want one per gate run (3):\n%s", n, md)
+	}
+}
+
 // When the closing round fails, the run's termination becomes "error" and the
 // loop's own outcome is preserved separately -- the difference between a run that
 // never converged and one that converged and then tripped on its last step. The

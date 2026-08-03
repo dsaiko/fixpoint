@@ -167,19 +167,18 @@ type RoundRecord struct {
 	// CoderError is set when the coder failed mid-round but its partial edits
 	// were salvaged into CommitSHA; the loop then continued.
 	CoderError string `json:"coder_error,omitempty"`
-	// Verify holds the deterministic gate's results for this round, and
-	// VerifyRetried records that the coder was given a correction attempt. Kept on
-	// the round record so the summary can show what actually passed -- the one
-	// non-model signal in the loop deserves to be persisted, not just logged.
-	Verify []VerifyResult `json:"verify,omitempty"`
-	// VerifyBlocking names the checks that actually blocked the round under the
-	// active policy, which is narrower than "the checks that failed": under
-	// no_regressions a check already red in the pre-run baseline fails without
-	// blocking. Persisted because Verify alone cannot answer "did the gate clear
-	// this round" after the fact -- the baseline it was judged against is gone.
-	VerifyBlocking []string   `json:"verify_blocking,omitempty"`
-	VerifyRetried  bool       `json:"verify_retried,omitempty"`
-	Steps          []StepStat `json:"steps,omitempty"` // per-invocation I/O figures
+	// Verify holds every run of the deterministic gate in this round, in the order
+	// they ran. Kept on the round record so the summary can show what actually
+	// passed -- the one non-model signal in the loop deserves to be persisted, not
+	// just logged.
+	//
+	// A slice rather than one set of results because the gate runs per FIX, not per
+	// round: under commit_policy: per_fix a round of N fixes runs it N times, plus
+	// once more for each correction attempt, plus once on a salvage. Keeping only
+	// the last would leave the summary and the scoreboard describing one fix's gate
+	// run while claiming to describe the round.
+	Verify []VerifyRun `json:"verify,omitempty"`
+	Steps  []StepStat  `json:"steps,omitempty"` // per-invocation I/O figures
 	// Final marks the closing round that `final: true` lenses run in, after the loop
 	// has stopped. It is not part of the convergence story -- it happens once the
 	// run's outcome is already decided -- so a reader must be able to tell it apart.
@@ -329,6 +328,34 @@ type VerifyResult struct {
 	Output   string        `json:"output,omitempty"` // combined stdout+stderr, capped and redacted
 	Duration time.Duration `json:"duration"`
 	Err      string        `json:"error,omitempty"` // could not run at all (not a non-zero exit)
+}
+
+// VerifyRun is ONE run of the deterministic gate: which fix it gated, on what
+// occasion, and what the checks did. The gate runs per fix rather than per round,
+// so this -- not the round -- is the granularity at which its verdict is true.
+type VerifyRun struct {
+	// Issue is the issue whose fix this run gated. Empty on a salvage pass, which
+	// gates a failed coder's partial work rather than any one issue's fix.
+	Issue string `json:"issue,omitempty"`
+	// Attempt is one of VerifyAttempt*: the occasion for this run, so a correction
+	// attempt can be told apart from the initial pass it followed.
+	Attempt string         `json:"attempt,omitempty"`
+	Results []VerifyResult `json:"results,omitempty"`
+	// Blocking names the checks that actually blocked under the active policy, which
+	// is narrower than "the checks that failed": under no_regressions a check already
+	// red in the pre-run baseline fails without blocking. Persisted because Results
+	// alone cannot answer "did the gate clear" after the fact -- the baseline it was
+	// judged against is gone.
+	Blocking []string `json:"blocking,omitempty"`
+}
+
+// LastVerify returns the round's most recent gate run -- the one whose verdict the
+// round is currently acting on. ok is false when the gate has not run at all.
+func (r RoundRecord) LastVerify() (VerifyRun, bool) {
+	if len(r.Verify) == 0 {
+		return VerifyRun{}, false
+	}
+	return r.Verify[len(r.Verify)-1], true
 }
 
 // Issue statuses. An issue's status is its own, tracked across rounds, and is

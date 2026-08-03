@@ -3380,11 +3380,22 @@ func TestVerifyRetrySucceedsAndCommits(t *testing.T) {
 	if got := f.commitCount(); got != before+1 {
 		t.Errorf("commit count = %d, want %d: the corrected round should commit", got, before+1)
 	}
-	if len(sum.Rounds) == 0 || !sum.Rounds[0].VerifyRetried {
-		t.Error("the round record must note that a correction attempt was made")
+	if len(sum.Rounds) == 0 || len(sum.Rounds[0].Verify) == 0 {
+		t.Fatal("verification results must be recorded on the round for the summary")
 	}
-	if len(sum.Rounds[0].Verify) == 0 {
-		t.Error("verification results must be recorded on the round for the summary")
+	// Both gate runs, each naming the fix and the occasion: the initial pass that
+	// blocked and the one after the correction. Keeping only the last would leave the
+	// summary unable to say which fix needed correcting.
+	got := make([]string, 0, len(sum.Rounds[0].Verify))
+	for _, run := range sum.Rounds[0].Verify {
+		got = append(got, run.Issue+"/"+run.Attempt)
+		if len(run.Results) == 0 {
+			t.Errorf("gate run %+v recorded no check results", run)
+		}
+	}
+	want := []string{"i1/" + model.VerifyAttemptInitial, "i1/" + model.VerifyAttemptCorrection}
+	if !slices.Equal(got, want) {
+		t.Errorf("recorded gate runs = %v, want %v", got, want)
 	}
 }
 

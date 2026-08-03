@@ -2991,7 +2991,7 @@ func salvageBody(coderErr string, pending []model.Issue) string {
 // failed, so re-invoking it would most likely burn another timeout. Verification
 // here is a single pass, and a failure preserves the work and stops the run.
 func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRecord, active []model.Issue, runErr error) (salvaged bool, err error) {
-	if blocking, verr := o.verifyPass(ctx, rec, model.VerifyAttemptSalvage); verr != nil {
+	if blocking, verr := o.verifyPass(ctx, rec, "", model.VerifyAttemptSalvage); verr != nil {
 		return false, verr
 	} else if len(blocking) > 0 {
 		return false, o.rejectUnverifiedSalvage(ctx, rec, runErr, blocking)
@@ -3194,7 +3194,7 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 // with the failure output in hand is unlikely to succeed on the third attempt, and
 // an unbounded repair loop is how a run silently burns an entire budget.
 func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord, fixed model.Issue) (blocked bool, err error) {
-	blocking, err := o.verifyPass(ctx, rec, model.VerifyAttemptInitial)
+	blocking, err := o.verifyPass(ctx, rec, fixed.ID, model.VerifyAttemptInitial)
 	if err != nil || len(blocking) == 0 {
 		return false, err
 	}
@@ -3203,8 +3203,7 @@ func (o *Orchestrator) verifyRound(ctx context.Context, rec *model.RoundRecord, 
 	if err := o.fixVerification(ctx, rec, blocking, fixed); err != nil {
 		return false, err
 	}
-	rec.VerifyRetried = true
-	blocking, err = o.verifyPass(ctx, rec, model.VerifyAttemptCorrection)
+	blocking, err = o.verifyPass(ctx, rec, fixed.ID, model.VerifyAttemptCorrection)
 	return len(blocking) > 0, err
 }
 
@@ -3245,21 +3244,28 @@ func blockingNames(blocking []verify.Result) []string {
 // verifyRound adds one bounded coder correction on top of this; the salvage path
 // deliberately does not (see salvagePartialFix).
 //
-// attempt is one of model.VerifyAttempt*: it names the occasion for the journal and
-// selects the log line's human suffix, so the machine and human records of one gate
-// run cannot drift apart.
-func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, attempt string) ([]verify.Result, error) {
+// issue is the issue whose fix is being gated (empty on a salvage pass, which gates
+// a failed coder's partial work rather than one fix), and attempt is one of
+// model.VerifyAttempt*: it names the occasion for the journal and selects the log
+// line's human suffix, so the machine and human records of one gate run cannot
+// drift apart.
+func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, issue, attempt string) ([]verify.Result, error) {
 	if !o.cfg.Verify.Enabled() {
 		return nil, nil
 	}
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
-	rec.Verify = rep.Results
 	o.logf("round %d verify%s: %s", rec.Round, verifyAttemptLabel[attempt], rep.Summary())
 	blocking := rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)
-	// Recorded next to the results they were derived from: the baseline is not part
-	// of the summary, so nothing downstream could otherwise tell a round the gate
-	// cleared from one it stopped.
-	rec.VerifyBlocking = blockingNames(blocking)
+	// Appended, not assigned: the gate runs once per fix, so a round holds one record
+	// per run. The blocking set is recorded next to the results it was derived from --
+	// the baseline is not part of the summary, so nothing downstream could otherwise
+	// tell a pass the gate cleared from one it stopped.
+	rec.Verify = append(rec.Verify, model.VerifyRun{
+		Issue:    issue,
+		Attempt:  attempt,
+		Results:  rep.Results,
+		Blocking: blockingNames(blocking),
+	})
 	// Journal before the cancellation check: the gate DID run and its verdict is the
 	// one fact in the loop no model produced, so an interruption immediately after
 	// must not be the reason it goes unrecorded.
@@ -3296,8 +3302,10 @@ func (o *Orchestrator) rejectUnverifiedRound(ctx context.Context, rec *model.Rou
 	// The blocking set, not every non-optional failure: under no_regressions a check
 	// that was already red at the baseline fails without blocking, and naming it here
 	// would accuse a check the policy permits while hiding the one that actually
-	// caused the discard. verifyPass recorded it from the same pass that blocked.
-	blocking := rec.VerifyBlocking
+	// caused the discard. The LAST run is the pass that blocked: verifyPass appends one
+	// record per run, and earlier runs in this round are the fixes already committed.
+	last, _ := rec.LastVerify()
+	blocking := last.Blocking
 	return o.discardEdits(ctx, discard{
 		round:  rec.Round,
 		reason: model.DiscardVerifyFailed,

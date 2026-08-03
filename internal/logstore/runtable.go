@@ -102,7 +102,7 @@ type runStats struct {
 	commits      []string
 	verifyNames  []string
 	verifyPassed int
-	verifyRounds int
+	verifyRuns   int
 }
 
 func computeRunStats(sum *model.RunSummary) *runStats {
@@ -212,23 +212,26 @@ func (st *runStats) absorbCosts(r model.RoundRecord, get getFn) {
 	}
 }
 
-// absorbVerify counts the rounds the deterministic gate cleared. What counts is
-// what BLOCKED under the active policy, not what failed: an optional check never
-// blocks, and under no_regressions neither does a check that was already red in
-// the pre-run baseline. Counting failures instead would report "passed in 0/N
-// rounds" for a run that committed every round, on exactly the already-red
+// absorbVerify counts the gate runs the deterministic gate cleared. Runs, not
+// rounds: the gate runs once per fix (plus once more for a correction attempt, or
+// once on a salvage), so counting per round would report one of a round's N runs and
+// silently discard the rest.
+//
+// What counts as cleared is what BLOCKED under the active policy, not what failed:
+// an optional check never blocks, and under no_regressions neither does a check that
+// was already red in the pre-run baseline. Counting failures instead would report
+// "passed in 0/N" for a run that committed every fix, on exactly the already-red
 // repository no_regressions exists to support.
 func (st *runStats) absorbVerify(r model.RoundRecord) {
-	if len(r.Verify) == 0 {
-		return
-	}
-	st.verifyRounds++
-	if len(r.VerifyBlocking) == 0 {
-		st.verifyPassed++
-	}
-	if len(st.verifyNames) == 0 {
-		for _, v := range r.Verify {
-			st.verifyNames = append(st.verifyNames, v.Name)
+	for _, run := range r.Verify {
+		st.verifyRuns++
+		if len(run.Blocking) == 0 {
+			st.verifyPassed++
+		}
+		if len(st.verifyNames) == 0 {
+			for _, v := range run.Results {
+				st.verifyNames = append(st.verifyNames, v.Name)
+			}
 		}
 	}
 }
@@ -366,7 +369,7 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 	if len(sum.Overrides) > 0 {
 		out = append(out, [2]string{"flags", strings.Join(sum.Overrides, ", ")})
 	}
-	if st.verifyRounds > 0 {
+	if st.verifyRuns > 0 {
 		// Escaped for the same reason the rows above are: a check's name is
 		// verify.commands[].name from a config the repository under review may own,
 		// and a cell that can emit ESC/CSI would redraw the rows printed after it --
@@ -375,8 +378,10 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 		for _, n := range st.verifyNames {
 			names = append(names, agent.EscapeTerminal(n))
 		}
-		out = append(out, [2]string{"verify", fmt.Sprintf("%s · passed in %d/%d round(s)",
-			strings.Join(names, ", "), st.verifyPassed, st.verifyRounds)})
+		// Gate run(s), not round(s): under commit_policy: per_fix one round gates each
+		// fix in turn, so "rounds" would name a unit this counter never measured.
+		out = append(out, [2]string{"verify", fmt.Sprintf("%s · passed in %d/%d gate run(s)",
+			strings.Join(names, ", "), st.verifyPassed, st.verifyRuns)})
 	}
 	return out
 }

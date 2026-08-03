@@ -412,31 +412,53 @@ func renderIssues(sb *strings.Builder, rec model.RoundRecord) {
 	}
 }
 
-// renderVerify records the deterministic gate's outcome for a round. It is the
-// only evidence in the summary that is not a model's opinion, so it is reported
-// per round rather than folded into a total.
+// renderVerify records the deterministic gate's outcome. It is the only evidence in
+// the summary that is not a model's opinion, so it is reported run by run rather
+// than folded into a total -- and the gate runs once per FIX, so a round of N fixes
+// gets N blocks, each headed by the fix it gated. Reporting only one would present a
+// single fix's gate run as the whole round's.
 func renderVerify(sb *strings.Builder, rec model.RoundRecord) {
-	if len(rec.Verify) == 0 {
-		return
-	}
-	sb.WriteString("\nVerification")
-	if rec.VerifyRetried {
-		sb.WriteString(" (after one coder correction attempt)")
-	}
-	sb.WriteString(":\n")
-	for _, v := range rec.Verify {
-		status := "PASS"
-		switch {
-		case v.Err != "":
-			status = "ERROR: " + v.Err
-		case !v.Passed:
-			status = fmt.Sprintf("FAIL (exit %d)", v.ExitCode)
+	for _, run := range rec.Verify {
+		sb.WriteString("\nVerification")
+		if label := verifyRunLabel(run); label != "" {
+			fmt.Fprintf(sb, " (%s)", label)
 		}
-		if v.Optional {
-			status += " [optional]"
+		sb.WriteString(":\n")
+		for _, v := range run.Results {
+			status := "PASS"
+			switch {
+			case v.Err != "":
+				status = "ERROR: " + v.Err
+			case !v.Passed:
+				status = fmt.Sprintf("FAIL (exit %d)", v.ExitCode)
+			}
+			if v.Optional {
+				status += " [optional]"
+			}
+			fmt.Fprintf(sb, "- %s: %s — `%s` in %s\n", v.Name, status, strings.Join(v.Argv, " "), v.Duration.Round(time.Millisecond))
 		}
-		fmt.Fprintf(sb, "- %s: %s — `%s` in %s\n", v.Name, status, strings.Join(v.Argv, " "), v.Duration.Round(time.Millisecond))
 	}
+}
+
+// verifyAttemptNote is the human note for each gate occasion. The initial pass has
+// none: it is the unqualified case, and every round has one.
+var verifyAttemptNote = map[string]string{
+	model.VerifyAttemptCorrection: "after one coder correction attempt",
+	model.VerifyAttemptSalvage:    "partial work from the failed coder",
+}
+
+// verifyRunLabel says which fix a gate run gated and on what occasion, so a reader
+// can tell the N runs of a per_fix round apart -- and, where a fix needed a
+// correction, WHICH fix it was.
+func verifyRunLabel(run model.VerifyRun) string {
+	parts := make([]string, 0, 2)
+	if run.Issue != "" {
+		parts = append(parts, "fixing "+run.Issue)
+	}
+	if note := verifyAttemptNote[run.Attempt]; note != "" {
+		parts = append(parts, note)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // renderLoopTermination reports how the LOOP ended when the run then ended some
