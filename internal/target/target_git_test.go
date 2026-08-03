@@ -3645,6 +3645,10 @@ func TestGitScanNULHeldOpenListingStillReportsFailedCleanupKill(t *testing.T) {
 // was complete, with an error blaming an escaped descendant that never existed --
 // and would truncate the listing to make its own diagnosis true. Entries arrive
 // slowly here and nothing holds stdout, so the listing must be delivered in full.
+//
+// This is the many-fast-callbacks half of that: every individual call is short and it
+// is their number that outlasts the grace. The one-long-call half -- a single fn that
+// outlasts a whole grace by itself -- is the test below.
 func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
 	repo := gitRepo(t)
 	const entries = 100
@@ -3656,22 +3660,70 @@ func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
 		"    exit 0", entries))
 
 	var seen int
-	// 100 entries at 50ms is 5s of callback, so the grace armed at the leader's exit has
-	// to be re-armed TWICE before the listing is through -- sustained progress across
-	// more than one window, not the single re-arm a 3s callback would exercise. Every
-	// individual gap stays far short of the 2s grace, so what decides this test is the
+	// Derived from the grace rather than hardcoded, so raising that shared constant
+	// cannot leave the whole listing finishing before the grace ever fires -- which
+	// would keep this test passing while exercising none of the re-arm. Two graces'
+	// worth of callback spread over 100 entries means the grace armed at the leader's
+	// exit has to be re-armed TWICE before the listing is through: sustained progress
+	// across more than one window, not the single re-arm one long call would exercise.
+	// Each individual gap is a fiftieth of a grace, so what decides this test is the
 	// predicate under test and not timing noise on a loaded machine: a cut on the second
 	// grace lands around the 80th entry and fails the count below.
+	perEntry := 2 * agent.PipeDrainGrace / entries
 	c := New(config.Target{Mode: "directory", Path: repo})
 	err := c.gitScanNUL(t.Context(), func(string) {
 		seen++
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(perEntry)
 	}, "ls-files", "--cached", "-z")
 	if err != nil {
 		t.Fatalf("gitScanNUL() err = %v, want nil: the grace bounded the callback's own work instead of the absence of output", err)
 	}
 	if seen != entries {
 		t.Errorf("gitScanNUL delivered %d of %d entries; the listing was cut short", seen, entries)
+	}
+}
+
+// The other shape a slow delivery takes, and the one a count of entries taken off the
+// pipe cannot see: ONE callback that outlasts a whole grace by itself. listGitFiles'
+// fn does an Lstat and, for a symlink, an EvalSymlinks; a single one of those on a
+// hung network mount or a cold cache is enough. If progress were measured only on
+// entry, the last entry's counter bump would land BEFORE the grace was armed and
+// nothing would move again until fn returned, so the grace would fire on an unchanged
+// count and cut a listing that was complete -- reporting errListingHeldOpen and
+// blaming an escaped descendant that never existed. Cutting cannot even end the scan
+// there: the cut path joins the scan goroutine, which is inside that very call.
+//
+// The shim lingers after its single entry so the callback is provably in flight when
+// the leader is reaped and the grace is armed -- the exact state the re-arm has to
+// survive -- and nothing escapes the process group, so EOF is waiting the moment fn
+// returns.
+func TestGitScanNULSingleLongCallbackDoesNotFailCompleteListing(t *testing.T) {
+	repo := gitRepo(t)
+	shimGit(t, "ls-files", "    printf 'main.go\\0'\n    sleep 1\n    exit 0")
+
+	var seen int
+	// Two graces in one call, derived from the constant so the call outlasts the grace
+	// whatever it is set to: the entry is consumed about a second before the leader
+	// exits, the grace fires one grace after that -- with fn still a whole grace from
+	// returning -- and must re-arm rather than cut.
+	c := New(config.Target{Mode: "directory", Path: repo})
+	start := time.Now()
+	err := c.gitScanNUL(t.Context(), func(string) {
+		seen++
+		time.Sleep(2 * agent.PipeDrainGrace)
+	}, "ls-files", "--cached", "-z")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("gitScanNUL() err = %v, want nil: the grace bounded one callback's own work instead of the absence of output", err)
+	}
+	if seen != 1 {
+		t.Errorf("gitScanNUL delivered %d of 1 entries; the listing was cut short", seen)
+	}
+	// Without this the test could pass on a callback that never actually outlasted the
+	// grace -- a shortened sleep, or a grace raised out from under it -- and would stop
+	// exercising the re-arm while still looking green.
+	if elapsed < 2*agent.PipeDrainGrace {
+		t.Errorf("gitScanNUL returned after %s, sooner than the %s callback it was supposed to wait out; the grace was never in a position to cut", elapsed, 2*agent.PipeDrainGrace)
 	}
 }
 

@@ -482,6 +482,14 @@ var errListingHeldOpen = errors.New("stdout held open past the drain grace by a 
 // credentials this process cannot signal. Nothing in production reassigns it.
 var gitCleanupKill = agent.KillProcessGroup
 
+// scanProgressed reports whether a scan whose progress counter now reads now has
+// moved since that counter read mark. The counter is bumped on both sides of the
+// callback (see gitScanNUL), so movement is either a new entry taken off the pipe or
+// -- on an odd reading -- a callback still in flight over the one already taken.
+func scanProgressed(now, mark uint64) bool {
+	return now != mark || now%2 == 1
+}
+
 // gitScanNUL runs a git command whose stdout is a NUL-delimited list and calls
 // fn once per entry as it arrives, so the caller can count an unbounded listing
 // without holding it in memory and without the diagnostic output cap c.run
@@ -576,19 +584,28 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// indefinitely, hanging the whole collection. Closing the read end out from
 	// under it is the only way to end it, exactly as OutPipe.Drain does for stderr.
 
-	// Entries taken off the pipe, published so the grace below can bound the ABSENCE
-	// of data rather than the scan's completion. Incremented BEFORE fn: what the
-	// grace has to distinguish is a listing still arriving from one that never will,
-	// and fn's cost per entry is the caller's, not the pipe's.
-	var consumed atomic.Uint64
+	// The scan's progress, published so the grace below can bound the ABSENCE of data
+	// rather than the scan's completion: what the grace has to distinguish is a listing
+	// still being delivered from one that never will be.
+	//
+	// Bumped BOTH on taking an entry off the pipe and on that entry's fn returning, so
+	// an ODD value means fn is in flight. Counting only entries taken would make a
+	// single fn call that outlasts one whole grace -- one cold-cache EvalSymlinks is
+	// enough, see the grace's own case below -- indistinguishable from a pipe nothing
+	// is coming through, and a complete listing would be cut and reported as held open.
+	// Cutting cannot help there in any case: the cut path joins this goroutine, which
+	// is inside fn, so it waits for exactly the same call it just failed the listing
+	// for. A caller whose fn never returns is bounded by ctx, as a slow feed is.
+	var progress atomic.Uint64
 	scanned := make(chan error, 1)
 	go func() {
 		sc := bufio.NewScanner(pr)
 		sc.Buffer(make([]byte, 0, 64<<10), maxGitPath)
 		sc.Split(scanNUL)
 		for sc.Scan() {
-			consumed.Add(1)
+			progress.Add(1)
 			fn(sc.Text())
+			progress.Add(1)
 		}
 		scanned <- sc.Err()
 	}()
@@ -603,8 +620,9 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	// already finished and its exit status sitting in `waited` unread.
 	var grace <-chan time.Time
 	var graceTimer *time.Timer
-	// Entry count at the instant the grace was last armed, so a fired grace can ask
-	// whether anything arrived during it.
+	// The progress counter at the instant the grace was last armed, so a fired grace
+	// can ask whether the scan moved during it. Monotonic, so equality means not one
+	// increment happened -- no entry taken and no fn returned.
 	var mark uint64
 	// One timer, re-armed in place while the scan keeps making progress, so one Stop
 	// covers every exit path -- and the usual one is the scan reaching EOF before the
@@ -624,7 +642,7 @@ scan:
 			// Received once, so this case simply blocks from here on: the grace is armed
 			// here and only ever re-armed by the case below.
 			reaped = true
-			mark = consumed.Load()
+			mark = progress.Load()
 			graceTimer = time.NewTimer(agent.PipeDrainGrace)
 			grace = graceTimer.C
 		case <-grace:
@@ -634,12 +652,14 @@ scan:
 			// entries -- can still be unread, and unlike OutPipe.Drain's copy goroutine
 			// this one runs the CALLER's fn per entry: listGitFiles' costs a glob sweep,
 			// an Lstat, and for a symlink an EvalSymlinks, which on a network filesystem
-			// or a cold cache can easily outlast one grace. Cutting there would discard a
-			// listing that was arriving fine and blame an escaped writer that does not
-			// exist. So re-arm while entries keep arriving; a scan blocked on a write end
-			// held outside the group consumes nothing and is still cut after a single
-			// grace, and one fed slowly forever remains bounded by ctx below.
-			if now := consumed.Load(); now != mark {
+			// or a cold cache can easily outlast one grace -- a SINGLE one of them, so
+			// entries arriving is not the only shape progress takes. Cutting there would
+			// discard a listing that was arriving fine and blame an escaped writer that
+			// does not exist. So re-arm while the scan moves at all, an entry taken off
+			// the pipe or a callback still in flight; a scan blocked on a write end held
+			// outside the group does neither and is still cut after a single grace, and
+			// one fed slowly forever remains bounded by ctx below.
+			if now := progress.Load(); scanProgressed(now, mark) {
 				mark = now
 				graceTimer.Reset(agent.PipeDrainGrace)
 				continue
