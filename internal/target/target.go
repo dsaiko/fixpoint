@@ -1627,7 +1627,8 @@ func pathspec(exclude []string) []string {
 // or stdin, and into the .prompt/.raw artifacts on disk. A PR that adds a .env or
 // a deploy key would hand that key material verbatim to every reviewer, and
 // agent.RedactSecrets is shape-based and best-effort. The `glob` magic gives git
-// the same `**/` semantics compileGlobs gives the directory walk.
+// the same `**/` semantics compileGlobs gives the directory walk, and `icase` on
+// the mandatory patterns the same case folding (see config.FoldExclude).
 //
 // Every spec above is name-based, and the name of a symlink says nothing about
 // what it opens, so symlinkExcludes adds the resolved-destination check on top --
@@ -1638,7 +1639,13 @@ func pathspec(exclude []string) []string {
 func (c *Collector) collectPathspec(ctx context.Context) ([]string, error) {
 	specs := pathspec(c.excludes())
 	for _, g := range c.cfg.EffectiveExcludes() {
-		specs = append(specs, ":(exclude,glob)"+g)
+		magic := "exclude,glob"
+		if config.FoldExclude(g) {
+			// The same folding compileGlobs applies, so a PRODUCTION.ENV the walk
+			// drops does not arrive here with its content in the diff.
+			magic += ",icase"
+		}
+		specs = append(specs, ":("+magic+")"+g)
 	}
 	scope, err := c.fileScope()
 	if err != nil {
@@ -2096,7 +2103,10 @@ func truncate(s string) string {
 }
 
 // compileGlobs converts **-style globs to regexps: ** matches across path
-// separators, * and ? within a segment.
+// separators, * and ? within a segment. A glob config.FoldExclude marks -- the
+// mandatory credential patterns -- compiles case-insensitively, which
+// collectPathspec pairs with git's `icase` pathspec magic so both matchers drop
+// the same files.
 //
 // A glob carrying NO wildcard at all names a plain directory -- "config/secrets",
 // spelled with or without a trailing slash -- and so also matches everything
@@ -2122,10 +2132,13 @@ func truncate(s string) string {
 func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 	res := make([]*regexp.Regexp, 0, len(globs))
 	for _, g := range globs {
+		var sb strings.Builder
+		if config.FoldExclude(g) {
+			sb.WriteString("(?i)")
+		}
 		// The trailing slash is only a spelling of "this is a directory"; drop it so
 		// both spellings compile to the same pattern.
 		g = strings.TrimSuffix(g, "/")
-		var sb strings.Builder
 		sb.WriteString("^")
 		i := 0
 		for i < len(g) {

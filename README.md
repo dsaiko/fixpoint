@@ -154,6 +154,10 @@ anywhere (`*.env`, `**/node_modules`) describes a file shape and matches names
 only; to take the contents of every matching directory too, say so:
 `**/node_modules/**`.
 
+Your entries match case-sensitively, as written. The credential patterns fixpoint
+enforces on top of them do not: `PRODUCTION.ENV` and `ID_RSA` are dropped the
+same way their lowercase spellings are.
+
 ## Review lenses and assignment strategies
 
 Prompts under [config/prompts/](config/prompts/) are a library you can grow freely; only the

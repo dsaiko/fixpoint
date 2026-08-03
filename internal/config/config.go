@@ -1289,6 +1289,36 @@ var mandatoryExcludes = []string{
 	"**/*.kdbx",
 }
 
+// mandatoryExcludeSet indexes mandatoryExcludes so FoldExclude can still
+// recognize one after EffectiveExcludes has flattened the two sources into a
+// single list.
+var mandatoryExcludeSet = func() map[string]bool {
+	set := make(map[string]bool, len(mandatoryExcludes))
+	for _, g := range mandatoryExcludes {
+		set[g] = true
+	}
+	return set
+}()
+
+// FoldExclude reports whether an exclude glob is matched case-insensitively.
+//
+// The mandatory patterns above are spelled entirely in lowercase, so matching
+// them as written lets a committed PRODUCTION.ENV, .Env, server.PEM, ID_RSA or
+// KUBECONFIG past the one exclusion no config can drop -- spellings that are
+// ordinary in real repositories, and that fixpoint's own supported filesystems
+// may not even distinguish. In the git modes that exclusion is what keeps the
+// file's full CONTENT out of every reviewer prompt and out of the always-written
+// .prompt artifact, not merely its path, and agent.RedactSecrets only masks
+// fixed-shape tokens. So the credential patterns fold rather than trying to name
+// every spelling.
+//
+// Configured excludes are matched as written: they are the operator's own intent,
+// and folding them would start dropping files nobody asked to hide -- a "Test/"
+// directory for an excluded "test/" -- with nothing in the material saying so.
+// Both matchers consult this, the compiled regexps in compileGlobs and the git
+// :(exclude,glob) pathspecs in collectPathspec, so the two keep agreeing.
+func FoldExclude(glob string) bool { return mandatoryExcludeSet[glob] }
+
 // EffectiveExcludes returns the configured exclude globs plus the mandatory
 // credential patterns, deduplicated.
 func (t Target) EffectiveExcludes() []string {

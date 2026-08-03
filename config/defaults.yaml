@@ -21,8 +21,10 @@ target:
   # ("config/secrets") excludes that directory's contents too; one with a wildcard
   # matches names only, so use "**/node_modules/**" to take the contents as well.
   #
+  # Entries here match case-sensitively, as written.
+  #
   # Credential-shaped paths (.env*, *.pem, *.key, id_rsa, ...) are excluded by
-  # fixpoint itself and cannot be re-enabled here.
+  # fixpoint itself, in any casing, and cannot be re-enabled here.
   exclude:
     - "**/vendor/**" # committed dependencies
     - "**/testdata/**" # committed fixtures; remove to review them too

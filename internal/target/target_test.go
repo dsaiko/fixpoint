@@ -49,6 +49,19 @@ func TestCompileGlobs(t *testing.T) {
 		{"**/node_modules", "a/node_modules/pkg/index.js", false},
 		{"**/café.go", "src/café.go", true}, // multi-byte literals
 		{".github/**/*.yaml", ".github/workflows/ci.yaml", true},
+		// The mandatory credential patterns are spelled in lowercase and match any
+		// casing: PRODUCTION.ENV and ID_RSA are the same secrets, and in the git
+		// modes this exclusion is what keeps their CONTENT out of the material.
+		{"**/*.env", "PRODUCTION.ENV", true},
+		{"**/*.env", "svc/Docker.Env", true},
+		{"**/.env.*", ".Env.Production", true},
+		{"**/*.pem", "certs/Server.PEM", true},
+		{"**/id_rsa", "home/.ssh/ID_RSA", true},
+		{"**/kubeconfig", "KubeConfig", true},
+		// A CONFIGURED exclude is matched as written: folding it would silently drop
+		// files nobody asked to hide from review (see config.FoldExclude).
+		{"vendor/**", "Vendor/x/y.go", false},
+		{"**/*.md", "README.MD", false},
 	}
 	for _, tc := range cases {
 		res, err := compileGlobs([]string{tc.glob})

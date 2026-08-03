@@ -2255,10 +2255,17 @@ func TestCollectGitDiffAppliesExcludes(t *testing.T) {
 	writeFile(t, repo, "deploy/id_rsa.pem", "-----BEGIN PRIVATE KEY-----\ncommitted-key\n")
 	writeFile(t, repo, "vendor/dep/c.go", "package dep // configured-exclude\n")
 	writeFile(t, repo, "main.go", "package main // reviewed\n")
+	// The same secrets under an upper- or mixed-case name: the mandatory patterns
+	// are lowercase, and the pathspec magic has to fold or the file's full content
+	// lands in the diff -- and so in every reviewer prompt and .prompt artifact.
+	writeFile(t, repo, "STAGING.ENV", "DB_PASS=hunter2-upper-suffix\n")
+	writeFile(t, repo, "certs/Wildcard.PEM", "-----BEGIN PRIVATE KEY-----\nmixed-case-key\n")
+	writeFile(t, repo, "deploy/ID_RSA", "-----BEGIN PRIVATE KEY-----\nupper-case-key\n")
 	git(t, repo, "add", "-A")
 	git(t, repo, "commit", "-qm", "secrets")
 	// And as untracked files, which are listed by path rather than diffed.
 	writeFile(t, repo, "sub/.env.local", "TOKEN=hunter2-untracked\n")
+	writeFile(t, repo, "sub/.Env", "TOKEN=hunter2-untracked-mixed\n")
 	writeFile(t, repo, "sub/ok.txt", "fine\n")
 
 	material, err := c.Collect(t.Context())
@@ -2271,6 +2278,10 @@ func TestCollectGitDiffAppliesExcludes(t *testing.T) {
 		"committed-key", "id_rsa.pem",
 		"hunter2-untracked", ".env.local",
 		"configured-exclude", "vendor/dep/c.go",
+		"hunter2-upper-suffix", "STAGING.ENV",
+		"mixed-case-key", "Wildcard.PEM",
+		"upper-case-key", "ID_RSA",
+		"hunter2-untracked-mixed", "sub/.Env",
 	} {
 		if strings.Contains(material, leak) {
 			t.Errorf("Collect() leaked %q into the review material:\n%s", leak, material)
@@ -2768,6 +2779,13 @@ var credentialFiles = []string{
 	"credentials", "home/.aws/credentials",
 	"kubeconfig", "home/.kube/kubeconfig",
 	"secrets.kdbx", "vault/secrets.kdbx",
+	// Casings the lowercase patterns must still recognize: a Windows-authored
+	// branch or an operator's own habit produces them, and a case-sensitive match
+	// would leave the one exclusion no config can drop protecting nothing. Each
+	// name differs from the lowercase fixtures above by more than its case, so the
+	// tree lays out distinct files on a case-INsensitive filesystem too.
+	"STAGING.ENV", "svc/.Env", "certs/Wildcard.PEM",
+	"home/.ssh/ID_RSA", "deploy/KUBECONFIG", "aws/Credentials",
 }
 
 // writeCredentialTree writes every credential shape plus one ordinary source file

@@ -171,7 +171,8 @@ work at all.
 
 **fixpoint removes credential-shaped paths from collection unconditionally**, in
 code, whatever `target.exclude` says (`.env*`, `*.pem`, `*.key`, `id_rsa`,
-`.netrc`, and similar). That bounds the blast radius; it is not a sandbox.
+`.netrc`, and similar, in any casing). That bounds the blast radius; it is not a
+sandbox.
 
 **The agent environment is filtered.** Each agent receives a non-secret baseline —
 `PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LANGUAGE`/`LC_ALL`/`LC_CTYPE`,
