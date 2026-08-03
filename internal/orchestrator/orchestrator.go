@@ -614,14 +614,31 @@ func (o *Orchestrator) squashRun(ctx context.Context, sum *model.RunSummary, run
 	if err != nil {
 		return err
 	}
-	// The per-fix commits this replaced are gone, so point the last round at what now
-	// holds its work -- otherwise the summary cites a SHA no longer in the history.
+	// The per-fix commits this replaced are gone, so point the round that produced the
+	// run's last commit at what now holds every round's work -- otherwise the summary
+	// cites SHAs no longer in the history. CommitSHA has to be cleared alongside
+	// Commits on every other round: the scoreboard falls back to CommitSHA when
+	// Commits is empty (logstore/runtable.go), so a leftover per-fix SHA there would
+	// be counted as a commit of its own and printed under "Committed:", both of them
+	// naming an object git can no longer resolve. Re-pointing the LAST round instead
+	// would hand the squash to a clean round that committed nothing.
+	last := -1
 	for i := range sum.Rounds {
+		if len(sum.Rounds[i].Commits) > 0 || sum.Rounds[i].CommitSHA != "" {
+			last = i
+		}
 		sum.Rounds[i].Commits = nil
+		sum.Rounds[i].CommitSHA = ""
 	}
-	if n := len(sum.Rounds); n > 0 {
-		sum.Rounds[n-1].CommitSHA = sha
-		sum.Rounds[n-1].Commits = []string{sha}
+	// head != runBase with no round claiming a commit should not happen -- every
+	// commit path records one -- but the squash exists either way, and dropping it
+	// from the summary entirely would report a run that committed as one that did not.
+	if last < 0 {
+		last = len(sum.Rounds) - 1
+	}
+	if last >= 0 {
+		sum.Rounds[last].CommitSHA = sha
+		sum.Rounds[last].Commits = []string{sha}
 	}
 	if len(salvaged) > 0 {
 		o.logf("run: squashed %d round(s) of fixes, including partial salvage work from %d round(s), into %s", agg.Round, len(salvaged), shortSHA(sha))

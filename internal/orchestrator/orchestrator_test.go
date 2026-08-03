@@ -5041,12 +5041,40 @@ func TestCommitPolicyPerRunSquashesTheWholeRun(t *testing.T) {
 	if status := gitRun(t, f.repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		t.Errorf("tree left dirty by the squash: %q", status)
 	}
-	// The last round's SHA is re-pointed at the squash; citing a commit the squash
-	// removed would make the summary reference history that no longer exists.
+	// Exactly one round cites the squash and no round still cites a per-fix commit the
+	// squash removed: every SHA the summary names must be reachable from HEAD, or the
+	// scoreboard's commits row -- which falls back to CommitSHA when Commits is empty,
+	// so it counts these too -- reports one commit per round that committed, each
+	// naming an object `git log` cannot show.
 	head := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
-	last := sum.Rounds[len(sum.Rounds)-1]
-	if last.CommitSHA != "" && last.CommitSHA != head {
-		t.Errorf("last round CommitSHA = %q, want the squash %q or empty", last.CommitSHA, head)
+	reachable := map[string]bool{}
+	for _, sha := range strings.Fields(gitRun(t, f.repo, "rev-list", "HEAD")) {
+		reachable[sha] = true
+	}
+	var cited []int
+	for i, r := range sum.Rounds {
+		for _, sha := range r.Commits {
+			if !reachable[sha] {
+				t.Errorf("round %d lists commit %q, which the squash removed from history", r.Round, sha)
+			}
+		}
+		if r.CommitSHA != "" && !reachable[r.CommitSHA] {
+			t.Errorf("round %d cites CommitSHA %q, which the squash removed from history", r.Round, r.CommitSHA)
+		}
+		if r.CommitSHA != "" {
+			cited = append(cited, i)
+			if r.CommitSHA != head {
+				t.Errorf("round %d CommitSHA = %q, want the squash %q", r.Round, r.CommitSHA, head)
+			}
+			// The squash belongs to a round whose work is in it, not to the trailing
+			// clean round that committed nothing.
+			if r.Fixed == 0 {
+				t.Errorf("round %d committed nothing yet names the squash %q", r.Round, r.CommitSHA)
+			}
+		}
+	}
+	if len(cited) != 1 {
+		t.Errorf("rounds naming a commit = %v, want exactly one (the squash)", cited)
 	}
 	if _, err := os.Stat(filepath.Join(f.repo, ".git", "HEAD")); err != nil {
 		t.Errorf("repository damaged by the squash: %v", err)
