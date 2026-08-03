@@ -1913,14 +1913,11 @@ func (c *Collector) pathInTree(ctx context.Context, tree, p string) (bool, error
 // chooses. Refusing is the only thing that covers both.
 func unsafeConfigKey(key string) bool {
 	switch {
-	case filterConfigKey(key):
+	case attributeSelectableKey(key):
 		return true
 	case key == "core.sshcommand" || key == "core.askpass":
 		return true
 	case key == "diff.external":
-		return true
-	case strings.HasPrefix(key, "diff.") &&
-		(strings.HasSuffix(key, ".command") || strings.HasSuffix(key, ".textconv")):
 		return true
 	case strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"):
 		return true
@@ -2002,16 +1999,33 @@ func tuningHTTPConfigKey(key string) bool {
 	return false
 }
 
-// filterConfigKey reports whether key defines a per-name content filter program
-// (filter.<name>.clean on stage-in, .smudge on checkout, .process for a
-// long-running filter). What SELECTS such a filter is a `filter=<name>` entry in
-// a .gitattributes file, which is repository content -- so the definition is
-// execution-capable no matter which scope it lives in. unsafeConfigKey refuses it
-// when the REPOSITORY defines one; ExternalFilterConfig reports it when the
-// operator does and the repository can still activate it.
-func filterConfigKey(key string) bool {
-	return strings.HasPrefix(key, "filter.") &&
-		(strings.HasSuffix(key, ".clean") || strings.HasSuffix(key, ".smudge") || strings.HasSuffix(key, ".process"))
+// attributeSelectableKey reports whether key defines a program that REPOSITORY
+// CONTENT can select by name, whichever config scope the definition lives in:
+//
+//   - a per-name content filter -- filter.<name>.clean on stage-in, .smudge on
+//     checkout, .process for a long-running filter -- selected by a
+//     `filter=<name>` entry in .gitattributes;
+//   - a per-name diff driver -- diff.<name>.command (an external diff program)
+//     and diff.<name>.textconv (which also runs during `git log -p`, `git grep`
+//     and `git blame`) -- selected by a `diff=<name>` entry in .gitattributes.
+//
+// .gitattributes IS repository content, so for both classes the definition is
+// execution-capable no matter who wrote it, and no -c pin can disable a name the
+// repository chooses. unsafeConfigKey refuses such a definition when the
+// REPOSITORY supplies it; ExternalActivatableConfig reports it when the operator
+// does and the repository can still activate it. The two share this predicate so
+// they cannot drift: a key class one of them learns about is a key class the
+// other must not miss.
+func attributeSelectableKey(key string) bool {
+	switch {
+	case strings.HasPrefix(key, "filter.") &&
+		(strings.HasSuffix(key, ".clean") || strings.HasSuffix(key, ".smudge") || strings.HasSuffix(key, ".process")):
+		return true
+	case strings.HasPrefix(key, "diff.") &&
+		(strings.HasSuffix(key, ".command") || strings.HasSuffix(key, ".textconv")):
+		return true
+	}
+	return false
 }
 
 // UnsafeConfig returns the sorted, de-duplicated repo-supplied config keys
@@ -2056,20 +2070,24 @@ func (c *Collector) UnsafeConfig(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
-// ExternalFilterConfig returns the sorted, de-duplicated content-filter keys that
-// are defined OUTSIDE the repository's own scopes -- in the operator's global or
-// system git config (or the command scope).
+// ExternalActivatableConfig returns the sorted, de-duplicated content-filter and
+// diff-driver keys that are defined OUTSIDE the repository's own scopes -- in the
+// operator's global or system git config (or the command scope).
 //
 // UnsafeConfig deliberately drops those scopes, because a setting the operator
 // configured is not the target's doing and refusing on it would refuse every
-// target on the host. But for a content filter that reasoning only covers half
-// the mechanism: a definition does nothing until a `filter=<name>` attribute
-// SELECTS it, and .gitattributes is repository content. So a filter the operator
-// installed globally -- `git lfs install` writes filter.lfs.clean/smudge/process
-// into ~/.gitconfig -- is still a program a hostile checkout can make git run over
-// its own file content, with fixpoint's inherited environment: `gh pr checkout`
+// target on the host. But for the attribute-selectable classes that reasoning only
+// covers half the mechanism: a definition does nothing until a `filter=<name>` or
+// `diff=<name>` attribute SELECTS it, and .gitattributes is repository content. So
+// a program the operator installed globally -- `git lfs install` writes
+// filter.lfs.clean/smudge/process into ~/.gitconfig, `nbdime config-git --enable
+// --global` writes a diff.<name>.command, a pdftotext/exiftool textconv driver is
+// a common habit, and Git for Windows ships diff.astextplain.textconv in its
+// system config -- is still a program a hostile checkout can make git run over its
+// own file content, with fixpoint's inherited environment: `gh pr checkout`
 // applies the PR's .gitattributes (and its .lfsconfig, which redirects where a
-// git-lfs filter talks), and every later git add/status/diff re-runs the filter.
+// git-lfs filter talks), and every later git add/status/diff -- plus the reviewer
+// and coder CLIs' own diff/log/blame inside the checkout -- re-runs it.
 //
 // This cannot become a refusal the way a repo-supplied definition does. The
 // definition belongs to the operator, the selecting attributes arrive WITH the
@@ -2077,7 +2095,7 @@ func (c *Collector) UnsafeConfig(ctx context.Context) ([]string, error) {
 // so there is nothing to cross-check against), and refusing would break every
 // host with git-lfs installed. Callers report it instead, so the operator learns
 // which of their own programs the checkout is able to activate.
-func (c *Collector) ExternalFilterConfig(ctx context.Context) ([]string, error) {
+func (c *Collector) ExternalActivatableConfig(ctx context.Context) ([]string, error) {
 	entries, err := c.scopedConfigKeys(ctx)
 	if err != nil {
 		return nil, err
@@ -2088,7 +2106,7 @@ func (c *Collector) ExternalFilterConfig(ctx context.Context) ([]string, error) 
 		if e.scope == "local" || e.scope == "worktree" {
 			continue // the repository's own; UnsafeConfig judges those
 		}
-		if !filterConfigKey(e.key) || seen[e.key] {
+		if !attributeSelectableKey(e.key) || seen[e.key] {
 			continue
 		}
 		seen[e.key] = true
@@ -2130,8 +2148,9 @@ type configEntry struct{ scope, key string }
 // scopedConfigKeys lists every config key a git command run inside the target
 // would honor, paired with its scope, in file order and with duplicates kept (a
 // key may be set more than once). Callers pick the scopes they care about:
-// repoScopedConfigKeys keeps what the repository supplies, ExternalFilterConfig
-// keeps what the operator supplies and the repository can activate.
+// repoScopedConfigKeys keeps what the repository supplies,
+// ExternalActivatableConfig keeps what the operator supplies and the repository
+// can activate.
 func (c *Collector) scopedConfigKeys(ctx context.Context) ([]configEntry, error) {
 	// -z with --show-scope: NUL-separated fields alternating "scope" then
 	// "key\nvalue" (a valueless key is just "key"). A real repo always has at

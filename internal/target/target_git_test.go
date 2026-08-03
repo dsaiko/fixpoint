@@ -2073,8 +2073,8 @@ func TestUnsafeConfig(t *testing.T) {
 // REPOSITORY can run: .gitattributes selects a filter by name, and .gitattributes
 // is repository content (on the pr path it arrives with `gh pr checkout`, after
 // the preflight). UnsafeConfig cannot report it without refusing every target on
-// a git-lfs host, so ExternalFilterConfig reports it separately for a warning.
-func TestExternalFilterConfig(t *testing.T) {
+// a git-lfs host, so ExternalActivatableConfig reports it separately for a warning.
+func TestExternalActivatableConfig(t *testing.T) {
 	t.Run("reports globally configured filters", func(t *testing.T) {
 		repo := gitRepo(t)
 		global := filepath.Join(t.TempDir(), "gitconfig")
@@ -2088,12 +2088,12 @@ func TestExternalFilterConfig(t *testing.T) {
 		// Pin the system scope too, so a filter installed host-wide on the machine
 		// running the tests cannot make the exact-match assertion below flaky.
 		t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
-		keys, err := New(config.Target{Path: repo}).ExternalFilterConfig(t.Context())
+		keys, err := New(config.Target{Path: repo}).ExternalActivatableConfig(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got, want := strings.Join(keys, ","), "filter.lfs.clean,filter.lfs.process,filter.lfs.smudge"; got != want {
-			t.Errorf("ExternalFilterConfig() = %v, want exactly %q", keys, want)
+			t.Errorf("ExternalActivatableConfig() = %v, want exactly %q", keys, want)
 		}
 	})
 
@@ -2109,12 +2109,12 @@ func TestExternalFilterConfig(t *testing.T) {
 		t.Setenv("GIT_CONFIG_GLOBAL", global)
 		t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 		git(t, repo, "config", "filter.evil.clean", "sh -c 'id'")
-		keys, err := New(config.Target{Path: repo}).ExternalFilterConfig(t.Context())
+		keys, err := New(config.Target{Path: repo}).ExternalActivatableConfig(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(keys) != 0 {
-			t.Fatalf("ExternalFilterConfig() = %v, want none: a repo-scoped filter is UnsafeConfig's to refuse", keys)
+			t.Fatalf("ExternalActivatableConfig() = %v, want none: a repo-scoped filter is UnsafeConfig's to refuse", keys)
 		}
 	})
 }
@@ -2146,8 +2146,8 @@ func TestConfigProbesOutsideARepository(t *testing.T) {
 	if keys, err := c.UnsafeConfig(t.Context()); err != nil || len(keys) != 0 {
 		t.Errorf("UnsafeConfig() = %v, %v outside a repository, want no keys and no error", keys, err)
 	}
-	if keys, err := c.ExternalFilterConfig(t.Context()); err != nil || len(keys) != 0 {
-		t.Errorf("ExternalFilterConfig() = %v, %v outside a repository, want no keys and no error", keys, err)
+	if keys, err := c.ExternalActivatableConfig(t.Context()); err != nil || len(keys) != 0 {
+		t.Errorf("ExternalActivatableConfig() = %v, %v outside a repository, want no keys and no error", keys, err)
 	}
 }
 

@@ -1488,7 +1488,7 @@ func TestRunReviewOnlyAllowsNonGitDirectory(t *testing.T) {
 // with its working directory inside the target, and a review-only directory run
 // is the shipped review bundle's own shape -- so an UNTRUSTED one over a plain
 // folder is the target shape that widening newly probes. Nothing but the
-// IsGitRepo short-circuit holds UnsafeConfig/ExternalFilterConfig back there, and
+// IsGitRepo short-circuit holds UnsafeConfig/ExternalActivatableConfig back there, and
 // no trust is asserted to soften what they report: a probe that errored, or a
 // listing that read the operator's own global config as the target's, would kill
 // the run before its reviewer ever launched -- and the operator's filters, which
