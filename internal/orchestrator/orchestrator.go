@@ -2451,6 +2451,27 @@ func (o *Orchestrator) assignments(round int) []model.Assignment {
 // ambiguous (thinking-heavy coders can run 20+ minutes without output).
 const heartbeatDefault = 5 * time.Minute
 
+// heartbeat calls log on every tick until done closes. The inner re-check of
+// done is load-bearing: when a tick is already queued as the agent finishes,
+// both channels are ready and select picks between them at random, so the tick
+// branch can win and announce "still running" for an agent that has already
+// returned -- while the caller waits on the join for that stale line.
+func heartbeat(done <-chan struct{}, ticks <-chan time.Time, log func()) {
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticks:
+			select {
+			case <-done:
+				return
+			default:
+			}
+			log()
+		}
+	}
+}
+
 // runAgent persists the prompt (before invoking, so a killed or hung agent's
 // input is still inspectable), invokes the agent with a heartbeat, and
 // returns the result. label prefixes the heartbeat lines, e.g.
@@ -2477,14 +2498,9 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 		defer hb.Done()
 		t := time.NewTicker(every)
 		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				o.logf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
-			}
-		}
+		heartbeat(done, t.C, func() {
+			o.logf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
+		})
 	}()
 	res := agent.Run(ctx, o.cfg.Agents[agentName], text, o.cfg.Target.Path)
 	close(done)

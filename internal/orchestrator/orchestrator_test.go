@@ -5812,6 +5812,26 @@ func gatedScript(t *testing.T, gate string) string {
 	return script
 }
 
+// A tick queued at the moment the agent finishes leaves both of the heartbeat's
+// channels ready, and select picks between ready cases at random -- so without
+// the inner done re-check the tick branch wins about half the time and prints
+// "still running" for an agent that has already returned. One iteration cannot
+// tell the two apart; the loop makes a missing re-check a near-certain failure.
+func TestHeartbeatSkipsTickAfterDone(t *testing.T) {
+	for i := range 200 {
+		done := make(chan struct{})
+		close(done)
+		ticks := make(chan time.Time, 1)
+		ticks <- time.Now()
+
+		logged := 0
+		heartbeat(done, ticks, func() { logged++ })
+		if logged != 0 {
+			t.Fatalf("iteration %d: logged %d progress lines after done closed, want 0", i, logged)
+		}
+	}
+}
+
 // A heartbeat tick already inside logf when the agent exits must finish BEFORE
 // runAgent returns: otherwise the "still running" line lands after the caller
 // has moved on, interleaved with whatever it logs next -- or with the
