@@ -106,7 +106,12 @@ func TestRunTableCreditsCorroborationToBothReviewersButCountsItOnce(t *testing.T
 	rows := map[string]string{}
 	for _, line := range strings.Split(got, "\n") {
 		if f := strings.Fields(line); len(f) > 1 {
-			rows[f[0]] = strings.Join(f[1:], " ")
+			// First occurrence wins: the scoreboard has three tables (REVIEWER, LENS,
+			// SEVERITY) and each ends in a row labeled TOTAL, so a last-wins map would
+			// silently move these assertions onto the severity table.
+			if _, dup := rows[f[0]]; !dup {
+				rows[f[0]] = strings.Join(f[1:], " ")
+			}
 		}
 	}
 	// codex reported i1 (shared) and i2; claude reported i1 and i3.
@@ -447,7 +452,12 @@ func TestRunTableReportsReportedUsageAndOmitsUnreportedCost(t *testing.T) {
 	rows := map[string]string{}
 	for _, line := range strings.Split(got, "\n") {
 		if f := strings.Fields(line); len(f) > 1 {
-			rows[f[0]] = strings.Join(f[1:], " ")
+			// First occurrence wins: the scoreboard has three tables (REVIEWER, LENS,
+			// SEVERITY) and each ends in a row labeled TOTAL, so a last-wins map would
+			// silently move these assertions onto the severity table.
+			if _, dup := rows[f[0]]; !dup {
+				rows[f[0]] = strings.Join(f[1:], " ")
+			}
 		}
 	}
 	// codex reported tokens but no price: a "-" beats a fabricated $0.00, which
@@ -583,5 +593,94 @@ func TestRunTableReportsCacheRatePerAgent(t *testing.T) {
 		if strings.Contains(line, "silent") && !strings.Contains(line, "-") {
 			t.Errorf("an agent reporting no usage must show %q, got line %q", "-", line)
 		}
+	}
+}
+
+// The scoreboard has to answer "is another round worth paying for?", and volume
+// cannot: a reviewer asked for coverage or style always has more to say, so "35
+// issues again" reads identically whether the run found a data race or restated its
+// own documentation. Severity can answer it -- and specifically the severity of what
+// the LAST round found, which is why that column exists.
+func TestRunTableBreaksIssuesDownBySeverity(t *testing.T) {
+	sum := twoAgentRun()
+	r := &sum.Rounds[0]
+	r.Issues[0].Severity = "high"   // i1, fixed
+	r.Issues[1].Severity = "low"    // i2, rejected
+	r.Issues[2].Severity = "medium" // i3, deferred
+	// A second round that reported only the medium one: it is the run's last word,
+	// and the point of the column is that it differs from the run-wide counts.
+	sum.Rounds = append(sum.Rounds, model.RoundRecord{
+		Round:       2,
+		Assignments: []model.Assignment{{Agent: "claude", Lens: "review-bugs"}},
+		Issues:      []model.Issue{{ID: "i3", Severity: "medium", Status: model.VerdictDeferred}},
+	})
+
+	got := RenderRunTable(sum)
+	rows := map[string]string{}
+	for _, line := range strings.Split(got, "\n") {
+		if f := strings.Fields(line); len(f) > 1 {
+			if _, dup := rows[f[0]]; !dup {
+				rows[f[0]] = strings.Join(f[1:], " ")
+			}
+		}
+	}
+	// severity | issues fixed rejected deferred open | last round
+	for _, tc := range []struct{ sev, want string }{
+		{"high", "1 1 0 0 0 0"},
+		{"medium", "1 0 0 1 0 1"},
+		{"low", "1 0 1 0 0 0"},
+	} {
+		if rows[tc.sev] != tc.want {
+			t.Errorf("%s row = %q, want %q", tc.sev, rows[tc.sev], tc.want)
+		}
+	}
+	// Worst first: the row that decides the question must not be buried.
+	if hi, lo := strings.Index(got, "\n high"), strings.Index(got, "\n low"); hi < 0 || lo < hi {
+		t.Errorf("severity rows are not ordered worst-first:\n%s", got)
+	}
+	if !strings.Contains(got, "last round reported 1 medium") {
+		t.Errorf("the table must say what the LAST round found, not just the run total:\n%s", got)
+	}
+	// Deferred and open are work nobody decided -- the summary must not let them
+	// pass as finished.
+	if !strings.Contains(got, "left unresolved: 1 medium") {
+		t.Errorf("unresolved issues are missing from the severity block:\n%s", got)
+	}
+}
+
+// "Nothing" is the most informative outcome a final round has, and an absent line
+// is not the same statement -- it reads as a summary that forgot to say.
+func TestRunTableSaysSoWhenTheLastRoundFoundNothing(t *testing.T) {
+	sum := twoAgentRun()
+	sum.Rounds[0].Issues[0].Severity = "high"
+	sum.Rounds[0].Issues[1].Severity = "high"
+	sum.Rounds[0].Issues[2].Severity = "high"
+	sum.Rounds = append(sum.Rounds, model.RoundRecord{
+		Round:       2,
+		Final:       true,
+		Assignments: []model.Assignment{{Agent: "claude", Lens: "review-tests"}},
+	})
+	got := RenderRunTable(sum)
+	if !strings.Contains(got, "last round (closing) reported nothing") {
+		t.Errorf("a clean final round must say so in words:\n%s", got)
+	}
+}
+
+// A round that never reviewed -- abandoned before its panel ran -- is not the run's
+// last word on the code. Letting it overwrite the last word with an empty one would
+// report "the last round found nothing" about a round that never looked.
+func TestRunTableLastRoundIgnoresARoundThatNeverReviewed(t *testing.T) {
+	sum := twoAgentRun()
+	sum.Rounds[0].Assignments = []model.Assignment{{Agent: "codex", Lens: "review-bugs"}}
+	sum.Rounds[0].Issues[0].Severity = "high"
+	sum.Rounds[0].Issues[1].Severity = "high"
+	sum.Rounds[0].Issues[2].Severity = "high"
+	sum.Rounds = append(sum.Rounds, model.RoundRecord{Round: 2}) // no assignments: no review ran
+	got := RenderRunTable(sum)
+	if strings.Contains(got, "reported nothing") {
+		t.Errorf("a round that never reviewed was read as a clean last round:\n%s", got)
+	}
+	if !strings.Contains(got, "last round reported 3 high") {
+		t.Errorf("the last REVIEWING round's findings are missing:\n%s", got)
 	}
 }

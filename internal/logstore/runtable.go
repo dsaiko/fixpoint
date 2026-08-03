@@ -61,6 +61,12 @@ func RenderRunTable(sum *model.RunSummary) string {
 		b.WriteString("\n")
 		writeContributorTable(&b, "LENS", st.lensOrder, st.lenses, st.finalVerdict, nil)
 	}
+	// Last of the three, because it is the one to read if you read only one: whether
+	// this run found anything serious, and whether the last round still was.
+	if len(st.finalSeverity) > 0 {
+		b.WriteString("\n")
+		writeSeverityTable(&b, st)
+	}
 
 	b.WriteString("\n")
 	for _, kv := range runOutcome(sum, st) {
@@ -90,12 +96,20 @@ type runStats struct {
 	// finalVerdict is each issue's LAST verdict across the run: an issue deferred
 	// three times and then fixed counts once, as fixed.
 	finalVerdict map[string]string
-	corroborated int
-	finalRounds  int
-	coderFixed   int
-	coderReject  int
-	coderDur     time.Duration
-	coderUsage   model.Usage
+	// finalSeverity is each issue's LAST severity, tracked the same way and for a
+	// sharper reason: a deferral PROMOTES an issue one tier, so an issue's severity
+	// is only meaningful as of its most recent report.
+	finalSeverity map[string]string
+	// lastRoundIssues are the issue ids the most recent REVIEWING round reported.
+	// It is the run's convergence signal -- see writeSeverityTable.
+	lastRoundIssues map[string]bool
+	lastRoundFinal  bool
+	corroborated    int
+	finalRounds     int
+	coderFixed      int
+	coderReject     int
+	coderDur        time.Duration
+	coderUsage      model.Usage
 	// total is every invocation's reported usage, reviewers and coder alike. It
 	// is summed independently rather than added up from the rows, so the run
 	// total stays right even for a step no row claims.
@@ -108,9 +122,10 @@ type runStats struct {
 
 func computeRunStats(sum *model.RunSummary) *runStats {
 	st := &runStats{
-		agents:       map[string]*contributor{},
-		lenses:       map[string]*contributor{},
-		finalVerdict: map[string]string{},
+		agents:        map[string]*contributor{},
+		lenses:        map[string]*contributor{},
+		finalVerdict:  map[string]string{},
+		finalSeverity: map[string]string{},
 	}
 	get := func(m map[string]*contributor, order *[]string, name string) *contributor {
 		if name == "" {
@@ -131,6 +146,18 @@ func computeRunStats(sum *model.RunSummary) *runStats {
 		st.absorbAttribution(r, get)
 		st.absorbCosts(r, get)
 		st.absorbVerify(r)
+		// A round that reviewed nothing (a fix-only continuation, a round abandoned
+		// before its panel ran) is not the run's last word on the code, so it must not
+		// overwrite the last word with an empty one. A round that reviewed and found
+		// NOTHING is the opposite -- that is the most informative outcome there is.
+		if len(r.Assignments) == 0 {
+			continue
+		}
+		st.lastRoundIssues = map[string]bool{}
+		st.lastRoundFinal = r.Final
+		for _, it := range r.Issues {
+			st.lastRoundIssues[it.ID] = true
+		}
 	}
 	st.corroborated = len(corroborated)
 	sort.Strings(st.agentOrder)
@@ -149,6 +176,7 @@ func (st *runStats) absorbIssues(r model.RoundRecord, corroborated map[string]bo
 		if v := it.StatusOrDefault(); v != "" {
 			st.finalVerdict[it.ID] = v
 		}
+		st.finalSeverity[it.ID] = it.Severity
 		if len(it.Agents()) > 1 {
 			corroborated[it.ID] = true
 		}
@@ -286,6 +314,147 @@ func writeContributorTable(b *strings.Builder, heading string, order []string, m
 	if st != nil && st.corroborated > 0 {
 		fmt.Fprintf(b, " %s\n", fmt.Sprintf("rows sum above the total: %d issue(s) were reported by more than one reviewer", st.corroborated))
 	}
+}
+
+// writeSeverityTable answers the question the operator asks after every run:
+// is another round worth paying for?
+//
+// The contributor tables cannot answer it. They report volume per agent and per
+// lens, and volume never approaches zero on a real project -- a reviewer asked for
+// coverage gaps or style will always have more to say, so "35 issues again" reads
+// the same whether the run found a data race or restated its own documentation. What
+// decides the question is SEVERITY, and specifically the severity of what the LAST
+// round found: a final round that reported nothing above medium means the panel is
+// no longer finding serious defects in this tree, which is the closest thing to
+// convergence a review loop offers.
+//
+// Severity is each issue's LAST reported one, matching how the verdict is counted
+// (and deferral promotes a tier, so an issue's first severity is not its verdict's).
+// Unknown severities are shown under their own name rather than folded into a known
+// tier: a reviewer that invents one has said something, and silently filing it as
+// "low" would be the summary lying about what was reported.
+func writeSeverityTable(b *strings.Builder, st *runStats) {
+	if len(st.finalSeverity) == 0 {
+		return
+	}
+	type bucket struct{ issues, fixed, rejected, deferred, open, last int }
+	buckets := map[string]*bucket{}
+	var order []string
+	at := func(sev string) *bucket {
+		if sev == "" {
+			sev = "(unset)"
+		}
+		bk, ok := buckets[sev]
+		if !ok {
+			bk = &bucket{}
+			buckets[sev] = bk
+			order = append(order, sev)
+		}
+		return bk
+	}
+	for id, sev := range st.finalSeverity {
+		bk := at(sev)
+		bk.issues++
+		switch st.finalVerdict[id] {
+		case model.VerdictFixed:
+			bk.fixed++
+		case model.VerdictRejected:
+			bk.rejected++
+		case model.VerdictDeferred:
+			bk.deferred++
+		default:
+			bk.open++
+		}
+		if st.lastRoundIssues[id] {
+			bk.last++
+		}
+	}
+	// Worst first, so the row that decides the question is the row at the top.
+	sort.SliceStable(order, func(i, j int) bool {
+		ri, rj := model.SeverityRank(order[i]), model.SeverityRank(order[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return order[i] < order[j]
+	})
+
+	rows := [][]string{{"SEVERITY", "issues", "fixed", "rejected", "deferred", "open", "last round"}}
+	var tot bucket
+	for _, sev := range order {
+		bk := buckets[sev]
+		tot.issues += bk.issues
+		tot.fixed += bk.fixed
+		tot.rejected += bk.rejected
+		tot.deferred += bk.deferred
+		tot.open += bk.open
+		tot.last += bk.last
+		// Escaped: an unknown severity is a string a reviewer wrote, and a reviewer's
+		// output can carry ESC/CSI -- the same reason the agent and lens cells are.
+		rows = append(rows, []string{
+			agent.EscapeTerminal(sev), itoa(bk.issues), itoa(bk.fixed), itoa(bk.rejected),
+			itoa(bk.deferred), itoa(bk.open), itoa(bk.last),
+		})
+	}
+	rows = append(rows, []string{
+		"TOTAL", itoa(tot.issues), itoa(tot.fixed), itoa(tot.rejected),
+		itoa(tot.deferred), itoa(tot.open), itoa(tot.last),
+	})
+	writeAligned(b, rows, true)
+
+	// The verdict line. It states what the last round found and nothing more --
+	// whether to run again also depends on what the operator is willing to spend, and
+	// a summary that said "no further rounds needed" would be making that call.
+	last := map[string]int{}
+	for id := range st.lastRoundIssues {
+		last[st.finalSeverity[id]]++
+	}
+	which := "last round"
+	if st.lastRoundFinal {
+		which = "last round (closing)"
+	}
+	fmt.Fprintf(b, " %s reported %s\n", which, severityMix(last))
+	if unresolved := tot.open + tot.deferred; unresolved > 0 {
+		left := map[string]int{}
+		for id, sev := range st.finalSeverity {
+			switch st.finalVerdict[id] {
+			case model.VerdictFixed, model.VerdictRejected:
+			default:
+				left[sev]++
+			}
+		}
+		fmt.Fprintf(b, " left unresolved: %s -- neither fixed nor rejected; they are listed in the summary\n", severityMix(left))
+	}
+}
+
+// severityMix renders a severity histogram worst-first ("1 high, 2 medium"), or
+// "nothing" for an empty one -- which is the reading that matters most, so it is
+// said in words rather than left as an absent line.
+func severityMix(counts map[string]int) string {
+	sevs := make([]string, 0, len(counts))
+	for s, n := range counts {
+		if n > 0 {
+			sevs = append(sevs, s)
+		}
+	}
+	if len(sevs) == 0 {
+		return "nothing"
+	}
+	sort.SliceStable(sevs, func(i, j int) bool {
+		ri, rj := model.SeverityRank(sevs[i]), model.SeverityRank(sevs[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return sevs[i] < sevs[j]
+	})
+	parts := make([]string, 0, len(sevs))
+	for _, s := range sevs {
+		name := s
+		if name == "" {
+			name = "(unset)"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", counts[s], agent.EscapeTerminal(name)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // writeAligned prints rows in aligned columns: the first column left-justified

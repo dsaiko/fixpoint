@@ -249,17 +249,43 @@ Per-lens modifiers:
   either:
   pass 2 sees the tests pass 1 wrote, so it reports what's genuinely still missing
   instead of working from a list computed before the code changed — which is also
-  what makes the phase stop on its own. `loop.max_final_passes` (default 2) bounds
+  what makes the phase stop on its own. `loop.max_final_passes` (default 1) bounds
   it as a last resort, and running out is always said loudly rather than dropped
   silently — either issues are still open, or the last pass fixed everything it
   reported and there was no pass left to review those fixes.
 
-  Two, and its own knob rather than `max_iterations`, because this phase is where a
-  measured run spent 51 minutes and still had pass 2 producing four *new* issues:
-  each pass reviews the tests the previous pass just wrote. Every repeated issue id
-  in that run came from here — a real bug fixed in the loop, re-opened as "the test
-  for that fix is flaky", then as "the test for the test" — while the loop's own
-  rounds did not repeat themselves at all.
+  Its own knob rather than `max_iterations`, because this phase is where a measured
+  run spent 51 minutes and still had pass 2 producing four *new* issues: each pass
+  reviews the tests the previous pass just wrote. Every repeated issue id in that
+  run came from here — a real bug fixed in the loop, re-opened as "the test for that
+  fix is flaky", then as "the test for the test" — while the loop's own rounds did
+  not repeat themselves at all.
+
+  **The default is 1**, lowered from 2 on a second measurement. Pass 2's premise was
+  "confirm the fix did not open something new"; what it actually did, over a
+  seven-round run, was file 4 critiques of the tests pass 1 had just written, 2
+  restatements of what pass 1 already reported, and 1 real regression — which pass
+  1's own fix had introduced. A pass whose main yield is repairing the previous pass
+  is not converging on the code, and what reliably catches a broken fix is the
+  verify gate, which runs per fix. Raise it to 2 when your closing lenses are
+  list-shaped (a fixed set of gaps to work through) rather than opinion-shaped, and
+  pair that with `loop.final_skip_run_edits` below.
+
+  **`loop.final_skip_run_edits`** keeps the closing round from reviewing its own
+  output. It is a glob list, matched against the paths *this run's own commits*
+  changed; a match is hidden from the closing round's material only. Empty by
+  default; the shipped Go configs set `["**/*_test.go"]`.
+
+  It is not a general "don't review your own work" rule — inside the loop that
+  review is productive, and it is how a fix's own bug gets caught. It targets one
+  feedback loop that has no fixed point: `review-tests` asks for a test, the coder
+  writes one, and the next look reviews *that test* ("the assertion claims more than
+  it proves", "the timing is wall-clock noise", "only one branch is exercised"). In
+  the run above, 7 of the closing phase's 14 findings were exactly that, every one
+  against a test file the run had committed minutes earlier. Hiding *everything* the
+  run touched was measured and rejected: the same run changed 27 of 57 source files,
+  so the blunt rule blinds the closing round to half the tree — including the newest
+  code, which is the code most worth a coverage review.
 
   **Advisory final lenses run exactly once, after that** — they're reports, and a
   report should describe the code that actually shipped, which isn't known until the
@@ -328,6 +354,23 @@ things depending on how it was closed. A **rejected** issue stays rejected and i
 not handed back — re-submitting a decided question would spend a slot every round.
 A **fixed** issue **reopens**: reviewers still seeing it is evidence the fix did not
 work, and treating it as closed would let a failed fix end the run as converged.
+
+### Rejection is also a value judgment
+
+The shipped `fix` prompt authorizes the coder to reject a finding that is *correct
+but not worth making*, not only one that is wrong. Because rejection is durable,
+this is the loop's one damper: a fix costs a commit, a verify run, and whatever the
+next round writes about the code it added, so a change that buys less than that is
+a net loss. The prompt names the recurring shapes — a finding that restates a
+decision the code already documents, a request for a test of a test, a speculative
+defect with no input that triggers it, a refactor riskier than the edge case it
+removes.
+
+Two limits keep it from becoming a way out of work, and both are in the prompt: a
+`high` or `critical` finding may be rejected only for being *wrong*, never for
+being expensive, and every rejection reason is recorded in the run summary for a
+human to read. Rejecting on value is a judgment the operator can audit afterwards,
+which is the only reason it is safe to delegate.
 
 ## One fix, one commit
 
@@ -762,7 +805,8 @@ The main sections of a task config:
   it.
 - **`agents`** — the command templates described above.
 - **`loop`** — `max_iterations`, `max_final_passes` (how many times the closing
-  round may repeat, default 2), `commit_policy` (see
+  round may repeat, default 1), `final_skip_run_edits` (globs the closing round is
+  not shown when this run wrote the file), `commit_policy` (see
   [One fix, one commit](#one-fix-one-commit)), `max_findings_per_round` (caps how
   many **issues** a round hands over, `0` = unlimited and the default; worst
   severity goes first and the overflow is deferred to later rounds, but every
@@ -866,6 +910,15 @@ landed.
  review-tests                26     12         0        14         0       0  24m37s
  ...
 
+ SEVERITY  issues  fixed  rejected  deferred  open  last round
+ high           4      4         0         0     0           0
+ medium        19     16         2         0     1           2
+ low           10      8         3         0     1           3
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ TOTAL         33     28         5         0     2           5
+ last round reported 2 medium, 3 low
+ left unresolved: 1 medium, 1 low -- neither fixed nor rejected; they are listed in the summary
+
  coder      claude-coder · 28 fixed · 5 rejected · 1h15m · 38.7M tok · 100% cached
  commits    39 · f40acbc26fbd a7361e82ecdc d8f4b9d429ea ...  (per_fix)
  exit       max-iterations (exit 2)
@@ -877,6 +930,26 @@ which lens earned their tokens.** A panel is only worth its cost if the answer
 varies between its members, and the table above is what a weak member looks like.
 The `review-tests` row — the most reports, the most deferred, the least converted
 into fixes — is why that lens is now `final: true`.
+
+**The SEVERITY block is the one that answers "run it again?"** Volume cannot: a
+reviewer asked for coverage or style always has more to say, so "33 issues again"
+reads the same whether the run found a data race or restated its own
+documentation. Severity separates those, and the `last round` column is the part
+to read — it counts only what the most recent *reviewing* round reported, so a
+final round with nothing above medium means the panel has stopped finding serious
+defects in this tree. That is the closest thing to convergence a review loop
+offers, and it is stated in words underneath (including "reported nothing", which
+is the most informative outcome there is and so is never left as an absent line).
+
+Severity is each issue's **last** reported one, matching how its verdict is
+counted — deferral promotes an issue a tier, so its first severity is not the one
+its verdict belongs to. A severity outside the vocabulary gets its own row rather
+than being folded into a known tier: a reviewer that invents one has said
+something, and filing it silently as `low` would be the summary lying about what
+was reported. Note that severity is **per-agent uncalibrated** — in one measured
+panel claude's 23 `high` findings were rejected 0% of the time and another
+reviewer's 4 were rejected 50% — so read the row alongside the REVIEWER table
+rather than on its own.
 
 **The `cache` column is the one that explains a bill.** It is the share of an
 agent's *input* served from the prompt cache, and it is the difference between two
