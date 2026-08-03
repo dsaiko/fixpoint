@@ -5,7 +5,7 @@ One file per agent, referenced from a task config by bare name:
     roles:
       coder: { agent: claude-coder, prompt: fix }
       review:
-        agents: [codex, claude, kimi-ollama]
+        agents: [codex, claude, kimi-ollama, deepseek-ollama]
 
 An agent is a command that receives a prompt and prints text to stdout. That is
 the whole provider abstraction — the orchestrator wraps the prompt with role

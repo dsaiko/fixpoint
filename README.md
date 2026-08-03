@@ -517,8 +517,14 @@ worse than none, so the bundle leaves it unset on both routes.
 Practically: for one-shot prompts none of this matters. For anything agentic it
 decides the bill, and for a prepaid endpoint it decides whether a long run
 finishes at all — uncached volume is what exhausted a session limit mid-run twice
-here. The `-ollama` files are kept as a one-word fallback for a missing key or a
-provider outage.
+here.
+
+The panel nevertheless runs the **`-ollama`** files, and the `-openrouter` ones are
+the fallback rather than the other way round: caching cut the price per token 4.9×
+and left the bill unchanged, because the volume is the defect. One 98%-cached kimi
+session still ran ~$5. Prepaid quota absorbs that volume where a card bills it, so
+the cheap route for a model that will not converge is the prepaid one, and its
+ceiling is the price of the choice.
 
 > **This is measured behaviour as of August 2026, not a documented contract.**
 > Both proxies are free to change: ollama may add cache and budget support, and

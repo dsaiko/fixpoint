@@ -22,6 +22,18 @@ func stubGroupPopulated(t *testing.T, populated, known bool) {
 	groupPopulated = func(int) (bool, bool) { return populated, known }
 }
 
+// stubGroupDrains makes the bounded drain wait answer from the test. It is needed
+// alongside stubGroupPopulated because a populated group is only half the state:
+// what decides the downgrade is whether that membership then CLEARS, and against a
+// stubbed pid the real wait would query a group that never existed and always find
+// it empty.
+func stubGroupDrains(t *testing.T, drains bool) {
+	t.Helper()
+	orig := groupEmptiesShortly
+	t.Cleanup(func() { groupEmptiesShortly = orig })
+	groupEmptiesShortly = func(int) bool { return drains }
+}
+
 // On darwin the EPERM from kill(-pgid, SIGKILL) is ambiguous -- an empty group and
 // a group of unsignalable members both answer it, and so does the signal-0 probe
 // -- so what decides the downgrade is the kern.proc.pgrp membership listing.
@@ -36,6 +48,7 @@ func TestKillProcessGroupEPERMFollowsGroupMembershipOnDarwin(t *testing.T) {
 	// The group is empty: EPERM is all darwin has to say about a group that is gone.
 	stubGroupKill(t, syscall.EPERM, syscall.EPERM)
 	stubGroupPopulated(t, false, true)
+	stubGroupDrains(t, false) // must not be consulted: membership already settled it
 	err := KillProcessGroup(cmd)
 	if !errors.Is(err, os.ErrProcessDone) {
 		t.Errorf("KillProcessGroup(EPERM, empty group) = %v, want an error wrapping os.ErrProcessDone; on darwin an empty group is what answers EPERM", err)
@@ -57,6 +70,7 @@ func TestKillProcessGroupEPERMFollowsGroupMembershipOnDarwin(t *testing.T) {
 	// provably failed and the errno has to reach the caller.
 	stubGroupKill(t, syscall.EPERM, syscall.EPERM)
 	stubGroupPopulated(t, true, true)
+	stubGroupDrains(t, false)
 	err = KillProcessGroup(cmd)
 	if errors.Is(err, os.ErrProcessDone) {
 		t.Errorf("KillProcessGroup(EPERM, populated group) = %v, want the EPERM; downgrading it reports a group that still holds a descendant as cleanly contained", err)
@@ -98,5 +112,46 @@ func TestDarwinGroupPopulatedSeparatesLiveFromReaped(t *testing.T) {
 	}
 	if populated, _ := darwinGroupPopulated(reaped.Process.Pid); populated {
 		t.Errorf("darwinGroupPopulated(reaped leader) = true, want false; the group is empty and a command that raced its deadline is otherwise rewritten into a cancel error")
+	}
+}
+
+// The membership listing includes zombies, so the ordinary end of a supervised
+// command -- leader exited, not yet reaped, cmd.Wait racing cmd.Cancel -- looks
+// like a populated group. groupEmptiesShortly is what separates that from a group
+// still holding something else, and it does so by WAITING: no single snapshot can,
+// because every reading of the process table races the reap. Getting it wrong costs
+// a complete review, since an EPERM over the leader's own zombie would be reported
+// as a cancel error for a command that exited 0.
+func TestGroupEmptiesShortlySeparatesOwnZombieFromLiveMembers(t *testing.T) {
+	// A leader that exits and is deliberately NOT reaped until cleanup: a zombie,
+	// still listed, which is the state the sweep hits hundreds of times.
+	zombie := exec.Command("true")
+	zombie.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := zombie.Start(); err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	pid := zombie.Process.Pid
+	done := make(chan struct{})
+	// Reap concurrently, as os/exec's Wait does while Cancel runs -- that is the
+	// interleaving under test, not a tidy sequential one.
+	go func() { _ = zombie.Wait(); close(done) }()
+	if !groupEmptiesShortly(pid) {
+		t.Errorf("groupEmptiesShortly(own zombie) = false, want true; an EPERM would then fail a command that exited 0")
+	}
+	<-done
+
+	// A group holding a live member must NOT qualify, or a descendant this process
+	// cannot kill is reported as contained while it runs on inside the target.
+	live := exec.Command("sleep", "60")
+	live.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := live.Start(); err != nil {
+		t.Fatalf("Start() = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = KillProcessGroup(live)
+		_ = live.Wait()
+	})
+	if groupEmptiesShortly(live.Process.Pid) {
+		t.Errorf("groupEmptiesShortly(live leader) = true, want false; an uncontained group would be reported as finished")
 	}
 }

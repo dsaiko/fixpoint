@@ -1,11 +1,15 @@
 # GLM via ollama, same claude-harness wrapping as kimi-ollama.
 #
-# NOT on the panel: glm-openrouter.yaml serves the same model over a route that
-# honours prompt caching, and this one measured a 0% cache rate -- 12.6M fresh
-# input tokens across four sessions in a single run. Kept as the fallback for a
-# missing OpenRouter key or a provider outage; switching is one word in the panel.
+# NOT on the panel, and not a fallback for anything either: GLM was dropped from
+# the review panel outright, on both routes. It was the weakest producer by a wide
+# margin -- 1 issue for 10.5M tokens in one measured run, roughly 3.5x worse per
+# token than anyone else, against kimi's 10 issues in the same run -- and cheaper
+# tokens make a weak reviewer cheaper, not better.
 #
-# The panel's general reasoner to kimi's code specialist, and the slower of the two.
+# Kept only so the decision is reversible and the measurement has somewhere to
+# live. Its 0% cache rate (12.6M fresh input across four sessions in one run) is a
+# property of the ollama route, not of the model; see kimi-ollama.yaml for why that
+# route is still the panel's choice for the agent that stayed.
 model: glm-5.2:cloud
 # No `effort`, deliberately: it is Anthropic's setting, and ollama drops the
 # thinking budget the harness translates it into. Measured -- this model produced
