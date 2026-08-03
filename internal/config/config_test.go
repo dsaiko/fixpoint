@@ -304,6 +304,13 @@ func TestValidate(t *testing.T) {
 			a.Command = []string{"echo", "exec", "-csandbox_mode=workspace-write"}
 			c.Agents["rev"] = a
 		}, "sandbox_mode=workspace-write"},
+		// clap takes "=" after a short flag too, so -c=k=v is the same override as
+		// -c k=v -- and the spelling whose leading "=" cut an empty key out of the token.
+		{"read-only reviewer passing codex -c= sandbox_mode rejected", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Command = []string{"echo", "exec", "-c=sandbox_mode=workspace-write"}
+			c.Agents["rev"] = a
+		}, "sandbox_mode=workspace-write"},
 		// The value is TOML, so a string may be quoted; the quotes must not hide it.
 		{"read-only reviewer passing a quoted codex sandbox_mode rejected", func(c *Config) {
 			a := c.Agents["rev"]

@@ -504,12 +504,17 @@ var configOverridePrefixes = []string{"--config=", "--config", "-c"}
 
 // configSetting reports the setting a token assigns, in every spelling a
 // config-override flag accepts: "sandbox_mode=v" (the argument after -c/--config),
-// "-csandbox_mode=v", "--config=sandbox_mode=v", and "--configsandbox_mode=v".
+// "-csandbox_mode=v", "-c=sandbox_mode=v", "--config=sandbox_mode=v", and
+// "--configsandbox_mode=v".
 // Quotes are stripped because the value is TOML, so a string may arrive quoted.
 func configSetting(tok string) (key, val string, ok bool) {
 	for _, p := range configOverridePrefixes {
 		if strings.HasPrefix(tok, p) && len(tok) > len(p) {
-			tok = strings.TrimPrefix(tok, p)
+			// The "=" between a flag and its value is a separator, not part of the
+			// key: clap accepts it on the short spelling too, so `-c=sandbox_mode=v`
+			// sets sandbox_mode exactly as `-c sandbox_mode=v` does. Leaving it on
+			// would cut an empty key out of the token and hide the whole override.
+			tok = strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(tok, p)), "=")
 			break
 		}
 	}
@@ -520,7 +525,14 @@ func configSetting(tok string) (key, val string, ok bool) {
 	unquote := func(s string) string {
 		return strings.Trim(strings.TrimSpace(s), `"'`)
 	}
-	return unquote(key), unquote(val), true
+	key, val = unquote(key), unquote(val)
+	if key == "" {
+		// Not a setting fixpoint can read -- and not a spelling any parser accepts
+		// either. Reporting no key is right; silently treating it as the empty
+		// setting is what let a grant through.
+		return "", "", false
+	}
+	return key, val, true
 }
 
 // permissionBypassFlag returns the write-granting token in argv, or "" when there
