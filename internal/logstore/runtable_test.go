@@ -542,3 +542,46 @@ func TestRunTableTruncatesLongCommitLists(t *testing.T) {
 		}
 	}
 }
+
+// The cache rate is the number that explains a token bill. On one measured run two
+// agents spent 41.6M fresh input at a 0% rate while a third spent 0.4M at 99%,
+// because an uncached agentic session re-pays for the whole conversation every turn
+// -- and the totals column showed all three as merely "large", which is how the
+// diagnosis went the wrong way twice.
+func TestRunTableReportsCacheRatePerAgent(t *testing.T) {
+	sum := &model.RunSummary{
+		StartedAt: time.Now(), FinishedAt: time.Now().Add(time.Minute),
+		Termination: model.TermConverged,
+		Rounds: []model.RoundRecord{{
+			Round: 1,
+			Steps: []model.StepStat{
+				// Uncached: every turn re-paid for the conversation.
+				{Role: "review", Agent: "uncached", Lens: "review-bugs",
+					Usage: model.Usage{InputTokens: 900, CacheReadTokens: 100, OutputTokens: 50}},
+				// Warm: almost all input served from cache.
+				{Role: "review", Agent: "warm", Lens: "review-security",
+					Usage: model.Usage{InputTokens: 10, CacheReadTokens: 990, OutputTokens: 50}},
+				// Reports no usage at all -- a rate over nothing is not 0%.
+				{Role: "review", Agent: "silent", Lens: "review-concurrency"},
+			},
+		}},
+	}
+	got := RenderRunTable(sum)
+	for _, want := range []string{"cache", "10%", "99%"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("scoreboard is missing %q:\n%s", want, got)
+		}
+	}
+	// Output must not drag the rate down: 990/(10+990) is 99%, and folding in the
+	// 50 output tokens would round it to 94%.
+	if strings.Contains(got, "94%") {
+		t.Errorf("cache rate counted output tokens; only input can be cached:\n%s", got)
+	}
+	// The silent agent gets "-", not 0%: printing 0% would accuse a CLI that simply
+	// does not report usage.
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "silent") && !strings.Contains(line, "-") {
+			t.Errorf("an agent reporting no usage must show %q, got line %q", "-", line)
+		}
+	}
+}

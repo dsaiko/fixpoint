@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -239,7 +240,7 @@ func (st *runStats) absorbVerify(r model.RoundRecord) {
 // writeContributorTable renders one attribution table. totals adds the TOTAL row,
 // which is the DISTINCT issue count rather than the column sum; pass nil to omit it.
 func writeContributorTable(b *strings.Builder, heading string, order []string, m map[string]*contributor, verdicts map[string]string, st *runStats) {
-	head := []string{heading, "issues", "fixed", "rejected", "deferred", "advisory", "errors", "tokens", "cost", "time"}
+	head := []string{heading, "issues", "fixed", "rejected", "deferred", "advisory", "errors", "tokens", "cache", "cost", "time"}
 	rows := [][]string{head}
 	for _, name := range order {
 		c := m[name]
@@ -259,7 +260,7 @@ func writeContributorTable(b *strings.Builder, heading string, order []string, m
 		// cell that can emit ESC/CSI would redraw the rows around it.
 		rows = append(rows, []string{
 			agent.EscapeTerminal(name), itoa(len(c.issues)), itoa(fixed), itoa(rejected), itoa(deferred),
-			itoa(c.advisory), itoa(c.errors), tokenCount(c.usage.Tokens()), costUSD(c.usage), humanDuration(c.dur),
+			itoa(c.advisory), itoa(c.errors), tokenCount(c.usage.Tokens()), cacheRate(c.usage), costUSD(c.usage), humanDuration(c.dur),
 		})
 	}
 	if st != nil {
@@ -278,7 +279,7 @@ func writeContributorTable(b *strings.Builder, heading string, order []string, m
 		// are the run's bill rather than the sum of the reviewer rows above.
 		rows = append(rows, []string{
 			"TOTAL", itoa(len(st.finalVerdict)), itoa(fixed), itoa(rejected), itoa(deferred), "", "",
-			tokenCount(st.total.Tokens()), costUSD(st.total), "",
+			tokenCount(st.total.Tokens()), cacheRate(st.total), costUSD(st.total), "",
 		})
 	}
 	writeAligned(b, rows, st != nil)
@@ -402,7 +403,10 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 		line := fmt.Sprintf("%s · %d fixed · %d rejected · %s",
 			coder, st.coderFixed, st.coderReject, humanDuration(st.coderDur))
 		if n := st.coderUsage.Tokens(); n > 0 {
-			line += " · " + tokenCount(n) + " tok"
+			// The coder is the run's most cache-dependent agent -- one measured run had
+			// it at 100% against reviewers at 0% -- so its rate belongs here for the
+			// same reason the reviewer column exists.
+			line += " · " + tokenCount(n) + " tok · " + cacheRate(st.coderUsage) + " cached"
 		}
 		if st.coderUsage.CostKnown {
 			line += " · " + costUSD(st.coderUsage)
@@ -524,6 +528,30 @@ func costUSD(u model.Usage) string {
 		return "<$0.01"
 	}
 	return fmt.Sprintf("$%.2f", u.CostUSD)
+}
+
+// cacheRate is the share of an agent's INPUT that came from the prompt cache,
+// which is the single number that explains a token bill this project kept
+// misreading.
+//
+// Measured here: two agents on one run spent 41.6M fresh input tokens across nine
+// sessions at a 0% cache rate while a third spent 0.4M across five at 99%, because
+// an uncached agentic session re-pays for the whole conversation every turn. The
+// totals column showed all three as merely "large", so the diagnosis took a day and
+// went the wrong way twice -- first blaming prompt size, then buying a cached route
+// that fixed the rate and not the bill. A rate in the table would have said which.
+//
+// Only INPUT counts. Output is never cached, and folding it in would drag every rate
+// toward zero by an amount that varies with how talkative an agent is, which is not
+// what this column is asking. "-" when an agent reports no input at all: a rate over
+// nothing is not 0%, and printing 0% there would accuse a CLI that simply does not
+// report usage.
+func cacheRate(u model.Usage) string {
+	in := u.InputTokens + u.CacheReadTokens
+	if in == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d%%", int(math.Round(100*float64(u.CacheReadTokens)/float64(in))))
 }
 
 // humanDuration renders a duration at one useful unit, so a column of them lines up

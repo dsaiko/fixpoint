@@ -839,14 +839,14 @@ landed.
  flags      trusted_target=true
  verify     fmt, vet, test, lint · passed in 39/39 gate run(s)
 
- REVIEWER  issues  fixed  rejected  deferred  advisory  errors    time
- claude        27     18         0         9        23       1  48m47s
- codex         23     17         1         5        11       0  44m08s
- gemma4         9      7         0         2         1       1  36m34s
- glm            8      4         0         4         6       0  25m38s
- ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- TOTAL         60     39         1        20
- rows sum above the total: 7 issue(s) were reported by more than one reviewer
+ REVIEWER  issues  fixed  rejected  deferred  advisory  errors  tokens  cache    cost    time
+ claude        13     12         1         0        17       0   43.1M   100%  $45.40   1h15m
+ codex         14     13         1         0         0       0   34.5M    48%       -  39m25s
+ glm            1      0         1         0         0       0   13.5M     0%       -  19m38s
+ kimi           8      6         2         0         0       2   36.0M     0%       -  37m42s
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ TOTAL         33     28         5         0                    165.8M    59%  $87.78
+ rows sum above the total: 3 issue(s) were reported by more than one reviewer
 
  LENS                    issues  fixed  rejected  deferred  advisory  errors    time
  review-bugs                 20     15         1         4         0       0  35m21s
@@ -854,7 +854,7 @@ landed.
  review-tests                26     12         0        14         0       0  24m37s
  ...
 
- coder      claude-coder · 39 fixed · 1 rejected · 1h15m
+ coder      claude-coder · 28 fixed · 5 rejected · 1h15m · 38.7M tok · 100% cached
  commits    39 · f40acbc26fbd a7361e82ecdc d8f4b9d429ea ...  (per_fix)
  exit       max-iterations (exit 2)
 ──────────────────────────────────────────────────────────────────────────────
@@ -865,6 +865,17 @@ which lens earned their tokens.** A panel is only worth its cost if the answer
 varies between its members, and the table above is what a weak member looks like.
 The `review-tests` row — the most reports, the most deferred, the least converted
 into fixes — is why that lens is now `final: true`.
+
+**The `cache` column is the one that explains a bill.** It is the share of an
+agent's *input* served from the prompt cache, and it is the difference between two
+agents whose token totals look alike. In the run above, `claude` and `kimi` both
+processed ~40M tokens, but claude read 100% of its input from cache and kimi 0% —
+because an uncached agentic session re-pays for the whole conversation on every
+turn, and a reviewer averages tens of turns. Without the column all four rows read
+as "large", which is how a cost investigation here first blamed prompt size and
+then bought a cached route that fixed the rate and not the bill: the volume was the
+defect. Output tokens are excluded, since only input can be cached, and an agent
+that reports no usage shows `-` rather than 0%.
 
 **Tokens and cost are what the agent's own CLI reported**, never a fixpoint
 estimate. Each agent file says where its CLI puts those numbers (see `usage:` in
