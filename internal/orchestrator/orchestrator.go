@@ -3314,6 +3314,14 @@ func writeVerdictSection(b *strings.Builder, title string, findings []model.Find
 // most real ones.
 //
 // A baseline failure is not an error: it is the fact being recorded.
+//
+// It runs under must_pass too, even though Report.Blocking never reads the
+// baseline on that path. Two things justify the gate run: the journal record of
+// how the project stood before fixpoint touched it, which is what a later reader
+// needs to attribute a failure under ANY policy, and the up-front warning below
+// that a red repository under must_pass will have every round refused. That
+// warning costs one gate run and saves the alternative -- max_iterations rounds
+// of coder work, each one gated, corrected, refused, and stashed.
 func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 	if !o.cfg.Verify.Enabled() || o.cfg.Loop.ReviewOnly {
 		return
@@ -3352,9 +3360,18 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 		o.logf("verify baseline: all checks pass")
 		return
 	}
+	o.logf("verify baseline: %s", rep.Summary())
+	// What a red baseline MEANS depends entirely on the policy, and saying the
+	// wrong one here is worse than saying nothing: Report.Blocking reads the
+	// baseline only under no_regressions, so under must_pass these very failures
+	// block every round and the operator has to be told that up front rather than
+	// discovering it when round 1's edits are refused and stashed.
+	if o.cfg.Verify.Policy == config.VerifyMustPass {
+		o.logf("verify baseline: the failing checks above are pre-existing, but policy must_pass ignores the baseline -- they WILL block every round until they are fixed or marked optional; switch to no_regressions to work on a repository that starts red")
+		return
+	}
 	// Worth stating plainly: under no_regressions these checks are permitted to
 	// keep failing, which is easy to misread later as fixpoint ignoring them.
-	o.logf("verify baseline: %s", rep.Summary())
 	o.logf("verify baseline: the failing checks above are pre-existing; policy %s permits them to keep failing", o.cfg.Verify.Policy)
 	// Except the ones that never ran: those recorded no fact about the project, so
 	// verify.Regressions treats them as having no baseline at all and a later

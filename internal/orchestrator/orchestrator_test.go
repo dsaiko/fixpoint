@@ -5958,3 +5958,55 @@ func TestRunAgentWaitsForInFlightHeartbeat(t *testing.T) {
 		}
 	}
 }
+
+// A red baseline means opposite things under the two policies -- tolerated under
+// no_regressions, fatal to every round under must_pass, because Report.Blocking
+// reads the baseline only on the first path. The narration is the operator's only
+// warning before round 1, so it is pinned here per policy.
+func TestVerifyBaselineNarrationMatchesThePolicy(t *testing.T) {
+	tests := []struct {
+		policy   config.VerifyPolicy
+		wants    []string
+		notWants []string
+	}{
+		{
+			policy:   config.VerifyNoRegressions,
+			wants:    []string{"pre-existing", "permits them to keep failing"},
+			notWants: []string{"WILL block every round"},
+		},
+		{
+			policy:   config.VerifyMustPass,
+			wants:    []string{"pre-existing", "must_pass ignores the baseline", "WILL block every round"},
+			notWants: []string{"permits them to keep failing"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.policy), func(t *testing.T) {
+			var log strings.Builder
+			o := &Orchestrator{
+				cfg: &config.Config{Verify: config.Verify{
+					Policy:   tc.policy,
+					Timeout:  config.Duration(30 * time.Second),
+					Commands: []config.VerifyCommand{{Name: "red", Run: []string{"false"}}},
+				}},
+				logf:         func(format string, args ...any) { fmt.Fprintf(&log, format+"\n", args...) },
+				journalWrite: func(string, int, any) error { return nil },
+			}
+			o.captureVerifyBaseline(t.Context())
+
+			if o.verifyBaseline.Passed() {
+				t.Fatal("baseline passed: the test needs a failing command to narrate")
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(log.String(), want) {
+					t.Errorf("baseline narration is missing %q:\n%s", want, log.String())
+				}
+			}
+			for _, no := range tc.notWants {
+				if strings.Contains(log.String(), no) {
+					t.Errorf("baseline narration under %s must not say %q:\n%s", tc.policy, no, log.String())
+				}
+			}
+		})
+	}
+}
