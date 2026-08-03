@@ -317,18 +317,45 @@ func TestResolverRefusesSymlinkOutOfBundle(t *testing.T) {
 	if !strings.Contains(err.Error(), "outside its bundle") {
 		t.Errorf("the refusal should name the reason:\n%v", err)
 	}
-	// The listing skips it instead of failing: it walks every bundle, so one
+	if _, err := r.Config("task"); err == nil {
+		t.Fatal("Config(task) must be refused: the first bundle holding it escapes the bundle")
+	}
+	// The listing omits it instead of failing: it walks every bundle, so one
 	// hostile entry must not take `--list` down for all of them -- and the
 	// description of a file elsewhere on the host must not appear in it either.
+	// The name is dropped rather than shown against the lower bundle's copy,
+	// because the escaping entry is refused outright by the by-name lookup: `--list`
+	// and completion must not offer a name that every run refuses.
 	entries, err := r.ListConfigs()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Path != filepath.Join(low, "task"+configExt) {
-		t.Fatalf("--list must show the bundle's own copy, not the escaping symlink: %+v", entries)
+	for _, e := range entries {
+		t.Errorf("--list offers %s -> %s, but a run of it fails with the containment error", e.Name, e.Path)
 	}
-	if entries[0].Description != "" {
-		t.Errorf("a description leaked from outside the bundle: %q", entries[0].Description)
+}
+
+// A bundle entry that is not a regular file -- a dangling symlink, a device --
+// is not a match for the by-name lookup, which falls through to the next bundle.
+// The listing must fall through with it: skipping the name entirely would hide a
+// perfectly good config that a run WOULD use.
+func TestListConfigsFallsThroughNonRegularEntry(t *testing.T) {
+	root := t.TempDir()
+	high := bundle(t, filepath.Join(root, "project"), nil, nil, nil)
+	low := bundle(t, filepath.Join(root, "system"), map[string]string{"task": runnableBody}, nil, nil)
+	link(t, filepath.Join(root, "nowhere"), filepath.Join(high, "task"+configExt))
+	r := &Resolver{Bundles: []string{high, low}}
+
+	want, err := r.Config("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := r.ListConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != want {
+		t.Fatalf("--list must show %s, the file a run resolves to: %+v", want, entries)
 	}
 }
 

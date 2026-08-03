@@ -431,7 +431,7 @@ func (r *Resolver) ListConfigs() ([]Entry, error) {
 			continue // a missing bundle is normal, not an error
 		}
 		for _, e := range entries {
-			if e.IsDir() || filepath.Ext(e.Name()) != configExt {
+			if filepath.Ext(e.Name()) != configExt {
 				continue
 			}
 			name := strings.TrimSuffix(e.Name(), configExt)
@@ -439,13 +439,28 @@ func (r *Resolver) ListConfigs() ([]Entry, error) {
 				continue
 			}
 			path := filepath.Join(b, e.Name())
-			// Same containment rule the by-name lookup applies, so the listing shows
-			// what a run would actually resolve -- and so a symlink out of the bundle
-			// cannot leak the description line of a file elsewhere on the host into a
-			// listing printed before any trust gate. Skipped rather than fatal, unlike
-			// the named lookup: listing walks every bundle, so one hostile entry must
-			// not be able to take `--list` down for all of them.
+			// From here the entry is judged exactly as find judges it, so the listing
+			// shows what a run would actually resolve -- including WHICH bundle gets to
+			// answer for the name.
+			//
+			// Regular files only, and for find's reason: a directory was never a match,
+			// and a device or a fifo planted through a symlink is worse than a miss.
+			// Like find, this leaves the name unclaimed and lets a lower bundle answer.
+			st, err := os.Stat(path)
+			if err != nil || !st.Mode().IsRegular() {
+				continue
+			}
+			// A symlink out of the bundle is the opposite case: find refuses the name
+			// outright there rather than falling through, so a copy in a lower bundle is
+			// NOT what a run would use. Claim the name so the listing omits it entirely
+			// -- offering the lower copy would advertise a path every run refuses with
+			// the containment error. Omitted rather than fatal, unlike the named lookup:
+			// listing walks every bundle, so one hostile entry must not be able to take
+			// `--list` down for all of them, and nothing is read from it, so the
+			// description line of a file elsewhere on the host cannot leak into a
+			// listing printed before any trust gate.
 			if !withinBundle(b, path) {
+				seen[name] = true
 				continue
 			}
 			seen[name] = true
