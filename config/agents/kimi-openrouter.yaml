@@ -24,8 +24,12 @@
 # $0.15/M against $0.73/M for fresh input -- 4.9x -- so at this run's volumes the
 # same work lands near $4.50 rather than burning the quota.
 #
-# Keep kimi-ollama.yaml: if OpenRouter is down or the key is missing, swapping one
-# name in the panel restores a working reviewer.
+# NOT the panel default, and the measurement above is why only in part. Caching
+# worked exactly as predicted -- 98% -- and one session STILL cost ~$5, because it
+# took 168 turns against claude's 37 on the same round. Cheap tokens do not rescue
+# a session that will not converge, so the panel runs kimi-ollama: same volume,
+# absorbed by prepaid quota instead of a card. Swap this one in when the quota is
+# exhausted and finishing the run matters more than the bill.
 model: moonshotai/kimi-k2.7-code
 command:
   - claude

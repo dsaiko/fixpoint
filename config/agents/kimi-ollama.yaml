@@ -1,9 +1,11 @@
-# Kimi via ollama, same claude-harness wrapping as glm-ollama.
+# Kimi via ollama, same claude-harness wrapping as glm-ollama. THE PANEL DEFAULT.
 #
-# NOT on the panel: kimi-openrouter.yaml serves the same model over a route that
-# honours prompt caching, and this one measured a 0% cache rate -- 29.0M fresh
-# input tokens across five sessions in a single run. Kept as the fallback for a
-# missing OpenRouter key or a provider outage; switching is one word in the panel.
+# It is on the panel despite caching nothing -- 0% hit rate, 29.0M fresh input
+# tokens across five sessions in one run -- because the alternative costs cash for
+# the same volume. kimi-openrouter.yaml caches at 98%, and one session there still
+# ran ~$5: cheaper tokens do not help when the session takes 168 turns to claude's
+# 37. Prepaid quota absorbs that; a card does not. The quota ceiling is the price,
+# and dropping glm from the panel halved the pressure on it.
 #
 # A code-specialized
 # reasoning model: it replaced gemma4 on the review panel, which was the panel's

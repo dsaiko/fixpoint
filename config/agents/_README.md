@@ -5,7 +5,7 @@ One file per agent, referenced from a task config by bare name:
     roles:
       coder: { agent: claude-coder, prompt: fix }
       review:
-        agents: [codex, claude, kimi-openrouter]
+        agents: [codex, claude, kimi-ollama]
 
 An agent is a command that receives a prompt and prints text to stdout. That is
 the whole provider abstraction — the orchestrator wraps the prompt with role
@@ -81,9 +81,16 @@ every turn of an uncached agentic session re-pays for the whole conversation. Th
 same request sent to both proxies returns `in=5418` with no cache fields from
 ollama, and `in=16, cacheRead=5604` on the second call from OpenRouter.
 
-Both files are kept for every model that has both routes. The panel points at the
-`-openrouter` ones; switching a name back is the fallback when the key is missing
-or the provider is down, and it is deliberately a one-word edit.
+Both files are kept for every model that has both routes, and switching is one
+word in the panel.
+
+The panel currently runs the `-ollama` one, which is the counter-intuitive choice
+and worth the sentence: caching cut the price per token 4.9x and did not cut the
+BILL, because the volume is what is wrong. kimi takes ~168 turns to claude's ~37
+on the same round, so one cached session still ran ~$5 through OpenRouter. Prepaid
+quota absorbs that volume; a card bills it. The quota ceiling is the cost of that
+choice — it ended two runs early — which is why glm came off the panel rather than
+being moved to a cheaper route.
 
 ## env
 
