@@ -1096,31 +1096,52 @@ func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSumm
 // It is only reached when the LAST allowed pass returned done=false, so there is no
 // clean exhaustion to keep quiet about -- a pass that found nothing, fixed nothing
 // or hit a decided-only round ends the phase with done=true and never gets here.
-// done=false leaves the run in one of two states, and both are reported because in
-// both the run's last edits are unvouched for:
+// done=false leaves behind two INDEPENDENT kinds of loose end, and a pass can leave
+// both at once (fix some issues, defer others), so each is detected and reported on
+// its own:
 //
-//   - Issues the pass reported are still open (the cap deferred them, or the coder
-//     rejected them and the deferred remainder never reached it).
-//   - Every issue it reported was FIXED, which is exactly why it asked for another
-//     pass: those commits changed the tree, and the review that would have judged
-//     them is the pass the cap refused. Silence here reads as a clean finish over a
-//     tree whose final edits nobody looked at.
+//   - Issues the pass reported are still unresolved: open, or deferred by the cap
+//     and never handed over. A REJECTED issue is neither -- it is decided, and
+//     counting it as unfixed work would invent an obligation the run does not have.
+//   - The pass committed fixes, which is a reason it asked for another pass: those
+//     commits changed the tree, and the review that would have judged them is the
+//     pass the cap refused. Silence here reads as a clean finish over a tree whose
+//     final edits nobody looked at.
 func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary, passes int) {
-	open := 0
+	var last model.RoundRecord
 	if n := len(sum.Rounds); n > 0 {
-		for _, it := range sum.Rounds[n-1].Issues {
-			if it.StatusOrDefault() != model.VerdictFixed {
-				open++
-			}
+		last = sum.Rounds[n-1]
+	}
+	open, fixed := 0, 0
+	for _, it := range last.Issues {
+		switch it.StatusOrDefault() {
+		case model.VerdictFixed:
+			fixed++
+		case model.VerdictRejected: // decided; not work left over
+		default:
+			open++
 		}
 	}
-	if open == 0 {
-		o.logf("WARNING: the closing round stopped after %d pass(es) (loop.max_final_passes); its last pass fixed every issue it reported, but those fixes changed the tree and were NOT re-reviewed",
-			passes)
-		return
+	// A fix in this phase is only recorded once verifyAndCommitFix committed it, so
+	// a fixed issue is itself evidence the tree moved -- checked alongside the round's
+	// commits because per_round squashes them into one SHA.
+	changed := fixed > 0 || len(last.Commits) > 0 || last.CommitSHA != ""
+	var parts []string
+	if open > 0 {
+		parts = append(parts, fmt.Sprintf("%d issue(s) still open or deferred: they are recorded in the summary and were NOT fixed", open))
 	}
-	o.logf("WARNING: the closing round stopped after %d pass(es) (loop.max_final_passes) with %d issue(s) still open; they are recorded in the summary and were NOT fixed",
-		passes, open)
+	if changed {
+		parts = append(parts, "its last pass committed fixes that changed the tree and were NOT re-reviewed")
+	}
+	// Neither is unreachable through runFinalFixPasses, since a pass with nothing
+	// unresolved and nothing committed ends the phase with done=true. Still said out
+	// loud rather than returning silently: the cap fired, and that is the one thing
+	// this warning exists to never omit.
+	if len(parts) == 0 {
+		parts = append(parts, "its last pass asked for another look at the tree and did not get one")
+	}
+	o.logf("WARNING: the closing round stopped after %d pass(es) (loop.max_final_passes); %s",
+		passes, strings.Join(parts, "; and "))
 }
 
 // runFinalPass is one closing round: review the finished tree, hand the coder up to

@@ -4209,25 +4209,43 @@ func TestClosingPassContinuesWhenACorrectionReopensTheOnlyFix(t *testing.T) {
 // so every call is a real exhaustion. It used to say nothing when that pass had
 // fixed everything it reported -- the very case where the closing round committed
 // edits and then ran out of passes to review them, leaving a run that reads as a
-// clean finish over a tree nobody looked at last.
+// clean finish over a tree nobody looked at last. The two loose ends it reports are
+// independent: a rejected issue is decided rather than unfixed, and a pass can both
+// commit fixes and leave issues behind.
 func TestWarnFinalPhaseCappedAlwaysReportsExhaustion(t *testing.T) {
-	issue := func(status string) model.Issue {
-		return model.Issue{ID: "i1", Status: status}
+	issue := func(id, status string) model.Issue {
+		return model.Issue{ID: id, Status: status}
 	}
 	tests := []struct {
-		name  string
-		last  model.RoundRecord
-		wants []string
+		name     string
+		last     model.RoundRecord
+		wants    []string
+		notWants []string
 	}{
 		{
 			name:  "issues still open",
-			last:  model.RoundRecord{Round: 3, Final: true, Issues: []model.Issue{issue(model.VerdictDeferred)}},
+			last:  model.RoundRecord{Round: 3, Final: true, Issues: []model.Issue{issue("i1", model.VerdictDeferred)}},
 			wants: []string{"WARNING", "1 issue(s) still open", "NOT fixed"},
 		},
 		{
 			name:  "everything fixed, so the fixes themselves went unreviewed",
-			last:  model.RoundRecord{Round: 3, Final: true, Issues: []model.Issue{issue(model.VerdictFixed)}},
+			last:  model.RoundRecord{Round: 3, Final: true, Issues: []model.Issue{issue("i1", model.VerdictFixed)}},
 			wants: []string{"WARNING", "NOT re-reviewed"},
+		},
+		{
+			name: "a rejected issue is decided, not unfixed work",
+			last: model.RoundRecord{Round: 3, Final: true, Issues: []model.Issue{
+				issue("i1", model.VerdictFixed), issue("i2", model.VerdictRejected),
+			}},
+			wants:    []string{"WARNING", "NOT re-reviewed"},
+			notWants: []string{"still open"},
+		},
+		{
+			name: "fixes committed AND issues left over: both are reported",
+			last: model.RoundRecord{Round: 3, Final: true, Issues: []model.Issue{
+				issue("i1", model.VerdictFixed), issue("i2", model.VerdictDeferred), issue("i3", model.VerdictRejected),
+			}, Commits: []string{"abc1234"}},
+			wants: []string{"WARNING", "1 issue(s) still open", "NOT fixed", "NOT re-reviewed"},
 		},
 	}
 	for _, tc := range tests {
@@ -4240,6 +4258,11 @@ func TestWarnFinalPhaseCappedAlwaysReportsExhaustion(t *testing.T) {
 			for _, want := range tc.wants {
 				if !strings.Contains(log.String(), want) {
 					t.Errorf("warning is missing %q:\n%s", want, log.String())
+				}
+			}
+			for _, no := range tc.notWants {
+				if strings.Contains(log.String(), no) {
+					t.Errorf("warning should not say %q:\n%s", no, log.String())
 				}
 			}
 		})
