@@ -403,12 +403,14 @@ func readBundleFile(path string) ([]byte, error) {
 type Entry struct {
 	Name string
 	Path string
-	// Description is the config's own one-line summary, empty if it has none.
+	// Description is the config's one-line summary, inherited from its `extends`
+	// base when it sets none of its own; empty if neither has one.
 	Description string
-	// Runnable is false for a base config -- one that defines no review lenses and
-	// so exists to be inherited via `extends`, not executed. Determined by shape
-	// rather than by name: a bundle may hold several bases under any names, and
-	// hardcoding "defaults" would be a rule that only happens to fit this bundle.
+	// Runnable is false for a base config -- one that defines no review lenses, its
+	// own or inherited, and so exists to be inherited via `extends`, not executed.
+	// Determined by shape rather than by name: a bundle may hold several bases under
+	// any names, and hardcoding "defaults" would be a rule that only happens to fit
+	// this bundle.
 	Runnable bool
 }
 
@@ -447,7 +449,7 @@ func (r *Resolver) ListConfigs() ([]Entry, error) {
 				continue
 			}
 			seen[name] = true
-			runnable, desc := probe(path)
+			runnable, desc := r.probeEffective(path)
 			out = append(out, Entry{Name: name, Path: path, Description: desc, Runnable: runnable})
 		}
 	}
@@ -455,20 +457,51 @@ func (r *Resolver) ListConfigs() ([]Entry, error) {
 	return out, errors.Join(errs...)
 }
 
-// probe reads the two things a listing needs from a config without loading it
+// probeEffective answers what a listing needs about a config as a RUN would see
+// it, which means accounting for `extends`: the child is decoded over the base, so
+// a config that names no lenses of its own still inherits the base's and runs
+// perfectly (see loadWithExtends). Judging it on its own text alone would print a
+// working config as a non-runnable base and drop it from shell completion. The
+// description is inherited the same way, for the same reason.
+//
+// ONE level, matching the loader -- a base that itself extends is an error there,
+// so there is no chain to follow here.
+func (r *Resolver) probeEffective(path string) (runnable bool, description string) {
+	runnable, desc, extends := probe(path)
+	if extends == "" || (runnable && desc != "") {
+		return runnable, desc
+	}
+	basePath, err := r.configByName(extends)
+	if err != nil {
+		// The base does not resolve, so this config cannot run -- but that is the
+		// loader's error to report, naming the base it could not find. Reporting it
+		// here as a base for others to inherit would be the one thing it is certainly
+		// not: it asked to inherit.
+		return true, desc
+	}
+	baseRunnable, baseDesc, _ := probe(basePath)
+	if desc == "" {
+		desc = baseDesc
+	}
+	return runnable || baseRunnable, desc
+}
+
+// probe reads the three things a listing needs from a config without loading it
 // properly: whether it defines any review lens (which is what makes it runnable
-// rather than a base for `extends`) and its description.
+// rather than a base for `extends`), its description, and the base it inherits
+// from -- because either of the first two may come from that base instead.
 //
 // Deliberately lenient -- a lone unknown key, which the strict loader rejects,
 // must not make a config vanish from the listing. Listing is discovery; the loader
 // is where correctness is enforced, with a message that says what is wrong.
-func probe(path string) (runnable bool, description string) {
+func probe(path string) (runnable bool, description, extends string) {
 	data, err := readBundleFile(path)
 	if err != nil {
-		return true, "" // unreadable, oversized, or not a regular file: the loader reports it properly
+		return true, "", "" // unreadable, oversized, or not a regular file: the loader reports it properly
 	}
 	var p struct {
 		Description string `yaml:"description"`
+		Extends     string `yaml:"extends"`
 		Roles       struct {
 			Review struct {
 				Prompts []yaml.Node `yaml:"prompts"`
@@ -476,9 +509,9 @@ func probe(path string) (runnable bool, description string) {
 		} `yaml:"roles"`
 	}
 	if err := yaml.Unmarshal(data, &p); err != nil {
-		return true, ""
+		return true, "", ""
 	}
-	return len(p.Roles.Review.Prompts) > 0, strings.TrimSpace(p.Description)
+	return len(p.Roles.Review.Prompts) > 0, strings.TrimSpace(p.Description), strings.TrimSpace(p.Extends)
 }
 
 // isPathLike reports whether an argument should be treated as a filesystem path

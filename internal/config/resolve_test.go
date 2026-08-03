@@ -463,6 +463,45 @@ func TestListConfigsMarksBaseConfigs(t *testing.T) {
 	}
 }
 
+// A config that inherits its lenses -- and its description -- from an `extends`
+// base is runnable, because the run merges the child over the base. Judging it on
+// its own text alone would print a working config as a non-runnable base and hide
+// it from shell completion entirely.
+func TestListConfigsResolvesExtendsForRunnability(t *testing.T) {
+	dir := bundle(t, filepath.Join(t.TempDir(), "b"), map[string]string{
+		"defaults":   "description: shared base\n" + runnableBody,
+		"inherits":   "extends: defaults\nloop:\n  max_iterations: 2\n",
+		"own-desc":   "description: mine\nextends: defaults\n",
+		"no-base":    "extends: missing\n",
+		"plain-base": "loop:\n  max_iterations: 3\n",
+	}, nil, nil)
+	got, err := (&Resolver{Bundles: []string{dir}}).ListConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]Entry{}
+	for _, c := range got {
+		byName[c.Name] = c
+	}
+	if !byName["inherits"].Runnable {
+		t.Error("a config inheriting its lenses via extends must be runnable, not reported as a base")
+	}
+	if got, want := byName["inherits"].Description, "shared base"; got != want {
+		t.Errorf("inherited description = %q, want %q", got, want)
+	}
+	if got, want := byName["own-desc"].Description, "mine"; got != want {
+		t.Errorf("own description = %q, want %q -- the child's own value wins", got, want)
+	}
+	if !byName["no-base"].Runnable {
+		// The loader reports the unresolvable base by name; the listing must not
+		// silently reclassify the config as something to inherit from.
+		t.Error("a config whose extends base does not resolve must still be offered, not marked a base")
+	}
+	if byName["plain-base"].Runnable {
+		t.Error("a config with no lenses and no extends is still a base")
+	}
+}
+
 // An unparseable or partially invalid config must not vanish from the listing:
 // listing is discovery, and the loader is where correctness is reported with a
 // message that says what is wrong.
