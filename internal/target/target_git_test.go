@@ -3823,6 +3823,105 @@ func TestGitScanNULReArmedGraceStillCutsAStalledListing(t *testing.T) {
 	}
 }
 
+// The boundary between the two halves above, and the one the other held-open tests
+// step around: the grace arms while a callback is in flight -- so the mark it takes is
+// ODD -- and that callback then RETURNS onto a pipe an escaped writer is holding open.
+// The counter moves once, to mark+1, and nothing about that increment says the pipe
+// delivered anything: it is the end of the very work the previous firing already
+// re-armed for. Counting it as progress buys the stalled scan a second full window,
+// so the listing is cut two graces after the last thing that actually arrived instead
+// of the one the grace promises -- and the re-arm -> cut test above cannot see it,
+// since its grace arms between callbacks and its mark is even.
+//
+// The callback is released by the test rather than timed out of a sleep, so the
+// release provably lands after the first firing (which must re-arm, fn being in
+// flight) and inside the second window; what is then asserted is the distance from
+// that release to the cut, which is one window under the predicate and two without it.
+func TestGitScanNULGraceAfterInFlightCallbackReturnsCutsAStalledListing(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid unavailable to detach the child from the process group")
+	}
+	repo := gitRepo(t)
+	pidFile := filepath.Join(t.TempDir(), "detached.pid")
+	// The child outlives this test by design, so reap it rather than leave a sleeper
+	// behind on every run.
+	t.Cleanup(func() { reapDetachedChild(t, pidFile) })
+	// One entry, delivered before the leader is anywhere near exiting, so the callback
+	// below is provably in flight when the grace is armed. Then the setsid child that
+	// escapes the group kill and keeps the inherited stdout, so EOF is never coming and
+	// only the grace can end the scan; its stderr goes to /dev/null so what is measured
+	// is the stdout stall. The leader lingers a second so the kill cannot land while
+	// setsid is still forking.
+	shimGit(t, "ls-files", "    printf 'main.go\\0'\n"+
+		"    setsid sh -c 'echo $$ > "+pidFile+"; exec sleep 30' 2>/dev/null &\n"+
+		"    sleep 1\n    exit 0")
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var seen int
+	// The wall time the callback returned -- the last instant anything at all moved the
+	// progress counter -- read back only after gitScanNUL has returned and so joined the
+	// goroutine that writes it.
+	var returned time.Time
+	c := New(config.Target{Mode: "directory", Path: repo})
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		done <- c.gitScanNUL(t.Context(), func(string) {
+			seen++
+			once.Do(func() { close(entered) })
+			<-release
+			returned = time.Now()
+		}, "ls-files", "--cached", "-z")
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("gitScanNUL returned before delivering a listing entry: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("git never delivered a listing entry to fn")
+	}
+	// Half a window past the first firing: the grace is armed at the leader's exit (its
+	// one-second linger), fires a window later with fn still blocked, and re-arms. The
+	// release then lands in the middle of the second window, so the firing that closes
+	// it is half a grace away and the one after it is a grace and a half -- the widest
+	// margin either side of the single-grace bound asserted below.
+	hold := time.Second + 3*agent.PipeDrainGrace/2
+	select {
+	case err := <-done:
+		t.Fatalf("gitScanNUL returned after %s with fn still in flight: %v", time.Since(start), err)
+	case <-time.After(time.Until(start.Add(hold))):
+	}
+	close(release)
+
+	select {
+	case err := <-done:
+		elapsed := time.Since(start)
+		// The identity, not merely the presence: the listing could not be read to EOF, so
+		// it may be short, and that is what the operator has to be told.
+		if !errors.Is(err, errListingHeldOpen) {
+			t.Fatalf("gitScanNUL() err = %v, want it to wrap errListingHeldOpen once the grace found no progress", err)
+		}
+		if seen != 1 {
+			t.Errorf("gitScanNUL delivered %d of 1 entries", seen)
+		}
+		gap := elapsed - returned.Sub(start)
+		// The claim under test. A callback's return counted as pipe progress re-arms here
+		// and the cut lands a grace and a half after it instead of half a grace.
+		if gap > agent.PipeDrainGrace {
+			t.Errorf("the stalled listing was cut %s after the in-flight callback returned, more than the %s grace: the callback's own return was counted as progress and bought the dead pipe another window", gap, agent.PipeDrainGrace)
+		}
+		// The other side, so the test cannot pass on a grace that never re-armed at all:
+		// a firing that cut while fn was still in flight would be blocked joining that
+		// very call, and would return within milliseconds of the release above.
+		if gap < agent.PipeDrainGrace/4 {
+			t.Errorf("the listing was cut %s after the callback returned, too soon for a firing of its own: the grace cut while fn was in flight and merely waited out the call", gap)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("gitScanNUL never returned once the in-flight callback did; the grace stopped bounding a scan on a held-open pipe")
+	}
+}
+
 // The re-arm removes the grace as the outer bound on one shape of scan: a writer
 // that escaped the process group and TRICKLES, delivering an entry inside every
 // window, so every firing sees progress and re-arms forever. Nothing about that

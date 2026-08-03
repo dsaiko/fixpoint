@@ -486,8 +486,23 @@ var gitCleanupKill = agent.KillProcessGroup
 // moved since that counter read mark. The counter is bumped on both sides of the
 // callback (see gitScanNUL), so movement is either a new entry taken off the pipe or
 // -- on an odd reading -- a callback still in flight over the one already taken.
+//
+// The one increment that is NOT movement is the RETURN of a callback that was
+// already in flight when the mark was taken: an ODD mark reaching exactly mark+1
+// says only that the work the previous firing already re-armed for has finished, not
+// that anything new came off the pipe. Counting it would hand a scan that has been
+// sitting on a write end no EOF is coming through another whole window, so a listing
+// held open by an escaped writer would be cut after TWO graces rather than the one
+// the grace promises. Anything further -- mark+2, or mark+1 from an EVEN mark -- is
+// an entry taken off the pipe since the mark, which is movement.
 func scanProgressed(now, mark uint64) bool {
-	return now != mark || now%2 == 1
+	if now == mark {
+		return mark%2 == 1
+	}
+	if mark%2 == 1 && now == mark+1 {
+		return false
+	}
+	return true
 }
 
 // endScanOnCancel ends gitScanNUL's scan once its context is done and reports why

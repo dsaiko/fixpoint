@@ -161,6 +161,42 @@ func TestRemoteIdentity(t *testing.T) {
 	}
 }
 
+// The predicate the drain grace re-arms on, at the boundaries the timing-based
+// gitScanNUL tests cannot pin exactly. The counter is bumped on both sides of the
+// callback, so its parity carries as much meaning as its value: an odd reading is a
+// callback in flight, and the increment that merely ENDS an already-in-flight
+// callback is the one movement that says nothing about the pipe.
+func TestScanProgressed(t *testing.T) {
+	cases := []struct {
+		name       string
+		now, mark  uint64
+		progressed bool
+	}{
+		// Nothing moved and no callback was running when the grace armed: the scan is
+		// sitting on a pipe that delivered nothing for a whole window.
+		{"idle since an even mark", 4, 4, false},
+		// Nothing moved either, but the marked callback is still in it -- a single
+		// Lstat or EvalSymlinks can outlast a window, and cutting would only join the
+		// very call it fired over.
+		{"marked callback still in flight", 3, 3, true},
+		// The callback the previous firing re-armed for returned and nothing came off
+		// the pipe behind it. Counted as movement this would buy a stalled scan a
+		// second window before the cut.
+		{"in-flight callback merely returned", 4, 3, false},
+		// An entry WAS taken off the pipe: from an even mark straight into its callback,
+		// or past the marked callback's return and into the next entry's.
+		{"entry taken since an even mark", 5, 4, true},
+		{"entry taken past the marked callback's return", 5, 3, true},
+		// And a whole entry consumed, callback included, since an even mark.
+		{"entry consumed since an even mark", 6, 4, true},
+	}
+	for _, tc := range cases {
+		if got := scanProgressed(tc.now, tc.mark); got != tc.progressed {
+			t.Errorf("%s: scanProgressed(%d, %d) = %v, want %v", tc.name, tc.now, tc.mark, got, tc.progressed)
+		}
+	}
+}
+
 // The filesystem walk is the one collection path that runs no subprocess, so
 // nothing else carries the cancellation into it: a Ctrl-C during a directory-mode
 // run over a large non-git tree must stop the walk rather than finish it.
