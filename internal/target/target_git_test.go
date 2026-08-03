@@ -3662,14 +3662,20 @@ func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
 	var seen int
 	// Derived from the grace rather than hardcoded, so raising that shared constant
 	// cannot leave the whole listing finishing before the grace ever fires -- which
-	// would keep this test passing while exercising none of the re-arm. Two graces'
-	// worth of callback spread over 100 entries means the grace armed at the leader's
-	// exit has to be re-armed TWICE before the listing is through: sustained progress
-	// across more than one window, not the single re-arm one long call would exercise.
-	// Each individual gap is a fiftieth of a grace, so what decides this test is the
-	// predicate under test and not timing noise on a loaded machine: a cut on the second
-	// grace lands around the 80th entry and fails the count below.
-	perEntry := 2 * agent.PipeDrainGrace / entries
+	// would keep this test passing while exercising none of the re-arm. Two and a HALF
+	// graces' worth of callback spread over 100 entries means the grace armed at the
+	// leader's exit has to be re-armed TWICE before the listing is through: sustained
+	// progress across more than one window, not the single re-arm one long call would
+	// exercise. The half window is what makes that structural rather than incidental:
+	// the grace is armed at the REAP, a few milliseconds after the scan started
+	// consuming, so with exactly two windows' worth of callback the second firing and
+	// EOF would land within the sleeps' own overshoot of each other and many runs would
+	// exercise one re-arm, not two. At 2.5 windows the second firing has half a grace of
+	// callback still ahead of it. Each individual gap is a fortieth of a grace, so what
+	// decides this test is the predicate under test and not timing noise on a loaded
+	// machine: a cut on the second grace lands around the 80th entry and fails the count
+	// below.
+	perEntry := 5 * agent.PipeDrainGrace / (2 * entries)
 	c := New(config.Target{Mode: "directory", Path: repo})
 	start := time.Now()
 	err := c.gitScanNUL(t.Context(), func(string) {
@@ -3690,8 +3696,8 @@ func TestGitScanNULSlowCallbackDoesNotFailCompleteListing(t *testing.T) {
 	// raised out from under the derivation would leave the test green while exercising
 	// no re-arm at all. The same guard the one-long-call test below carries, for the
 	// same reason.
-	if elapsed < 2*agent.PipeDrainGrace {
-		t.Errorf("gitScanNUL returned after %s, sooner than the %s of callback it was supposed to span; the grace never fired, so no re-arm was exercised", elapsed, 2*agent.PipeDrainGrace)
+	if elapsed < 5*agent.PipeDrainGrace/2 {
+		t.Errorf("gitScanNUL returned after %s, sooner than the %s of callback it was supposed to span; the grace never fired twice, so the second re-arm was not exercised", elapsed, 5*agent.PipeDrainGrace/2)
 	}
 }
 
