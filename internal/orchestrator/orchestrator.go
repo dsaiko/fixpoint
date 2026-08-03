@@ -2536,7 +2536,7 @@ func (o *Orchestrator) logStep(role, agentName, promptName string, round int, ok
 func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg model.Assignment, lensName string, round int, first agent.Result, firstErr error) (model.ReviewOutput, agent.Result, salvageCost, error) {
 	o.logf("%s output did not meet the contract (%v); asking it to restate the block", label, firstErr)
 	text := prompt.FormatReformat(first.Stdout, firstErr, prompt.ReviewContract)
-	res := o.runAgent(ctx, label+" (reformat)", "review", asg.Agent, lensName+"-reformat", round, text)
+	res := o.runAgent(ctx, label+" (reformat)", "review", asg.Agent, config.ReformatLensName(lensName), round, text)
 	// Bill both attempts to this step whatever happens: a salvage that fails must
 	// not look cheaper than one that succeeds. Usage and wall clock merge onto the
 	// Result; the byte counts cannot (Stdout is what the parser and the .raw log

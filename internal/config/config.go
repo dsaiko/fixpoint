@@ -223,6 +223,17 @@ func LensName(promptPath string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
+// ReformatLensSuffix is appended to a lens name for the second invocation the
+// orchestrator makes when a reviewer's reply broke the output contract. That
+// invocation logs its own prompt and step under the suffixed name, so the suffix
+// is part of the log identity space (logIdentities) and the name is reserved:
+// both live here so validation cannot drift from the paths actually written.
+const ReformatLensSuffix = "-reformat"
+
+// ReformatLensName is the {prompt} log token for a lens's contract-salvage
+// invocation.
+func ReformatLensName(lens string) string { return lens + ReformatLensSuffix }
+
 // How a prompt reaches an agent CLI. The set is closed, so it gets named
 // constants like Mode and Strategy: three packages compare against these values,
 // and a single home keeps their spellings from drifting.
@@ -1192,6 +1203,11 @@ func (c *Config) Validate() error {
 	// a round and their reviewer goroutines race to os.WriteFile the same path,
 	// silently losing one durable record. Require distinct lens names so the
 	// per-assignment log path is always unique.
+	//
+	// A lens's contract salvage logs under LensName+ReformatLensSuffix, so that
+	// name is reserved too: lenses "review-bugs" and "review-bugs-reformat" would
+	// otherwise share one {prompt} token, and no logs.pattern can separate two
+	// writes whose whole identity is equal.
 	seenLens := map[string]int{}
 	for i, l := range c.Roles.Review.Prompts {
 		name := LensName(l.Prompt)
@@ -1199,6 +1215,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("roles.review.prompts: lenses %d (%s) and %d (%s) both resolve to log name %q; prompt basenames must be unique so parallel reviewers' step logs do not overwrite each other -- rename one prompt file", j, c.Roles.Review.Prompts[j].Prompt, i, l.Prompt, name)
 		}
 		seenLens[name] = i
+	}
+	for i, l := range c.Roles.Review.Prompts {
+		name := LensName(l.Prompt)
+		if j, dup := seenLens[ReformatLensName(name)]; dup && j != i {
+			return fmt.Errorf("roles.review.prompts: lens %d (%s) resolves to log name %q, which is where lens %d (%s) logs the reply it is asked to restate when its output breaks the contract; those two step logs would overwrite each other -- rename one prompt file so no lens name is another's name plus %q", j, c.Roles.Review.Prompts[j].Prompt, ReformatLensName(name), i, l.Prompt, ReformatLensSuffix)
+		}
 	}
 
 	// Every role must name a prompt, and the resolved file must be readable. The
@@ -1329,16 +1351,21 @@ func (c *Config) validateLogsDir() error {
 
 // logIdentities returns every (role, agent, prompt) triple a run can log a step
 // or prompt for: each reviewer lens under every agent it can be assigned to
-// (Review.LensAgents, the same policy the orchestrator's fan-out consumes), plus
-// the coder. It is the identity space the step-log path must render injectively
-// over.
+// (Review.LensAgents, the same policy the orchestrator's fan-out consumes) and
+// that lens's contract salvage, which logs under ReformatLensName, plus the
+// coder. It is the identity space the step-log path must render injectively over.
+//
+// The reformat identity belongs here because it races the same way: it is written
+// mid-round while the other lenses on that agent are still running, so a pattern
+// that maps one lens's reformat onto another lens's normal path loses a record
+// just as silently.
 func (c *Config) logIdentities() [][3]string {
 	var ids [][3]string
 	rv := c.Roles.Review
 	for _, l := range rv.Prompts {
 		name := LensName(l.Prompt)
 		for _, a := range rv.LensAgents(l) {
-			ids = append(ids, [3]string{"review", a, name})
+			ids = append(ids, [3]string{"review", a, name}, [3]string{"review", a, ReformatLensName(name)})
 		}
 	}
 	ids = append(ids, [3]string{"fix", c.Roles.Coder.Agent, LensName(c.Roles.Coder.Prompt)})

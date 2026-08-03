@@ -416,6 +416,12 @@ func TestValidate(t *testing.T) {
 			c.Roles.Review.Strategy = "all"
 			c.Roles.Review.Agents = []string{"rev", "rev2"}
 		}, "same path"},
+		{"logs.pattern that drops {prompt} by cleaning collides a lens with its reformat", func(c *Config) {
+			// Cleans to "review/<agent>.<ext>", so the lens's own contract-salvage
+			// invocation -- which logs under LensName+ReformatLensSuffix while the
+			// round is still running -- lands on the lens's step log.
+			c.Logs.Pattern = "{role}/{prompt}/../{agent}.{ext}"
+		}, "same path"},
 		{"logs.pattern climbing out of the round directory rejected", func(c *Config) {
 			c.Logs.Pattern = "../{role}-{agent}-{prompt}.{ext}"
 		}, "outside its round directory"},
@@ -547,6 +553,20 @@ func TestValidateDuplicateLensBasename(t *testing.T) {
 		cfg.Roles.Review.Prompts = []ReviewLens{{Prompt: a}, {Prompt: b}}
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("Validate() = %v, want nil for distinct basenames", err)
+		}
+	})
+
+	// A lens's contract salvage logs under LensName+ReformatLensSuffix, so a lens
+	// literally named that is the same collision by another route -- and one no
+	// logs.pattern can separate, since the two writes share their whole identity.
+	t.Run("reformat name of another lens rejected", func(t *testing.T) {
+		cfg := validConfig(t)
+		cfg.Roles.Review.Prompts = []ReviewLens{
+			{Prompt: "prompts/review-bugs.md"},
+			{Prompt: "prompts/review-bugs-reformat.md"},
+		}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "asked to restate") {
+			t.Fatalf("Validate() = %v, want reserved-reformat-name rejection", err)
 		}
 	})
 }
