@@ -3207,6 +3207,25 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 	}
 	o.logf("verify: capturing baseline (%d command(s))", len(o.cfg.Verify.Commands))
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
+	// A cancellation inside the baseline is ordinary -- it is the longest step before
+	// round 1, a full build and test suite over an untouched tree -- and it leaves a
+	// SHORT report: the in-flight command carries the interruption the teardown caused
+	// and the rest never started. Neither is a fact about the project, so this must not
+	// become the baseline, and least of all be narrated as pre-existing failures the
+	// policy tolerates. The run aborts immediately after this (resolveRunBase fails on
+	// the dead context), so an unset baseline never reaches a Regressions judgement;
+	// what would outlive the run is the journal record, so it says interrupted rather
+	// than a verdict. Mirrors verifyPass's post-run ctx check, minus the reconcile:
+	// captureVerifyBaseline runs before round 1, so there is no round to reconcile.
+	if ctx.Err() != nil {
+		o.journal(model.EvVerifyBaseline, 0, model.JournalVerifyFinished{
+			Policy:      string(o.cfg.Verify.Policy),
+			Interrupted: true,
+			Checks:      journalChecks(rep.Results),
+		})
+		o.logf("verify baseline: interrupted (%v) -- no baseline was captured; the commands that had started were stopped by the run, not by the project", ctx.Err())
+		return
+	}
 	o.verifyBaseline = rep
 	// The baseline is what makes every later "blocking" judgement meaningful under
 	// no_regressions, so it is recorded rather than only logged: a reader cannot

@@ -3733,6 +3733,56 @@ func TestVerifyNoRegressionsToleratesPreExistingFailure(t *testing.T) {
 	}
 }
 
+// The baseline is the longest step before round 1 -- a whole build and test suite
+// over an untouched tree -- so a Ctrl-C landing inside it is ordinary. What it must
+// not produce is a record claiming the project was already red: the checks it lists
+// were killed by the run, and the ones it never started are simply absent.
+func TestVerifyBaselineInterruptedIsNotRecordedAsPreExisting(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	// The check signals readiness, then blocks until the teardown kills it.
+	ready := filepath.Join(f.t.TempDir(), "baseline-started")
+	script := filepath.Join(f.t.TempDir(), "check.sh")
+	if err := os.WriteFile(script, []byte(fmt.Sprintf("#!/bin/sh\ntouch '%s'\nsleep 60\n", ready)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.Verify = config.Verify{
+		Policy:   config.VerifyNoRegressions,
+		Timeout:  config.Duration(time.Minute),
+		Commands: []config.VerifyCommand{{Name: "build", Run: []string{script}}},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(ready); err == nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+	}()
+
+	o, logs := f.capturingOrchestrator()
+	sum, err := o.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run() err = %v, want nil for an interruption", err)
+	}
+	if sum.Termination != model.TermInterrupted {
+		t.Fatalf("termination = %q, want interrupted", sum.Termination)
+	}
+	if got := logs(); strings.Contains(got, "pre-existing") {
+		t.Errorf("operator log calls the interrupted baseline's checks pre-existing:\n%s", got)
+	}
+
+	var base model.JournalVerifyFinished
+	payload(t, f.journal(), model.EvVerifyBaseline, &base)
+	if !base.Interrupted || base.Passed {
+		t.Errorf("verify_baseline = %+v, want it marked interrupted with no verdict", base)
+	}
+}
+
 // The bug this aggregation exists to fix, end to end: two agents reporting the
 // same problem must cost ONE slot against the per-round cap, not two. Before, a
 // cap of 1 with two agreeing reviewers meant one report was deferred and the

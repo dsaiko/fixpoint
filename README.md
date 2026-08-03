@@ -930,7 +930,8 @@ an optional `round`, and a per-`type` `data` payload:
 ```
 run_started        config, mode, path, strategy, review_only, max_iterations,
                    and the flag overrides that authorized the run
-verify_baseline    what was already failing before the run touched anything
+verify_baseline    what was already failing before the run touched anything, or
+                   `interrupted` when it was stopped before it could say
 round_started      the lens→agent assignment (differs per round under `rotate`)
 review_finished    observations, advisory, reviewer errors
 issues_aggregated  observations → issues, and how many were corroborated

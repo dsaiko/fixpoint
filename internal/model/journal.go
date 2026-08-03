@@ -171,11 +171,17 @@ type JournalFixFinished struct {
 // than the failing checks: under no_regressions a check that was already failing
 // at the baseline fails without blocking the round.
 type JournalVerifyFinished struct {
-	Attempt  string         `json:"attempt,omitempty"` // absent on the baseline
-	Policy   string         `json:"policy"`
-	Passed   bool           `json:"passed"`
-	Checks   []JournalCheck `json:"checks,omitempty"`
-	Blocking []string       `json:"blocking,omitempty"`
+	Attempt string         `json:"attempt,omitempty"` // absent on the baseline
+	Policy  string         `json:"policy"`
+	Passed  bool           `json:"passed"`
+	Checks  []JournalCheck `json:"checks,omitempty"`
+	// Interrupted marks a pass the run's cancellation cut short before it produced a
+	// verdict: the checks listed are only those that had started, and the last of them
+	// was killed by the teardown rather than by its own outcome. On a baseline it says
+	// the recorded checks are NOT the pre-existing state of the project, so a reader
+	// cannot mistake the absent Passed for "these were already red".
+	Interrupted bool     `json:"interrupted,omitempty"`
+	Blocking    []string `json:"blocking,omitempty"`
 }
 
 // JournalCheck is one gate command's outcome, without its output: the journal is
