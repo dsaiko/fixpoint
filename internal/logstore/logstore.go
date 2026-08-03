@@ -69,7 +69,7 @@ func (s *Store) ensureDir() error {
 				s.mkdirErr = err
 				return
 			}
-			s.runDir = fmt.Sprintf("%s-%d", base, i+1)
+			s.runDir = fmt.Sprintf("%s-%d", base, i)
 		}
 	})
 	return s.mkdirErr

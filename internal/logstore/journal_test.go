@@ -212,7 +212,7 @@ func TestJournalPathClaimsTheSuffixedRunDirBeforeAnyWrite(t *testing.T) {
 	}
 
 	got := s.JournalPath()
-	if want := filepath.Join(taken+"-2", JournalName); got != want {
+	if want := filepath.Join(taken+"-1", JournalName); got != want {
 		t.Fatalf("JournalPath() = %q, want the collision-suffixed %q", got, want)
 	}
 	if err := s.Journal(model.EvRunStarted, 0, nil); err != nil {
@@ -252,7 +252,7 @@ func TestJournalPathIsSafeAlongsideConcurrentAppends(t *testing.T) {
 	}
 	wg.Wait()
 
-	want := filepath.Join(taken+"-2", JournalName)
+	want := filepath.Join(taken+"-1", JournalName)
 	for i, got := range paths {
 		if got != want {
 			t.Errorf("JournalPath() from goroutine %d = %q, want the single claimed %q", i, got, want)
