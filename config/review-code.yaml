@@ -23,8 +23,7 @@ roles:
       # to), so a final lens simply runs in this one round, which is what keeps this
       # config a complete preview of its fix sibling rather than a subset of it.
       - { prompt: review-tests, final: true }
-      - { agent: claude, prompt: review-maintainability, advisory: true, final: true }
-      - { agent: claude, prompt: review-design, advisory: true, final: true }
+      # No advisory lenses; see fix-code.yaml for why they were removed.
 
 loop:
   review_only: true

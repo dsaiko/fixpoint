@@ -39,33 +39,11 @@ roles:
       # the run read as complete.
       - { prompt: review-tests, final: true } # coverage of what the run changed
 
-      # advisory: reported for a human, never handed to the coder, and excluded from
-      # the termination condition. Both lenses below propose restructuring -- of the
-      # discard/stash paths that carry the fail-closed invariant, of shared git
-      # process setup, of the architecture itself. A coder refactor there can pass
-      # fmt/vet/test/lint and still be wrong in exactly the way that matters, because
-      # a dirty tree on an abnormal exit is not something the happy-path suite
-      # exercises. Adding tests is additive and safe to automate; rewriting recovery
-      # code is not. So: reported, for you to act on.
-      #
-      # advisory + final + PINNED, which is the right shape for a report:
-      #   - final, not recurring -- an advisory report nobody acts on mid-run is
-      #     paid for per round and read never. One report, on the code that actually
-      #     shipped: the advisory half of the closing round runs ONCE, after the fix
-      #     passes above have stopped changing things. (This also replaces `once:
-      #     true`, whose report described the architecture as it was BEFORE the run;
-      #     the last run added ~3000 lines, so by the end it described code that no
-      #     longer existed. Same one session, more relevant subject.)
-      #   - pinned, not fanned out -- an unpinned final lens runs on every agent,
-      #     which for a human-read report means four overlapping documents to read
-      #     and corroboration that buys nothing, since nothing gets scheduled.
-      - {
-          agent: claude,
-          prompt: review-maintainability,
-          advisory: true,
-          final: true,
-        }
-      - { agent: claude, prompt: review-design, advisory: true, final: true }
+      # No advisory lenses. review-maintainability and review-design were pinned
+      # here as final+advisory reports; they were removed because nobody read them.
+      # An unread report still costs a full agent session per run. Both prompts are
+      # still in the bundle, so re-adding either is one line -- see the git history
+      # for the shape that worked (advisory + final + pinned to one agent).
 
 # The deterministic gate for THIS project. fixpoint runs these itself after the
 # coder and refuses to commit a round that fails them, so a fix that breaks the

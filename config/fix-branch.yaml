@@ -47,28 +47,9 @@ roles:
       # "what did this branch add, and is it tested" is exactly the question.
       - { prompt: review-tests, final: true }
 
-      # Advisory: reported for a human, never handed to the coder. Pinned and
-      # final, so it is one report on the code that shipped rather than one per
-      # round. See fix-code.yaml for the full argument.
-      - {
-          agent: claude,
-          prompt: review-maintainability,
-          advisory: true,
-          final: true,
-        }
-
-# review-design is deliberately ABSENT, unlike fix-code. It judges the
-# architecture, and a branch diff is the wrong evidence for that: it shows what
-# moved, not the shape it moved within, so the report would either restate the
-# diff or reason about a structure it was never shown. Run review-code when you
-# want that lens.
-
-# Fewer rounds than fix-code's five. A branch diff is a bounded amount of
-# material, so the panel runs out of genuine findings sooner -- and the rounds
-# after that are the expensive ones, where reviewers re-read a shrinking set of
-# real problems. Raise it with -max-iterations for a long-running branch.
-loop:
-  max_iterations: 3
+      # No advisory lenses -- see fix-code.yaml. review-maintainability was pinned
+      # here and review-design deliberately absent; both are gone now, because an
+      # unread report costs a session per run.
 
 # The deterministic gate. Identical to fix-code on purpose: a fix is committed
 # only if the WHOLE project still builds and passes, never merely the files the

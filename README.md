@@ -24,8 +24,7 @@ one round:
   review-bugs ─────────► agent A ─┐
   review-security ─────► agent B  │   observations      issues
   review-concurrency ──► agent C  ├──► (raw reports) ──► (deduped) ──► coder ──► verify ──► commit
-  review-tests ────────► agent D  │                                    fixes    build/test
-  review-maintainability ► ...  ──┘
+  review-tests ────────► agent D  ┘                                    fixes    build/test
 
 repeat until a full reviewer panel reports nothing
 ```
@@ -167,8 +166,8 @@ ones referenced in the configuration are used. The shipped lenses:
 - [review-security.md](config/prompts/review-security.md) — security
 - [review-concurrency.md](config/prompts/review-concurrency.md) — concurrency
 - [review-tests.md](config/prompts/review-tests.md) — test coverage of what the run changed
-- [review-maintainability.md](config/prompts/review-maintainability.md) — smells, simplification, docs (advisory)
-- [review-design.md](config/prompts/review-design.md) — architecture (advisory, round 1 only)
+- [review-maintainability.md](config/prompts/review-maintainability.md) — smells, simplification, docs (advisory; **shipped but not in any panel**)
+- [review-design.md](config/prompts/review-design.md) — architecture (advisory; **shipped but not in any panel**)
 - [fix.md](config/prompts/fix.md) — the coder's instructions
 
 Which agent runs which lens is decided by `roles.review.strategy`:
@@ -241,9 +240,13 @@ Per-lens modifiers:
   **Pin a final lens whose findings are advisory.** Unpinned means the whole panel,
   which is right when the findings get fixed — nothing follows to catch what one
   model missed. For a report a human reads, it means four overlapping documents and
-  corroboration that buys nothing, since nothing gets scheduled. The shipped
-  `fix-code` uses both shapes: `review-tests` unpinned and fixed, `review-design`
-  and `review-maintainability` pinned and reported.
+  corroboration that buys nothing, since nothing gets scheduled.
+
+  The shipped configs now use only the first shape — `review-tests`, unpinned and
+  fixed. `review-design` and `review-maintainability` were pinned and reported, and
+  were removed from every panel because nobody read them: an unread report still
+  costs a full agent session per run. Both prompts remain in the bundle, so the
+  advisory shape is one line away if that changes.
 
 ## Observations and issues
 
