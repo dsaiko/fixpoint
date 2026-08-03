@@ -227,7 +227,9 @@ func Quote(s string) string {
 	}
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
-		lines[i] = strings.TrimRight("> "+l, " ")
+		// Any trailing whitespace, not just ASCII spaces: defang happens to map
+		// tabs to spaces today, and Quote should not depend on that.
+		lines[i] = strings.TrimRightFunc("> "+l, unicode.IsSpace)
 	}
 	return strings.Join(lines, "\n")
 }
