@@ -12,6 +12,7 @@ command:
   - --dangerously-skip-permissions # required to edit; see can_edit below
   - --model {{model}}
   - --effort {{effort}}
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see below
 # The CLI reports what it actually spent; fixpoint reads it from here rather than
 # estimating from the bytes it exchanged (which miss the whole agentic session in
 # between -- see config/README.md). modelUsage is keyed by model id and aggregates
@@ -32,15 +33,20 @@ usage:
 prompt_via: stdin
 timeout: 30m # fixing rounds run longer than a single review pass
 can_edit: true
-# No `--setting-sources user` here, unlike every reviewer -- deliberately. That
-# flag exists on the reviewers because they run against material nobody vouched
-# for, and a hook in the target's .claude/settings.json would be execution they
-# never asked for. A fix round is the opposite case: it is refused outright
-# unless the operator passes -trusted-target (or -allow-untrusted-fix in pr
-# mode) on that very invocation, and this command already auto-approves every
-# tool request above, so target-supplied settings are not an escalation over
-# what was authorized. In exchange the coder keeps the target's own CLAUDE.md
-# and project conventions, which is most of what makes its edits fit in.
+# `--setting-sources user` above, exactly as on every reviewer: settings come
+# from ~/.claude and never from the .claude/settings.json sitting in the code
+# being fixed. The permission-skip flag is not a reason to drop it. A hook there
+# is a shell command the CLI runs before the model takes a single turn -- no
+# model in the loop, no tool request to approve -- so it is code execution
+# fixpoint performs on the target's behalf, the same class as the argv in a
+# target-supplied bundle, which is refused without -trusted-target. It is also
+# not covered by the assertion a fix round actually requires: in pr mode the
+# only gate is -allow-untrusted-fix, whose documented meaning is accepting
+# prompt-injection risk from an author nobody vouched for, and `gh pr checkout`
+# writes that PR's settings file straight into the worktree the coder runs in.
+# The cost is that the target's CLAUDE.md is no longer auto-loaded; the coder
+# can still read it as a file when project conventions matter, which keeps it
+# content the model weighs rather than instructions injected before the turn.
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,
 # HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's

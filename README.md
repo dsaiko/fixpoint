@@ -898,10 +898,19 @@ Read this before pointing the tool at code you did not write.
 - **The coder edits files with permission checks disabled** and is not
   confined to `target.path`. A prompt-injection payload hidden in any reviewed
   file could steer it into writing elsewhere on your machine. Fix rounds are
-  therefore **fail-closed**: they are refused unless you affirm the target is
-  trusted with `-trusted-target`, and in `pr` mode — where the reviewed code is
-  by definition untrusted — they additionally require `-allow-untrusted-fix`.
-  Review each round commit before pushing.
+  therefore **fail-closed**: they are refused unless you affirm trust in the
+  invocation — `-trusted-target` for a directory or git-diff target, and in `pr`
+  mode, where the reviewed code is by definition untrusted,
+  `-allow-untrusted-fix`. Review each round commit before pushing.
+- **No agent loads the target's `.claude/settings.json`.** Every shipped
+  `claude`-backed agent — the coder included — passes `--setting-sources user`.
+  A hook in that file is a shell command the CLI runs before the model takes a
+  turn, so neither a reviewer's read-only flags nor the trust assertion a fix
+  round makes covers it: it is execution with no model in the loop, and in `pr`
+  mode the branch `gh pr checkout` writes into the worktree is the thing that
+  supplied it. The same flag keeps the target's MCP servers, skills and
+  `CLAUDE.md` out of the session. Agent commands you write yourself get no such
+  treatment automatically.
 - **Trust is asserted on the command line only, never in a config file.**
   fixpoint refuses to load a config that sets `loop.trusted_target` or
   `loop.allow_untrusted_fix`. Bundles are shadowable and `<project>/config` is
