@@ -1116,13 +1116,12 @@ func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary,
 		// An interruption is a termination, not a run failure -- see above.
 		return nil
 	}
-	// Narrow what this phase is shown, for the whole phase including the advisory
-	// report, then restore full scope: the collector outlives the phase (squashRun
-	// and any later reconcile use it), and a hidden set left behind would silently
-	// narrow them too.
+	// Narrow what this phase is shown -- recomputed before every pass, since each
+	// pass commits its own fixes and the next one must not be handed them -- then
+	// restore full scope: the collector outlives the phase (squashRun and any later
+	// reconcile use it), and a hidden set left behind would silently narrow them too.
 	defer func() { _, _ = o.collector.HideRunEdits(nil, nil) }()
-	o.hideRunEdits(ctx, runBase)
-	if err := o.runFinalFixPasses(ctx, sum, actionable); err != nil {
+	if err := o.runFinalFixPasses(ctx, sum, runBase, actionable); err != nil {
 		return err
 	}
 	// The report goes last, over the tree as it finally stands. Skipped on a
@@ -1134,6 +1133,11 @@ func (o *Orchestrator) runFinalPhase(ctx context.Context, sum *model.RunSummary,
 			// As above: not a run failure.
 			return nil
 		}
+		// The report describes the tree as it finally stands, so its hidden set is
+		// computed against that tree too: everything the actionable passes just
+		// committed is this run's own work, and a set computed before those passes ran
+		// does not know about it.
+		o.hideRunEdits(ctx, runBase)
 		if _, err := o.runFinalPass(ctx, sum, advisory, "report"); err != nil {
 			return err
 		}
@@ -1178,7 +1182,7 @@ func (o *Orchestrator) hideRunEdits(ctx context.Context, runBase string) {
 // own as soon as a pass finds nothing or fixes nothing, so the bound only catches a
 // lens that never runs out of things to say. See config.Loop.MaxFinalPasses for why
 // that bound is its own knob (default 1) rather than the loop's max_iterations.
-func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSummary, actionable []model.Assignment) error {
+func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSummary, runBase string, actionable []model.Assignment) error {
 	if len(actionable) == 0 {
 		return nil
 	}
@@ -1190,6 +1194,12 @@ func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSumm
 		maxPasses = config.DefaultMaxFinalPasses
 	}
 	for pass := 1; pass <= maxPasses; pass++ {
+		// Per pass, not once per phase: every pass commits its own fixes, and those
+		// files are as much "this run's own edits" as the loop's are. A set computed
+		// before pass 1 would show pass 2 the tests pass 1 just wrote -- the
+		// review-the-test-that-was-just-asked-for loop this setting exists to break,
+		// and the opposite of what max_final_passes documents.
+		o.hideRunEdits(ctx, runBase)
 		done, err := o.runFinalPass(ctx, sum, actionable, fmt.Sprintf("pass %d", pass))
 		if err != nil {
 			return err

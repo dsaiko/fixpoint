@@ -6265,3 +6265,44 @@ func TestClosingRoundIsNotShownTheTestFilesThisRunWrote(t *testing.T) {
 		t.Errorf("a LOOP round lost the run's own test file; only the closing round narrows:\n%s", r2)
 	}
 }
+
+// The hidden set has to be recomputed per closing PASS, not once per phase: each
+// pass commits its own fixes, and those files are as much "this run's own edits" as
+// the loop's are. Computed once, pass 2 is handed the test file pass 1 just wrote --
+// the review-the-test-that-was-just-asked-for loop final_skip_run_edits exists to
+// break, and the opposite of what max_final_passes: 2 documents.
+func TestClosingPassIsNotShownTheTestFileTheEarlierPassWrote(t *testing.T) {
+	f := newFixture(t, config.Loop{
+		MaxIterations:     1,
+		CleanRoundsToStop: 1,
+		MaxFinalPasses:    2,
+		FinalSkipRunEdits: []string{"**/*_test.go"},
+	})
+	f.finalLens()
+
+	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged, nothing committed
+	f.respond(2, reviewResponse(t, aFinding("missing coverage")))
+	// The closing fix writes a test file and a source file, as a coder asked for a
+	// regression test would. Neither name appears in any agent response, so the only
+	// way pass 2's prompt can mention them is the collected material.
+	testfixture.WriteSide(t, f.respDir, 3, fmt.Sprintf(
+		"#!/bin/sh\necho 'package main' > '%s'\necho '// covered' >> '%s'\n",
+		filepath.Join(f.repo, "pass1_test.go"), filepath.Join(f.repo, "main.go")))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "covered it"}))
+	f.respond(4, reviewResponse(t)) // closing pass 2: nothing left
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	pass2 := f.reviewPrompt(3)
+	if pass2 == "" {
+		t.Fatal("closing pass 2 never ran: the test needs two closing passes to say anything")
+	}
+	if strings.Contains(pass2, "pass1_test.go") {
+		t.Errorf("closing pass 2 was shown the test file closing pass 1 wrote:\n%s", pass2)
+	}
+	if !strings.Contains(pass2, "main.go") {
+		t.Errorf("closing pass 2 lost main.go, which final_skip_run_edits must not hide:\n%s", pass2)
+	}
+}
