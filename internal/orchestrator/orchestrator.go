@@ -1158,7 +1158,7 @@ func (o *Orchestrator) hideRunEdits(ctx context.Context, runBase string) {
 // nothing left to fix, bounded by loop.max_final_passes -- the phase stops on its
 // own as soon as a pass finds nothing or fixes nothing, so the bound only catches a
 // lens that never runs out of things to say. See config.Loop.MaxFinalPasses for why
-// that bound is its own knob (default 2) rather than the loop's max_iterations.
+// that bound is its own knob (default 1) rather than the loop's max_iterations.
 func (o *Orchestrator) runFinalFixPasses(ctx context.Context, sum *model.RunSummary, actionable []model.Assignment) error {
 	if len(actionable) == 0 {
 		return nil

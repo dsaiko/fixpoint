@@ -762,9 +762,10 @@ type Loop struct {
 	// the loop, then re-opened as "the test for that fix is flaky", then as "the
 	// test for the test". The loop's own rounds did not repeat themselves at all.
 	//
-	// Two is the default: one pass to fix what the finished tree still needs, one
-	// to confirm the fix did not open something new. A third pass is reviewing the
-	// second pass's tests, which is where the yield goes negative.
+	// One is the default (see DefaultMaxFinalPasses above for the measurement that
+	// lowered it from two): a single pass to fix what the finished tree still needs.
+	// A second pass is already largely reviewing the first pass's tests, which is
+	// where the yield goes negative.
 	MaxFinalPasses int `yaml:"max_final_passes"`
 
 	// FinalSkipRunEdits hides files THIS RUN wrote from the CLOSING round's review
