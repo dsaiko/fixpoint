@@ -879,8 +879,9 @@ func scanNUL(data []byte, atEOF bool) (int, []byte, error) {
 
 // skipFile reports whether a target-relative file path is out of scope: hidden by
 // HideRunEdits, inside the run's own logs directory, or matched by an exclude glob.
-// The walk applies the logs check per directory (and prunes there); a git listing
-// yields only file paths, so the same rule is applied by prefix here.
+// Every collector routes its file paths through here. The walk additionally
+// prunes the logs directory as a directory entry, which is why the rule is also
+// stated as a prefix test: a git listing yields only file paths.
 //
 // It takes the whole scope, not just the globs, because the hidden set it consults
 // must be the caller's snapshot rather than the live field -- see fileScope.
@@ -929,7 +930,8 @@ func (c *Collector) symlinkOutOfScope(rel string, scope fileScope) bool {
 }
 
 // walkFiles is the non-git fallback: target.path may be any directory, so scope
-// comes from the filesystem and only target.exclude narrows it.
+// comes from the filesystem, and what narrows it is whatever skipFile says --
+// target.exclude, the run's own logs dir, and the hidden set.
 //
 // It observes ctx: a large tree can take a long time to walk, and Ctrl-C has to
 // reach the one collection path that runs no subprocess of its own.
@@ -967,7 +969,10 @@ func (c *Collector) walkFiles(ctx context.Context, scope fileScope) (int, string
 			}
 			return nil
 		}
-		if matchAny(excludes, rel) {
+		// Judged by skipFile, not by the globs alone: it is the single definition
+		// of "out of scope" that listGitFiles and symlinkExcludes also use, so a
+		// path HideRunEdits hid stays hidden whichever collector ran.
+		if c.skipFile(rel, scope) {
 			return nil
 		}
 		// WalkDir never descends through a symlink, so every one of them -- to a
