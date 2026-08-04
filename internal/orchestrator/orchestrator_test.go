@@ -5390,6 +5390,32 @@ func TestPerFixCommitMessageDefangsTerminalControlCharacters(t *testing.T) {
 	}
 }
 
+// Severity is validated against a closed vocabulary, but the check trims first --
+// so "high\r\n" passes it while the stored value keeps the whitespace. If that raw
+// value reaches a commit body the newline forges a message line and the CR makes
+// `git log` render bytes other than the ones stored, which is why a finding stores
+// the severity ValidSeverity actually validated rather than the one typed.
+func TestReviewerSeverityCannotForgeLinesInTheCommitBody(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: " High\r\n\n", File: "main.go", Line: 12, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "clamped the bound"}))
+	f.respond(3, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	body := gitRun(t, f.repo, "log", "-1", "--format=%b")
+	if strings.ContainsRune(body, '\r') {
+		t.Errorf("commit body carries the CR the reviewer put in the severity:\n%q", body)
+	}
+	if !strings.Contains(body, "(bugs, high) main.go:12") {
+		t.Errorf("commit body is missing the normalized severity on the issue line:\n%s", body)
+	}
+}
+
 // per_round regroups the round's per-fix commits into the single commit fixpoint
 // has always produced. The squash is `reset --soft`, so the tree must be identical
 // to what the per-fix commits already verified -- and the body describes the round.

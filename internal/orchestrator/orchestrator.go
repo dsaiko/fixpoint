@@ -907,7 +907,7 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 		"{title}", flattenField(it.Title),
 	).Replace(o.fixCommitMessage())
 	var body strings.Builder
-	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, flattenField(it.Category), it.Severity, flattenField(it.Loc()))
+	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, flattenField(it.Category), flattenField(it.Severity), flattenField(it.Loc()))
 	// The detail is the body's LAST line, and a lone `token: value` line at the end
 	// of a message IS a git trailer -- so it goes out as a bullet, the same shape
 	// writeVerdictSection uses, which git's trailer parser can never accept.
@@ -2886,9 +2886,13 @@ func toFindings(in []model.ReviewFinding, asg model.Assignment, lensName string,
 			// fingerprint fallback cannot. Dropping it here silently created a second
 			// issue for a re-report, which restarted deferral aging and resubmitted
 			// issues the coder had already rejected.
-			IssueID:     f.Issue,
-			Category:    f.Category,
-			Severity:    f.Severity,
+			IssueID:  f.Issue,
+			Category: f.Category,
+			// Severity is stored in the form ValidSeverity validated, not the form the
+			// reviewer typed: it is the one field consumers treat as a closed vocabulary
+			// rather than free text, so the raw spelling has no use downstream and does
+			// have a cost -- see model.NormalizeSeverity.
+			Severity:    model.NormalizeSeverity(f.Severity),
 			File:        f.File,
 			Line:        f.Line,
 			Title:       f.Title,
@@ -3231,7 +3235,7 @@ func salvageBody(coderErr string, pending []model.Issue) string {
 	// the finding text below it.
 	fmt.Fprintf(&b, "Coder failed before reporting verdicts: %s\n\nIssues left without a verdict:\n", flattenField(coderErr))
 	for _, it := range pending {
-		fmt.Fprintf(&b, "- [%s] (%s, %s) %s\n", it.ID, flattenField(it.Category), it.Severity, flattenField(it.Title))
+		fmt.Fprintf(&b, "- [%s] (%s, %s) %s\n", it.ID, flattenField(it.Category), flattenField(it.Severity), flattenField(it.Title))
 	}
 	return b.String()
 }

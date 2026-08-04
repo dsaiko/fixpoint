@@ -37,7 +37,7 @@ var severityRank = func() map[string]int {
 // " high " have to mean high. ValidSeverity is what rejects a genuinely unknown
 // value; this function must still order one sanely if it reaches here.
 func SeverityRank(s string) int {
-	if r, ok := severityRank[normalizeSeverity(s)]; ok {
+	if r, ok := severityRank[NormalizeSeverity(s)]; ok {
 		return r
 	}
 	return len(Severities)
@@ -49,8 +49,18 @@ func WorseSeverity(a, b string) bool { return SeverityRank(a) < SeverityRank(b) 
 // ValidSeverity reports whether s is in the closed vocabulary reviewers may use
 // (the same set stated in the review output contract).
 func ValidSeverity(s string) bool {
-	_, ok := severityRank[normalizeSeverity(s)]
+	_, ok := severityRank[NormalizeSeverity(s)]
 	return ok
 }
 
-func normalizeSeverity(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+// NormalizeSeverity is the canonical spelling of a severity: what ValidSeverity
+// actually checked, and therefore the only form worth STORING.
+//
+// The raw spelling and the validated one are not the same string, and that gap
+// was a defect: ValidSeverity accepts "high\r" or "High\n\n" because it trims
+// first, but the untouched value kept flowing into the ledger, the summary and a
+// commit body -- where an embedded newline forges message lines and a CR makes
+// `git log` render something other than the stored bytes. Reviewers on an
+// untrusted tree are prompt-injectable, so severity gets normalized where a
+// finding is built and the raw agent text stops there.
+func NormalizeSeverity(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
