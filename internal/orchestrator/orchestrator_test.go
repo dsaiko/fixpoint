@@ -5820,10 +5820,12 @@ func TestCommitPolicyPerRunKeepsEverySalvagedRoundVisible(t *testing.T) {
 // this round dies in the MIDDLE: i1 is fixed and committed, i2's session dies, and
 // i3 is never reached at all.
 //
-// The two commit shapes legitimately disagree about i3, and both sides are pinned
-// here. A squash (per_round, per_run) covers the whole round, so its no-verdict
-// section must name i2 AND i3. The per_fix salvage commit stands alone and holds
-// only the edits of the session that died, so it names only i2.
+// Every commit shape must name i2 AND i3, per_fix included. The salvage commit
+// holds only the dead session's edits, but its subject speaks for the round
+// ("round N (partial, coder failed)") and the round abandons everything behind the
+// failed session -- runFixSessions returns the moment one is salvaged. Under the
+// DEFAULT per_fix nothing rewrites that message, so naming only i2 would leave the
+// one pushed artifact of the round permanently understating the undecided work.
 func TestSalvageCommitNamesTheIssuesTheRoundNeverReached(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -5845,8 +5847,8 @@ func TestSalvageCommitNamesTheIssuesTheRoundNeverReached(t *testing.T) {
 		{
 			// initial + the verified per-fix commit + the salvage commit.
 			name: "per_fix", policy: config.CommitPerFix, commits: 3,
-			want:     []string{"off by one"},
-			unwanted: []string{"nil deref", "unsynchronized map write"},
+			want:     []string{"off by one", "unsynchronized map write"},
+			unwanted: []string{"nil deref"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

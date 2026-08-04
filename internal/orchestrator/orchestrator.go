@@ -3136,7 +3136,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		if !allowSalvage {
 			return false, o.discardFailedFix(ctx, rec.Round, runErr)
 		}
-		return o.salvagePartialFix(ctx, rec, active, runErr)
+		return o.salvagePartialFix(ctx, rec, runErr)
 	}
 	return false, nil
 }
@@ -3269,7 +3269,7 @@ func salvageBody(coderErr string, pending []model.Issue) string {
 // Unlike verifyRound this does NOT attempt a coder correction: the coder just
 // failed, so re-invoking it would most likely burn another timeout. Verification
 // here is a single pass, and a failure preserves the work and stops the run.
-func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRecord, active []model.Issue, runErr error) (salvaged bool, err error) {
+func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRecord, runErr error) (salvaged bool, err error) {
 	if blocking, verr := o.verifyPass(ctx, rec, "", model.VerifyAttemptSalvage); verr != nil {
 		return false, verr
 	} else if len(blocking) > 0 {
@@ -3277,8 +3277,14 @@ func (o *Orchestrator) salvagePartialFix(ctx context.Context, rec *model.RoundRe
 	}
 	// Redact reviewer-authored finding text before it lands in the pushed
 	// commit message, mirroring the normal round commit and the logstore.
+	// pendingIssues, not the single-issue batch this session was handed: the caller
+	// abandons the round's remaining issues the moment this returns salvaged, so the
+	// commit must name every issue the round left undecided -- the one the coder died
+	// on plus the ones no session reached. Anything decided already carries a verdict
+	// and is excluded. This is the same set the per_round and per_run squashes use, so
+	// all three shapes of the salvage message account for the same work.
 	sha, cerr := o.collector.Commit(ctx, salvageHeader(rec.Round),
-		agent.RedactSecrets(salvageBody(fmt.Sprint(runErr), active)), o.gitExclude...)
+		agent.RedactSecrets(salvageBody(fmt.Sprint(runErr), pendingIssues(rec))), o.gitExclude...)
 	if cerr != nil {
 		// A cancellation that lands during the salvage commit is a stop request,
 		// not a salvageable failure. Passing the already-canceled ctx to
