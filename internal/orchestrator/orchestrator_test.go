@@ -6308,3 +6308,109 @@ func TestClosingPassIsNotShownTheTestFileTheEarlierPassWrote(t *testing.T) {
 		t.Errorf("closing pass 2 lost main.go, which final_skip_run_edits must not hide:\n%s", pass2)
 	}
 }
+
+// advisoryFinalLens pins a `final: true, advisory: true` report lens to its own
+// agent, the shape config/fix-code.yaml documents for maintainability/design
+// reports. Its own agent so the report's artifacts and invocation order stay
+// distinguishable from the actionable half's.
+func (f *fixture) advisoryFinalLens(agent string) {
+	f.t.Helper()
+	f.cfg.Agents[agent] = f.cfg.Agents["mock"]
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts, config.ReviewLens{
+		Agent:    agent,
+		Prompt:   f.cfg.Roles.Review.Prompts[0].Prompt,
+		Final:    true,
+		Advisory: true,
+	})
+}
+
+// An ADVISORY-ONLY closing phase is the one shape where the report's own
+// hideRunEdits call is the only narrowing loop.final_skip_run_edits ever gets:
+// runFinalFixPasses returns before its per-pass call when there is nothing
+// actionable to run. Without this test, deleting that call leaves the suite green
+// while a report lens reviews the run's own test files with no narrowing at all --
+// and the failure is invisible by construction, because a reviewer that is not shown
+// a file reports no findings about it, which reads exactly like a clean bill of
+// health.
+func TestAdvisoryOnlyClosingReportIsNotShownTheTestFilesThisRunWrote(t *testing.T) {
+	f := newFixture(t, config.Loop{
+		MaxIterations:     3,
+		CleanRoundsToStop: 1,
+		FinalSkipRunEdits: []string{"**/*_test.go"},
+	})
+	f.advisoryFinalLens("report") // no actionable final lens: the phase is report-only
+
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	// The loop's fix writes a test alongside its source change, as a coder asked for
+	// a regression test does.
+	testfixture.WriteSide(t, f.respDir, 2, fmt.Sprintf(
+		"#!/bin/sh\necho 'package main' > '%s'\necho '// fixed' >> '%s'\n",
+		filepath.Join(f.repo, "loop_test.go"), filepath.Join(f.repo, "main.go")))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "fixed with a test"}))
+	f.respond(3, reviewResponse(t)) // loop round 2: clean -> converged
+	f.respond(4, reviewResponse(t)) // the report pass
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want converged", sum.Termination)
+	}
+	last := sum.Rounds[len(sum.Rounds)-1]
+	if !last.Final {
+		t.Fatalf("the last round should be the report pass: %+v", last)
+	}
+	report := f.reviewPrompt(last.Round)
+	if report == "" {
+		t.Fatal("no report-pass reviewer prompt was written")
+	}
+	if strings.Contains(report, "loop_test.go") {
+		t.Errorf("the advisory report was shown a test file this run wrote:\n%s", report)
+	}
+	if !strings.Contains(report, "main.go") {
+		t.Errorf("the advisory report lost the non-test file the run changed, which stays in scope:\n%s", report)
+	}
+}
+
+// The report's hidden set must be computed AFTER the actionable passes, not once for
+// the whole phase: every pass commits its own fixes, so a set computed before pass 1
+// does not know about the tests pass 1 wrote and the report is handed exactly what
+// this setting exists to hide. Same trap one level down -- with max_final_passes
+// above 1, pass 2 would see pass 1's tests.
+func TestClosingReportRecomputesWhatToHideAfterTheFixPasses(t *testing.T) {
+	f := newFixture(t, config.Loop{
+		MaxIterations:     3,
+		MaxFinalPasses:    1,
+		CleanRoundsToStop: 1,
+		FinalSkipRunEdits: []string{"**/*_test.go"},
+	})
+	f.finalLens()                 // actionable, on mock2
+	f.advisoryFinalLens("report") // and a report after it
+
+	f.respond(1, reviewResponse(t))                           // loop round 1: clean -> converged
+	f.respond(2, reviewResponse(t, aFinding("coverage gap"))) // closing pass 1 (actionable)
+	// Pass 1's own fix writes the test file. Nothing before this point knows the path
+	// exists, which is what makes it a recompute test rather than a presence test.
+	testfixture.WriteSide(t, f.respDir, 3, fmt.Sprintf(
+		"#!/bin/sh\necho 'package main' > '%s'\necho '// covered' >> '%s'\n",
+		filepath.Join(f.repo, "pass1_test.go"), filepath.Join(f.repo, "main.go")))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "test added"}))
+	f.respond(4, reviewResponse(t)) // the report pass
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := sum.Rounds[len(sum.Rounds)-1]
+	report := f.reviewPrompt(last.Round)
+	if report == "" {
+		t.Fatal("no report-pass reviewer prompt was written")
+	}
+	if strings.Contains(report, "pass1_test.go") {
+		t.Errorf("the report was shown the test file the closing pass had just written, so the hidden set was not recomputed:\n%s", report)
+	}
+	if !strings.Contains(report, "main.go") {
+		t.Errorf("the report lost the non-test file the run changed:\n%s", report)
+	}
+}

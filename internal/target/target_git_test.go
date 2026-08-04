@@ -2886,8 +2886,9 @@ func assertNoCredentials(t *testing.T, material string) {
 // in code rather than config ("a safety property must not be something a config can
 // forget"). This is the test that keeps them working: an EMPTY target.exclude, no
 // .gitignore, and every shape of credential path in the tree. It covers BOTH
-// collection paths, because they filter at different call sites -- listGitFiles via
-// skipFile, walkFiles via matchAny -- and a change to either one, or to compileGlobs'
+// collection paths, because they are separate code -- listGitFiles asks git for the
+// listing, walkFiles walks the filesystem, and both filter through skipFile -- and a
+// change to either one, or to compileGlobs'
 // "**/" expansion, would otherwise leave the suite green while every directory-mode
 // prompt started naming the operator's key files.
 func TestCollectDirectoryAlwaysExcludesCredentialFiles(t *testing.T) {
@@ -4356,49 +4357,68 @@ func TestScopeReportsFailedCleanupKillFromUntrackedScan(t *testing.T) {
 // and it must narrow ONLY that -- a matching file the run did not touch, and a
 // run-written file that does not match, both stay in scope.
 func TestHideRunEditsHidesOnlyTheRunsOwnMatchingFiles(t *testing.T) {
-	repo := gitRepo(t)
-	writeFile(t, repo, "old_test.go", "package main\n") // matches, but not ours
-	writeFile(t, repo, "new_test.go", "package main\n") // matches and ours
-	writeFile(t, repo, "helper.go", "package main\n")   // ours, does not match
-	c := New(config.Target{Mode: "directory", Path: repo})
-	if err := c.Prepare(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	// BOTH collection paths, because they are different code -- listGitFiles asks git
+	// for the listing, walkFiles walks the filesystem -- and their parity is exactly
+	// what broke here once: walkFiles matched the exclude globs directly instead of
+	// going through skipFile, so the hidden set applied on the git path only. Nothing
+	// end-to-end can catch a regression either, which is why the parity is pinned
+	// here: resolveRunBase needs a HEAD, so a non-repository target never gets a
+	// runBase and the orchestrator's hideRunEdits returns before narrowing anything.
+	for _, tc := range []struct {
+		name string
+		tree func(*testing.T) string
+	}{
+		{"git", gitRepo},
+		// A plain directory, so IsGitRepo is false and listFiles takes walkFiles.
+		{"walk", func(t *testing.T) string { t.Helper(); return t.TempDir() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := tc.tree(t)
+			writeFile(t, dir, "main.go", "package main\n")     // untouched source
+			writeFile(t, dir, "old_test.go", "package main\n") // matches, but not ours
+			writeFile(t, dir, "new_test.go", "package main\n") // matches and ours
+			writeFile(t, dir, "helper.go", "package main\n")   // ours, does not match
+			c := New(config.Target{Mode: "directory", Path: dir})
+			if err := c.Prepare(t.Context()); err != nil {
+				t.Fatal(err)
+			}
 
-	// Exactly what the orchestrator passes: the paths this run's commits changed.
-	changed := map[string]bool{"new_test.go": true, "helper.go": true}
-	hidden, err := c.HideRunEdits(changed, []string{"**/*_test.go"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(hidden) != 1 || hidden[0] != "new_test.go" {
-		t.Fatalf("HideRunEdits() = %v, want exactly [new_test.go]", hidden)
-	}
+			// Exactly what the orchestrator passes: the paths this run's commits changed.
+			changed := map[string]bool{"new_test.go": true, "helper.go": true}
+			hidden, err := c.HideRunEdits(changed, []string{"**/*_test.go"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(hidden) != 1 || hidden[0] != "new_test.go" {
+				t.Fatalf("HideRunEdits() = %v, want exactly [new_test.go]", hidden)
+			}
 
-	material, err := c.Collect(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(material, "new_test.go") {
-		t.Errorf("a test file this run wrote is still in the closing round's material:\n%s", material)
-	}
-	for _, want := range []string{"old_test.go", "helper.go", "main.go"} {
-		if !strings.Contains(material, want) {
-			t.Errorf("Collect() dropped %q, which HideRunEdits must not touch:\n%s", want, material)
-		}
-	}
+			material, err := c.Collect(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(material, "new_test.go") {
+				t.Errorf("a test file this run wrote is still in the closing round's material:\n%s", material)
+			}
+			for _, want := range []string{"old_test.go", "helper.go", "main.go"} {
+				if !strings.Contains(material, want) {
+					t.Errorf("Collect() dropped %q, which HideRunEdits must not touch:\n%s", want, material)
+				}
+			}
 
-	// Cleared again: the collector outlives the closing phase, and a hidden set left
-	// behind would silently narrow every later collection and clean check too.
-	if _, err := c.HideRunEdits(nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	material, err = c.Collect(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(material, "new_test.go") {
-		t.Errorf("clearing HideRunEdits did not restore full scope:\n%s", material)
+			// Cleared again: the collector outlives the closing phase, and a hidden set
+			// left behind would silently narrow every later collection and clean check.
+			if _, err := c.HideRunEdits(nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			material, err = c.Collect(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(material, "new_test.go") {
+				t.Errorf("clearing HideRunEdits did not restore full scope:\n%s", material)
+			}
+		})
 	}
 }
 
