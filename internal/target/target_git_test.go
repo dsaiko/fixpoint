@@ -4134,6 +4134,112 @@ func TestGitScanNULWedgedCallbackStillReturnsOnCancel(t *testing.T) {
 	}
 }
 
+// The goroutine the test above deliberately abandons is only safe if its callback
+// reads nothing another goroutine rewrites. It keeps calling fn once per entry
+// bufio.Scanner already buffered -- long after gitScanNUL returned and the next phase
+// began -- and both streamed listings' callbacks open with skipFile, whose first
+// question is whether the path is hidden. HideRunEdits answers that question from
+// runFinalPhase's defer, which fires on exactly the path that abandons a listing: a
+// closing pass whose Collect failed. Reading c.hidden through the receiver there is a
+// concurrent map read and write, which is a FATAL runtime error rather than something
+// the run can report -- at the run's last step, after the loop's commits were
+// verified and before the journal's run_finished record and the summary are written.
+// fileScope's snapshot is what keeps the callback off the field; this pins it, by
+// clearing the field while the callback is provably still in flight and requiring the
+// verdicts that follow to be the snapshot's.
+func TestAbandonedScanCallbackJudgesAgainstTheScopeSnapshot(t *testing.T) {
+	repo := gitRepo(t)
+	// Enough entries that git's listing is sitting in the scanner's buffer when the
+	// cancel lands, so the abandoned goroutine still has callbacks left to make.
+	for i := range 300 {
+		writeFile(t, repo, fmt.Sprintf("f%03d_test.go", i), "package main\n")
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "a listing worth buffering")
+
+	c := New(config.Target{Mode: "directory", Path: repo})
+	const ours = "f000_test.go" // a test file "this run" wrote: hidden from the closing round
+	if _, err := c.HideRunEdits(map[string]bool{ours: true}, []string{"**/*_test.go"}); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := c.fileScope()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	entered, release, enough := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	// Released only once the field has been rewritten, so every callback after the
+	// first one runs in the window the fix is about.
+	var once sync.Once
+	var drained, stale atomic.Int64
+	done := make(chan error, 1)
+	go func() {
+		done <- c.gitScanNUL(ctx, func(string) {
+			wedge := false
+			once.Do(func() { wedge = true })
+			if wedge {
+				close(entered)
+				<-release
+				return
+			}
+			if !c.skipFile(ours, scope) {
+				stale.Add(1)
+			}
+			if drained.Add(1) == 20 {
+				close(enough)
+			}
+		}, "ls-files", "--cached", "-z")
+	}()
+
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("gitScanNUL returned before delivering a listing entry: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("git never delivered a listing entry to fn")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("gitScanNUL() err = %v, want it to wrap context.Canceled", err)
+		}
+	case <-time.After(agent.PipeDrainGrace + 30*time.Second):
+		t.Fatal("gitScanNUL never returned with fn wedged; the abandonment this test is about did not happen")
+	}
+
+	// gitScanNUL has returned with its scan goroutine still inside fn -- precisely the
+	// state runFinalPhase's defer runs in. Clear the hidden set the way that defer
+	// does, then let the goroutine work through what it still holds.
+	if _, err := c.HideRunEdits(nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	// Keep rewriting the field while the goroutine drains, so a callback that consulted
+	// it directly is a data race the -race build reports as well as a stale verdict.
+	// Neither rewrite ever hides `ours` again, so a "skip" verdict can only be the
+	// snapshot's.
+	for range 50 {
+		if _, err := c.HideRunEdits(map[string]bool{"other.go": true}, []string{"other.go"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.HideRunEdits(nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	select {
+	case <-enough:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the abandoned scan made only %d callback(s) after the cancel; nothing was left buffered for the rewrite to race", drained.Load())
+	}
+	if n := stale.Load(); n != 0 {
+		t.Errorf("%d abandoned callback(s) judged %s against the rewritten field instead of the scope snapshot; the callback reads state the next phase mutates", n, ours)
+	}
+}
+
 // gitScanNUL hand-copies c.git's hardening (the gitenv.SafeConfigArgs -c overrides and the
 // hardened environment) because it runs git itself. core.fsmonitor names a program
 // git spawns while listing files, and a target's own .git/config can set it -- so a

@@ -455,17 +455,33 @@ func (c *Collector) listFiles(ctx context.Context) (int, string, error) {
 }
 
 // fileScope is what both directory collectors filter against: the compiled
-// exclude globs, and the canonical target root every symlink's destination is
-// checked against (see symlinkOutOfScope).
+// exclude globs, the canonical target root every symlink's destination is
+// checked against (see symlinkOutOfScope), and a snapshot of the run's hidden
+// set. Everything a per-entry callback needs to judge a path lives here rather
+// than on the Collector, for the reason fileScope's constructor gives.
 type fileScope struct {
 	excludes []*regexp.Regexp
-	root     string // target.path with every symlink in it resolved
+	root     string          // target.path with every symlink in it resolved
+	hidden   map[string]bool // c.hidden as of this call; see fileScope
 }
 
 // fileScope builds the filter both collectors share. The root is resolved once
 // here rather than per file: it is what a symlink's canonical destination is
 // compared against, and target.path itself may sit under a symlinked parent
 // (/tmp -> /private/tmp), which would otherwise make every path look external.
+//
+// The hidden set is COPIED rather than read through the receiver, because the
+// per-entry callbacks of a streamed listing do not all run on this goroutine, nor
+// necessarily before the listing's caller returns: gitScanNUL abandons a scan whose
+// callback outlives the drain grace (see endScanOnCancel), and that goroutine keeps
+// calling fn for every entry already buffered. HideRunEdits then REPLACES the field
+// -- from runFinalPhase's defer, which fires on exactly the error path that
+// abandonment produces -- so a callback consulting c.hidden directly would be a
+// concurrent map read and write: a fatal runtime error, killing the process before
+// the journal's run_finished record and the summary are written, on a run whose
+// commits were already verified. A snapshot cannot be written by anyone, so the
+// callback's view is fixed for the whole listing. c.logsExclude needs no such copy:
+// ExcludeLogs is called once during construction, before any collection.
 func (c *Collector) fileScope() (fileScope, error) {
 	// EffectiveExcludes adds the mandatory credential patterns, which no config can
 	// drop: a reviewer reads any path it is pointed at, so never point it at a key.
@@ -477,7 +493,11 @@ func (c *Collector) fileScope() (fileScope, error) {
 	if err != nil {
 		return fileScope{}, fmt.Errorf("resolve target.path %s: %w", c.cfg.Path, err)
 	}
-	return fileScope{excludes: excludes, root: root}, nil
+	hidden := make(map[string]bool, len(c.hidden))
+	for p := range c.hidden {
+		hidden[p] = true
+	}
+	return fileScope{excludes: excludes, root: root, hidden: hidden}, nil
 }
 
 // listGitFiles asks git for the scope instead of walking the filesystem:
@@ -509,7 +529,7 @@ func (c *Collector) listGitFiles(ctx context.Context, scope fileScope) (int, str
 			return
 		}
 		rel = filepath.ToSlash(rel)
-		if c.skipFile(rel, scope.excludes) {
+		if c.skipFile(rel, scope) {
 			return
 		}
 		// --cached reports index entries, which outlive a file deleted from the
@@ -596,6 +616,13 @@ func scanProgressed(now, mark uint64) bool {
 // left to finish on its own. The listing is failed either way, so the state fn built
 // is already something no caller may use -- and none does: every one of them
 // discards it when this function's caller returns an error.
+//
+// That covers what fn WRITES. What it READS is the callers' side of the bargain: an
+// abandoned goroutine keeps calling fn once per entry bufio.Scanner already
+// buffered, long after the caller returned and the next phase began, so a callback
+// must consult nothing another goroutine can rewrite. Both streamed listings judge
+// paths against a per-call fileScope for exactly that reason -- see its snapshot of
+// the hidden set, which HideRunEdits replaces on this very error path.
 func endScanOnCancel(ctx context.Context, pr *os.File, scanned <-chan error) error {
 	_ = pr.Close()
 	var scanErr error
@@ -850,18 +877,21 @@ func scanNUL(data []byte, atEOF bool) (int, []byte, error) {
 	return 0, nil, nil
 }
 
-// skipFile reports whether a target-relative file path is out of scope: inside
-// the run's own logs directory, or matched by an exclude glob. The walk applies
-// the logs check per directory (and prunes there); a git listing yields only file
-// paths, so the same rule is applied by prefix here.
-func (c *Collector) skipFile(rel string, excludes []*regexp.Regexp) bool {
-	if c.hidden[rel] {
+// skipFile reports whether a target-relative file path is out of scope: hidden by
+// HideRunEdits, inside the run's own logs directory, or matched by an exclude glob.
+// The walk applies the logs check per directory (and prunes there); a git listing
+// yields only file paths, so the same rule is applied by prefix here.
+//
+// It takes the whole scope, not just the globs, because the hidden set it consults
+// must be the caller's snapshot rather than the live field -- see fileScope.
+func (c *Collector) skipFile(rel string, scope fileScope) bool {
+	if scope.hidden[rel] {
 		return true
 	}
 	if c.logsExclude != "" && (rel == c.logsExclude || strings.HasPrefix(rel, c.logsExclude+"/")) {
 		return true
 	}
-	return matchAny(excludes, rel)
+	return matchAny(scope.excludes, rel)
 }
 
 // symlinkOutOfScope reports whether a symlink at the target-relative path rel
@@ -895,7 +925,7 @@ func (c *Collector) symlinkOutOfScope(rel string, scope fileScope) bool {
 	// Inside the root, but the destination gets the same filtering the pathname
 	// got: a `notes.md -> config/.env` alias must not smuggle in a file the
 	// exclusions already removed under its real name.
-	return c.skipFile(filepath.ToSlash(inner), scope.excludes)
+	return c.skipFile(filepath.ToSlash(inner), scope)
 }
 
 // walkFiles is the non-git fallback: target.path may be any directory, so scope
@@ -1977,7 +2007,7 @@ func (c *Collector) symlinkExcludes(ctx context.Context, scope fileScope) ([]str
 		}
 		rel = filepath.ToSlash(rel)
 		// Already dropped by name, so a second spec for it would only crowd argv.
-		if c.skipFile(rel, scope.excludes) {
+		if c.skipFile(rel, scope) {
 			return
 		}
 		fi, err := os.Lstat(filepath.Join(c.cfg.Path, rel))
