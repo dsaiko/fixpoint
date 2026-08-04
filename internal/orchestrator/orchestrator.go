@@ -892,7 +892,7 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 	).Replace(o.fixCommitMessage())
 	var body strings.Builder
 	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, flattenField(it.Category), it.Severity, flattenField(it.Loc()))
-	if d := flattenField(it.VerdictDetail); d != "" {
+	if d := flattenField(issueVerdictDetail(rec, it.ID)); d != "" {
 		body.WriteString("\n" + d + "\n")
 	}
 	// Redact the subject as well as the body: it is agent-authored text bound for
@@ -2014,6 +2014,23 @@ func (o *Orchestrator) setIssueVerdict(rec *model.RoundRecord, i int, verdict, d
 			rec.Findings[j].VerdictDetail = detail
 		}
 	}
+}
+
+// issueVerdictDetail reads back the coder's verdict detail for one of the round's
+// issues, LIVE from the record.
+//
+// It cannot be taken from a model.Issue the caller is holding: runFixSessions
+// iterates a snapshot taken before any session ran, so its copies still carry the
+// empty detail they had then, and setIssueVerdict writes the coder's detail onto
+// rec.Issues and rec.Findings -- never onto a copy someone else took. Reading it
+// back here is what puts what the coder changed into the per-fix commit body.
+func issueVerdictDetail(rec *model.RoundRecord, id string) string {
+	for i := range rec.Issues {
+		if rec.Issues[i].ID == id {
+			return rec.Issues[i].VerdictDetail
+		}
+	}
+	return ""
 }
 
 // reopenFixedIssue withdraws ONE fixed verdict and reports whether it found one to

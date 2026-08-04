@@ -5264,6 +5264,34 @@ func TestCommitPolicyPerFixCommitsEachIssueSeparately(t *testing.T) {
 	}
 }
 
+// A per-fix commit body must record what the coder changed, not just where the
+// issue was: the location line is already in the subject's title, so a body
+// without the verdict detail leaves the one commit that IS the fix saying nothing
+// about it. The detail is written onto the round record after the session reports,
+// so reading it off the pre-session snapshot silently yields an empty body.
+func TestPerFixCommitBodyRecordsTheCodersDetail(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 12, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{
+		ID: "i1", Verdict: "fixed", Detail: "clamped the loop bound to len(xs)",
+	}))
+	f.respond(3, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	body := gitRun(t, f.repo, "log", "-1", "--format=%b")
+	if !strings.Contains(body, "clamped the loop bound to len(xs)") {
+		t.Errorf("per-fix commit body is missing the coder's verdict detail:\n%s", body)
+	}
+	if !strings.Contains(body, "main.go:12") {
+		t.Errorf("per-fix commit body is missing the issue location:\n%s", body)
+	}
+}
+
 // The per-fix subject renders a reviewer-authored title, so it needs the same
 // handling the body gets. A title quoting a credential the reviewer found while
 // exploring must be masked -- the commit is the one artifact meant to be pushed --
