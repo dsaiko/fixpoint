@@ -5357,6 +5357,39 @@ func TestPerFixCommitBodyCannotForgeATrailerFromTheDetail(t *testing.T) {
 	}
 }
 
+// A commit is the most-read thing fixpoint writes -- it is pushed, and every later
+// `git log`/`git show` renders it in someone's terminal -- so the agent-authored
+// text in it must be defanged the way the prompts and logs are. Collapsing
+// whitespace does not do it: ESC and the bidi overrides are not unicode.IsSpace,
+// git stores the message verbatim, and OSC 52 would then write the reader's
+// clipboard while a bidi override rewrites what the finding appears to say.
+func TestPerFixCommitMessageDefangsTerminalControlCharacters(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 12,
+			Title: "off by one\x1b]52;c;cGF5bG9hZA==\x07"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{
+		ID: "i1", Verdict: "fixed", Detail: "clamped \x1b[2Jthe bound\u202egnorw si siht",
+	}))
+	f.respond(3, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	if strings.ContainsAny(msg, "\x1b\x07") || strings.ContainsRune(msg, '\u202e') {
+		t.Errorf("commit message carries raw terminal control characters:\n%q", msg)
+	}
+	// Escaped, not dropped: the commit still records what the agents reported.
+	for _, want := range []string{"off by one", "clamped", "the bound", `\x1b`, `\u202e`} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("commit message is missing %q:\n%s", want, msg)
+		}
+	}
+}
+
 // per_round regroups the round's per-fix commits into the single commit fixpoint
 // has always produced. The squash is `reset --soft`, so the tree must be identical
 // to what the per-fix commits already verified -- and the body describes the round.

@@ -857,7 +857,17 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 // read as `Signed-off-by: ...`. Every such line is written as a `- ` bullet (see
 // writeVerdictSection and verifyAndCommitFix) -- git's trailer parser rejects a
 // line whose token carries a space, so a bullet can never become a trailer.
-func flattenField(s string) string { return strings.Join(strings.Fields(s), " ") }
+//
+// Nor does flattening defang the text: ESC and the bidi overrides are not
+// unicode.IsSpace, so strings.Fields passes them straight through, and git stores
+// a message verbatim. A commit is the most-read artifact fixpoint produces -- it
+// is pushed, and every later `git log`/`git show` renders it in someone's terminal
+// -- so it gets the same escaping the prompts, logs and scoreboard get: OSC 52
+// must not reach a reader's clipboard, and a bidi override must not make the
+// finding read as something the reviewer never wrote.
+func flattenField(s string) string {
+	return agent.EscapeTerminal(strings.Join(strings.Fields(s), " "))
+}
 
 // verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
 // a round commit -- nothing lands unverified -- with the granularity moved down to
