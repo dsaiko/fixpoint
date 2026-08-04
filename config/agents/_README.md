@@ -29,7 +29,10 @@ command prints, so any CLI works with no code change.
 `model` and `effort` are injected through the `{{model}}` and `{{effort}}`
 placeholders. A command token whose placeholder resolves to empty is dropped
 whole, so keep a flag and its value in ONE token ("--model {{model}}") and
-`effort` disappears cleanly for providers that have no such setting.
+`effort` disappears cleanly for providers that have no such setting. A token is
+split on whitespace BEFORE substitution, so each value lands as exactly one
+argument and cannot smuggle further flags in after the ones the file hardcodes;
+a `model`/`effort` containing whitespace, or starting with `-`, is refused.
 
 `can_edit` must reflect what the command ACTUALLY permits. Reviewers run in
 enforced read-only modes (`can_edit: false`); only an agent whose command allows

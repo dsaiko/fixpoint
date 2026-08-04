@@ -415,19 +415,38 @@ func (a Agent) placeholderValues() map[string]string {
 }
 
 // Argv renders the command template into argv. Each Command element is a
-// template token: placeholders are substituted, a token referencing a
-// placeholder that resolves to empty is dropped whole (so a flag and its
-// value drop together), and surviving tokens are split on whitespace so
-// "--model fable" becomes two argv elements.
+// template token: it is split on whitespace so "--model fable" becomes two argv
+// elements, each field's placeholders are substituted, and a token referencing a
+// placeholder that resolves to empty is dropped whole (so a flag and its value
+// drop together).
+//
+// SECURITY: the split happens BEFORE substitution, so a placeholder's value is
+// always exactly one argv element however it is spelled. Splitting afterwards
+// would let a model/effort value carry its own arguments -- `model: claude-opus-5
+// --setting-sources target` would append a second --setting-sources after the one
+// config/agents/claude.yaml hardcodes, and the CLI's last-flag-wins parsing would
+// load the target's settings, hooks and MCP servers after all. Validate refuses
+// such a value outright (see validCommandValue); this keeps the refusal from
+// being the only thing between a config field and the argument list.
 func (a Agent) Argv() []string {
 	values := a.placeholderValues()
 	var argv []string
 	for _, tok := range a.Command {
-		sub, keep := expandToken(tok, values)
-		if !keep {
+		fields := strings.Fields(tok)
+		subs := make([]string, 0, len(fields))
+		drop := false
+		for _, f := range fields {
+			sub, keep := expandToken(f, values)
+			if !keep {
+				drop = true
+				break
+			}
+			subs = append(subs, sub)
+		}
+		if drop {
 			continue
 		}
-		argv = append(argv, strings.Fields(sub)...)
+		argv = append(argv, subs...)
 	}
 	return argv
 }
@@ -1263,6 +1282,12 @@ func (c *Config) Validate() error {
 		if err := validPathIdent("agent", name); err != nil {
 			return fmt.Errorf("%s: %w", ctx, err)
 		}
+		if err := validCommandValue(name, "model", a.Model); err != nil {
+			return err
+		}
+		if err := validCommandValue(name, "effort", a.Effort); err != nil {
+			return err
+		}
 		argv := a.Argv()
 		if len(argv) == 0 {
 			return fmt.Errorf("agents.%s: empty command", name)
@@ -1589,6 +1614,28 @@ func validPathIdent(kind, name string) error {
 		return fmt.Errorf("%s name %q must not contain a path separator: it is substituted into logs.pattern, and the joined path is cleaned before it is written, so the artifact silently lands on another identity's file or outside the round directory", kind, name)
 	case name == "." || name == "..":
 		return fmt.Errorf("%s name %q must not be a dot segment: it is substituted into logs.pattern, and the joined path is cleaned before it is written, so the artifact silently lands on another identity's file or outside the round directory", kind, name)
+	}
+	return nil
+}
+
+// validCommandValue refuses a model/effort value that would read as an argument
+// rather than as a value. Both are substituted into the command template, so a
+// value carrying whitespace is trying to be more than one argv element, and one
+// starting with '-' is trying to be a flag: `--model --setting-sources` is parsed
+// by some CLIs as a bare --setting-sources with --model left to default, which is
+// exactly the hardcoded flag config/agents/claude.yaml exists to guarantee.
+//
+// Neither shape has a legitimate use -- no CLI names a model or an effort level
+// with a space or a leading dash -- so this costs nothing and closes the field as
+// an injection point, whatever a file inside the target declares. Argv keeps the
+// value to a single element regardless; this makes the attempt an error the
+// operator sees rather than a silently odd argument.
+func validCommandValue(agent, field, v string) error {
+	switch {
+	case strings.ContainsAny(v, " \t\n\r\v\f"):
+		return fmt.Errorf("agents.%s: %s %q must not contain whitespace: it is substituted into the command template, and a value spelled as several words is an attempt to append arguments of its own to the agent's command line", agent, field, v)
+	case strings.HasPrefix(v, "-"):
+		return fmt.Errorf("agents.%s: %s %q must not start with '-': it is substituted into the command template, where a leading dash makes the value read as a flag rather than as the argument of the one it follows", agent, field, v)
 	}
 	return nil
 }

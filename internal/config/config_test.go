@@ -40,6 +40,20 @@ func TestArgv(t *testing.T) {
 			Agent{Effort: "high", Command: []string{"codex", "-c model_reasoning_effort={{effort}}"}},
 			[]string{"codex", "-c", "model_reasoning_effort=high"},
 		},
+		// Validate refuses these values (see TestValidate), but the split must not be
+		// what enforces it: a substituted value is one argv element however it is
+		// spelled, so it can never append an argument of its own after the flags the
+		// agent file hardcoded.
+		{
+			"whitespace in a value stays one argv element",
+			Agent{Model: "claude-opus-5 --setting-sources target", Command: []string{"claude", "--setting-sources user", "--model {{model}}"}},
+			[]string{"claude", "--setting-sources", "user", "--model", "claude-opus-5 --setting-sources target"},
+		},
+		{
+			"whitespace in a key=value value stays one argv element",
+			Agent{Effort: "high -c sandbox_mode=danger-full-access", Command: []string{"codex", "-c model_reasoning_effort={{effort}}"}},
+			[]string{"codex", "-c", "model_reasoning_effort=high -c sandbox_mode=danger-full-access"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -164,6 +178,26 @@ func TestValidate(t *testing.T) {
 			a.Command = nil
 			c.Agents["rev"] = a
 		}, "empty command"},
+		// model/effort are substituted into the command template. A value that is
+		// several words, or that starts like a flag, is trying to add arguments the
+		// agent file did not write -- `--setting-sources target` appended after the
+		// one config/agents/claude.yaml hardcodes is the target's own settings file,
+		// hooks included, loaded by a reviewer that trusts nothing.
+		{"model with whitespace", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Model = "claude-opus-5 --setting-sources target"
+			c.Agents["rev"] = a
+		}, "must not contain whitespace"},
+		{"effort with whitespace", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Effort = "high -c sandbox_mode=danger-full-access"
+			c.Agents["rev"] = a
+		}, "must not contain whitespace"},
+		{"model spelled as a flag", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Model = "--setting-sources"
+			c.Agents["rev"] = a
+		}, "must not start with '-'"},
 		{"binary not on PATH", func(c *Config) {
 			a := c.Agents["rev"]
 			a.Command = []string{"definitely-not-a-binary-xyz"}
