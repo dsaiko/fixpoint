@@ -851,6 +851,12 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 // keyword. Reviewer-authored category/title/file and coder-authored verdict
 // detail are all reachable by a prompt injection on a run over untrusted
 // content, and the trust gate authorizes file edits, not commit metadata.
+//
+// Flattening alone is not enough for a value that ends up ALONE on its own line:
+// one line is exactly the shape of a trailer, so the collapsed text can still
+// read as `Signed-off-by: ...`. Every such line is written as a `- ` bullet (see
+// writeVerdictSection and verifyAndCommitFix) -- git's trailer parser rejects a
+// line whose token carries a space, so a bullet can never become a trailer.
 func flattenField(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
@@ -892,8 +898,11 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 	).Replace(o.fixCommitMessage())
 	var body strings.Builder
 	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, flattenField(it.Category), it.Severity, flattenField(it.Loc()))
+	// The detail is the body's LAST line, and a lone `token: value` line at the end
+	// of a message IS a git trailer -- so it goes out as a bullet, the same shape
+	// writeVerdictSection uses, which git's trailer parser can never accept.
 	if d := flattenField(issueVerdictDetail(rec, it.ID)); d != "" {
-		body.WriteString("\n" + d + "\n")
+		body.WriteString("\n- " + d + "\n")
 	}
 	// Redact the subject as well as the body: it is agent-authored text bound for
 	// a pushed commit, exactly what squashTo redacts for the same reason.

@@ -5328,6 +5328,35 @@ func TestPerFixCommitSubjectRedactsAndFlattensTheTitle(t *testing.T) {
 	}
 }
 
+// The coder's verdict detail is the LAST line of the per-fix commit body, and a
+// lone `token: value` line at the end of a message is what git calls a trailer:
+// forging one attributes the commit to someone who never made it, or auto-closes
+// an unrelated issue on push. Flattening the detail onto one line does not stop
+// that -- one line is already the shape -- so the detail must be rendered so git
+// cannot parse it as a trailer, while still saying what the coder did.
+func TestPerFixCommitBodyCannotForgeATrailerFromTheDetail(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 12, Title: "off by one"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{
+		ID: "i1", Verdict: "fixed", Detail: "Signed-off-by: Someone <nobody@example.com>",
+	}))
+	f.respond(3, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if trailers := strings.TrimSpace(gitRun(t, f.repo, "log", "-1", "--format=%(trailers)")); trailers != "" {
+		t.Errorf("the verdict detail forged a git trailer: %q", trailers)
+	}
+	// Defanged, not dropped: the commit still has to record what the coder reported.
+	if body := gitRun(t, f.repo, "log", "-1", "--format=%b"); !strings.Contains(body, "nobody@example.com") {
+		t.Errorf("per-fix commit body lost the verdict detail:\n%s", body)
+	}
+}
+
 // per_round regroups the round's per-fix commits into the single commit fixpoint
 // has always produced. The squash is `reset --soft`, so the tree must be identical
 // to what the per-fix commits already verified -- and the body describes the round.
