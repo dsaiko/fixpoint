@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -6421,21 +6422,44 @@ func TestClosingReportRecomputesWhatToHideAfterTheFixPasses(t *testing.T) {
 // opposite -- that the whole tree is reviewed. Stale narrowing is the one kind of
 // gap nobody can see, since a reviewer that is not shown a file reports no findings
 // about it, which reads exactly like a clean bill of health.
+// liveOnFirstCheck answers its first Err() caller with a live context and every
+// later one with the wrapped context's error, which is how a cancellation that
+// lands just after a ctx.Err() check looks from inside the call that check guards.
+// Done() is the wrapped -- already canceled -- context's, so the git operation
+// fails the way a real late cancellation makes it fail.
+type liveOnFirstCheck struct {
+	//nolint:containedctx // this IS a context (a decorator over the embedded one), not a struct stashing one as state
+	context.Context
+	checks atomic.Int64
+}
+
+func (c *liveOnFirstCheck) Err() error {
+	if c.checks.Add(1) == 1 {
+		return nil
+	}
+	return c.Context.Err()
+}
+
 func TestAFailedHiddenSetRecomputeDropsTheEarlierPassesNarrowing(t *testing.T) {
 	// An unresolvable base is what a broken ChangedSince looks like from here (a git
 	// index lock or an operation timeout arrives the same way).
 	const brokenBase = "0000000000000000000000000000000000000000"
 	for _, tc := range []struct {
-		name     string
-		base     string
-		canceled bool
-		wantWarn bool
+		name       string
+		base       string
+		canceled   bool
+		lateCancel bool
+		wantWarn   bool
 	}{
 		{name: "git failure", base: brokenBase, wantWarn: true},
 		// A cancellation fails ChangedSince instantly, but the phase is being
 		// abandoned anyway, so it must clear the set WITHOUT crying wolf about a
 		// narrowing nobody is waiting on.
 		{name: "cancellation", base: "unused", canceled: true},
+		// The same, for a cancellation that lands in the window between the
+		// ctx.Err() check and the git call it guards: the failure it causes is
+		// indistinguishable from a git failure unless the context is re-checked.
+		{name: "cancellation during the git call", base: "unused", lateCancel: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, config.Loop{FinalSkipRunEdits: []string{"**/*_test.go"}})
@@ -6459,10 +6483,13 @@ func TestAFailedHiddenSetRecomputeDropsTheEarlierPassesNarrowing(t *testing.T) {
 
 			// Pass 2: the recompute fails.
 			ctx := t.Context()
-			if tc.canceled {
+			if tc.canceled || tc.lateCancel {
 				canceled, cancel := context.WithCancel(ctx)
 				cancel()
 				ctx = canceled
+				if tc.lateCancel {
+					ctx = &liveOnFirstCheck{Context: canceled}
+				}
 			}
 			o.hideRunEdits(ctx, tc.base)
 

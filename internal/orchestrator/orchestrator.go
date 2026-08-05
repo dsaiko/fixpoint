@@ -1177,6 +1177,13 @@ func (o *Orchestrator) hideRunEdits(ctx context.Context, runBase string) {
 	}
 	changed, err := o.collector.ChangedSince(ctx, runBase)
 	if err != nil {
+		// Cancellation can also land between the check above and this git call, which
+		// fails it the same way. The set is already cleared, and the same reasoning
+		// applies: warn only when git itself is the reason, or the operator is told
+		// about the review breadth of a closing round that never runs.
+		if ctx.Err() != nil {
+			return
+		}
 		o.logf("WARNING: could not list this run's own edits (%v); the closing round reviews the whole tree, including files it wrote (loop.final_skip_run_edits)", err)
 		return
 	}
