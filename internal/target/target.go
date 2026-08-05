@@ -814,14 +814,27 @@ scan:
 				continue
 			}
 			_ = pr.Close()
-			scanErr = <-scanned
-			// The listing could not be read to EOF, so a complete one is
-			// indistinguishable from one cut off mid-entry -- and git's exit status
-			// cannot tell them apart either, since git itself succeeded. Report it
-			// rather than hand the round a scope that may be silently narrow. A scan
-			// that reached EOF in the same instant the grace fired keeps its own (nil)
-			// outcome: that listing IS known complete.
-			if errors.Is(scanErr, os.ErrClosed) {
+			// Bounded for endScanOnCancel's reason, and against the one interleaving
+			// this branch can lose to: between the Load above and this close, the very
+			// escaped writer being cut can deliver an entry, putting the scan inside fn
+			// where the close says nothing to it. An unbounded join would then wait on a
+			// callback that is allowed never to return -- an Lstat on a hard-mounted
+			// export -- and ctx cannot rescue it, since nothing below consults ctx again.
+			// So take the same trade: the listing is failed here either way, so the state
+			// fn built is already something every caller discards, and the goroutine is
+			// left to finish on its own.
+			select {
+			case scanErr = <-scanned:
+				// The listing could not be read to EOF, so a complete one is
+				// indistinguishable from one cut off mid-entry -- and git's exit status
+				// cannot tell them apart either, since git itself succeeded. Report it
+				// rather than hand the round a scope that may be silently narrow. A scan
+				// that reached EOF in the same instant the grace fired keeps its own (nil)
+				// outcome: that listing IS known complete.
+				if errors.Is(scanErr, os.ErrClosed) {
+					scanErr = errListingHeldOpen
+				}
+			case <-time.After(agent.PipeDrainGrace):
 				scanErr = errListingHeldOpen
 			}
 			break scan
