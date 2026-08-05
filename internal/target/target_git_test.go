@@ -4013,6 +4013,71 @@ func TestGitScanNULTrickledListingIsBoundedByContext(t *testing.T) {
 	}
 }
 
+// joinScan's outcome mapping, tested directly because one of its two callers cannot
+// reach it any other way. The cancellation path below drives it end to end, but the
+// grace branch's call is only entered when scanProgressed says no, which needs an
+// even counter -- fn not in flight -- so reaching that call with the scan wedged
+// inside fn requires git to deliver an entry in the window between the branch's
+// progress.Load and its pr.Close. A wedge that predates the firing re-arms the grace
+// instead, which is the ctx-bounded path the tests below cover. So the timeout arm of
+// that call has no end-to-end test on purpose, and without this one a future
+// simplification back to a bare receive would leave the suite green while restoring
+// an unbounded hang in Collect, with gitOpTimeout already spent as ctx and nothing
+// above it left to cut.
+func TestJoinScanReportsWhyTheListingEnded(t *testing.T) {
+	own := errors.New("scanner's own failure")
+	cut := errors.New("why the read end was closed")
+	tests := []struct {
+		name    string
+		scanned error
+		want    error
+	}{
+		// The one outcome the close itself manufactures, so it says nothing about the
+		// listing and is replaced by the reason we closed.
+		{name: "closed under it", scanned: os.ErrClosed, want: cut},
+		// A scan that reached EOF in the same instant keeps its own outcome: that
+		// listing IS known complete.
+		{name: "already finished", scanned: nil, want: nil},
+		{name: "failed on its own", scanned: own, want: own},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scanned := make(chan error, 1)
+			scanned <- tt.scanned
+			if got := joinScan(scanned, cut); !errors.Is(got, tt.want) {
+				t.Errorf("joinScan() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// The bound itself: a scan nobody will ever hear from -- the wedged callback, which
+// the close cannot reach -- must cost one grace and then be abandoned, not held onto
+// forever.
+func TestJoinScanBoundsAScanThatNeverReports(t *testing.T) {
+	cut := errors.New("why the read end was closed")
+	done := make(chan error, 1)
+	start := time.Now()
+	// Never sent on, and never closed either: a closed channel would yield a nil
+	// outcome and take the receive arm, which is not the arm under test.
+	go func() { done <- joinScan(make(chan error), cut) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, cut) {
+			t.Errorf("joinScan() = %v, want %v once the join timed out", err, cut)
+		}
+		// The wait has to actually be the grace: a join that returned at once would
+		// abandon a callback still capable of finishing, which is the whole reason the
+		// join exists.
+		if elapsed := time.Since(start); elapsed < agent.PipeDrainGrace-100*time.Millisecond {
+			t.Errorf("joinScan returned after %s, sooner than the %s grace; it did not wait for the scan at all", elapsed, agent.PipeDrainGrace)
+		}
+	case <-time.After(agent.PipeDrainGrace + 30*time.Second):
+		t.Fatal("joinScan never returned for a scan that never reports; the join is unbounded and hangs the round")
+	}
+}
+
 // gitScanNUL's scan runs on its own goroutine and calls fn, which writes the
 // caller's state (listGitFiles' count and builder). On the cancellation path it
 // must JOIN that goroutine rather than abandon it while it still can: a caller
