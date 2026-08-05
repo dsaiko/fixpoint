@@ -77,6 +77,10 @@ func Majority(n int) int {
 type CI struct {
 	Known   bool
 	Failing []string
+	// Pending are checks still running. They do not block -- that would make the
+	// tool unusable while CI runs -- but an approval that ignored them silently
+	// would be overstating what it knows, so they are named in the reasons.
+	Pending []string
 }
 
 // Input is everything Decide is allowed to look at.
@@ -172,6 +176,10 @@ func Decide(in Input) Decision {
 	d.Reasons = append(d.Reasons, fmt.Sprintf("no unresolved finding at %s or above", blockAt), quorumNote(in.Quorum))
 	if !in.CI.Known {
 		d.Reasons = append(d.Reasons, "no CI status was available for the reviewed head; this approval rests on the review alone")
+	}
+	if len(in.CI.Pending) > 0 {
+		d.Reasons = append(d.Reasons, fmt.Sprintf("%d check(s) were still running and are not covered by this approval: %s",
+			len(in.CI.Pending), strings.Join(in.CI.Pending, ", ")))
 	}
 	return d
 }

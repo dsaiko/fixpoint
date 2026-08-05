@@ -19,6 +19,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/issue"
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -573,6 +574,10 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// checks (so nothing of the operator's is in it) and before any coder edits (so
 	// a pre-existing failure is attributable to the project, not to this run).
 	o.captureVerifyBaseline(ctx)
+
+	// What the forge already knows about this head, read once before the panel
+	// runs so the reviewers' own context and the verdict see the same answer.
+	o.readForgeChecks(ctx)
 
 	// Where the run's commits begin, for a per_run squash at the end. Captured on the
 	// same pristine tree as the verification baseline: everything after this point is
@@ -3800,5 +3805,44 @@ func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSumma
 	o.logf("verdict: %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
 	for _, r := range d.Reasons {
 		o.logf("  %s", r)
+	}
+}
+
+// readForgeChecks asks the forge what its own checks say about the reviewed head,
+// and records the answer for the verdict and the review body.
+//
+// Reading the forge rather than RUNNING the project's checks is the whole point.
+// A review run reviews code somebody else wrote: `make test` on a pull request
+// executes that pull request's Makefile, which is arbitrary code on this host with
+// this operator's credentials. The forge already ran those checks in its own
+// sandbox and will tell us the answer for free.
+//
+// pr mode only, because that is where a pull request exists to ask about. It is
+// also entirely best-effort: no gh/glab installed, no remote, a private repo the
+// token cannot see -- every one of those leaves CI unknown, which never blocks a
+// verdict but is stated in its reasons, so an approval never silently rests on a
+// check nobody ran.
+func (o *Orchestrator) readForgeChecks(ctx context.Context) {
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
+		return
+	}
+	p := forge.For(ctx, o.cfg.Target.Path)
+	if p == nil {
+		o.logf("no GitHub or GitLab remote recognized; the verdict will carry no CI evidence")
+		return
+	}
+	checks, err := p.Checks(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	if err != nil {
+		o.logf("WARNING: could not read %s checks (%v); the verdict will carry no CI evidence", p.Kind(), err)
+		return
+	}
+	o.ci = review.CI{Known: checks.Known, Failing: checks.Failing, Pending: checks.Pending}
+	switch {
+	case len(checks.Failing) > 0:
+		o.logf("%s checks: FAILING (%s)", p.Kind(), strings.Join(checks.Failing, ", "))
+	case len(checks.Pending) > 0:
+		o.logf("%s checks: none failing, %d still running (%s)", p.Kind(), len(checks.Pending), strings.Join(checks.Pending, ", "))
+	default:
+		o.logf("%s checks: all passing", p.Kind())
 	}
 }
