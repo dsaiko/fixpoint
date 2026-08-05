@@ -193,6 +193,14 @@ func TestValidate(t *testing.T) {
 			a.Effort = "high -c sandbox_mode=danger-full-access"
 			c.Agents["rev"] = a
 		}, "must not contain whitespace"},
+		// Argv splits on strings.Fields, so the refusal has to cover every
+		// separator Fields honors: a non-breaking space is three words to the
+		// splitter and must not be one value to the validator.
+		{"model with a non-breaking space", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Model = "claude-opus-5\u00a0--setting-sources\u00a0target"
+			c.Agents["rev"] = a
+		}, "must not contain whitespace"},
 		{"model spelled as a flag", func(c *Config) {
 			a := c.Agents["rev"]
 			a.Model = "--setting-sources"

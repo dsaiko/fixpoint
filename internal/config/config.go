@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -1630,9 +1631,14 @@ func validPathIdent(kind, name string) error {
 // an injection point, whatever a file inside the target declares. Argv keeps the
 // value to a single element regardless; this makes the attempt an error the
 // operator sees rather than a silently odd argument.
+//
+// Whitespace is unicode.IsSpace and not the ASCII six, because that is exactly
+// what Argv's strings.Fields splits on: a validator that called U+00A0 a normal
+// character would wave through the one spelling of `model: claude-opus-5<NBSP>
+// --setting-sources<NBSP>target` that the splitter still reads as three words.
 func validCommandValue(agent, field, v string) error {
 	switch {
-	case strings.ContainsAny(v, " \t\n\r\v\f"):
+	case strings.IndexFunc(v, unicode.IsSpace) >= 0:
 		return fmt.Errorf("agents.%s: %s %q must not contain whitespace: it is substituted into the command template, and a value spelled as several words is an attempt to append arguments of its own to the agent's command line", agent, field, v)
 	case strings.HasPrefix(v, "-"):
 		return fmt.Errorf("agents.%s: %s %q must not start with '-': it is substituted into the command template, where a leading dash makes the value read as a flag rather than as the argument of the one it follows", agent, field, v)
