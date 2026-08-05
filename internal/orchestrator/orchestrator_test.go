@@ -5366,14 +5366,19 @@ func TestPerFixCommitBodyCannotForgeATrailerFromTheDetail(t *testing.T) {
 // message in a form no closing-keyword grammar can link.
 func TestPerFixCommitCannotLinkAnIssueForAutoClose(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	// The File field is reviewer-authored text too, and it reaches the body through
+	// the same flattening -- so it doubles as the negative case: a plain path names
+	// no issue and has to survive with its spelling intact, or the commit reports a
+	// location that does not exist.
 	f.respond(1, reviewResponse(t,
-		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 12,
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "docs/issues/1-intro.md", Line: 12,
 			Title: "off by one, closes GH-43 and https://github.com/oddin/fixpoint/issues/45"},
 	))
 	f.editRepoOn(2)
 	f.respond(2, fixResponse(t, model.FixResult{
 		ID: "i1", Verdict: "fixed",
-		Detail: "Closes #42, resolves oddin/fixpoint#44, fixes https://github.com/oddin/fixpoint/pull/46",
+		Detail: "Closes #42, resolves oddin/fixpoint#44, fixes https://github.com/oddin/fixpoint/pull/46, " +
+			"https://api.github.com/repos/oddin/fixpoint/pulls/48 and https://gitlab.com/oddin/fixpoint/-/merge_requests/47",
 	}))
 	f.respond(3, reviewResponse(t))
 
@@ -5382,19 +5387,30 @@ func TestPerFixCommitCannotLinkAnIssueForAutoClose(t *testing.T) {
 	}
 	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
 	// The URL form needs only the target's own slug, which is public -- so it is no
-	// less reachable by an injection than a bare `#42`, and no less linkable.
+	// less reachable by an injection than a bare `#42`, and no less linkable. Every
+	// spelling the grammar accepts is here, GitLab's included.
 	for _, linkable := range []string{"#42", "#44", "GH-43",
-		"https://github.com/oddin/fixpoint/issues/45", "https://github.com/oddin/fixpoint/pull/46"} {
+		"https://github.com/oddin/fixpoint/issues/45", "https://github.com/oddin/fixpoint/pull/46",
+		"https://api.github.com/repos/oddin/fixpoint/pulls/48",
+		"https://gitlab.com/oddin/fixpoint/-/merge_requests/47"} {
 		if strings.Contains(msg, linkable) {
 			t.Errorf("commit message carries %q in linkable form -- a push would close that issue:\n%s", linkable, msg)
 		}
 	}
 	// Defanged, not dropped: the commit still records the numbers the agents named.
 	for _, want := range []string{"# 42", "# 44", "GH- 43",
-		"https://github.com/oddin/fixpoint/issues/ 45", "https://github.com/oddin/fixpoint/pull/ 46"} {
+		"https://github.com/oddin/fixpoint/issues/ 45", "https://github.com/oddin/fixpoint/pull/ 46",
+		"https://api.github.com/repos/oddin/fixpoint/pulls/ 48",
+		"https://gitlab.com/oddin/fixpoint/-/merge_requests/ 47"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("commit message is missing %q:\n%s", want, msg)
 		}
+	}
+	// The other side of the boundary: only a URL is rewritten. A path that merely
+	// reads like one closes nothing, so widening the match to catch it would corrupt
+	// the location in the artifact meant to be pushed.
+	if !strings.Contains(msg, "docs/issues/1-intro.md:12") {
+		t.Errorf("commit message rewrote a plain path that names no issue:\n%s", msg)
 	}
 }
 
