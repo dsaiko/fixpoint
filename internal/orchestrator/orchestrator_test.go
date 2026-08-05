@@ -5358,6 +5358,41 @@ func TestPerFixCommitBodyCannotForgeATrailerFromTheDetail(t *testing.T) {
 	}
 }
 
+// A forge's closing keywords are not trailers: GitHub matches `Closes #42`
+// anywhere in a commit message, at no particular line shape, so the `- ` bullet
+// that defeats git's trailer parser does nothing about them. The commit is the
+// artifact meant to be pushed, so an injection that makes an agent name an issue
+// number would close somebody else's issues -- the reference has to reach the
+// message in a form no closing-keyword grammar can link.
+func TestPerFixCommitCannotLinkAnIssueForAutoClose(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1, CommitPolicy: config.CommitPerFix})
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 12,
+			Title: "off by one, closes GH-43"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{
+		ID: "i1", Verdict: "fixed", Detail: "Closes #42, resolves oddin/fixpoint#44",
+	}))
+	f.respond(3, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B")
+	for _, linkable := range []string{"#42", "#44", "GH-43"} {
+		if strings.Contains(msg, linkable) {
+			t.Errorf("commit message carries %q in linkable form -- a push would close that issue:\n%s", linkable, msg)
+		}
+	}
+	// Defanged, not dropped: the commit still records the numbers the agents named.
+	for _, want := range []string{"# 42", "# 44", "GH- 43"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("commit message is missing %q:\n%s", want, msg)
+		}
+	}
+}
+
 // A commit is the most-read thing fixpoint writes -- it is pushed, and every later
 // `git log`/`git show` renders it in someone's terminal -- so the agent-authored
 // text in it must be defanged the way the prompts and logs are. Collapsing
