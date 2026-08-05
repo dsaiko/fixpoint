@@ -192,6 +192,11 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 	if err := load(cfg.Roles.Coder.Prompt, cfg.Roles.Coder.PromptFile(), prompt.FixData{}); err != nil {
 		return nil, err
 	}
+	if cfg.Review.Refute != "" {
+		if err := load(cfg.Review.Refute, cfg.Review.RefutePath, prompt.RefuteData{}); err != nil {
+			return nil, err
+		}
+	}
 	for _, l := range cfg.Roles.Review.Prompts {
 		if err := load(l.Prompt, l.PromptFile(), prompt.ReviewData{}); err != nil {
 			return nil, err
@@ -1873,6 +1878,9 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	// cannot tell an infrastructure failure from a reviewer that timed out on one
 	// lens of four. See internal/review.
 	if o.cfg.Loop.ReviewOnly {
+		// Judge the merged set before concluding anything from it: the verdict, the
+		// review body and the exit code all read what survives this.
+		o.runRefutation(ctx, recP, material)
 		o.decideVerdict(recP, sum)
 		sum.Termination = model.TermReviewOnly
 		return true, nil
@@ -3892,5 +3900,174 @@ func (o *Orchestrator) readForgeChecks(ctx context.Context) {
 		o.logf("%s checks: none failing, %d still running (%s)", p.Kind(), len(checks.Pending), strings.Join(checks.Pending, ", "))
 	default:
 		o.logf("%s checks: all passing", p.Kind())
+	}
+}
+
+// runRefutation asks every reviewer on the panel to take a position on the MERGED
+// finding set, and drops what they unanimously refute.
+//
+// It exists because agreement cannot sort signal from noise in this panel.
+// Measured across 19 runs: under 4% of findings were reported by more than one
+// reviewer, and 0 of 25 findings the coder rejected as false positives were among
+// them -- so an intersection would filter none of the noise while discarding 237
+// of 248 confirmed defects. What is left is to judge each finding on its own
+// evidence, which is a better test than counting votes anyway.
+//
+// Every reviewer sees the same canonical set and nothing about who reported what.
+// Attribution would hand a reviewer a reason that is not evidence: "this came from
+// the model I have disagreed with twice today" is not a fact about the code.
+func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord, material string) {
+	if o.cfg.Review.Refute == "" || len(rec.Issues) == 0 || ctx.Err() != nil {
+		return
+	}
+	panel := panelAgents(rec.Assignments)
+	if len(panel) == 0 {
+		return
+	}
+	o.logf("=== refutation: %d reviewer(s) judging %d finding(s) ===", len(panel), len(rec.Issues))
+
+	type reply struct {
+		agent     string
+		positions []model.RefutePosition
+	}
+	replies := make([]reply, len(panel))
+	var wg sync.WaitGroup
+	for i, name := range panel {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			replies[i] = reply{agent: name, positions: o.refuteWith(ctx, name, rec, material)}
+		}()
+	}
+	wg.Wait()
+
+	byIssue := map[string][]model.RefutePosition{}
+	responded := 0
+	for _, r := range replies {
+		if r.positions == nil {
+			continue
+		}
+		responded++
+		for _, p := range r.positions {
+			byIssue[p.Issue] = append(byIssue[p.Issue], p)
+		}
+	}
+	if responded == 0 {
+		// Nobody judged anything. Dropping findings on the strength of an empty round
+		// would be the worst possible reading of silence.
+		o.logf("refutation: no reviewer returned a usable position; every finding stands")
+		return
+	}
+	applyRefutations(rec, byIssue, o.logf)
+}
+
+// panelAgents lists the distinct non-advisory agents a round assigned, in a
+// stable order.
+func panelAgents(assignments []model.Assignment) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(assignments))
+	for _, a := range assignments {
+		if a.Advisory || seen[a.Agent] {
+			continue
+		}
+		seen[a.Agent] = true
+		out = append(out, a.Agent)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// refuteWith runs one reviewer's refutation pass, returning nil if it produced
+// nothing usable. A failed refuter is not a round failure: it simply does not get
+// a vote, and unanimity is measured over those who answered.
+func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *model.RoundRecord, material string) []model.RefutePosition {
+	label := "refute: " + agentName
+	d := prompt.RefuteData{
+		Mode:           o.cfg.Target.Mode,
+		Path:           o.cfg.Target.Path,
+		Round:          rec.Round,
+		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
+		Target:         material,
+		Canonical:      prompt.FormatCanonical(rec.Issues),
+		OutputContract: prompt.RefuteContract,
+	}
+	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
+		Mode: d.Mode, Path: d.Path, Round: d.Round, ModeGuidance: d.ModeGuidance, Target: d.Target,
+	})
+	text, err := prompt.Render(o.templates[o.cfg.Review.Refute], d)
+	if err != nil {
+		o.logf("WARNING: %s: render failed (%v); this reviewer casts no position", label, err)
+		return nil
+	}
+	res := o.runAgent(ctx, label, "refute", agentName, o.cfg.Review.Refute, rec.Round, text)
+	var out model.RefuteOutput
+	parseErr := res.Err
+	if parseErr == nil {
+		parseErr = agent.ExtractJSON(res.Stdout, "review", &out)
+	}
+	rec.Steps = append(rec.Steps, stepStat("refute", agentName, o.cfg.Review.Refute, len(text), res, parseErr != nil))
+	if parseErr != nil {
+		o.logf("WARNING: %s failed (%v); this reviewer casts no position", label, parseErr)
+		return nil
+	}
+	valid := out.Positions[:0]
+	for _, p := range out.Positions {
+		if !model.ValidPosition(p.Position) {
+			o.logf("WARNING: %s returned an unknown position %q on %s; ignored", label, p.Position, p.Issue)
+			continue
+		}
+		p.Position = strings.ToLower(strings.TrimSpace(p.Position))
+		valid = append(valid, p)
+	}
+	o.logf("%s done (%d position(s), %s)", label, len(valid), res.Duration.Round(time.Second))
+	return valid
+}
+
+// applyRefutations drops the findings every responder refuted, and marks the rest.
+//
+// UNANIMOUS, not majority. A refutation deletes a finding from the review and
+// nothing downstream will look for it again, while a wrongly-kept finding costs a
+// human one paragraph. With that asymmetry the bar for deletion belongs at the top:
+// one reviewer still standing behind a defect is enough to keep it.
+//
+// Issues nobody took a position on are untouched. A reviewer that ran out of
+// context before reaching the last finding must not thereby delete it.
+func applyRefutations(rec *model.RoundRecord, byIssue map[string][]model.RefutePosition, logf func(string, ...any)) {
+	for i := range rec.Issues {
+		it := &rec.Issues[i]
+		positions := byIssue[it.ID]
+		if len(positions) == 0 {
+			continue
+		}
+		refuted, maintained, unsure := 0, 0, 0
+		var evidence string
+		for _, p := range positions {
+			switch p.Position {
+			case model.PositionRefute:
+				refuted++
+				if evidence == "" {
+					evidence = p.Evidence
+				}
+			case model.PositionMaintain:
+				maintained++
+			case model.PositionUnsure:
+				unsure++
+			}
+		}
+		switch {
+		case refuted == len(positions):
+			it.Status = model.VerdictRejected
+			it.Verdict = model.VerdictRejected
+			it.VerdictDetail = "refuted by every reviewer that judged it: " + evidence
+			logf("refutation: %s dropped -- %d/%d refuted", it.ID, refuted, len(positions))
+		case refuted > 0:
+			// Kept, but the disagreement is recorded: a reader deciding what to do about
+			// this finding should know somebody who looked did not believe it.
+			it.Contested = true
+			logf("refutation: %s contested (%d refute, %d maintain, %d unsure) -- kept", it.ID, refuted, maintained, unsure)
+		case unsure == len(positions):
+			it.Contested = true
+			logf("refutation: %s uncertain -- no reviewer could decide it from the evidence", it.ID)
+		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -467,6 +468,11 @@ type Issue struct {
 
 	Verdict       string `json:"verdict,omitempty"`
 	VerdictDetail string `json:"verdict_detail,omitempty"`
+	// Contested records that the refutation round disagreed about this finding:
+	// somebody who looked at it did not believe it, or nobody could decide. It is
+	// kept -- one reviewer still standing behind a defect is enough -- but a reader
+	// deciding what to do about it should know the panel split.
+	Contested bool `json:"contested,omitempty"`
 }
 
 // Agents returns the distinct agents that reported this issue, sorted. Two
@@ -498,4 +504,39 @@ func (i Issue) StatusOrDefault() string {
 		return StatusOpen
 	}
 	return i.Status
+}
+
+// RefuteOutput is a reviewer's answer in the refutation round: one position on
+// every finding it was shown.
+type RefuteOutput struct {
+	Positions []RefutePosition `json:"positions"`
+}
+
+// RefutePosition is one reviewer's stance on one issue.
+//
+// Evidence is required by the contract for every position, not just a refutation.
+// A "maintain" with no evidence is indistinguishable from a reviewer that did not
+// look, and the round exists precisely to find out which findings anyone can still
+// stand behind after seeing them written down.
+type RefutePosition struct {
+	Issue    string `json:"issue"`
+	Position string `json:"position"`
+	Evidence string `json:"evidence"`
+}
+
+// The positions a refuter may take. Only Refute removes a finding, and only
+// unanimously -- see the orchestrator's applyRefutations.
+const (
+	PositionMaintain = "maintain"
+	PositionRefute   = "refute"
+	PositionUnsure   = "unsure"
+)
+
+// ValidPosition reports whether p is one a refuter may return.
+func ValidPosition(p string) bool {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case PositionMaintain, PositionRefute, PositionUnsure:
+		return true
+	}
+	return false
 }

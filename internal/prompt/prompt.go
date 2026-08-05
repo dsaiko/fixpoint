@@ -617,3 +617,72 @@ func historyID(f model.Finding) string {
 	}
 	return f.ID
 }
+
+// RefuteData is the placeholder set for the refutation prompt. It carries the
+// same prelude a review prompt does -- the reviewer has to be able to CHECK the
+// canonical set against the code, and a refutation with no material is an opinion
+// poll.
+type RefuteData struct {
+	Mode         config.Mode
+	Path         string
+	Round        int
+	ModeGuidance string
+	Target       string
+	Prelude      string
+	// Canonical is the merged finding set every reviewer is asked to take a
+	// position on. It is the COMPLETE shared state of the round: no reviewer sees
+	// another's reasoning, only the findings themselves, so a position is a fresh
+	// judgment rather than an agreement with whoever spoke first.
+	Canonical      string
+	OutputContract string
+}
+
+// FormatCanonical renders the merged finding set for the refutation round.
+//
+// Each entry carries its id, severity, location and text, and nothing about WHO
+// reported it. Attribution is deliberately withheld: a reviewer told that the
+// finding it is judging came from a model it has just disagreed with three times
+// is being handed a reason that is not evidence, and the round is supposed to
+// produce evidence.
+func FormatCanonical(issues []model.Issue) string {
+	var sb strings.Builder
+	sb.WriteString("## Findings to judge\n\n")
+	for _, it := range issues {
+		loc := it.File
+		if it.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", loc, it.Line)
+		}
+		fmt.Fprintf(&sb, "### %s (%s) %s\n", it.ID, it.Severity, loc)
+		fmt.Fprintf(&sb, "%s\n\n", Quote(it.Title))
+		if d := strings.TrimSpace(it.Description); d != "" {
+			fmt.Fprintf(&sb, "%s\n\n", Quote(d))
+		}
+	}
+	return sb.String()
+}
+
+// RefuteContract is the output contract for the refutation round.
+const RefuteContract = `## Required output format
+End your response with exactly one <review> block containing valid JSON:
+
+<review>
+{
+  "positions": [
+    {"issue": "i1", "position": "maintain|refute|unsure", "evidence": "what in the code decides it"}
+  ]
+}
+</review>
+
+Return exactly one position for every finding id above, and no others.
+
+- maintain: the finding stands. Evidence is what you checked that still supports it.
+- refute: specific code or context DISPROVES it. Evidence is that code -- a file
+  and line, a documented decision, the guard that already handles it. "I would not
+  have reported this" is not a refutation.
+- unsure: you cannot decide from what you can see. Say what is missing.
+
+Evidence is required for every position, not just a refutation. A "maintain" with
+no evidence is indistinguishable from not having looked.
+
+The <review> block must be the LAST thing you print. The JSON must be valid: no
+comments, no trailing commas, no markdown fences inside the block.`

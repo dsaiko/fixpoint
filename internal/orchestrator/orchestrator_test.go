@@ -6645,6 +6645,17 @@ func (f *fixture) reviewOnly(agents ...string) {
 	}
 }
 
+// refuteLens points the fixture at a refutation prompt, enabling the round.
+func (f *fixture) refuteLens() {
+	f.t.Helper()
+	path := filepath.Join(f.t.TempDir(), "refute.md")
+	if err := os.WriteFile(path, []byte("{{.Prelude}}\n{{.Canonical}}\n{{.OutputContract}}"), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	f.cfg.Review.Refute = "refute"
+	f.cfg.Review.RefutePath = path
+}
+
 // A review run ends with a verdict, and the verdict decides the exit status: a
 // review that requested changes terminated perfectly normally, so without this the
 // process would exit 0 and tell CI the branch was fine.
@@ -6745,5 +6756,150 @@ func TestAHighBlocksEvenWhenThePanelIsIncomplete(t *testing.T) {
 	}
 	if model.ExitCodeFor(sum) != model.ExitChangesRequested {
 		t.Errorf("exit = %d, want %d", model.ExitCodeFor(sum), model.ExitChangesRequested)
+	}
+}
+
+// The refutation round drops what EVERY responder refutes and keeps everything
+// else. Unanimity is the bar because the errors are not symmetric: a wrong
+// refutation deletes a real defect and nothing downstream looks for it again,
+// while a wrongly-kept finding costs a human a paragraph.
+func TestApplyRefutations(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		positions     []model.RefutePosition
+		wantStatus    string
+		wantContested bool
+	}{
+		{
+			"unanimously refuted is dropped",
+			[]model.RefutePosition{
+				{Issue: "i1", Position: model.PositionRefute, Evidence: "guarded at x.go:41"},
+				{Issue: "i1", Position: model.PositionRefute, Evidence: "unreachable"},
+			},
+			model.VerdictRejected, false,
+		},
+		{
+			"one holdout keeps it, marked contested",
+			[]model.RefutePosition{
+				{Issue: "i1", Position: model.PositionRefute, Evidence: "guarded"},
+				{Issue: "i1", Position: model.PositionMaintain, Evidence: "the guard is on the other branch"},
+			},
+			"", true,
+		},
+		{
+			"unanimous maintain is untouched",
+			[]model.RefutePosition{
+				{Issue: "i1", Position: model.PositionMaintain, Evidence: "still there"},
+				{Issue: "i1", Position: model.PositionMaintain, Evidence: "confirmed"},
+			},
+			"", false,
+		},
+		{
+			"nobody could decide: kept, but flagged",
+			[]model.RefutePosition{
+				{Issue: "i1", Position: model.PositionUnsure, Evidence: "cannot see the caller"},
+			},
+			"", true,
+		},
+		{
+			// A reviewer that ran out of context before the last finding must not
+			// thereby delete it.
+			"no positions at all leaves the finding alone",
+			nil,
+			"", false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &model.RoundRecord{Issues: []model.Issue{{ID: "i1", Severity: "high", Title: "t"}}}
+			by := map[string][]model.RefutePosition{}
+			if tc.positions != nil {
+				by["i1"] = tc.positions
+			}
+			applyRefutations(rec, by, func(string, ...any) {})
+			got := rec.Issues[0]
+			if got.Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.Contested != tc.wantContested {
+				t.Errorf("Contested = %v, want %v", got.Contested, tc.wantContested)
+			}
+			if tc.wantStatus == model.VerdictRejected && !strings.Contains(got.VerdictDetail, "guarded at x.go:41") {
+				t.Errorf("a dropped finding must record the evidence that dropped it, got %q", got.VerdictDetail)
+			}
+		})
+	}
+}
+
+// End to end: a finding every reviewer refutes must not reach the verdict, so a
+// review whose only high was refuted approves instead of requesting changes.
+func TestRefutationRemovesAFindingFromTheVerdict(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock", "mock2")
+	f.refuteLens()
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "bug", Severity: "high", File: "main.go", Line: 1, Title: "the sky is falling"}))
+	f.respond(2, reviewResponse(t)) // mock2 finds nothing
+	// Both reviewers then refute the one finding.
+	refutation := `<review>{"positions":[{"issue":"i1","position":"refute","evidence":"main.go:1 is a package clause"}]}</review>`
+	f.respond(3, refutation)
+	f.respond(4, refutation)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Verdict.Outcome != model.VerdictApprove {
+		t.Errorf("verdict = %q, want approve: the only blocking finding was refuted by everyone (reasons %v)",
+			sum.Verdict.Outcome, sum.Verdict.Reasons)
+	}
+	it := sum.Rounds[0].Issues[0]
+	if it.Status != model.VerdictRejected {
+		t.Errorf("issue status = %q, want rejected", it.Status)
+	}
+}
+
+// One reviewer still standing behind a defect is enough to keep it -- and the
+// verdict must still block on it.
+func TestASingleHoldoutKeepsTheFindingAndTheVerdict(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock", "mock2")
+	f.refuteLens()
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "security", Severity: "high", File: "auth.go", Line: 7, Title: "token compared with =="}))
+	f.respond(2, reviewResponse(t))
+	f.respond(3, `<review>{"positions":[{"issue":"i1","position":"refute","evidence":"I would not report this"}]}</review>`)
+	f.respond(4, `<review>{"positions":[{"issue":"i1","position":"maintain","evidence":"auth.go:7 still uses =="}]}</review>`)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Verdict.Outcome != model.VerdictChangesRequested {
+		t.Errorf("verdict = %q, want changes_requested", sum.Verdict.Outcome)
+	}
+	if it := sum.Rounds[0].Issues[0]; !it.Contested {
+		t.Error("a finding the panel split on must be marked contested")
+	}
+}
+
+// A refutation round in which nobody answered must not delete anything: silence is
+// the one reading that would be catastrophic here.
+func TestRefutationWithNoUsableRepliesKeepsEveryFinding(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.refuteLens()
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "bug", Severity: "high", File: "main.go", Line: 1, Title: "real defect"}))
+	f.respond(2, "the refuter produced prose instead of a block")
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := sum.Rounds[0].Issues[0]; it.Status == model.VerdictRejected {
+		t.Error("a finding was dropped by a refutation round that produced no positions")
+	}
+	if sum.Verdict.Outcome != model.VerdictChangesRequested {
+		t.Errorf("verdict = %q, want changes_requested", sum.Verdict.Outcome)
 	}
 }

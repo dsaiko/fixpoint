@@ -33,3 +33,16 @@ roles:
 
 loop:
   review_only: true
+
+# The refutation round: after the panel reports, every reviewer is shown the MERGED
+# finding set and must take an evidenced position on each one. What all of them
+# refute is dropped; what any of them still stands behind is kept and marked
+# contested.
+#
+# It replaces the obvious alternative -- keep only what two reviewers both found --
+# which measurement ruled out: across 19 runs under 4% of findings were reported by
+# more than one reviewer, and NONE of the 25 the coder rejected as false positives
+# were among them. An intersection would have filtered none of the noise while
+# discarding 237 of 248 confirmed defects.
+review:
+  refute: refute

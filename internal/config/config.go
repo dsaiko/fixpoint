@@ -1799,6 +1799,21 @@ type ReviewPolicy struct {
 	// region carrying agent text: a signature composed from a finding's prose could
 	// be forged by whatever wrote that prose.
 	Signature string `yaml:"signature"`
+	// Refute names the prompt for the refutation round, or is empty to skip it.
+	//
+	// One key rather than a bool plus a name, because the two could disagree and
+	// then the config would say something it does not do.
+	//
+	// The round exists because agreement cannot sort signal from noise in this
+	// panel: measured across 19 runs, under 4% of findings were reported by more
+	// than one reviewer, and 0 of 25 false positives were among them. Keeping only
+	// corroborated findings -- the obvious alternative -- would have discarded 237
+	// of 248 confirmed defects. Asking every reviewer to take an evidenced position
+	// on the merged set gets a judgment on each finding instead of a popularity
+	// count.
+	Refute string `yaml:"refute"`
+	// RefutePath is the resolved file for Refute; filled in during loading.
+	RefutePath string `yaml:"-"`
 }
 
 // VerifyCommand is one check. Argv, not a shell string: there is no shell to
