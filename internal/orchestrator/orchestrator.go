@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -845,18 +846,29 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 // flattenField collapses agent-authored text onto a single line before it lands
 // in a commit message. `git commit -m` takes its arguments literally, so a value
 // carrying newlines forges extra message lines -- and a line shaped like
-// `Signed-off-by: Someone <s@org>` or `Fixes: #12` becomes a real git trailer,
-// attributing the commit to people who never made it or auto-closing an issue on
-// push. RedactSecrets does not stop that: a trailer carries no credential
-// keyword. Reviewer-authored category/title/file and coder-authored verdict
-// detail are all reachable by a prompt injection on a run over untrusted
-// content, and the trust gate authorizes file edits, not commit metadata.
+// `Signed-off-by: Someone <s@org>` becomes a real git trailer, attributing the
+// commit to people who never made it. RedactSecrets does not stop that: a trailer
+// carries no credential keyword. Reviewer-authored category/title/file and
+// coder-authored verdict detail are all reachable by a prompt injection on a run
+// over untrusted content, and the trust gate authorizes file edits, not commit
+// metadata.
 //
 // Flattening alone is not enough for a value that ends up ALONE on its own line:
 // one line is exactly the shape of a trailer, so the collapsed text can still
 // read as `Signed-off-by: ...`. Every such line is written as a `- ` bullet (see
 // writeVerdictSection and verifyAndCommitFix) -- git's trailer parser rejects a
 // line whose token carries a space, so a bullet can never become a trailer.
+//
+// The bullet stops trailers and nothing else. A forge's closing keywords (`Closes
+// #42`) are matched ANYWHERE in a message, at no particular line shape, so the
+// commit -- the one artifact meant to be pushed -- would close third-party issues
+// chosen by an injection. Line shape cannot answer that; the reference can, so
+// `#` or `GH-` followed by a digit is rewritten with a space in it. That breaks
+// the `KEYWORD #N` / `KEYWORD GH-N` grammar, and `owner/repo#42` with it, while
+// still recording readably the number the agent named. A reference written as a
+// full issue URL survives, deliberately: mangling every URL would cost every
+// legitimate link in a commit body, and unlike a bare `#42` that form needs a
+// repository slug the injected text cannot know in advance.
 //
 // Nor does flattening defang the text: ESC and the bidi overrides are not
 // unicode.IsSpace, so strings.Fields passes them straight through, and git stores
@@ -866,8 +878,14 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 // must not reach a reader's clipboard, and a bidi override must not make the
 // finding read as something the reviewer never wrote.
 func flattenField(s string) string {
-	return agent.EscapeTerminal(strings.Join(strings.Fields(s), " "))
+	return forgeIssueRef.ReplaceAllString(agent.EscapeTerminal(strings.Join(strings.Fields(s), " ")), "$1 $2")
 }
+
+// forgeIssueRef matches the issue references a forge's closing-keyword grammar
+// accepts and an injected string can name without knowing the repository: `#42`
+// -- which is also the tail of `owner/repo#42` -- and `GH-42`. Both groups are
+// captured so the rewrite can put the digit back after a space.
+var forgeIssueRef = regexp.MustCompile(`(?i)(#|\bGH-)(\d)`)
 
 // verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
 // a round commit -- nothing lands unverified -- with the granularity moved down to
