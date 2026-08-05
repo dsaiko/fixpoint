@@ -1068,6 +1068,57 @@ func TestRunSalvagesVerifiedPartialWork(t *testing.T) {
 	}
 }
 
+// The salvage commit is pushed like any other, and its body is built from the very
+// text a failing coder round leaves behind: reviewer-authored category/severity/title
+// and the coder's own error, which quotes what the coder printed. So it needs every
+// protection the normal round commit gets -- no forged trailer, no raw terminal
+// control sequence, no reference a forge's closing keywords would link -- and the
+// salvage path renders them at its own formatting site, which nothing else covers.
+func TestSalvageCommitDefangsFindingTextAndCoderError(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "bugs\nSigned-off-by: Someone <nobody@example.com>",
+		Severity: " High\r\n",
+		File:     "main.go", Line: 12,
+		Title: "off by one, closes #42\x1b]52;c;cGF5bG9hZA==\x07\u202egnorw si siht",
+	}))
+	f.editRepoOn(2)
+	// The coder edits, then reports a verdict for an id no issue has: applyVerdicts
+	// fails, so the round is salvaged -- and the id, which is the coder's own text,
+	// reaches the salvage body through the error message.
+	f.respond(2, fixResponse(t, model.FixResult{ID: "resolves GH-43", Verdict: "fixed", Detail: "x"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want salvage + continue", err)
+	}
+	sha := sum.Rounds[0].CommitSHA
+	if sha == "" {
+		t.Fatal("round 1 salvage commit SHA not recorded")
+	}
+	msg := gitRun(t, f.repo, "log", "-1", "--format=%B", sha)
+	if trailers := strings.TrimSpace(gitRun(t, f.repo, "log", "-1", "--format=%(trailers)", sha)); trailers != "" {
+		t.Errorf("the salvage body forged a git trailer: %q", trailers)
+	}
+	if strings.ContainsAny(msg, "\x1b\x07\r") || strings.ContainsRune(msg, '\u202e') {
+		t.Errorf("salvage commit message carries raw terminal control characters:\n%q", msg)
+	}
+	for _, linkable := range []string{"#42", "GH-43"} {
+		if strings.Contains(msg, linkable) {
+			t.Errorf("salvage commit carries %q in linkable form -- a push would close that issue:\n%s", linkable, msg)
+		}
+	}
+	// Defanged, not dropped: the salvage commit is the only record of what the round
+	// left undecided, so it still has to say what the agents reported.
+	for _, want := range []string{"(partial, coder failed)", "off by one", "# 42", "GH- 43",
+		`\x1b`, `\u202e`, "Signed-off-by", "high"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("salvage commit message is missing %q:\n%s", want, msg)
+		}
+	}
+}
+
 // writeSide installs a custom side-effect script for the coder's invocation
 // (call 2: review is call 1). editRepoOn writes a fixed one; this lets a test
 // script arbitrary repo mutations, e.g. failing the salvage commit.
