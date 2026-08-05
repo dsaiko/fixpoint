@@ -865,10 +865,12 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 // chosen by an injection. Line shape cannot answer that; the reference can, so
 // `#` or `GH-` followed by a digit is rewritten with a space in it. That breaks
 // the `KEYWORD #N` / `KEYWORD GH-N` grammar, and `owner/repo#42` with it, while
-// still recording readably the number the agent named. A reference written as a
-// full issue URL survives, deliberately: mangling every URL would cost every
-// legitimate link in a commit body, and unlike a bare `#42` that form needs a
-// repository slug the injected text cannot know in advance.
+// still recording readably the number the agent named. The same grammar accepts a
+// full issue/pull URL, and the repository slug that form needs is public -- the
+// injected text lives in the very repository under review -- so that spelling is
+// broken the same way. Only the `/issues/N`-shaped tail of a URL is touched, so a
+// legitimate link in a commit body survives unless it is itself a closable
+// reference.
 //
 // Nor does flattening defang the text: ESC and the bidi overrides are not
 // unicode.IsSpace, so strings.Fields passes them straight through, and git stores
@@ -878,7 +880,8 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 // must not reach a reader's clipboard, and a bidi override must not make the
 // finding read as something the reviewer never wrote.
 func flattenField(s string) string {
-	return forgeIssueRef.ReplaceAllString(agent.EscapeTerminal(strings.Join(strings.Fields(s), " ")), "$1 $2")
+	one := agent.EscapeTerminal(strings.Join(strings.Fields(s), " "))
+	return forgeIssueRef.ReplaceAllString(forgeIssueURL.ReplaceAllString(one, "$1 $2"), "$1 $2")
 }
 
 // forgeIssueRef matches the issue references a forge's closing-keyword grammar
@@ -886,6 +889,13 @@ func flattenField(s string) string {
 // -- which is also the tail of `owner/repo#42` -- and `GH-42`. Both groups are
 // captured so the rewrite can put the digit back after a space.
 var forgeIssueRef = regexp.MustCompile(`(?i)(#|\bGH-)(\d)`)
+
+// forgeIssueURL matches the other reference form that grammar accepts: the full
+// URL of an issue or a pull/merge request. The `//host/` prefix is required so
+// only a URL is rewritten -- a plain path like `docs/issues/1-intro.md` names no
+// issue and keeps its spelling. Groups match forgeIssueRef's so one replacement
+// string serves both.
+var forgeIssueURL = regexp.MustCompile(`(?i)(//\S+/(?:issues|pull|pulls|merge_requests)/)(\d)`)
 
 // verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
 // a round commit -- nothing lands unverified -- with the granularity moved down to
