@@ -596,26 +596,26 @@ func scanProgressed(now, mark uint64) bool {
 	return true
 }
 
-// endScanOnCancel ends gitScanNUL's scan once its context is done and reports why
-// the listing stopped. pr is the read end the scan is consuming and scanned is
-// where that scan reports its own outcome.
+// joinScan waits for gitScanNUL's scan goroutine to report its own outcome on
+// scanned once the read end under it has been closed, and says why the listing
+// stopped. cut is what to report when the close is what ended the scan: ctx.Err()
+// for a cancellation, errListingHeldOpen for a grace that found no progress.
 //
-// Closing the read end first ends a scan blocked on pr.Read at once, so the join
-// below is immediate in the usual case -- and joining is what we want, since fn
-// writes the caller's state and preferably nothing is still calling it once
-// gitScanNUL returns.
+// Report why the listing ended, not the mechanism that ended it -- so os.ErrClosed,
+// the one outcome the close itself manufactures, becomes cut. A scan that had
+// already finished (nil) or failed on its own keeps its own outcome.
 //
-// The close says nothing to a scan blocked INSIDE fn, though, and that is exactly
-// the case the drain grace no longer bounds: the progress counter is bumped on both
-// sides of the callback, so an odd reading re-arms the grace on every firing and ctx
-// is the only bound left on a wedged callback -- one stuck in an Lstat or an
-// EvalSymlinks on a hard-mounted export, say. An unbounded join here would spend
-// that last bound waiting for the very call ctx fired over: gitScanNUL would not
-// return at all, and with gitOpTimeout already spent as its ctx there is nothing
-// above it left to cut. So the wait is itself bounded, and past it the goroutine is
-// left to finish on its own. The listing is failed either way, so the state fn built
-// is already something no caller may use -- and none does: every one of them
-// discards it when this function's caller returns an error.
+// Joining at all is what we want, since fn writes the caller's state and preferably
+// nothing is still calling it once gitScanNUL returns. But the wait must be bounded,
+// because closing the read end says nothing to a scan blocked INSIDE fn, and a
+// callback is allowed never to return -- one stuck in an Lstat or an EvalSymlinks on
+// a hard-mounted export, say. An unbounded join would spend whatever bound sent us
+// here waiting on the very call it fired over: gitScanNUL would not return at all,
+// and with gitOpTimeout already spent as its ctx there is nothing above it left to
+// cut. So past the bound the goroutine is left to finish on its own. The listing is
+// failed either way, so the state fn built is already something no caller may use --
+// and none does: every one of them discards it when this function's caller returns
+// an error.
 //
 // That covers what fn WRITES. What it READS is the callers' side of the bargain: an
 // abandoned goroutine keeps calling fn once per entry bufio.Scanner already
@@ -623,20 +623,30 @@ func scanProgressed(now, mark uint64) bool {
 // must consult nothing another goroutine can rewrite. Both streamed listings judge
 // paths against a per-call fileScope for exactly that reason -- see its snapshot of
 // the hidden set, which HideRunEdits replaces on this very error path.
+func joinScan(scanned <-chan error, cut error) error {
+	select {
+	case scanErr := <-scanned:
+		if errors.Is(scanErr, os.ErrClosed) {
+			return cut
+		}
+		return scanErr
+	case <-time.After(agent.PipeDrainGrace):
+		return cut
+	}
+}
+
+// endScanOnCancel ends gitScanNUL's scan once its context is done and reports why
+// the listing stopped. pr is the read end the scan is consuming and scanned is
+// where that scan reports its own outcome.
+//
+// Closing the read end first ends a scan blocked on pr.Read at once, so the join is
+// immediate in the usual case. The case it is not is the one the drain grace no
+// longer bounds: the progress counter is bumped on both sides of the callback, so an
+// odd reading re-arms the grace on every firing and ctx is the only bound left on a
+// wedged callback -- which is why joinScan bounds its own wait.
 func endScanOnCancel(ctx context.Context, pr *os.File, scanned <-chan error) error {
 	_ = pr.Close()
-	var scanErr error
-	select {
-	case scanErr = <-scanned:
-	case <-time.After(agent.PipeDrainGrace):
-		return ctx.Err()
-	}
-	// Report why the listing ended, not the mechanism that ended it. A scan that had
-	// already finished (nil) or failed on its own keeps its own outcome.
-	if errors.Is(scanErr, os.ErrClosed) {
-		return ctx.Err()
-	}
-	return scanErr
+	return joinScan(scanned, ctx.Err())
 }
 
 // gitScanNUL runs a git command whose stdout is a NUL-delimited list and calls
@@ -814,29 +824,19 @@ scan:
 				continue
 			}
 			_ = pr.Close()
-			// Bounded for endScanOnCancel's reason, and against the one interleaving
-			// this branch can lose to: between the Load above and this close, the very
-			// escaped writer being cut can deliver an entry, putting the scan inside fn
-			// where the close says nothing to it. An unbounded join would then wait on a
-			// callback that is allowed never to return -- an Lstat on a hard-mounted
-			// export -- and ctx cannot rescue it, since nothing below consults ctx again.
-			// So take the same trade: the listing is failed here either way, so the state
-			// fn built is already something every caller discards, and the goroutine is
-			// left to finish on its own.
-			select {
-			case scanErr = <-scanned:
-				// The listing could not be read to EOF, so a complete one is
-				// indistinguishable from one cut off mid-entry -- and git's exit status
-				// cannot tell them apart either, since git itself succeeded. Report it
-				// rather than hand the round a scope that may be silently narrow. A scan
-				// that reached EOF in the same instant the grace fired keeps its own (nil)
-				// outcome: that listing IS known complete.
-				if errors.Is(scanErr, os.ErrClosed) {
-					scanErr = errListingHeldOpen
-				}
-			case <-time.After(agent.PipeDrainGrace):
-				scanErr = errListingHeldOpen
-			}
+			// The listing could not be read to EOF, so a complete one is
+			// indistinguishable from one cut off mid-entry -- and git's exit status cannot
+			// tell them apart either, since git itself succeeded. Report it rather than
+			// hand the round a scope that may be silently narrow. A scan that reached EOF
+			// in the same instant the grace fired keeps its own (nil) outcome: that
+			// listing IS known complete.
+			//
+			// joinScan's bound also covers the one interleaving this branch can lose to:
+			// between the Load above and this close, the very escaped writer being cut can
+			// deliver an entry, putting the scan inside fn where the close says nothing to
+			// it. An unbounded join would then wait on a callback that is allowed never to
+			// return, and ctx cannot rescue it, since nothing below consults ctx again.
+			scanErr = joinScan(scanned, errListingHeldOpen)
 			break scan
 		case <-ctx.Done():
 			scanErr = endScanOnCancel(ctx, pr, scanned)
