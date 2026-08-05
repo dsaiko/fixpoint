@@ -255,6 +255,18 @@ func TestValidate(t *testing.T) {
 		{"negative max findings", func(c *Config) { c.Loop.MaxFindingsPerRound = -1 }, "must not be negative"},
 		{"negative max iterations", func(c *Config) { c.Loop.MaxIterations = -1 }, "must not be negative"},
 		{"negative clean rounds", func(c *Config) { c.Loop.CleanRoundsToStop = -1 }, "must not be negative"},
+		// 0 already means "no limit", so a negative value is a typo that would
+		// otherwise disable the budget the operator thought they were setting.
+		{"negative prompt budget", func(c *Config) {
+			a := c.Agents["rev"]
+			a.PromptBudget = -1
+			c.Agents["rev"] = a
+		}, "prompt_budget must not be negative"},
+		{"prompt budget accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.PromptBudget = 400_000
+			c.Agents["rev"] = a
+		}, ""},
 		// An empty glob compiles to ^$ and matches no real path, so it would sit in
 		// the config looking like an active rule while hiding nothing -- and the
 		// closing round would review the run's own output with the operator believing

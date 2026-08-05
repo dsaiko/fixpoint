@@ -355,7 +355,10 @@ The main sections of a task config:
   inherited, so changing who reviews is one edit rather than one per config; a
   config that sets `roles.review.agents` replaces that pool instead of adding to
   it.
-- **`agents`** — the command templates described above.
+- **`agents`** — the command templates described above, each optionally carrying
+  `prompt_budget` (bytes; over it the invocation is refused before the process
+  starts, and the step is recorded as failed rather than sent and rejected by the
+  provider — see [config/README.md](config/README.md)).
 - **`loop`** — `max_iterations`, `max_final_passes` (how many times the closing
   round may repeat, default 1), `final_skip_run_edits` (globs the closing round is
   not shown when this run wrote the file), `commit_policy` (see

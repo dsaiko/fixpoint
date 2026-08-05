@@ -9454,3 +9454,35 @@ func TestAnUnsurePositionIsNotGroundsToDropABlocker(t *testing.T) {
 		t.Error("the judge dropped a blocker on the strength of an unsure position alone")
 	}
 }
+
+// A reviewer refused for being over budget must land as a REVIEWER ERROR, not as
+// a quiet zero-finding round. That distinction is the whole point: a failed
+// reviewer resets the clean-round streak, so a round that lost one this way cannot
+// be mistaken for a clean round and cannot advance the run toward convergence.
+func TestOverBudgetReviewerIsARoundFailureNotACleanRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1})
+	a := f.cfg.Agents["mock"]
+	a.PromptBudget = 16 // every rendered review prompt is far larger
+	f.cfg.Agents["mock"] = a
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v: a refused reviewer is a failed round, not a failed run", err)
+	}
+	if sum.Termination == model.TermConverged {
+		t.Error("the run converged on rounds where no reviewer ever ran")
+	}
+	if n := f.invocations(); n != 0 {
+		t.Errorf("%d agent invocation(s) started; an over-budget prompt must cost nothing", n)
+	}
+	if len(sum.Rounds) == 0 {
+		t.Fatal("no round was recorded")
+	}
+	first := sum.Rounds[0]
+	if len(first.ReviewErrors) != 1 {
+		t.Fatalf("round 1 review errors = %v, want exactly one naming the budget", first.ReviewErrors)
+	}
+	if !strings.Contains(first.ReviewErrors[0], "prompt_budget") {
+		t.Errorf("review error %q should name prompt_budget so the summary explains itself", first.ReviewErrors[0])
+	}
+}

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -439,4 +441,60 @@ func TestBoundedBufferConcurrentWriteString(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// The budget is checked BEFORE the process starts: an over-budget prompt must
+// cost no session, no tokens and no wall clock. Proven by pointing the agent at a
+// command that would fail loudly if it ever ran.
+func TestRunRefusesAnOverBudgetPromptWithoutStartingTheAgent(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	script := filepath.Join(t.TempDir(), "agent.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\necho '<review>{\"findings\":[]}</review>'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a := config.Agent{
+		Command:      []string{script},
+		PromptVia:    config.PromptViaStdin,
+		Timeout:      config.Duration(time.Minute),
+		PromptBudget: 10,
+	}
+	res := Run(t.Context(), a, strings.Repeat("x", 11), t.TempDir())
+	if res.Err == nil {
+		t.Fatal("Run() err = nil, want a refusal for a prompt over the budget")
+	}
+	for _, want := range []string{"11", "10", "prompt_budget"} {
+		if !strings.Contains(res.Err.Error(), want) {
+			t.Errorf("error %q should name %q so the operator can act on it", res.Err, want)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the agent process ran; the budget must be checked before anything is spent")
+	}
+}
+
+// Exactly at the budget is allowed -- it is a ceiling, not a strict bound -- and
+// the default of 0 means no limit, which is what every existing agent relies on.
+func TestRunAllowsAPromptAtOrUnderTheBudgetAndIgnoresAZeroBudget(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "agent.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat > /dev/null\necho ok\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	base := config.Agent{Command: []string{script}, PromptVia: config.PromptViaStdin, Timeout: config.Duration(time.Minute)}
+	for _, tc := range []struct {
+		name   string
+		budget int
+		prompt string
+	}{
+		{"exactly at the budget", 10, strings.Repeat("x", 10)},
+		{"under the budget", 10, "xx"},
+		{"zero means unlimited", 0, strings.Repeat("x", 5000)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := base
+			a.PromptBudget = tc.budget
+			if res := Run(t.Context(), a, tc.prompt, t.TempDir()); res.Err != nil {
+				t.Errorf("Run() err = %v, want the invocation to proceed", res.Err)
+			}
+		})
+	}
 }
