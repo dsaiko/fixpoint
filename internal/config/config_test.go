@@ -170,7 +170,10 @@ func TestValidate(t *testing.T) {
 			c.Loop.ReviewOnly = true
 		}, ""},
 		{"undefined coder agent", func(c *Config) { c.Roles.Coder.Agent = "ghost" }, "not defined"},
-		{"missing coder agent name", func(c *Config) { c.Roles.Coder.Agent = "" }, "roles.coder.agent: required"},
+		// A coder with a prompt but no agent is a typo, and the message says so
+		// precisely; the "no coder at all" case is legal for a review-only config and
+		// is covered by TestCoderIsRequiredForAFixRunAndOptionalForAReview.
+		{"half-declared coder", func(c *Config) { c.Roles.Coder.Agent = "" }, "both agent and prompt"},
 		{"undefined review agent", func(c *Config) { c.Roles.Review.Agents = []string{"ghost"} }, "not defined"},
 		{"undefined pinned lens agent", func(c *Config) { c.Roles.Review.Prompts[0].Agent = "ghost" }, "not defined"},
 		{"empty command", func(c *Config) {
@@ -412,7 +415,7 @@ func TestValidate(t *testing.T) {
 			a.Command = []string{"echo", "--dangerously-skip-permissions"}
 			c.Agents["coder"] = a
 		}, ""},
-		{"missing coder prompt", func(c *Config) { c.Roles.Coder.Prompt = "" }, "must reference a prompt file"},
+		{"half-declared coder, prompt missing", func(c *Config) { c.Roles.Coder.Prompt = "" }, "both agent and prompt"},
 		{"unreadable prompt file", func(c *Config) { c.Roles.Coder.Prompt = "/nonexistent/prompt.md" }, "prompt file"},
 		{"unknown log format", func(c *Config) { c.Logs.Formats = []string{"xml"} }, "unknown format"},
 		{"duplicate agent pool entry", func(c *Config) {
@@ -1112,5 +1115,57 @@ func TestClosingPhaseDefaultsToOnePass(t *testing.T) {
 	}
 	if c.Loop.MaxFinalPasses != 0 {
 		t.Errorf("Validate() changed max_final_passes to %d; defaulting is Load's job", c.Loop.MaxFinalPasses)
+	}
+}
+
+// The coder is optional only for a review-only config. A fix run without one has
+// nothing to make the changes it exists to make, and must say so at load time
+// rather than failing in the first round.
+func TestCoderIsRequiredForAFixRunAndOptionalForAReview(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reviewOnly bool
+		wantErr    string
+	}{
+		{"fix run without a coder is refused", false, "roles.coder.agent: required"},
+		{"review-only without a coder is fine", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig(t)
+			c.Roles.Coder = RoleRef{}
+			c.Loop.ReviewOnly = tc.reviewOnly
+			err := c.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A half-declared coder is a typo, not a review config: refusing it keeps the
+// "no coder at all" case unambiguous.
+func TestHalfDeclaredCoderIsRefused(t *testing.T) {
+	c := validConfig(t)
+	c.Loop.ReviewOnly = true
+	c.Roles.Coder.Prompt = ""
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "both agent and prompt") {
+		t.Errorf("Validate() = %v, want a complaint about a half-declared coder", err)
+	}
+}
+
+// The judge decides what a review reports and must never be able to edit -- the
+// same rule that keeps write-capable agents out of the reviewer pool.
+func TestJudgeMustBeReadOnly(t *testing.T) {
+	c := validConfig(t)
+	c.Roles.Judge = RoleRef{Agent: "coder", Prompt: c.Roles.Coder.Prompt} // "coder" is can_edit
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must be read-only") {
+		t.Errorf("Validate() = %v, want the judge refused for being write-capable", err)
+	}
+	c.Roles.Judge.Agent = "rev"
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() = %v, want a read-only judge accepted", err)
 	}
 }

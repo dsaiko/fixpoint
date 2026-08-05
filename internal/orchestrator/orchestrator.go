@@ -189,8 +189,10 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		templates[name] = t
 		return nil
 	}
-	if err := load(cfg.Roles.Coder.Prompt, cfg.Roles.Coder.PromptFile(), prompt.FixData{}); err != nil {
-		return nil, err
+	if cfg.Roles.Coder.Prompt != "" {
+		if err := load(cfg.Roles.Coder.Prompt, cfg.Roles.Coder.PromptFile(), prompt.FixData{}); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.Review.Refute != "" {
 		if err := load(cfg.Review.Refute, cfg.Review.RefutePath, prompt.RefuteData{}); err != nil {

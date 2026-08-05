@@ -78,3 +78,34 @@ func TestShippedReviewConfigsAreReviewOnlyAndFanOutToTheWholePanel(t *testing.T)
 		})
 	}
 }
+
+// A review- config must not have to name a coder. It never invokes one, and naming
+// it would put a write-capable agent in a configuration whose entire promise is
+// that nothing modifies the target -- leaving a reader to work out from the loop
+// settings that it never runs.
+func TestShippedReviewConfigsDeclareNoCoder(t *testing.T) {
+	names, err := filepath.Glob(filepath.Join("..", "..", projectBundleDir, "review-*.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range names {
+		name := strings.TrimSuffix(filepath.Base(path), ".yaml")
+		t.Run(name, func(t *testing.T) {
+			l, err := LoadBundle(&Resolver{Bundles: []string{filepath.Join("..", "..", projectBundleDir)}}, name, "", Overrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a := l.Config.Roles.Coder.Agent; a != "" {
+				t.Errorf("%s names coder %q; a review config invokes none", name, a)
+			}
+			// The judge takes its place, and must be read-only.
+			j := l.Config.Roles.Judge
+			if j.Agent == "" {
+				t.Fatalf("%s has neither a coder nor a judge; nothing filters its findings", name)
+			}
+			if l.Config.Agents[j.Agent].CanEdit {
+				t.Errorf("%s judge %q is write-capable", name, j.Agent)
+			}
+		})
+	}
+}

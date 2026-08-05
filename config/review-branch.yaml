@@ -30,9 +30,6 @@ target:
   base_ref: "@{upstream}..."
 
 roles:
-  # Required even though it never runs: validation checks the whole configuration
-  # up front rather than leaving a review-only run half-checked.
-  coder: { agent: claude-coder, prompt: fix }
   # The judge: the last filter before a review is published, and read-only by
   # design -- a review- config must never invoke something that can edit.
   #

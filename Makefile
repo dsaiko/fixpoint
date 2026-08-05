@@ -1,6 +1,8 @@
 # fixpoint -- agent-agnostic automated code review cycle
 
 BINARY  := fixpoint
+# The config the static checks below validate. The run targets each name their
+# own, so this is only the default for `make check`.
 CONFIG  := fix-code
 
 # Analysis tools are run via `go run` with pinned versions, so no global
@@ -9,7 +11,8 @@ GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v
 STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live run review-code fix-branch clean clean-logs help
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live \
+        fix-code fix-branch review-code review-branch review-pr clean clean-logs run help
 
 all: build
 
@@ -78,22 +81,48 @@ check: build
 check-live: build
 	./$(BINARY) --check-live $(CONFIG) --trusted-target
 
-## run: run the full review->fix cycle per the configuration
-## The trust gate is a per-invocation flag, never a config default: we assert it
-## here because this target reviews fixpoint's own repository.
-run: build test vet
-	./$(BINARY) $(CONFIG) --trusted-target
+# One target per shipped config, so `make help` lists what can actually be run
+# instead of one generic `run` whose behavior depends on a variable.
+#
+# --trusted-target is asserted here because every one of these targets reviews
+# THIS repository, which we wrote. It is a per-invocation flag and never a config
+# default -- see the security notes in config/README.md -- so a target pointed at
+# somebody else's code would have to say so itself.
+#
+# The fix- targets run the test suite and vet first: they let an agent edit the
+# working tree, and starting that from a tree whose tests already fail makes the
+# verify gate's baseline meaningless.
 
-## review-code: run a single review round; the coder is never invoked
-review-code: build
-	./$(BINARY) review-code --trusted-target
+## fix-code: review -> fix -> verify -> commit over the whole project
+fix-code: build test vet
+	./$(BINARY) fix-code --trusted-target
 
-## fix-branch: run the full cycle over only what this branch changed
-## Needs an upstream (`git push -u`); without one pass a base yourself, keeping
+## fix-branch: the same cycle over only what this branch changed
+## Needs an upstream (`git push -u`); without one, pass a base yourself, keeping
 ## the dots that ask for the merge base:
 ##   ./fixpoint fix-branch -base-ref 'origin/develop...' --trusted-target
 fix-branch: build test vet
 	./$(BINARY) fix-branch --trusted-target
+
+## review-code: one review round over the whole project; nothing is modified
+review-code: build
+	./$(BINARY) review-code --trusted-target
+
+## review-branch: one review round over only what this branch changed
+review-branch: build
+	./$(BINARY) review-branch --trusted-target
+
+## review-pr: review a pull request; pass the number as PR=<n>
+##   make review-pr PR=170
+review-pr: build
+	@test -n "$(PR)" || { echo "usage: make review-pr PR=<number>"; exit 2; }
+	./$(BINARY) review-pr -pr $(PR) --trusted-target
+
+## run: removed -- name the config you mean (make fix-code, make review-pr PR=n)
+run:
+	@echo "There is no 'make run': it hid which config was about to spend money."
+	@echo
+	@$(MAKE) --no-print-directory help
 
 ## clean: remove the built binary and coverage artifacts
 clean:
@@ -108,5 +137,8 @@ list: build
 	./$(BINARY) --list
 
 ## help: list all targets with their descriptions
+## Only "## name: text" lines are listed; a "## " line without a target name is a
+## continuation for someone reading the Makefile, and sorting those in among the
+## targets made the list unreadable.
 help:
-	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /' | sort
+	@grep -E '^## [a-z][a-z0-9-]*:' $(MAKEFILE_LIST) | sed 's/^## /  /' | sort

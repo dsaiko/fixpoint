@@ -1416,14 +1416,28 @@ func (c *Config) Validate() error {
 		return nil
 	}
 
-	if c.Roles.Coder.Agent == "" {
-		return errors.New("roles.coder.agent: required")
-	}
-	if err := check("roles.coder", c.Roles.Coder.Agent); err != nil {
-		return err
-	}
-	if !c.Agents[c.Roles.Coder.Agent].CanEdit {
-		return fmt.Errorf("roles.coder: agent %q has can_edit: false -- the coder must be able to edit files", c.Roles.Coder.Agent)
+	// A REVIEW-ONLY config needs no coder, and naming one is worse than pointless:
+	// the coder is the one role that must be able to edit, so a review- config
+	// declaring it puts a write-capable agent in a configuration whose entire
+	// promise is that nothing modifies the target. A reader then has to work out
+	// from the loop settings that it never runs.
+	//
+	// It stays REQUIRED for a fix run, and stays validated whenever it is present,
+	// so a config that names a coder still cannot name a broken one.
+	switch {
+	case c.Roles.Coder.Agent == "" && c.Roles.Coder.Prompt == "":
+		if !c.Loop.ReviewOnly {
+			return errors.New("roles.coder.agent: required (a fix run needs a coder; set loop.review_only for a config that only reviews)")
+		}
+	case c.Roles.Coder.Agent == "" || c.Roles.Coder.Prompt == "":
+		return errors.New("roles.coder: both agent and prompt are required when either is set")
+	default:
+		if err := check("roles.coder", c.Roles.Coder.Agent); err != nil {
+			return err
+		}
+		if !c.Agents[c.Roles.Coder.Agent].CanEdit {
+			return fmt.Errorf("roles.coder: agent %q has can_edit: false -- the coder must be able to edit files", c.Roles.Coder.Agent)
+		}
 	}
 	for _, name := range c.Roles.Review.ActiveAgents() {
 		if err := check("roles.review", name); err != nil {
@@ -1471,7 +1485,13 @@ func (c *Config) Validate() error {
 	// that was never resolved through a bundle (unit tests), in which case the
 	// name itself is treated as the path.
 	type promptRef struct{ name, file string }
-	refs := []promptRef{{c.Roles.Coder.Prompt, c.Roles.Coder.PromptFile()}}
+	refs := make([]promptRef, 0, len(c.Roles.Review.Prompts)+2)
+	if c.Roles.Coder.Prompt != "" {
+		refs = append(refs, promptRef{c.Roles.Coder.Prompt, c.Roles.Coder.PromptFile()})
+	}
+	if j := c.Roles.Judge; j.Prompt != "" {
+		refs = append(refs, promptRef{j.Prompt, j.PromptFile()})
+	}
 	for _, l := range c.Roles.Review.Prompts {
 		refs = append(refs, promptRef{l.Prompt, l.PromptFile()})
 	}
@@ -1611,7 +1631,9 @@ func (c *Config) logIdentities() [][3]string {
 			ids = append(ids, [3]string{"review", a, name}, [3]string{"review", a, ReformatLensName(name)})
 		}
 	}
-	ids = append(ids, [3]string{"fix", c.Roles.Coder.Agent, LensName(c.Roles.Coder.Prompt)})
+	if c.Roles.Coder.Agent != "" {
+		ids = append(ids, [3]string{"fix", c.Roles.Coder.Agent, LensName(c.Roles.Coder.Prompt)})
+	}
 	return ids
 }
 

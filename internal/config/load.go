@@ -399,11 +399,13 @@ func (c *Config) resolvePrompts(r *Resolver, into map[string]string) error {
 		into[name] = p
 		return p, nil
 	}
-	p, err := resolve(c.Roles.Coder.Prompt)
-	if err != nil {
-		return err
+	if c.Roles.Coder.Prompt != "" {
+		p, err := resolve(c.Roles.Coder.Prompt)
+		if err != nil {
+			return err
+		}
+		c.Roles.Coder.PromptPath = p
 	}
-	c.Roles.Coder.PromptPath = p
 	for i := range c.Roles.Review.Prompts {
 		p, err := resolve(c.Roles.Review.Prompts[i].Prompt)
 		if err != nil {

@@ -264,8 +264,17 @@ func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Co
 		return 1
 	}
 	logf("scope: %s", scope)
-	logf("configuration OK: %d review lens(es), coder %s, strategy %s",
-		len(cfg.Roles.Review.Prompts), cfg.Roles.Coder.Agent, cfg.Roles.Review.Strategy)
+	// A review-only config has no coder at all, so say that rather than printing an
+	// empty name -- "coder " reads like a lookup that failed.
+	who := "no coder (review only)"
+	if cfg.Roles.Coder.Agent != "" {
+		who = "coder " + cfg.Roles.Coder.Agent
+	}
+	if j := cfg.Roles.Judge.Agent; j != "" {
+		who += ", judge " + j
+	}
+	logf("configuration OK: %d review lens(es), %s, strategy %s",
+		len(cfg.Roles.Review.Prompts), who, cfg.Roles.Review.Strategy)
 	return 0
 }
 

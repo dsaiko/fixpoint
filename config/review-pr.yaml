@@ -14,7 +14,6 @@ target:
   pr: 0 # placeholder: pass -pr <number> on the command line, or edit here
 
 roles:
-  coder: { agent: claude-coder, prompt: fix }
   # The judge: the last filter before a review is published, and read-only by
   # design -- a review- config must never invoke something that can edit.
   #
