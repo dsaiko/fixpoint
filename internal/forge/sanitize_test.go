@@ -169,3 +169,28 @@ func TestBreakReferencesIsIndependentOfTheCommentRules(t *testing.T) {
 		t.Errorf("BreakReferences must not touch mentions: %q", got)
 	}
 }
+
+// The verdict-to-event mapping is small but it decides whether fixpoint approves
+// somebody's pull request, so it is pinned rather than left to a switch nobody
+// reads. There is deliberately no event for an inconclusive review: both that
+// exist would be lies about a panel that never reached quorum.
+func TestEventsAreDistinctAndNamed(t *testing.T) {
+	seen := map[Event]bool{}
+	for _, e := range []Event{Comment, EventApprove, EventRequestChanges} {
+		if e == "" {
+			t.Error("an event with an empty name would silently become a comment")
+		}
+		if seen[e] {
+			t.Errorf("duplicate event value %q", e)
+		}
+		seen[e] = true
+	}
+}
+
+// Both providers must satisfy Poster, or PosterFor silently returns nil and a
+// -post that the operator asked for turns into a warning about an unrecognized
+// remote.
+func TestBothProvidersCanPost(t *testing.T) {
+	var _ Poster = githubProvider{}
+	var _ Poster = gitlabProvider{}
+}
