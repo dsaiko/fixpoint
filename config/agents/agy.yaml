@@ -1,0 +1,50 @@
+# Antigravity (Google) -- NOT usable as a reviewer as configured; see can_edit.
+#
+# `agy models` lists ids; reasoning effort is baked into the model name
+# (gemini-3.6-flash-high, gemini-3.1-pro-high, ...), so there is no effort field.
+model: gemini-3.6-flash-high
+command:
+  - agy
+  - --model {{model}}
+  - --dangerously-skip-permissions # headless agy denies even read_file without it
+  - --mode plan # ...and plan mode is meant to hold back the edits it just allowed
+  - --print-timeout 10m # agy's own non-interactive wait (default 5m)
+  - -p # -p consumes the NEXT arg as the prompt -- MUST stay last
+# SECURITY: arg mode appends the WHOLE prompt to agy's argv, where any local user
+# reads it via `ps` or /proc/<pid>/cmdline for as long as the invocation lives --
+# the reviewed material (in git-diff/pr mode the diff, which often IS the
+# credential under review), the prior rounds' findings, and the verification
+# output, none of it covered by the 0600 log permissions or the on-disk redaction
+# pass. fixpoint warns at run start, but a warning is not a control: use this
+# agent only on a single-user host and only against a target whose material
+# carries no secrets. `-p` is the sole prompt entry point agy documents as of this
+# writing; check whether your version can take the prompt on stdin, and switch to
+# prompt_via: stdin the moment it can.
+prompt_via: arg
+timeout: 10m
+# can_edit: true, even though this agent was written for reviewer duty. Its
+# --dangerously-skip-permissions auto-approves EVERY tool request, writes
+# included, and agy offers no enforced read-only sandbox to earn the claim back:
+# `--sandbox` restricts the terminal, and `--mode` takes only accept-edits or
+# plan. Whether plan mode still denies the edit tools once the permission system
+# is off is agy's business to enforce, unverified here -- and a reviewer's
+# can_edit is the only barrier left when a prompt injection in the code under
+# review talks the model out of plan mode. So this declares the fail-safe truth
+# ("this command can write"), which is also what validation now requires of any
+# can_edit: false command carrying a permission-bypass flag. Effect: validation
+# keeps agy out of roles.review, where the damage would be. It is no more ready
+# for roles.coder -- plan mode blocks the edits a coder exists to make; drop that
+# flag first, and only then with the fix-round trust gate as usual.
+can_edit: true
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # Google credentials, when not using an interactive login.
+    - GOOGLE_API_KEY
+    - GEMINI_API_KEY
+    - GOOGLE_APPLICATION_CREDENTIALS

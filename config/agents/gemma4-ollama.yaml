@@ -1,0 +1,47 @@
+# Gemma via ollama, wrapped in Claude Code's agentic harness (ollama serves an
+# Anthropic-compatible API), so it can explore the repository like the others.
+# Flags after `--` are passed through to claude itself.
+model: gemma4:31b-cloud
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+# NO cost_usd: gemma4/glm are served by ollama, not Anthropic, and the wrapped
+# claude harness has no idea what ollama charges -- it labels them provider
+# "firstParty" and applies Anthropic's rate card. Measured on a real run: the cost
+# it reported for these two matched Opus-5 published rates to a ratio of 1.000
+# ($55.70 for glm's 10.5M input tokens), while the genuinely-Anthropic agents came
+# in at 1.09-1.20 because their real billing includes cache-TTL tiers. That number
+# is a rate-card calculation, not a bill, so it is not read: the scoreboard shows
+# "-" for these agents rather than $70 of money nobody was charged. Tokens ARE
+# real and still counted.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+
+prompt_via: stdin
+timeout: 15m # local models are slower; give them headroom
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # ollama needs to find its server; the wrapped claude harness needs nothing more.
+    - OLLAMA_HOST

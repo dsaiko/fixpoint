@@ -1,0 +1,568 @@
+package orchestrator
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/logstore"
+	"github.com/dsaiko/fixpoint/internal/model"
+)
+
+// journal returns the run journal's records. It reads the file the run actually
+// wrote rather than an in-memory copy, because durability on disk is the feature.
+func (f *fixture) journal() []model.JournalEvent {
+	f.t.Helper()
+	base := f.cfg.Logs.StaticBase()
+	runs, err := os.ReadDir(base)
+	if err != nil {
+		f.t.Fatalf("no run directory under %s: %v", base, err)
+	}
+	if len(runs) != 1 {
+		f.t.Fatalf("expected one run dir under %s, got %d", base, len(runs))
+	}
+	b, err := os.ReadFile(filepath.Join(base, runs[0].Name(), logstore.JournalName))
+	if err != nil {
+		f.t.Fatalf("read journal: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	out := make([]model.JournalEvent, 0, len(lines))
+	for i, line := range lines {
+		var ev model.JournalEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			f.t.Fatalf("journal line %d is not valid JSON (%v): %s", i+1, err, line)
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// discarded decodes the run's round_discarded record and asserts its reason. Each
+// abnormal exit leaves a stash the operator did not ask for, and the journal is
+// the only place "which stash is this and why" is answerable -- so every discard
+// site's own behavior test checks its record here, rather than one central test
+// re-staging four different failures.
+func (f *fixture) discarded(reason string) model.JournalDiscarded {
+	f.t.Helper()
+	var d model.JournalDiscarded
+	payload(f.t, f.journal(), model.EvRoundDiscarded, &d)
+	if d.Reason != reason {
+		f.t.Errorf("round_discarded reason = %q, want %q", d.Reason, reason)
+	}
+	return d
+}
+
+// sessionDiscarded is discarded at session scope: the record of one coder
+// session's edits being set aside while the round carried on.
+func (f *fixture) sessionDiscarded(reason string) model.JournalDiscarded {
+	f.t.Helper()
+	var d model.JournalDiscarded
+	payload(f.t, f.journal(), model.EvSessionDiscarded, &d)
+	if d.Reason != reason {
+		f.t.Errorf("session_discarded reason = %q, want %q", d.Reason, reason)
+	}
+	return d
+}
+
+// types is the journal's event sequence, which is the thing worth asserting: the
+// summary already reports the final counts, and what it cannot report is the ORDER
+// transitions happened in.
+func journalTypes(events []model.JournalEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, ev := range events {
+		out = append(out, ev.Type)
+	}
+	return out
+}
+
+// payload decodes the first record of the given type into v. The journal stores a
+// per-type payload under Data, so reading one back means naming the type you expect.
+func payload(t *testing.T, events []model.JournalEvent, typ string, v any) model.JournalEvent {
+	t.Helper()
+	for _, ev := range events {
+		if ev.Type != typ {
+			continue
+		}
+		b, err := json.Marshal(ev.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(b, v); err != nil {
+			t.Fatalf("decode %s payload: %v", typ, err)
+		}
+		return ev
+	}
+	t.Fatalf("no %s record in the journal: %v", typ, journalTypes(events))
+	return model.JournalEvent{}
+}
+
+// convergingLifecycle is the journal sequence of the run both
+// TestRunJournalRecordsTheRoundLifecycle and
+// TestRunSurvivesAJournalThatCannotBeWritten drive: one finding fixed and
+// committed, then a clean round that ends the run. It is shared because the
+// second test's property -- that a broken journal suppresses only the WARNING,
+// never a write -- is exactly "every transition in this sequence was still
+// attempted", and a count alone cannot say that.
+var convergingLifecycle = []string{
+	model.EvRunStarted,
+	model.EvRoundStarted, model.EvReviewFinished, model.EvIssuesAggregated,
+	model.EvFixFinished, model.EvRoundCommitted,
+	model.EvRoundStarted, model.EvReviewFinished, model.EvIssuesAggregated,
+	model.EvRoundClean,
+	model.EvRunFinished,
+}
+
+// A converging run's journal must reconstruct the loop: review, aggregate, fix,
+// commit, then a clean round that ends it. This is the property the summary cannot
+// provide, because the summary is one whole-run write at the end.
+func TestRunJournalRecordsTheRoundLifecycle(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	events := f.journal()
+	got := journalTypes(events)
+	want := convergingLifecycle
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("journal sequence =\n  %v\nwant\n  %v", got, want)
+	}
+
+	// Round numbers must place each record in its iteration; a run-level record has
+	// none, so a reader can tell "the run" from "a round".
+	for _, ev := range events {
+		switch ev.Type {
+		case model.EvRunStarted, model.EvRunFinished:
+			if ev.Round != 0 {
+				t.Errorf("%s carries round %d, want none", ev.Type, ev.Round)
+			}
+		default:
+			if ev.Round == 0 {
+				t.Errorf("%s (seq %d) carries no round", ev.Type, ev.Seq)
+			}
+		}
+	}
+
+	var fix model.JournalFixFinished
+	payload(t, events, model.EvFixFinished, &fix)
+	if fix.Fixed != 1 || fix.Rejected != 0 || fix.Issues != 1 {
+		t.Errorf("fix_finished = %+v, want 1 issue, 1 fixed, 0 rejected", fix)
+	}
+	if fix.Agent != "mock" {
+		t.Errorf("fix_finished agent = %q, want mock", fix.Agent)
+	}
+
+	var commit model.JournalRoundCommitted
+	payload(t, events, model.EvRoundCommitted, &commit)
+	if commit.SHA == "" {
+		t.Error("round_committed carries no SHA; it is the only durable pointer to the round's work")
+	}
+	if commit.Partial {
+		t.Error("a normal round must not be recorded as partial")
+	}
+
+	var fin model.JournalRunFinished
+	payload(t, events, model.EvRunFinished, &fin)
+	if fin.Termination != model.TermConverged || fin.Rounds != 2 {
+		t.Errorf("run_finished = %+v, want converged after 2 rounds", fin)
+	}
+}
+
+// The gate's verdict is the one fact in the loop no model produced, so it has to be
+// in the journal: the baseline (what was already failing before the run) and each
+// attempt over the coder's edits.
+func TestRunJournalRecordsVerification(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	events := f.journal()
+
+	var base model.JournalVerifyFinished
+	payload(t, events, model.EvVerifyBaseline, &base)
+	if !base.Passed || len(base.Checks) != 1 || base.Checks[0].Name != "build" {
+		t.Errorf("verify_baseline = %+v, want the build check passing on the pristine tree", base)
+	}
+	if base.Attempt != "" {
+		t.Errorf("verify_baseline attempt = %q, want none: the baseline is not an attempt over a fix", base.Attempt)
+	}
+
+	ev := payload(t, events, model.EvVerifyFinished, &base)
+	if base.Attempt != model.VerifyAttemptInitial {
+		t.Errorf("verify_finished attempt = %q, want %q", base.Attempt, model.VerifyAttemptInitial)
+	}
+	if !base.Passed || len(base.Blocking) != 0 {
+		t.Errorf("verify_finished = %+v, want a passing gate with nothing blocking", base)
+	}
+	if ev.Round != 1 {
+		t.Errorf("verify_finished round = %d, want 1", ev.Round)
+	}
+}
+
+// A round discarded by the gate must say so, with the reason and whether the work is
+// recoverable. This is the exit that leaves a stash the operator did not ask for, so
+// "which stash is this and why" has to be answerable from the journal.
+func TestRunJournalRecordsDiscardedRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	f.respond(1, reviewResponse(t, aFinding("bug")))
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "still done"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err == nil {
+		t.Fatal("expected the run to fail after the gate rejected the round")
+	}
+	events := f.journal()
+
+	var d model.JournalDiscarded
+	payload(t, events, model.EvRoundDiscarded, &d)
+	if d.Reason != model.DiscardVerifyFailed {
+		t.Errorf("discard reason = %q, want %q", d.Reason, model.DiscardVerifyFailed)
+	}
+	if !d.Stashed {
+		t.Error("the coder's edits were stashed; the journal must say so or they look lost")
+	}
+	if len(d.Checks) == 0 {
+		t.Error("discard record names no failing check")
+	}
+	if got := journalTypes(events); strings.Contains(strings.Join(got, ","), model.EvRoundCommitted) {
+		t.Errorf("a discarded round must not be recorded as committed: %v", got)
+	}
+
+	// Both gate attempts are recorded: the correction attempt is the run's second
+	// coder invocation, and a reader must be able to see that it happened and failed.
+	attempts := 0
+	for _, ev := range events {
+		if ev.Type == model.EvVerifyFinished {
+			attempts++
+		}
+	}
+	if attempts != 2 {
+		t.Errorf("verify_finished records = %d, want 2 (initial + correction)", attempts)
+	}
+}
+
+// The journal must record which issues the per-round cap made wait, and not merely
+// how many: aging exists to bound that wait, and the starvation bug it fixed is only
+// visible by following an id across rounds.
+func TestRunJournalRecordsDeferredIssues(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, MaxFindingsPerRound: 1})
+	// Two DISTINCT problems: aFinding reuses one file and line, so two of those would
+	// aggregate into a single issue and the cap would never bite.
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bugs", Severity: "high", File: "main.go", Line: 1, Title: "first"},
+		model.ReviewFinding{Category: "bugs", Severity: "low", File: "other.go", Line: 90, Title: "second"},
+	))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	var d model.JournalIssuesDeferred
+	payload(t, f.journal(), model.EvIssuesDeferred, &d)
+	if d.Cap != 1 || d.Deferred != 1 {
+		t.Errorf("issues_deferred = %+v, want a cap of 1 deferring 1 issue", d)
+	}
+	if len(d.IDs) != 1 {
+		t.Errorf("issues_deferred IDs = %v, want the one deferred issue named", d.IDs)
+	}
+}
+
+// Corroboration is the panel's strongest signal and is invisible in the raw
+// observation count, so the aggregation record carries it explicitly.
+func TestRunJournalRecordsCorroboration(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	// Two DIFFERENT agents: corroboration counts distinct agents, so one agent
+	// reporting twice is a duplicate, not agreement.
+	f.cfg.Roles.Review.Prompts = []config.ReviewLens{
+		{Agent: "mock", Prompt: f.cfg.Roles.Review.Prompts[0].Prompt},
+		{Agent: "mock2", Prompt: f.cfg.Roles.Review.Prompts[0].Prompt},
+	}
+	f.cfg.Agents["mock2"] = f.cfg.Agents["mock"]
+	// Both reviewers report the same problem; the coder then sees one issue.
+	f.respond(1, reviewResponse(t, aFinding("same bug")))
+	f.respond(2, reviewResponse(t, aFinding("same bug")))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "done"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	var agg model.JournalIssuesAggregated
+	payload(t, f.journal(), model.EvIssuesAggregated, &agg)
+	if agg.Observations != 2 || agg.Issues != 1 {
+		t.Errorf("issues_aggregated = %+v, want 2 observations grouped into 1 issue", agg)
+	}
+	if agg.Corroborated != 1 {
+		t.Errorf("Corroborated = %d, want 1: two agents agreeing is the fact worth recording", agg.Corroborated)
+	}
+}
+
+// A run refused by a gate journals the refusal and NOTHING else. No transition
+// record may precede the symlink check that authorizes artifact writes, because
+// rounds commit afterwards; the closing record is exempt because nothing commits
+// after it -- the same reasoning that permits the unconditional summary write.
+func TestRunRefusedByTrustGateJournalsOnlyTheRefusal(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Loop.TrustedTarget = false // the fixture asserts trust; withdraw it
+	f.respond(1, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err == nil {
+		t.Fatal("expected the untrusted-target gate to refuse the run")
+	}
+
+	events := f.journal()
+	if got := journalTypes(events); len(got) != 1 || got[0] != model.EvRunFinished {
+		t.Fatalf("journal = %v, want only %s: no transition record may be written before the symlink check", got, model.EvRunFinished)
+	}
+	var fin model.JournalRunFinished
+	payload(t, events, model.EvRunFinished, &fin)
+	if fin.Termination != model.TermError || fin.Rounds != 0 {
+		t.Errorf("run_finished = %+v, want an error termination with no rounds", fin)
+	}
+	if !strings.Contains(fin.Error, "trusted-target") {
+		t.Errorf("run_finished must name the refusal, got %q", fin.Error)
+	}
+}
+
+// A journal write failure must NEVER fail the run. The journal is an audit
+// artifact, and the alternative -- failing the run to protect it -- would make the
+// observability feature the most likely cause of a lost round, discarding fixes that
+// already passed verification and were committed. The warning is emitted once, so a
+// full disk cannot bury the run's real output under a line per transition.
+//
+// The failure is injected through o.journalWrite rather than by breaking the
+// filesystem: a read-only path still succeeds for root, which CI often is, so a
+// filesystem-based version of this test would silently assert nothing.
+func TestRunSurvivesAJournalThatCannotBeWritten(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean -> converge
+
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Record what each transition TRIED to write, not just how many tried: an
+	// implementation that gave up after the fifth failure would satisfy a count
+	// assertion while losing every later record, including the ones that say how
+	// the run ended.
+	var attempted []string
+	o.journalWrite = func(typ string, _ int, _ any) error {
+		attempted = append(attempted, typ)
+		return errors.New("no space left on device")
+	}
+
+	before := f.commitCount()
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v, want a broken journal to be survivable", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Fatalf("termination = %q, want converged", sum.Termination)
+	}
+	if got := f.commitCount(); got != before+1 {
+		t.Errorf("commit count = %d, want %d: the verified fix must still be committed", got, before+1)
+	}
+	// Every transition still tries, in order: giving up part-way would lose the
+	// records a journal that recovers (a freed disk) could still have held. The
+	// expected sequence is the one TestRunJournalRecordsTheRoundLifecycle asserts on
+	// a working journal, because this test drives the same run.
+	if strings.Join(attempted, ",") != strings.Join(convergingLifecycle, ",") {
+		t.Errorf("attempted journal writes =\n  %v\nwant one per transition\n  %v", attempted, convergingLifecycle)
+	}
+	warnings := 0
+	for _, l := range lines {
+		if strings.Contains(l, "journal unavailable") {
+			warnings++
+			if !strings.Contains(l, "no space left on device") || !strings.Contains(l, "continues") {
+				t.Errorf("the warning must carry the cause and say the run continues: %q", l)
+			}
+		}
+	}
+	if warnings != 1 {
+		t.Errorf("journal warnings = %d, want exactly 1 for the whole run", warnings)
+	}
+}
+
+// An advisory final lens is the shape the shipped config uses for maintainability
+// and design: one report on the finished code, never handed to the coder. The
+// closing round must therefore run the lens, record its findings as advisory, and
+// then stop -- no coder invocation and no commit, because there is nothing to fix.
+func TestFinalAdvisoryLensReportsWithoutInvokingTheCoder(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.cfg.Agents["mock2"] = f.cfg.Agents["mock"]
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts, config.ReviewLens{
+		Agent:    "mock2",
+		Prompt:   f.cfg.Roles.Review.Prompts[0].Prompt,
+		Advisory: true,
+		Final:    true,
+	})
+	f.respond(1, reviewResponse(t))                     // loop round: clean
+	f.respond(2, reviewResponse(t, aFinding("smelly"))) // closing round: advisory
+	// No response 3: if the coder were invoked it would read a missing file and the
+	// round would fail, so a passing test proves it was not.
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Rounds) != 2 || !sum.Rounds[1].Final {
+		t.Fatalf("want a closing round, got %d round(s)", len(sum.Rounds))
+	}
+	last := sum.Rounds[1]
+	if len(last.Advisory) != 1 {
+		t.Errorf("closing round advisory = %d, want 1: the report is the deliverable", len(last.Advisory))
+	}
+	if len(last.Findings) != 0 {
+		t.Errorf("closing round findings = %d, want 0: an advisory lens never reaches the coder", len(last.Findings))
+	}
+	if last.Fixed != 0 || last.CommitSHA != "" {
+		t.Errorf("closing round fixed=%d commit=%q, want nothing committed", last.Fixed, last.CommitSHA)
+	}
+	if got := f.invocations(); got != 2 {
+		t.Errorf("agent invocations = %d, want 2 (one loop reviewer + one closing reviewer, no coder)", got)
+	}
+}
+
+// A pinned final lens must run on its own agent only. Unpinned means the whole
+// panel, which is right when the findings get fixed and wrong for a report -- four
+// overlapping documents to read, and corroboration that buys nothing.
+func TestFinalLensPinnedRunsOnOneAgentOnly(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.cfg.Roles.Review.Agents = []string{"mock", "mock2", "mock3"}
+	for _, n := range []string{"mock2", "mock3"} {
+		f.cfg.Agents[n] = f.cfg.Agents["mock"]
+	}
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts, config.ReviewLens{
+		Agent:    "mock3",
+		Prompt:   f.cfg.Roles.Review.Prompts[0].Prompt,
+		Advisory: true,
+		Final:    true,
+	})
+	f.respond(1, reviewResponse(t))
+	f.respond(2, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	asgs := sum.Rounds[len(sum.Rounds)-1].Assignments
+	if len(asgs) != 1 || asgs[0].Agent != "mock3" {
+		t.Errorf("closing assignments = %+v, want only the pinned mock3 despite a 3-agent pool", asgs)
+	}
+}
+
+// A mixed closing panel is what the shipped fix-code uses: review-tests actionable
+// and unpinned, maintainability/design advisory and pinned. The actionable half
+// drives the repeat; the advisory half is a REPORT and must run exactly once, last,
+// over the tree as it finally stands. Running it per pass would emit one report per
+// pass -- the per-round waste `final` exists to remove, back inside the closing round.
+func TestFinalPhaseRunsAdvisoryReportOnceAfterTheFixPasses(t *testing.T) {
+	// MaxFinalPasses 3, above the default 1: this test is about the actionable and
+	// advisory halves having DIFFERENT schedules, and it needs the fix half to end
+	// the way it ends naturally -- on a clean pass -- rather than on the cap.
+	f := newFixture(t, config.Loop{MaxIterations: 4, MaxFinalPasses: 3, CleanRoundsToStop: 1, MaxFindingsPerRound: 1})
+	prompt := f.cfg.Roles.Review.Prompts[0].Prompt
+	for _, n := range []string{"mock2", "mock3"} {
+		f.cfg.Agents[n] = f.cfg.Agents["mock"]
+	}
+	f.cfg.Roles.Review.Prompts = append(f.cfg.Roles.Review.Prompts,
+		config.ReviewLens{Agent: "mock2", Prompt: prompt, Final: true},                 // actionable
+		config.ReviewLens{Agent: "mock3", Prompt: prompt, Final: true, Advisory: true}, // the report
+	)
+	f.respond(1, reviewResponse(t)) // loop round 1: clean -> converged
+
+	gapA := model.ReviewFinding{Category: "tests", Severity: "high", File: "a.go", Line: 10, Title: "a has no test"}
+	gapB := model.ReviewFinding{Category: "tests", Severity: "low", File: "b.go", Line: 20, Title: "b has no test"}
+	// Two fix passes, forced by a cap of one.
+	f.respond(2, reviewResponse(t, gapA, gapB))
+	f.editRepoOn(3)
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "test for a"}))
+	f.respond(4, reviewResponse(t, gapB))
+	f.editRepoOn(5)
+	f.respond(5, fixResponse(t, model.FixResult{ID: "i2", Verdict: "fixed", Detail: "test for b"}))
+	f.respond(6, reviewResponse(t)) // fix pass 3: clean -> fix passes end
+	// Invocation 7 is the report. If the advisory lens had run on every pass it would
+	// have consumed earlier slots and thrown the whole sequence out.
+	f.respond(7, reviewResponse(t, model.ReviewFinding{
+		Category: "maintainability", Severity: "low", File: "c.go", Line: 5, Title: "smelly helper",
+	}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Count how many closing rounds each half appeared in.
+	fixPasses, reportPasses := 0, 0
+	for _, r := range sum.Rounds {
+		if !r.Final {
+			continue
+		}
+		for _, a := range r.Assignments {
+			switch a.Agent {
+			case "mock2":
+				fixPasses++
+			case "mock3":
+				reportPasses++
+			}
+		}
+	}
+	if reportPasses != 1 {
+		t.Errorf("the advisory lens ran in %d closing round(s), want exactly 1: a report per pass is the waste `final` removes", reportPasses)
+	}
+	if fixPasses < 2 {
+		t.Errorf("actionable closing passes = %d, want at least 2 under a cap of 1", fixPasses)
+	}
+	// The two halves must never share a round: the report is taken after the fixing
+	// has stopped, so it describes the code that actually shipped.
+	for _, r := range sum.Rounds {
+		var sawFix, sawReport bool
+		for _, a := range r.Assignments {
+			sawFix = sawFix || a.Agent == "mock2"
+			sawReport = sawReport || a.Agent == "mock3"
+		}
+		if sawFix && sawReport {
+			t.Errorf("round %d mixed the fix pass and the report; the report must come after the fixing stops", r.Round)
+		}
+	}
+	// The report is the LAST round, and it committed nothing.
+	last := sum.Rounds[len(sum.Rounds)-1]
+	if len(last.Assignments) != 1 || last.Assignments[0].Agent != "mock3" {
+		t.Errorf("last round = %+v, want the advisory report", last.Assignments)
+	}
+	if len(last.Advisory) != 1 || len(last.Findings) != 0 || last.CommitSHA != "" {
+		t.Errorf("report round advisory=%d findings=%d sha=%q, want 1/0/empty",
+			len(last.Advisory), len(last.Findings), last.CommitSHA)
+	}
+}

@@ -1,0 +1,58 @@
+# Reviewer-duty claude: good quality/cost balance.
+# Exact model id, not the `opus` alias -- see claude-coder.yaml.
+model: claude-opus-5
+effort: high # low | medium | high | xhigh | max
+command:
+  - claude
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  # SECURITY: settings come from ~/.claude only. claude runs with its working
+  # directory INSIDE the target, and by default it also loads that directory's
+  # .claude/settings.json and .claude/settings.local.json -- files the code under
+  # review supplies. A SessionStart hook there is a shell command the CLI runs
+  # with the operator's full permissions, before the model takes a turn and
+  # before any tool permission (or the missing permission-skip flag above)
+  # applies to anything: read-only reviewer duty would still be arbitrary
+  # execution, with the agent's own credential in the environment to exfiltrate.
+  # Review-only mode asserts no trust in the target at all, so that file is
+  # whatever the PR author wrote. The same flag also keeps the target's MCP
+  # servers, skills and CLAUDE.md out of the session, on the same argument: they
+  # are instructions authored by the material being reviewed.
+  - --setting-sources user
+  - --model {{model}}
+  - --effort {{effort}}
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  cost_usd: modelUsage.*.costUSD
+  # Set when the API refused the call rather than the CLI failing -- 429 on a
+  # session limit, 5xx on an outage. Without it both are just "exit status 1".
+  error_status: api_error_status
+
+prompt_via: stdin
+# 20m, raised from 10m: a reviewer's budget has to cover a target that GROWS during
+# the run. In a measured 7-round run the review prompt went from 4.6 KB to 37.7 KB
+# (accumulated history) while the coder added 24 commits of code to read, and this
+# agent was killed twice at exactly 10m00s having written nothing at all. A timeout
+# buys no findings and still resets the convergence streak, so it is the most
+# expensive way to save time.
+timeout: 20m
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # See claude-coder.yaml: only needed when authenticating by API key.
+    - ANTHROPIC_API_KEY

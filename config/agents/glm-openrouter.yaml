@@ -1,0 +1,59 @@
+# GLM via OpenRouter, wrapped in Claude Code's agentic harness. Same model as
+# glm-ollama.yaml, routed somewhere that honours prompt caching -- see
+# kimi-openrouter.yaml for the measurement that motivated both files, and
+# _README.md for why ollama drops the field.
+#
+# The arithmetic is even better here than for kimi: OpenRouter bills glm-5.2 cache
+# reads at $0.0528/M against $0.284/M fresh, a 5.4x gap, and this agent burned
+# 12.6M uncached input tokens over four sessions in one run.
+#
+# A caveat this file should carry, because it argues for its own removal: glm is
+# the panel's weakest producer. One measured run gave it 1 issue for 10.5M tokens
+# -- roughly 3.5x worse yield per token than anyone else -- against kimi's 10
+# issues in the same run. Cheaper tokens make a weak reviewer cheaper, not better.
+# If the panel needs trimming, this is the agent to drop; the route change just
+# makes keeping it affordable while you decide.
+model: z-ai/glm-5.2
+command:
+  - claude
+  - --model {{model}}
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
+# modelUsage is keyed by model id and aggregates the WHOLE session; the top-level
+# `usage` object is only the final turn. Unlike the ollama route the cache_* paths
+# carry real numbers here -- which is the reason this file exists, so a run whose
+# scoreboard still shows 0% cache for this agent means the route is not working.
+#
+# NO cost_usd: the wrapped harness has no idea what OpenRouter charges -- it
+# labels the model provider "firstParty" and applies Anthropic's rate card,
+# measured to overstate by ~93x. The scoreboard shows "-" rather than money nobody
+# was charged. Tokens ARE real and still counted.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
+
+prompt_via: stdin
+timeout: 20m # remote-served model; matched to the rest of the panel
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # Must hold your OPENROUTER_API_KEY -- see kimi-openrouter.yaml. ANTHROPIC_API_KEY
+  # is deliberately NOT passed: it would take precedence and silently bill Anthropic.
+    - ANTHROPIC_AUTH_TOKEN
+  set:
+  # No /v1 suffix; the harness appends /v1/messages itself.
+    ANTHROPIC_BASE_URL: https://openrouter.ai/api

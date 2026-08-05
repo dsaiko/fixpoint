@@ -1,0 +1,202 @@
+# Shared base for every task config. Not runnable on its own — it defines no
+# roles. Reference it with `extends: defaults` and override what you need.
+#
+# See README.md in this directory for how bundles are found, how `extends`
+# merges, and the security model. Comments here stay short on purpose: this file
+# is meant to be copied and edited, and an essay is hard to diff.
+
+description: Shared base for the other configs; inherit with 'extends'.
+
+target:
+  mode: directory # git-diff | pr | directory
+
+  # target.path is intentionally unset: it defaults to the project root, so the
+  # same command reviews the whole project from anywhere inside it.
+
+  # In a git repository .gitignore already decides scope, so build output,
+  # caches, and local binaries need no entry here. List only what is COMMITTED
+  # but not worth reviewing. Patterns match at any depth unless anchored — use
+  # "target/**" rather than "**/target/**" for a build directory, or it will also
+  # match a source package called target. An entry with no wildcard at all
+  # ("config/secrets") excludes that directory's contents too; one with a wildcard
+  # matches names only, so use "**/node_modules/**" to take the contents as well.
+  #
+  # Entries here match case-sensitively, as written.
+  #
+  # Credential-shaped paths (.env*, *.pem, *.key, id_rsa, ...) are excluded by
+  # fixpoint itself, in any casing, and cannot be re-enabled here.
+  exclude:
+    - "**/vendor/**" # committed dependencies
+    - "**/testdata/**" # committed fixtures; remove to review them too
+
+roles:
+  # The shared reviewer pool. It lives here so that changing who reviews is ONE
+  # edit rather than the same edit in every config -- which is how the panels
+  # drifted apart before, and how a rename left three files disagreeing.
+  #
+  # This does not make defaults runnable: `--list` decides that on
+  # roles.review.prompts, which is deliberately absent here. A config still has to
+  # declare its own lenses, its own coder, and its own strategy; only the pool is
+  # inherited.
+  #
+  # Inheriting it works because `extends` decodes the child OVER this file: keys
+  # the child does not set survive, so a config that declares
+  # roles.review.strategy and roles.review.prompts keeps this agents list. Setting
+  # `agents` in a config REPLACES this list rather than adding to it -- review-pr
+  # does exactly that, deliberately narrowing the panel for untrusted code.
+  #
+  # codex is absent: its session budget ran out mid-run. Put it back by adding the
+  # name here once that resets.
+  review:
+    agents: [claude, kimi-ollama, deepseek-ollama]
+
+loop:
+  max_iterations: 5 # safety cap on review->fix rounds
+
+  # How many times the actionable half of the CLOSING round may repeat. The phase
+  # ends on its own the moment a pass finds nothing or fixes nothing, so this only
+  # catches a lens that never runs out of things to say -- and review-tests is that
+  # lens: coverage can always be wanted more of.
+  #
+  # 1, lowered from 2 on measurement. The argument for a second pass was "confirm the
+  # first did not open something new", and a seven-round run showed what it actually
+  # did: of pass 2's 7 findings, 4 critiqued the tests pass 1 had just written, 2
+  # repeated what pass 1 already said, and 1 was a real regression -- introduced by
+  # pass 1's own fix. Repairing the previous pass is not convergence, and the thing
+  # that reliably catches a broken fix is the verify gate, which runs per fix.
+  #
+  # Raise it to 2 if your closing lenses are genuinely list-shaped (a fixed set of
+  # coverage gaps to work through) rather than opinion-shaped; pair that with
+  # final_skip_run_edits below, which is what keeps pass 2 off pass 1's own output.
+  max_final_passes: 1
+
+  # Files THIS RUN wrote that the CLOSING round must not be shown, as globs matched
+  # against the paths the run's own commits changed. Empty means show everything,
+  # which is what every version before this did.
+  #
+  # Empty HERE on purpose: the pattern is per-language, so a shipped default would
+  # be wrong everywhere it is not Go -- the same reason verify.commands is empty.
+  # fix-code.yaml and fix-branch.yaml set the Go shape.
+  #
+  # This is NOT a general "do not review your own work" rule. Inside the loop that
+  # review is productive: it is how a fix's own bug gets caught, and a measured run's
+  # single high-severity closing finding was exactly that. It is aimed at one
+  # feedback loop that does not converge: review-tests asks for a test, the coder
+  # writes one, and the next look reviews THAT TEST -- "the assertion claims more
+  # than it proves", "the timing is wall-clock noise", "only one branch is
+  # exercised". Seven of one run's 14 closing findings were that, every one against a
+  # test file the run had committed minutes earlier.
+  #
+  # Hiding everything the run touched was measured and rejected: that run changed 27
+  # of 57 source files, so the blunt rule blinds the closing round to half the tree,
+  # including the newest code -- the code most worth a coverage review.
+  final_skip_run_edits: []
+
+  # ISSUES handed to the coder per round; 0 = unlimited, and unlimited is now the
+  # default because the reason for a cap is gone. It was sized to ONE coder
+  # session's timeout (17 issues blew 30m, ~8 fit), and the coder now gets exactly
+  # one issue per session -- see commit_policy -- so no number of findings can
+  # overrun a session.
+  #
+  # It was never free: a cap of 8 once deferred 18 issues across a run, and in the
+  # closing round -- where no later round follows -- it dropped 5 coverage gaps
+  # outright. Set it only as a cost lever, to bound what one round spends, knowing
+  # the overflow waits (worst severity first, and every deferral promotes an issue
+  # one tier so the tail cannot be starved by a lens that always has more to say).
+  max_findings_per_round: 0
+
+  # Consecutive zero-issue rounds required to stop. 2 pairs with
+  # strategy: rotate — a differently-assigned panel must confirm the clean result.
+  clean_rounds_to_stop: 2
+
+  # There are deliberately NO trust keys here. Fix rounds are authorized only by
+  # -trusted-target / -allow-untrusted-fix on the command line, and fixpoint
+  # refuses to load a config that sets either: this file may itself come from the
+  # repository under review (<project>/config is searched first), and code being
+  # reviewed must not be able to declare itself trustworthy.
+
+  # Commit header. {issue} {title} name a single fix; {round} {fixed} {rejected}
+  # describe a round, for the squashing policies below. The body is built from the
+  # coder's own report. A template mentioning {issue}/{title} is per-fix shaped, so
+  # squashed commits fall back to a round-shaped header rather than naming one issue
+  # for a commit holding many.
+  commit_message: "fixpoint: {issue} — {title}"
+
+  # How the round's commits are grouped. Every fix is made in its own coder session
+  # and committed on its own -- one issue per session is what lets the verify gate
+  # name the fix that broke the build, and what makes a fix revertable alone -- and
+  # this only decides how those commits are then regrouped:
+  #
+  #   per_fix    keep them; one commit per issue, each with its own verify (the
+  #              default: it is the granularity the work actually happened at, and
+  #              the only one where `git revert` can undo a single bad fix)
+  #   per_round  squash each round into one commit
+  #   per_run    squash the entire run into one commit
+  #
+  # Squashing is `reset --soft`, so the content is byte-for-byte what was already
+  # verified one fix at a time.
+  commit_policy: per_fix
+
+# Ping every agent with a trivial prompt before the run, in parallel, so an
+# expired login fails before tokens are spent or git is touched.
+ping_agents: true
+
+verify:
+  # The deterministic gate: commands FIXPOINT runs itself after the coder and
+  # before the round commit, so "fixed" and "converged" mean more than "a model
+  # said so". A round whose edits fail the gate is not committed -- the coder gets
+  # one correction attempt, then the round is discarded and its edits stashed.
+  #
+  # No commands here on purpose: they are per-project (go build, npm test, cargo
+  # check, ...), so a shipped default cannot know them, and an empty list disables
+  # verification. Define them in your project's own task config.
+  #
+  # policy:
+  #   no_regressions  a check already failing before this run may keep failing,
+  #                   but one that passed must not start failing. The default,
+  #                   because a real repository may well start red.
+  #   must_pass       every required check must pass, baseline or not.
+  #   off             run nothing.
+  #
+  # SECURITY: these commands execute code from the target project, so they run
+  # only on the fix path, which already requires an explicit trust assertion.
+  policy: no_regressions
+  timeout: 10m
+  commands: []
+
+logs:
+  # Path template, resolved against the project root.
+  #   {timestamp}  the RUN's start time — one value for the whole run
+  #   {round}      the loop iteration
+  # The literal prefix is what round commits and collection exclude, so it must
+  # be non-empty. It is hidden and tool-owned because fixpoint runs against
+  # projects it does not own: a generic name like "logs" would collide with a
+  # project's real logs directory and silently drop it from review.
+  # The {timestamp} segment and its ancestors hold the summary and the run journal
+  # (journal.jsonl, one JSON state transition per line, flushed as it happens);
+  # below it is per-round. Add .fixpoint/ to the project's .gitignore.
+  dir: .fixpoint/{timestamp}/round-{round}
+
+  # md | json | raw. Artifacts can contain secrets even after redaction — see
+  # README.md. Owner-only permissions and keeping this directory out of any
+  # commit or backup are the real controls.
+  formats: [md, json, raw]
+
+  # Per-step filename inside the round directory.
+  #   {role} {agent} {prompt} {round} {timestamp} {ext}
+  pattern: "{role}-{agent}-{prompt}-{timestamp}.{ext}"
+  summary_pattern: "summary-{timestamp}.{ext}"
+  timestamp_format: "20060102-150405" # Go layout (ref: Mon Jan 2 15:04:05 2006)
+
+  # Extra Go regular expressions masked in every artifact and log line, on top of
+  # the built-in credential shapes (sk-ant-…, ghp_…, JWTs, key/secret/password
+  # assignments, PEM blocks, connection-string passwords). The built-ins recognize
+  # shapes, so a site's own opaque token matches none of them and is written
+  # verbatim — name yours here. A capture group is kept and the rest of the match
+  # is masked, so the line stays readable:
+  #   redact:
+  #     - '(?i)(x-internal-auth\s*:\s*)\S+'
+  #     - 'ACME-[A-Z0-9]{24}'
+  # A pattern matching the empty string is rejected at startup: it would match at
+  # every position and mask the whole of every artifact.
+  redact: []

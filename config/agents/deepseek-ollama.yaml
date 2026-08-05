@@ -1,0 +1,76 @@
+# DeepSeek via ollama, same claude-harness wrapping as kimi-ollama. NOT on a
+# panel: it exists to be measured against kimi-ollama, which currently holds the
+# third reviewer slot.
+#
+# The pinned tag matters. `deepseek-v4-flash:cloud` and
+# `deepseek-v4-flash:0731-cloud` are NOT the same model -- the floating tag
+# reported 158B parameters, this one reports 304B. Pinning the dated tag is what
+# makes a comparison repeatable at all, since a floating tag can be re-pointed
+# between the run that measured it and the run that trusts the measurement.
+#
+# Capabilities per `ollama show`: completion, tools, thinking. No vision, which is
+# what disqualified the qwen3.7 flash and plus tiers -- those are vision-language
+# models whose published strengths are object recognition, and a code reviewer
+# reading source wants neither.
+#
+# THE OPEN QUESTION. This model was passed over once already, on the argument that
+# a "flash" tier trades depth for latency and depth was exactly what gemma4 lacked
+# (see kimi-ollama.yaml). That argument was made from a latency probe, not from
+# review output, so it was never actually tested. What has been learned since gives
+# it a second look for a different reason: the panel's cost is driven by TURNS, not
+# by tokens or price per token -- kimi takes ~168 turns to claude's ~37 on the same
+# round, and that is what made it expensive on every route. A flash tier that
+# converges in fewer turns could beat a stronger model that will not converge, even
+# while finding somewhat less.
+#
+# So the metrics that decide this are, in order: turns per session, findings the
+# coder ACCEPTS, and schema compliance -- every output-contract failure in the
+# project's history came from a non-Anthropic model driving this harness.
+model: deepseek-v4-flash:0731-cloud
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+#
+# NO cost_usd: ollama-served models are not billed by Anthropic, but the wrapped
+# claude harness applies Anthropic's rate card anyway and labels them provider
+# "firstParty" -- measured overstating a real bill by ~93x elsewhere. The
+# scoreboard shows "-" rather than money nobody was charged. Tokens ARE real and
+# still counted, and the cache_* paths will read 0 here: ollama discards
+# cache_control, which is a property of the route, not of this model.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
+
+# No `effort`: ollama drops the thinking budget the harness translates it into.
+# See "effort (claude)" in _README.md for the measurement.
+
+prompt_via: stdin
+timeout: 20m # cloud-served models are slower; matched to the panel (see claude.yaml)
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # ollama needs to find its server; the wrapped claude harness needs nothing more.
+    - OLLAMA_HOST

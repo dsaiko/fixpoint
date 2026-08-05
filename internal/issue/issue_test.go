@@ -1,0 +1,759 @@
+package issue
+
+import (
+	"testing"
+
+	"github.com/dsaiko/fixpoint/internal/model"
+)
+
+func obs(agent, lens, category, severity, file string, line int, title string) model.Finding {
+	return model.Finding{
+		Agent: agent, Lens: lens, Category: category, Severity: severity,
+		File: file, Line: line, Title: title,
+	}
+}
+
+// The duplicate that motivated this package, verbatim from a real five-round run:
+// two lenses reported the same racy-ordinal defect at the same file and line under
+// DIFFERENT categories and severities. As findings they consumed two of the eight
+// slots in that round's cap, so the reviewers agreeing cost a budget slot instead
+// of raising confidence.
+func TestAbsorbMergesRealWorldDuplicate(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(3, []model.Finding{
+		obs("codex", "review-concurrency", "concurrency", "low", "internal/testfixture/testfixture.go", 33,
+			"Mock invocation ordinals are allocated with a racy read-modify-write"),
+		obs("claude", "review-tests", "tests", "medium", "internal/testfixture/testfixture.go", 33,
+			"Mock agent assigns invocation ordinals via a racy read-modify-write"),
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1: the same defect at the same location must not cost two cap slots", len(got))
+	}
+	iss := got[0]
+	if len(iss.Observations) != 2 {
+		t.Errorf("got %d observations, want both preserved as corroboration", len(iss.Observations))
+	}
+	// Severity is the worst any reviewer assigned: one reviewer seeing it as more
+	// serious must not be outvoted, because severity decides scheduling.
+	if iss.Severity != "medium" {
+		t.Errorf("Severity = %q, want medium (the worst reading)", iss.Severity)
+	}
+	if agents := iss.Agents(); len(agents) != 2 {
+		t.Errorf("Agents() = %v, want both reporting agents", agents)
+	}
+}
+
+// Category must NOT be part of identity -- the real duplicate above arrived under
+// two different categories. This pins that explicitly, because "add the category
+// to the key" is a natural-looking change that would silently reintroduce the bug.
+func TestFingerprintIgnoresCategory(t *testing.T) {
+	a := obs("x", "l", "concurrency", "low", "a.go", 10, "same place")
+	b := obs("y", "l", "tests", "low", "a.go", 10, "same place")
+	if Fingerprint(a) != Fingerprint(b) {
+		t.Error("two categories at one location must share a fingerprint")
+	}
+}
+
+// A line without a file names nothing: two lenses that both omit the path and both
+// happen to land on line 42 are looking at different code, so keying identity on
+// the bare line would hand the coder one issue when there are two and silently drop
+// the second reading's title, description and suggestion.
+func TestAbsorbKeepsFilelessFindingsWithTheSameLineApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "", 42, "config pointer can be nil"),
+		obs("b", "tests", "tests", "high", "", 42, "the retry budget is never asserted"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: a line alone must not give two unrelated findings one identity", len(got))
+	}
+}
+
+// Reviewers point at slightly different lines for one defect -- the declaration,
+// the use, the enclosing function.
+func TestAbsorbMergesNearbyLines(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "pkg/x.go", 100, "nil deref on the config pointer"),
+		obs("b", "bugs", "bug", "high", "pkg/x.go", 103, "config pointer can be nil here"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1: lines %d apart in one file are one defect", len(got), 3)
+	}
+}
+
+// ...and distance is not what keeps unrelated code apart -- disagreeing titles are.
+func TestAbsorbKeepsDistantUnrelatedFindingsApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "pkg/x.go", 10, "one defect"),
+		obs("b", "bugs", "bug", "high", "pkg/x.go", 400, "an entirely different defect"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: merging unrelated code would tell the coder to fix one thing when there are two", len(got))
+	}
+}
+
+// A re-report of one defect after the code moved is the SAME issue, however far it
+// moved. This is the failure that stopped a real five-round run from converging: the
+// fix rounds grew the file above the defect by ~55 lines each round, so the same
+// complaint was minted as a new issue every round (orchestrator.go:1343, :1399,
+// :1453). A new id carries no deferral history, so severity aging restarted each
+// time and the issue was deferred forever, never scheduled and never fixed.
+func TestAbsorbMatchesAcrossRoundsAfterTheCodeMoved(t *testing.T) {
+	l := NewLedger()
+	first := l.Absorb(1, []model.Finding{
+		obs("a", "tests", "tests", "medium", "internal/orchestrator/orchestrator.go", 1343,
+			"Partial-salvage commit journal record (Partial: true) is never asserted"),
+	})
+	if len(first) != 1 {
+		t.Fatalf("round 1: got %d issues, want 1", len(first))
+	}
+	id := first[0].ID
+
+	// Round 2: same defect, reported 56 lines lower by a different agent wording it
+	// differently -- which is the normal case, not an edge case, under `rotate`.
+	second := l.Absorb(2, []model.Finding{
+		obs("b", "tests", "tests", "medium", "internal/orchestrator/orchestrator.go", 1399,
+			"Partial-salvage commit journal payload remains unasserted"),
+	})
+	if len(second) != 1 {
+		t.Fatalf("round 2: got %d issues, want 1: the code moved, the defect did not", len(second))
+	}
+	if second[0].ID != id {
+		t.Errorf("round 2 minted %s for the same defect first seen as %s; a fresh id resets the deferral count and defeats severity aging", second[0].ID, id)
+	}
+}
+
+// Aging depends on the match above holding: the whole point of a stable id is that
+// Deferrals keeps counting across rounds, so a repeatedly skipped issue eventually
+// outranks the fresh ones and gets scheduled.
+func TestDeferralsAccumulateAcrossRoundsAfterTheCodeMoved(t *testing.T) {
+	l := NewLedger()
+	l.Absorb(1, []model.Finding{
+		obs("a", "tests", "tests", "low", "pkg/x.go", 100, "helper has no test coverage"),
+	})
+	id := l.Issues()[0].ID
+	l.Record(id, model.VerdictDeferred, "over cap")
+
+	// Two more rounds, each finding it further down the file as fixes above it land.
+	l.Absorb(2, []model.Finding{
+		obs("b", "tests", "tests", "low", "pkg/x.go", 160, "no test coverage for the helper"),
+	})
+	l.Record(id, model.VerdictDeferred, "over cap")
+	l.Absorb(3, []model.Finding{
+		obs("c", "tests", "tests", "low", "pkg/x.go", 230, "the helper has no test coverage"),
+	})
+
+	if n := len(l.Issues()); n != 1 {
+		t.Fatalf("got %d issues, want 1: three reports of one defect that moved", n)
+	}
+	if got := l.Deferrals(id); got != 2 {
+		t.Errorf("Deferrals(%s) = %d, want 2; without an accumulating count the issue never ages into the cap", id, got)
+	}
+}
+
+// With no line number, identity falls back to the title -- normalized, so word
+// order and filler words do not split one issue in two.
+func TestAbsorbMatchesNormalizedTitleWhenNoLine(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "docs", "maintainability", "low", "README.md", 0, "The review-only claim is wrong"),
+		obs("b", "docs", "maintainability", "low", "README.md", 0, "review-only claim is wrong"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1: titles differing only in filler words are one issue", len(got))
+	}
+}
+
+// Cross-round identity that no lexical rule can recover: this is the severity
+// vocabulary issue as actually reported across three rounds -- reworded each time,
+// and its line moved as the surrounding code changed. The reviewer declares the
+// reference; the fingerprint cannot.
+func TestAbsorbHonorsReviewerDeclaredIssueAcrossRounds(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{
+		obs("codex", "review-maintainability", "maintainability", "medium", "internal/orchestrator/orchestrator.go", 382,
+			"Severity vocabulary has two independent declarations"),
+	})
+	if len(r1) != 1 {
+		t.Fatalf("round 1: got %d issues, want 1", len(r1))
+	}
+	id := r1[0].ID
+
+	// Round 2: reworded, different line, same problem -- declared by the reviewer.
+	reReport := obs("claude", "review-maintainability", "maintainability", "low", "internal/orchestrator/orchestrator.go", 788,
+		"Severity vocabulary declared twice (severityRank and validSeverities)")
+	reReport.IssueID = id
+	r2 := l.Absorb(2, []model.Finding{reReport})
+	if len(r2) != 1 || r2[0].ID != id {
+		t.Fatalf("round 2 should join issue %s, got %+v", id, r2)
+	}
+	if total := len(l.Issues()); total != 1 {
+		t.Errorf("ledger holds %d issues, want 1: a declared re-report must not create a second", total)
+	}
+	if got := l.Issues()[0].FirstRound; got != 1 {
+		t.Errorf("FirstRound = %d, want 1: the issue is as old as its first sighting", got)
+	}
+}
+
+// Corroboration is a claim about ONE round. Under strategy: rotate a lens is
+// deliberately reassigned each round, so an issue that survives a round is seen by
+// a different agent next time. If the round copy carried the whole accumulated
+// history, the coder prompt would announce "reported independently by 2 agents --
+// corroborated" for a problem exactly one agent saw per round, and the journal
+// would pair a per-round observation count with a cumulative corroborated count
+// (3 observations, 3 issues, 3 corroborated -- impossible within a round).
+func TestForRoundScopesObservationsToTheRound(t *testing.T) {
+	l := NewLedger()
+	l.Absorb(1, []model.Finding{obs("codex", "review-bugs", "bug", "high", "x.go", 10, "the same defect")})
+	r2 := l.Absorb(2, []model.Finding{obs("claude", "review-bugs", "bug", "high", "x.go", 10, "the same defect")})
+
+	if len(r2) != 1 {
+		t.Fatalf("round 2: got %d issues, want the round-1 issue re-reported", len(r2))
+	}
+	if got := r2[0].Observations; len(got) != 1 || got[0].Agent != "claude" {
+		t.Errorf("round 2 observations = %+v, want only this round's report by claude", got)
+	}
+	if agents := r2[0].Agents(); len(agents) != 1 {
+		t.Errorf("Agents() = %v, want 1: one agent per round is not corroboration", agents)
+	}
+	// The ledger still keeps the full history -- that is what the summary and the
+	// aging heuristics read.
+	if got := l.Issues()[0].Observations; len(got) != 2 {
+		t.Errorf("ledger observations = %d, want both rounds retained", len(got))
+	}
+}
+
+// A declared id that does not exist is a model mistake. It must not be trusted as
+// an identity, but it must not lose the observation either.
+func TestAbsorbIgnoresUnknownDeclaredIssueID(t *testing.T) {
+	l := NewLedger()
+	o := obs("a", "bugs", "bug", "high", "x.go", 5, "real problem")
+	o.IssueID = "i999"
+	got := l.Absorb(1, []model.Finding{o})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want the observation kept under a fresh issue", len(got))
+	}
+	if got[0].ID == "i999" {
+		t.Error("a hallucinated id must not be adopted as the issue id")
+	}
+	// An id that names no issue is a model slip, not a refused declaration: there is
+	// no rejected issue being cited, so reporting one would tell an operator a
+	// nonexistent issue "is already rejected".
+	if c := l.TakeConflicts(); len(c) != 0 {
+		t.Errorf("conflicts = %v, want none for an unknown declared id", c)
+	}
+}
+
+// A declared id naming an already REJECTED issue is the one declaration that can
+// SUPPRESS a finding: the round copy carries the rejection forward and the coder
+// never sees the issue, this round or any later one. Every review prompt lists the
+// ids, so a reviewer that is confused -- or steered -- can silence a genuine new
+// finding by citing a decided id. So a rejected issue has to earn the match on the
+// same evidence an undeclared observation would.
+func TestAbsorbRefusesADeclarationThatWouldBuryANewFindingUnderARejection(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{obs("a", "review-style", "style", "low", "x.go", 4, "prefer a named constant here")})
+	rejected := r1[0].ID
+	l.Record(rejected, model.VerdictRejected, "not genuine")
+
+	// A different file, a different problem -- with the rejected issue's id on it.
+	hijack := obs("b", "review-security", "security", "high", "internal/auth/token.go", 91,
+		"Session token is compared with a non-constant-time equality")
+	hijack.IssueID = rejected
+	r2 := l.Absorb(2, []model.Finding{hijack})
+
+	if len(r2) != 1 {
+		t.Fatalf("got %d issues, want the report kept", len(r2))
+	}
+	if r2[0].ID == rejected {
+		t.Fatalf("the report joined rejected issue %s; a new finding must not inherit a decided verdict", rejected)
+	}
+	if r2[0].Verdict != "" {
+		t.Errorf("Verdict = %q, want empty so the coder is handed this round's work", r2[0].Verdict)
+	}
+	if r2[0].Title != hijack.Title || r2[0].Severity != "high" {
+		t.Errorf("issue = %+v, want the new observation's own text and severity", r2[0])
+	}
+	// The refusal is reported, not silent: a reviewer citing a decided id while
+	// describing something else is worth seeing.
+	if got := l.TakeConflicts(); len(got) != 1 {
+		t.Errorf("TakeConflicts() = %v, want the refused declaration recorded once", got)
+	}
+	if got := l.TakeConflicts(); len(got) != 0 {
+		t.Errorf("TakeConflicts() = %v, want the list drained by the first call", got)
+	}
+}
+
+// The guard above must not turn every re-report of a rejected issue into a fresh
+// one: that would spend a cap slot on a decided problem every round. A declaration
+// backed by the ordinary evidence -- same file, agreeing title -- still joins.
+func TestAbsorbHonorsADeclaredReReportOfARejectedIssue(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{obs("a", "bugs", "bug", "low", "x.go", 12, "config pointer can be nil here")})
+	rejected := r1[0].ID
+	l.Record(rejected, model.VerdictRejected, "guarded by the caller")
+
+	reReport := obs("b", "bugs", "bug", "low", "x.go", 40, "nil deref on the config pointer")
+	reReport.IssueID = rejected
+	r2 := l.Absorb(2, []model.Finding{reReport})
+
+	if len(r2) != 1 || r2[0].ID != rejected {
+		t.Fatalf("got %+v, want the re-report folded back into %s", r2, rejected)
+	}
+	if r2[0].Verdict != model.VerdictRejected {
+		t.Errorf("Verdict = %q, want the rejection carried forward", r2[0].Verdict)
+	}
+	if got := l.TakeConflicts(); len(got) != 0 {
+		t.Errorf("TakeConflicts() = %v, want none: this declaration was honored", got)
+	}
+}
+
+// Only a rejection suppresses. An issue the round will still hand over -- open,
+// deferred, or fixed-and-reopened -- absorbs a declared re-report on the
+// reviewer's word alone, however far the wording and the line have moved, because
+// the round copy re-anchors onto the new observation and the coder sees it.
+func TestAbsorbHonorsADeclarationOnADeferredIssueWithoutLexicalEvidence(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{obs("a", "review-maintainability", "maintainability", "medium",
+		"internal/orchestrator/orchestrator.go", 382, "Severity vocabulary has two independent declarations")})
+	id := r1[0].ID
+	l.Record(id, model.VerdictDeferred, "capped")
+
+	reworded := obs("b", "review-maintainability", "maintainability", "medium",
+		"internal/config/config.go", 77, "duplicated severity ranking table")
+	reworded.IssueID = id
+	r2 := l.Absorb(2, []model.Finding{reworded})
+
+	if len(r2) != 1 || r2[0].ID != id {
+		t.Fatalf("got %+v, want the declared re-report to join %s", r2, id)
+	}
+	if l.Deferrals(id) != 1 {
+		t.Error("the deferral count must survive, or aging restarts and the issue is deferred forever")
+	}
+	if got := l.TakeConflicts(); len(got) != 0 {
+		t.Errorf("TakeConflicts() = %v, want none: only a rejected issue refuses a declaration", got)
+	}
+}
+
+// A declaration is taken on the reviewer's word for any issue the round will still
+// hand over, so a reviewer that is steered -- or merely confused about which id it
+// is citing -- can point an open issue's canonical text at something else and spend
+// its coder session on that. What it cannot do is bury the defect the issue was
+// about: the redirect replaces the canonical title, so once a verdict lands on the
+// wrong reading, an honest re-report of the real defect agrees with neither the
+// fingerprint's title nor the file's -- the evidence both match paths require -- and
+// is minted as its own issue rather than inheriting the verdict. This is what prices
+// a wrong id at a coder session and restarted aging; see declarationHolds.
+func TestARedirectedDeclarationCannotBuryTheOriginalDefect(t *testing.T) {
+	l := NewLedger()
+	r1 := l.Absorb(1, []model.Finding{obs("a", "review-security", "security", "high",
+		"internal/auth/token.go", 91, "Session token is compared with a non-constant-time equality")})
+	id := r1[0].ID
+	l.Record(id, model.VerdictDeferred, "capped")
+
+	// Round 2: the id is honored on the reviewer's word alone, so this reading
+	// becomes the canonical one and the coder answers about it.
+	redirect := obs("b", "review-style", "style", "low", "internal/auth/token.go", 12, "typo in a comment")
+	redirect.IssueID = id
+	r2 := l.Absorb(2, []model.Finding{redirect})
+	if len(r2) != 1 || r2[0].ID != id || r2[0].Title != redirect.Title {
+		t.Fatalf("round 2 = %+v, want the declaration honored and the issue re-anchored onto it", r2)
+	}
+	l.Record(id, model.VerdictRejected, "there is no typo there")
+
+	// Round 3: the real defect, reported honestly at the location it was first seen.
+	r3 := l.Absorb(3, []model.Finding{obs("c", "review-security", "security", "high",
+		"internal/auth/token.go", 91, "Session token is compared with a non-constant-time equality")})
+	if len(r3) != 1 {
+		t.Fatalf("got %d issues, want the re-report kept", len(r3))
+	}
+	if r3[0].ID == id {
+		t.Fatalf("the re-report joined %s, whose verdict was about the typo; a rejection must not close it", id)
+	}
+	if r3[0].Verdict != "" {
+		t.Errorf("Verdict = %q, want empty so the coder is handed the real defect", r3[0].Verdict)
+	}
+	if r3[0].Severity != "high" {
+		t.Errorf("Severity = %q, want high: the redirect's low reading must not have followed it", r3[0].Severity)
+	}
+}
+
+// Deferral counts are now exact, which is what the cap's aging consumes. The
+// previous approximation could only guess from (file, category).
+func TestRecordTracksDeferralsAndStatus(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{obs("a", "bugs", "bug", "low", "x.go", 1, "nit")})
+	id := got[0].ID
+
+	l.Record(id, model.VerdictDeferred, "capped")
+	if n := l.Deferrals(id); n != 1 {
+		t.Errorf("Deferrals = %d, want 1", n)
+	}
+	// Re-reported next round: still open, and the deferral history is retained so
+	// aging keeps promoting it rather than restarting.
+	l.Absorb(2, []model.Finding{obs("b", "bugs", "bug", "low", "x.go", 1, "nit")})
+	iss, _ := l.Get(id)
+	if iss.StatusOrDefault() != model.StatusOpen {
+		t.Errorf("status = %q, want open after a re-report", iss.StatusOrDefault())
+	}
+	if n := l.Deferrals(id); n != 1 {
+		t.Errorf("Deferrals = %d, want the count preserved across rounds", n)
+	}
+	l.Record(id, model.VerdictDeferred, "capped again")
+	if n := l.Deferrals(id); n != 2 {
+		t.Errorf("Deferrals = %d, want 2", n)
+	}
+}
+
+// A re-report means different things depending on how the issue was closed, and
+// getting this wrong is costly in both directions.
+func TestAbsorbReopenSemantics(t *testing.T) {
+	t.Run("rejected stays rejected and is not re-submitted", func(t *testing.T) {
+		l := NewLedger()
+		got := l.Absorb(1, []model.Finding{obs("a", "bugs", "bug", "low", "x.go", 1, "nit")})
+		l.Record(got[0].ID, model.VerdictRejected, "not genuine")
+		r2 := l.Absorb(2, []model.Finding{obs("b", "bugs", "bug", "low", "x.go", 1, "nit")})
+		// Still surfaced, so the summary shows it came up again -- but carrying the
+		// rejection, which keeps it out of the coder's workload. Re-submitting a
+		// decided issue would spend a slot every round forever.
+		if len(r2) != 1 {
+			t.Fatalf("got %d issues, want the re-report surfaced", len(r2))
+		}
+		if r2[0].Verdict != model.VerdictRejected {
+			t.Errorf("Verdict = %q, want it to stay rejected", r2[0].Verdict)
+		}
+	})
+
+	t.Run("fixed reopens, because a re-report means the fix did not work", func(t *testing.T) {
+		l := NewLedger()
+		got := l.Absorb(1, []model.Finding{obs("a", "bugs", "bug", "high", "x.go", 1, "real bug")})
+		l.Record(got[0].ID, model.VerdictFixed, "fixed it")
+		r2 := l.Absorb(2, []model.Finding{obs("b", "bugs", "bug", "high", "x.go", 1, "real bug still here")})
+		if len(r2) != 1 {
+			t.Fatalf("got %d issues, want 1", len(r2))
+		}
+		// Treating it as closed would let a failed fix end the run as converged.
+		if r2[0].Verdict != "" || r2[0].StatusOrDefault() != model.StatusOpen {
+			t.Errorf("issue = %+v, want it reopened for the coder", r2[0])
+		}
+	})
+
+	t.Run("a new round never inherits the previous round's verdict", func(t *testing.T) {
+		l := NewLedger()
+		got := l.Absorb(1, []model.Finding{obs("a", "bugs", "bug", "low", "x.go", 1, "nit")})
+		l.Record(got[0].ID, model.VerdictDeferred, "capped")
+		r2 := l.Absorb(2, []model.Finding{obs("b", "bugs", "bug", "low", "x.go", 1, "nit")})
+		if r2[0].Verdict != "" {
+			t.Errorf("Verdict = %q, want cleared so this round records its own decision", r2[0].Verdict)
+		}
+		if l.Deferrals(got[0].ID) != 1 {
+			t.Error("the deferral count must survive the reopen; aging depends on it")
+		}
+	})
+}
+
+// Paths are spelled inconsistently by different reviewers.
+func TestFingerprintNormalizesPaths(t *testing.T) {
+	a := obs("x", "l", "bug", "low", "./pkg/x.go", 7, "t")
+	b := obs("y", "l", "bug", "low", "pkg/x.go", 7, "t")
+	if Fingerprint(a) != Fingerprint(b) {
+		t.Errorf("a leading ./ must not split an issue: %q vs %q", Fingerprint(a), Fingerprint(b))
+	}
+}
+
+// Observations are tagged in place so the summary and history can keep speaking in
+// terms of findings while the coder works from issues.
+func TestAbsorbTagsObservationsWithIssueID(t *testing.T) {
+	l := NewLedger()
+	in := []model.Finding{
+		obs("a", "bugs", "bug", "high", "x.go", 1, "the retry budget is never asserted"),
+		obs("b", "tests", "tests", "low", "x.go", 1, "retry budget never asserted"),
+	}
+	l.Absorb(1, in)
+	if in[0].IssueID == "" || in[0].IssueID != in[1].IssueID {
+		t.Errorf("observations must be tagged with their shared issue: %q, %q", in[0].IssueID, in[1].IssueID)
+	}
+}
+
+// Proximity alone must not merge: three unrelated defects on consecutive lines of
+// one file are three issues. Merging them would tell the coder to fix one thing
+// when there are three -- strictly worse than a surviving duplicate, which only
+// costs a cap slot.
+func TestAbsorbKeepsUnrelatedNeighboursApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "tests", "tests", "low", "main.go", 1, "low prio"),
+		obs("a", "bugs", "bug", "high", "main.go", 2, "high prio"),
+		obs("a", "bugs", "bug", "medium", "main.go", 3, "med prio"),
+	})
+	if len(got) != 3 {
+		t.Fatalf("got %d issues, want 3: adjacent lines with unrelated titles are distinct defects", len(got))
+	}
+}
+
+// An exact line merges reports whose titles are only LOOSELY similar -- that is the
+// fingerprint doing its job, and it is what merged the real-world duplicate above.
+func TestAbsorbMergesExactLineWithLooselySimilarTitles(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "low", "main.go", 42, "config pointer can be nil"),
+		obs("b", "y", "tests", "low", "main.go", 42, "the config pointer is nil here"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1: one defect described twice at one line", len(got))
+	}
+}
+
+// Two lenses describe one defect in whatever voice their sentence wants, and an
+// exact token comparison reads these as sharing no vocabulary at all. If that
+// split them, the corroborated duplicate this package exists to merge would cost
+// two cap slots again.
+func TestAbsorbMergesTitlesThatDifferOnlyByInflection(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "concurrency", "concurrency", "high", "main.go", 33, "racy ordinal allocation"),
+		obs("b", "tests", "tests", "high", "main.go", 33, "ordinals allocated racily"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1: ordinal/ordinals and allocation/allocated are the same words", len(got))
+	}
+}
+
+// A title with one distinctive word must not swallow a longer one that happens to
+// mention it. Overlap used to be measured only against the SHORTER title, so a
+// single shared word cleared the bar -- and since the file matches at any line
+// distance, two unrelated defects became one issue carrying one title, one
+// suggestion and one verdict, so deciding either buried the other for the run.
+func TestAbsorbKeepsAOneWordTitleFromSwallowingALongerOne(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "scheduler.go", 40, "Deadlock"),
+		obs("b", "concurrency", "concurrency", "high", "scheduler.go", 120,
+			"Unbounded goroutine growth risks deadlock"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: one shared word is a subject, not evidence of one defect", len(got))
+	}
+}
+
+// The same, one word further along: agreeing on a word or two of a title that is
+// mostly words the other never mentions is not agreement.
+func TestAbsorbKeepsATerseTitleApartFromAMostlyDifferentOne(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "scheduler.go", 40, "queue deadlock"),
+		obs("b", "concurrency", "concurrency", "high", "scheduler.go", 120,
+			"unbounded goroutine growth starves the queue and can deadlock the worker pool"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: two of eleven distinctive words is not one defect", len(got))
+	}
+}
+
+// ...but a terse title that does not CHANGE is still one issue when the code moves
+// under it. Refusing this on word count alone would mint a fresh id every round,
+// restarting the deferral count -- the aging failure the package exists to fix.
+func TestAbsorbMatchesAnUnchangedTerseTitleAcrossRounds(t *testing.T) {
+	l := NewLedger()
+	first := l.Absorb(1, []model.Finding{obs("a", "bugs", "bug", "high", "scheduler.go", 40, "Deadlock")})
+	id := first[0].ID
+	l.Record(id, model.VerdictDeferred, "over cap")
+
+	second := l.Absorb(2, []model.Finding{obs("b", "bugs", "bug", "high", "scheduler.go", 96, "deadlock")})
+	if len(second) != 1 || second[0].ID != id {
+		t.Fatalf("got %+v, want the moved re-report to join %s: the same word set is the same title", second, id)
+	}
+	if got := l.Deferrals(id); got != 1 {
+		t.Errorf("Deferrals(%s) = %d, want 1; a fresh id restarts aging and the issue is deferred forever", id, got)
+	}
+}
+
+// The other side of that fold. Words that merely open alike are not one word:
+// severity and several agree on five letters and mean nothing to do with each
+// other, so a title pair carried across the bar by that coincidence alone is two
+// defects merged into one issue -- and one verdict then buries the other.
+func TestAbsorbKeepsTitlesThatOnlyOpenAlikeApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "low", "main.go", 42, "severity ignored"),
+		obs("b", "y", "tests", "low", "main.go", 42, "several ignored"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: severity and several are not the same word", len(got))
+	}
+}
+
+// ...but the line alone is not identity. One statement holds two defects often
+// enough that this is the ordinary case: the nil deref and the unchecked error it
+// came from, cited at the same line by two lenses. Merging them gives the coder one
+// title, one description and ONE verdict for two problems, so fixing or rejecting
+// the one the issue describes silently buries the other for the rest of the run --
+// strictly worse than a duplicate, which only costs a cap slot.
+func TestAbsorbKeepsUnrelatedDefectsOnOneLineApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "low", "main.go", 42, "completely different words here"),
+		obs("b", "y", "tests", "low", "main.go", 42, "nothing alike whatsoever"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: one line can hold two defects, and one issue carries one verdict", len(got))
+	}
+}
+
+// The split above must survive the round it was created in: a third report of the
+// SECOND defect at that same line joins that defect's issue, not the first one that
+// happens to share the fingerprint.
+func TestAbsorbMatchesTheRightIssueWhenOneLineHoldsTwo(t *testing.T) {
+	l := NewLedger()
+	l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "low", "main.go", 42, "config pointer is dereferenced without a check"),
+		obs("b", "y", "tests", "low", "main.go", 42, "the returned error is discarded"),
+	})
+	if n := len(l.Issues()); n != 2 {
+		t.Fatalf("got %d issues, want 2 before the re-report", n)
+	}
+	wantID := l.Issues()[1].ID
+
+	second := l.Absorb(2, []model.Finding{
+		obs("c", "z", "bug", "high", "main.go", 42, "returned error is still discarded"),
+	})
+	if len(second) != 1 || second[0].ID != wantID {
+		t.Fatalf("re-report joined %+v, want issue %s: the fingerprint alone must not pick the wrong defect", second, wantID)
+	}
+	if n := len(l.Issues()); n != 2 {
+		t.Errorf("ledger holds %d issues, want 2: the re-report must not mint a third", n)
+	}
+}
+
+// A later round's report re-anchors the issue. A reviewer-declared re-report of a
+// defect that MOVED (an earlier round's edits shifted it) arrives with the current
+// location; if it does not raise the severity, the issue would otherwise keep
+// pointing at the old code -- and FormatIssues prints only that canonical location,
+// so the coder would be sent to a line that no longer holds the defect.
+func TestAbsorbReanchorsOnALaterRoundReport(t *testing.T) {
+	l := NewLedger()
+	first := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "main.go", 10, "nil deref on the config pointer"),
+	})
+	if len(first) != 1 {
+		t.Fatalf("got %d issues, want 1", len(first))
+	}
+	moved := obs("b", "bugs", "bug", "low", "main.go", 120, "config pointer is still dereferenced when nil")
+	moved.IssueID = first[0].ID // the reviewer declares the re-report
+	moved.Description = "the fix moved the call but not the check"
+	moved.Suggestion = "check before dereferencing"
+
+	got := l.Absorb(2, []model.Finding{moved})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want the declared re-report to join the existing issue", len(got))
+	}
+	it := got[0]
+	if it.Line != 120 || it.File != "main.go" {
+		t.Errorf("Loc() = %s, want main.go:120: a re-report at a lower severity must still re-anchor", it.Loc())
+	}
+	if it.Title != moved.Title || it.Description != moved.Description || it.Suggestion != moved.Suggestion {
+		t.Errorf("issue text = %q/%q/%q, want this round's reading", it.Title, it.Description, it.Suggestion)
+	}
+	// Severity is what schedules the issue under the per-round cap, so it keeps the
+	// worst reading any round produced rather than following the newest one down.
+	if it.Severity != "high" {
+		t.Errorf("Severity = %q, want high preserved", it.Severity)
+	}
+}
+
+// A worse-severity reading raises the severity, but a reviewer who fills in only
+// the title must not blank the description, suggestion, or category: only the
+// title is required of a finding, and what is left is the detail that explains the
+// defect to the coder.
+func TestAbsorbKeepsIssueTextWhenTheWorseReadingIsBare(t *testing.T) {
+	l := NewLedger()
+	full := obs("a", "bugs", "bug", "low", "main.go", 10, "nil deref on the config pointer")
+	full.Description = "the pointer is dereferenced before the nil check"
+	full.Suggestion = "check before dereferencing"
+	if got := l.Absorb(1, []model.Finding{full}); len(got) != 1 {
+		t.Fatalf("got %d issues, want 1", len(got))
+	}
+	bare := obs("b", "security", "", "high", "main.go", 10, "config pointer may be nil")
+
+	got := l.Absorb(2, []model.Finding{bare})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want the re-report to join the existing issue", len(got))
+	}
+	it := got[0]
+	if it.Severity != "high" || it.Title != bare.Title {
+		t.Errorf("issue = %q (%s), want the worse reading's severity and title", it.Title, it.Severity)
+	}
+	if it.Description != full.Description || it.Suggestion != full.Suggestion {
+		t.Errorf("issue text = %q/%q, want the first reading's detail kept", it.Description, it.Suggestion)
+	}
+	if it.Category != "bug" {
+		t.Errorf("Category = %q, want bug kept: the worse reading did not classify it", it.Category)
+	}
+}
+
+// Within ONE round the worst-severity reading still wins, so the result does not
+// depend on which reviewer finished first.
+func TestAbsorbDoesNotReanchorWithinARound(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "main.go", 10, "nil deref on the config pointer"),
+		obs("b", "tests", "bug", "low", "main.go", 10, "config pointer may be nil"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1", len(got))
+	}
+	if got[0].Title != "nil deref on the config pointer" || got[0].Severity != "high" {
+		t.Errorf("issue = %q (%s), want the worst reading within the round", got[0].Title, got[0].Severity)
+	}
+}
+
+// The round's worst reading contributes its LOCATION as well as its text. Taking
+// the text from one observation and the line from another builds a headline no
+// reviewer wrote, and FormatIssues prints that location as the place to fix.
+func TestAbsorbTakesLocationFromTheWorstReadingInARound(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "tests", "tests", "low", "main.go", 200, "config pointer may be nil"),
+		obs("b", "bugs", "bug", "high", "main.go", 10, "nil deref on the config pointer"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1", len(got))
+	}
+	it := got[0]
+	if it.Line != 10 || it.Title != "nil deref on the config pointer" || it.Category != "bug" {
+		t.Errorf("issue = %s %q (%s), want the worst reading's location, title and category together",
+			it.Loc(), it.Title, it.Category)
+	}
+}
+
+// The round's worst reading wins even when an EARLIER round already recorded that
+// severity. Comparing a later observation against the LIFETIME severity instead
+// makes the strict comparison fail, so the round's milder first report keeps the
+// headline and the coder is sent to its location -- while the issue still carries
+// the severity of the report it is no longer describing.
+func TestAbsorbPrefersTheWorstReadingOfTheRoundNotOfTheRun(t *testing.T) {
+	l := NewLedger()
+	if got := l.Absorb(1, []model.Finding{
+		obs("a", "bugs", "bug", "high", "main.go", 10, "nil deref on the config pointer"),
+	}); len(got) != 1 {
+		t.Fatalf("got %d issues, want 1", len(got))
+	}
+	got := l.Absorb(2, []model.Finding{
+		obs("b", "tests", "tests", "low", "main.go", 200, "config pointer may be nil"),
+		obs("c", "bugs", "bug", "high", "main.go", 120, "nil deref on the config pointer"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want the re-reports to join the existing issue", len(got))
+	}
+	it := got[0]
+	if it.Line != 120 || it.Title != "nil deref on the config pointer" || it.Category != "bug" {
+		t.Errorf("issue = %s %q (%s), want this round's worst reading despite the run already being high",
+			it.Loc(), it.Title, it.Category)
+	}
+	if it.Severity != "high" {
+		t.Errorf("Severity = %q, want high", it.Severity)
+	}
+}

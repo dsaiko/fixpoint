@@ -1,0 +1,83 @@
+# The full review -> fix -> verify -> commit loop over a whole project's code.
+#
+# The fix- prefix means this config edits your files. Fix rounds are refused
+# unless you assert the target is trusted, because the coder edits files with
+# permission checks disabled and is not confined to the target: a prompt-injection
+# payload in ANY reviewed file could steer it. Pass -trusted-target on the command
+# line when you know what the target contains.
+description: Review, fix, verify, and commit a whole project. Needs -trusted-target.
+
+extends: defaults
+
+roles:
+  coder: { agent: claude-coder, prompt: fix }
+  review:
+    # rotate: each round a lens is assigned to a different agent, so fixes are
+    # re-reviewed by fresh eyes rather than by the model that reported them.
+    # fixed = pin every lens; all = every lens on every agent (max coverage,
+    # pool-size x the cost).
+    strategy: rotate
+    prompts:
+      # The LOOP hunts what has to reach zero for the run to converge.
+      - review-bugs # correctness
+      - review-security # security
+      - review-concurrency # concurrency
+
+      # The CLOSING ROUND assesses the finished code -- see `final: true` in the root
+      # README. Coverage is a question about code that has stopped changing: asked
+      # inside the loop it assessed work later rounds rewrote, so it demanded tests
+      # for intermediate states and re-reported the gap each time the code moved. In
+      # a five-round run that made it the largest producer (30 of 68 reports) and the
+      # largest waster (18 deferred), and 65% of everything the run wrote was test
+      # code.
+      #
+      # Unpinned, so the whole panel takes the last look: nothing follows to catch
+      # what one model missed, and these findings are FIXED, so breadth beats
+      # rotation. And the closing round REPEATS until nothing is left to fix, because
+      # max_findings_per_round caps one CODER SESSION rather than the phase -- with no
+      # round following this one, a single capped pass would fix 8 of 26 gaps and let
+      # the run read as complete.
+      - { prompt: review-tests, final: true } # coverage of what the run changed
+
+      # No advisory lenses. review-maintainability and review-design were pinned
+      # here as final+advisory reports; they were removed because nobody read them.
+      # An unread report still costs a full agent session per run. Both prompts are
+      # still in the bundle, so re-adding either is one line -- see the git history
+      # for the shape that worked (advisory + final + pinned to one agent).
+
+# Everything else in `loop` is inherited from defaults.yaml -- `extends` is per-key
+# and reaches inside nested blocks, so setting one key here keeps the rest.
+loop:
+  # The Go spelling of "a test file", for the closing round's do-not-review-your-own-
+  # tests rule (see defaults.yaml for the measurement). Applies ONLY to files this
+  # run's own commits wrote: a test file the run did not touch stays in scope.
+  final_skip_run_edits: ["**/*_test.go"]
+
+# The deterministic gate for THIS project. fixpoint runs these itself after the
+# coder and refuses to commit a round that fails them, so a fix that breaks the
+# build never becomes a commit later rounds build on.
+#
+# Every command runs on every pass -- a failure does not stop the pass, because the
+# coder gets one correction attempt and needs all the failures at once. Ordered
+# cheapest-first for readability only: the summary and the coder's failure block
+# follow this order.
+verify:
+  policy: no_regressions
+  timeout: 15m
+  commands:
+    - name: fmt
+      run: [make, fmt-check]
+    - name: vet
+      run: [go, vet, ./...]
+    # -race, not a plain `go test`. review-concurrency is a recurring loop lens, so
+    # the coder edits synchronization code round after round -- and the tests that
+    # guard those invariants only assert on the RESULT, so they stay green if a
+    # mutex or a sync.Once is dropped. Without the detector the gate cannot see a
+    # race it just committed. It costs ~70s against ~15s on the whole module here,
+    # which is far inside the timeout above; narrow to the concurrent packages only
+    # if that ever stops being true.
+    - name: test
+      run: [go, test, -race, ./...]
+    - name: lint
+      run: [make, lint]
+      optional: true # informative: a pre-existing lint debt should not block a fix
