@@ -825,6 +825,13 @@ or formally blocks it. Neither can be set from a config file — the first bundl
 on the search path belongs to the target, so a YAML key would let reviewed code
 arrange to have a review posted under your identity.
 
+**GitHub refuses an approval or a change request on your OWN pull request**, so
+`-post-verdict` only does anything when the token belongs to somebody other than
+the PR's author — a bot account, or a reviewer running it on a colleague's branch.
+`-post` works either way, which is part of why the comment is the default: on your
+own PR it is the only thing that can land. A refusal is reported, not swallowed,
+and the review is still on disk.
+
 | Flag | Effect |
 |---|---|
 | `<name>` | Positional: the task config to run, resolved on the bundle search path. A value containing a separator or ending in `.yaml` is used as a path. |

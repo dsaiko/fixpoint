@@ -190,7 +190,7 @@ func TestEventsAreDistinctAndNamed(t *testing.T) {
 // Both providers must satisfy Poster, or PosterFor silently returns nil and a
 // -post that the operator asked for turns into a warning about an unrecognized
 // remote.
-func TestBothProvidersCanPost(t *testing.T) {
+func TestBothProvidersCanPost(*testing.T) {
 	var _ Poster = githubProvider{}
 	var _ Poster = gitlabProvider{}
 }
