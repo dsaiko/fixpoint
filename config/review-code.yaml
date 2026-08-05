@@ -13,7 +13,13 @@ roles:
   # configuration up front rather than leaving a review-only run half-checked.
   coder: { agent: claude-coder, prompt: fix }
   review:
-    strategy: rotate
+    # all: every lens on every reviewer, rather than rotate's one lens per
+    # reviewer per round. A review run has ONE round -- nothing follows to catch
+    # what a single model missed -- so breadth is the whole budget, and this is the
+    # same argument that already makes an unpinned `final` lens fan out to the
+    # panel. Cost is pool-size x lenses, which for a one-shot review is affordable
+    # in a way it is not for a five-round fix loop.
+    strategy: all
     prompts:
       - review-bugs
       - review-security
