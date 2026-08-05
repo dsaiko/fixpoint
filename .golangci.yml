@@ -1,0 +1,206 @@
+# golangci-lint v2 configuration (run via `make lint`).
+#
+# Philosophy: enable everything that finds real defects or meaningful smells;
+# leave out only the purely stylistic linters whose noise outweighs their
+# value (wsl, lll, nlreturn, varnamelen, exhaustruct, mnd, ...). Every
+# disabled check and every exclusion below states its reason.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    # ---- bug finders --------------------------------------------------------
+    - asasalint          # func(...any) called with a []any slice by mistake
+    - asciicheck         # non-ASCII identifiers (confusable characters)
+    - bidichk            # dangerous Unicode bidirectional control characters
+    - bodyclose          # HTTP response bodies that are never closed
+    - containedctx       # context.Context stored in a struct field
+    - contextcheck       # a fresh context created where one should be inherited
+    - copyloopvar        # loop-variable copies made redundant by Go 1.22+
+    - durationcheck      # multiplying two durations (almost always a bug)
+    - errcheck           # unchecked error return values
+    - errchkjson         # json.Marshal of types that can never fail, or can
+    - errorlint          # comparisons/casts that break with wrapped errors
+    - fatcontext         # contexts accumulated in loops
+    - gocheckcompilerdirectives # malformed //go: compiler directives
+    - gochecksumtype     # non-exhaustive switches over "sum type" interfaces
+    - govet              # the standard vet suite
+    - ineffassign        # assignments whose value is never used
+    - loggercheck        # mismatched key/value pairs in structured logging
+    - makezero           # make([]T, n) followed by append (silent zero prefix)
+    - musttag            # (un)marshaled structs missing field tags
+    - nilerr             # returning nil after checking err != nil
+    - nilnesserr         # returning a wrong (nil-checked) error variable
+    - nilnil             # returning (nil, nil) where callers expect a value
+    - noctx              # outbound requests without a context
+    - protogetter        # direct field access on protobufs instead of getters
+    - reassign           # reassigning package-level variables of other packages
+    - rowserrcheck       # sql.Rows iterated without checking rows.Err
+    - spancheck          # trace spans that are never ended
+    - sqlclosecheck      # sql.Rows/Stmt that are never closed
+    - staticcheck        # the full staticcheck/gosimple/stylecheck suite
+    - unparam            # parameters that are always the same value / unused
+    - unused             # unused constants, variables, functions, types
+    - wastedassign       # values assigned and then overwritten unread
+    - zerologlint        # zerolog events terminated incorrectly
+
+    # ---- security -----------------------------------------------------------
+    - gosec              # security problems (command injection, weak crypto, ...)
+    - nosprintfhostport  # host:port built with Sprintf (breaks with IPv6)
+
+    # ---- correctness of tests ----------------------------------------------
+    - testableexamples   # Example funcs missing output comments (never run)
+    - testifylint        # misused testify assertions
+    - thelper            # test helpers missing t.Helper()
+    - tparallel          # t.Parallel misuse
+    - usetesting         # os.Setenv etc. where t.Setenv/t.TempDir belong
+
+    # ---- API hygiene & maintainability --------------------------------------
+    - cyclop             # function cyclomatic complexity (threshold below)
+    - dupl               # large duplicated code blocks
+    - errname            # error vars not named errFoo / types not FooError
+    - exhaustive         # non-exhaustive switches over enum-like constants
+    - goconst            # repeated literals that deserve a constant
+    - gocritic           # a large opinionated meta-linter (diagnostic+perf tags)
+    - gocognit           # cognitive complexity (threshold below)
+    - godot              # comments should end in a period
+    - gomoddirectives    # forbidden replace/exclude directives in go.mod
+    - goprintffuncname   # printf-like funcs not named ...f
+    - intrange           # loops rewritable with Go 1.22 integer ranges
+    - mirror             # needless []byte/string round-trips
+    - misspell           # commonly misspelled English words
+    - nakedret           # naked returns in long functions
+    - nestif             # deeply nested if chains (threshold below)
+    - nolintlint         # nolint directives must name a linter + a reason
+    - perfsprint         # Sprintf where a faster equivalent exists
+    - prealloc           # slices that could be preallocated
+    - predeclared        # shadowing of Go predeclared identifiers
+    - revive             # the maintained golint successor (rules below)
+    - unconvert          # unnecessary type conversions
+    - usestdlibvars      # magic literals with stdlib constants (http.MethodGet)
+    - whitespace         # stray leading/trailing blank lines
+
+  settings:
+    cyclop:
+      max-complexity: 20 # flag only genuinely tangled functions
+    dupl:
+      threshold: 150 # tokens; small similar blocks are fine
+    errcheck:
+      check-type-assertions: true # unchecked t := v.(T) panics at runtime
+      exclude-functions:
+        # Best-effort writes to stdout/stderr; there is no meaningful recovery
+        # from a failed write to a stream we do not own.
+        - fmt.Fprintf
+        - fmt.Fprint
+    exhaustive:
+      # A switch with a default case is considered exhaustive: this codebase
+      # uses default-branch validation for Mode/Strategy string enums.
+      default-signifies-exhaustive: true
+    gocognit:
+      min-complexity: 30
+    gocritic:
+      enabled-tags: [diagnostic, performance]
+      # style tag off by default: too opinionated. Cherry-pick the useful ones.
+      enabled-checks: [boolExprSimplify, emptyStringTest, ptrToRefParam]
+      disabled-checks:
+        # Copy-size micro-optimizations: this program is I/O-bound on agent
+        # subprocesses; copying a ~200-byte finding struct is irrelevant next
+        # to a multi-minute LLM invocation, and value semantics read better.
+        - rangeValCopy
+        - hugeParam
+    gosec:
+      excludes:
+        # G204 (subprocess with variable args) is this program's entire
+        # purpose: agents are user-configured command templates, and the
+        # config documents the trust model around them.
+        - G204
+        # G304 (file path from variable): reading user-configured files
+        # (config, prompt templates) is likewise the program's purpose.
+        - G304
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # micro-optimization; hurts field-grouping readability
+        - shadow # too many false positives on idiomatic err shadowing
+    misspell:
+      locale: US
+    nakedret:
+      max-func-lines: 5
+    nestif:
+      min-complexity: 6
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: atomic
+        - name: bool-literal-in-expr
+        - name: constant-logical-expr
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: defer
+        - name: dot-imports
+        - name: duplicated-imports
+        - name: early-return
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: identical-branches
+        - name: if-return
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: modifies-value-receiver
+        - name: package-comments
+        - name: range
+        - name: range-val-address
+        - name: range-val-in-closure
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-equal
+        - name: time-naming
+        - name: unconditional-recursion
+        - name: unexported-return
+        - name: unnecessary-stmt
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: use-any
+        - name: var-declaration
+        - name: var-naming
+        - name: waitgroup-by-value
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests legitimately ignore cleanup errors, repeat table literals, and
+      # grow long: relax the hygiene linters there, keep the bug finders on.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - dupl
+          - goconst
+          - gosec
+          - cyclop
+          - gocognit
+          - nestif
+      # testfixture is test-support code (fixture files, fake agents); hold it
+      # to test standards, not production hardening.
+      - path: internal/testfixture/
+        linters:
+          - gosec
+
+issues:
+  # Report everything; don't silently cap per-linter or duplicate counts.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

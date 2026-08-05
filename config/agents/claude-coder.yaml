@@ -1,0 +1,60 @@
+# The coder: the only agent allowed to edit files.
+#
+# Pinned to an exact model id rather than the `opus` alias. That alias currently
+# resolves to claude-opus-4-8 and re-points whenever the CLI ships a new alias
+# table, which would silently change which model fixes your code mid-project.
+model: claude-opus-5
+effort: high # xhigh runs ~2x slower for marginal gain on typical findings
+command:
+  - claude
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p
+  - --dangerously-skip-permissions # required to edit; see can_edit below
+  - --model {{model}}
+  - --effort {{effort}}
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see below
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  cost_usd: modelUsage.*.costUSD
+  # Set when the API refused the call rather than the CLI failing. This is the
+  # agent that hit it: a run ended `coder failed: exit status 1` when the envelope
+  # said 429 "You've hit your session limit · resets 8:20pm".
+  error_status: api_error_status
+
+prompt_via: stdin
+timeout: 30m # fixing rounds run longer than a single review pass
+can_edit: true
+# `--setting-sources user` above, exactly as on every reviewer: settings come
+# from ~/.claude and never from the .claude/settings.json sitting in the code
+# being fixed. The permission-skip flag is not a reason to drop it. A hook there
+# is a shell command the CLI runs before the model takes a single turn -- no
+# model in the loop, no tool request to approve -- so it is code execution
+# fixpoint performs on the target's behalf, the same class as the argv in a
+# target-supplied bundle, which is refused without -trusted-target. It is also
+# not covered by the assertion a fix round actually requires: in pr mode the
+# only gate is -allow-untrusted-fix, whose documented meaning is accepting
+# prompt-injection risk from an author nobody vouched for, and `gh pr checkout`
+# writes that PR's settings file straight into the worktree the coder runs in.
+# The cost is that the target's CLAUDE.md is no longer auto-loaded; the coder
+# can still read it as a file when project conventions matter, which keeps it
+# content the model weighs rather than instructions injected before the turn.
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # claude authenticates from ~/.claude when you have logged in, so this is only
+  # needed if you use an API key instead. An unset name is simply not passed.
+    - ANTHROPIC_API_KEY

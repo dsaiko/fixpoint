@@ -1,0 +1,29 @@
+# Review a GitHub pull request. The PR branch is checked out locally (gh pr
+# checkout) and reviewed against its base.
+#
+# loop.review_only is true and must stay true unless you trust the PR author: a PR is
+# externally authored code, and its content flows through reviewer findings into
+# the coder, which edits files with permission checks disabled. Enabling fixes
+# needs -allow-untrusted-fix, deliberately, per invocation.
+description: Review a GitHub pull request; review-only by default.
+
+extends: defaults
+
+target:
+  mode: pr
+  pr: 0 # placeholder: pass -pr <number> on the command line, or edit here
+
+roles:
+  coder: { agent: claude-coder, prompt: fix }
+  review:
+    strategy: rotate
+    agents: [codex, claude]
+    prompts:
+      - review-bugs
+      - review-security
+      - review-concurrency
+      - review-tests
+
+loop:
+  review_only: true
+  max_iterations: 1

@@ -1,0 +1,74 @@
+# Qwen via OpenRouter, wrapped in Claude Code's agentic harness. OpenRouter
+# serves an Anthropic-compatible /v1/messages, so the harness talks to it with
+# nothing but a base URL -- the same shape as the ollama agents, no proxy.
+#
+# Two things about that base URL and token, both learned the hard way:
+#   - it must NOT end in /v1. The harness appends /v1/messages itself, so
+#     ".../api/v1" becomes ".../api/v1/v1/messages" and every call 404s with
+#     "the selected model may not exist or you may not have access to it",
+#     which reads like a model problem and is not one.
+#   - the credential goes in ANTHROPIC_AUTH_TOKEN, which must hold your
+#     OPENROUTER_API_KEY -- env.set takes literal values only, so it cannot
+#     forward one variable into another. Export it before the run. Note that
+#     ANTHROPIC_API_KEY is deliberately NOT passed: if it reaches the process it
+#     takes precedence and the run silently bills Anthropic instead.
+#
+# codex reaches OpenRouter too, with `wire_api = "responses"` (0.146 dropped
+# "chat") and a model_providers block -- see the root README. An earlier comment
+# here claimed OpenRouter does not serve the Responses API; that was wrong, read
+# off a probe made with an expired key whose 401 looked like a missing endpoint.
+# The claude harness is used here because the panel already speaks it, not because
+# it is the only option.
+#
+# qwen3.7-max, not the cheaper qwen3.7-flash the panel was first offered: max is
+# the only one of the three that is text->text (flash and plus are
+# vision-language models whose published strengths are object recognition and
+# spatial understanding), and a flash tier trades away exactly the depth gemma4
+# already lacked. Both were probed through this wrapper and both work, so
+# swapping the model below is a one-line change if you want to measure it.
+model: qwen/qwen3.7-max
+command:
+  - claude
+  - --model {{model}}
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
+# modelUsage is keyed by model id and aggregates the WHOLE session; the top-level
+# `usage` object is only the final turn. OpenRouter honours prompt caching, so the
+# cache_* paths carry real numbers here rather than the zeros the ollama agents
+# report.
+#
+# NO cost_usd: the wrapped harness has no idea what OpenRouter charges -- it
+# labels the model provider "firstParty" and applies Anthropic's rate card.
+# Measured on the probe that introduced this agent: the harness claimed $0.599 for
+# two sessions whose real cost on the OpenRouter key was $0.0064, overstating by
+# ~93x. That number is a rate-card calculation, not a bill, so it is not read: the
+# scoreboard shows "-" rather than money nobody was charged. Tokens ARE real and
+# still counted.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
+
+prompt_via: stdin
+timeout: 15m # remote-served model; give it the same headroom as kimi/glm
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # Must hold the OpenRouter key -- see the note at the top of this file.
+    - ANTHROPIC_AUTH_TOKEN
+  set:
+  # No /v1 suffix; the harness adds it.
+    ANTHROPIC_BASE_URL: https://openrouter.ai/api

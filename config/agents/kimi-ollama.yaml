@@ -1,0 +1,67 @@
+# Kimi via ollama, same claude-harness wrapping as glm-ollama. THE PANEL DEFAULT.
+#
+# It is on the panel despite caching nothing -- 0% hit rate, 29.0M fresh input
+# tokens across five sessions in one run -- because the alternative costs cash for
+# the same volume. kimi-openrouter.yaml caches at 98%, and one session there still
+# ran ~$5: cheaper tokens do not help when the session takes 168 turns to claude's
+# 37. Prepaid quota absorbs that; a card does not. The quota ceiling is the price,
+# and dropping glm from the panel halved the pressure on it.
+#
+# A code-specialized
+# reasoning model: it replaced gemma4 on the review panel, which was the panel's
+# weakest producer (9 issues across a 5-round run, against claude's 27) and its
+# slowest per turn. On an identical trivial probe through this same wrapper kimi
+# answered in 4.2s to gemma4's 8.3s, on 17% fewer input tokens.
+#
+# Chosen over deepseek-v4-flash:cloud, which probed marginally faster still: a
+# flash tier trades depth for latency, and depth is exactly what gemma4 lacked.
+# Kimi also keeps the panel diverse -- glm is the general reasoner, kimi the code
+# specialist, so their findings overlap less than two general models' would.
+model: kimi-k2.7-code:cloud
+# No `effort`, deliberately: it is Anthropic's setting, and ollama drops the
+# thinking budget the harness translates it into. Measured -- this model produced
+# ~3428 thinking tokens under a 1024 budget, 3.3x over, and within half a percent
+# of what it produces with no budget at all. Setting it would validate, run, and
+# lie. See "effort (claude)" in _README.md.
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+# NO cost_usd: kimi/glm are served by ollama, not Anthropic, and the wrapped
+# claude harness has no idea what ollama charges -- it labels them provider
+# "firstParty" and applies Anthropic's rate card. That number is a rate-card
+# calculation, not a bill, so it is not read: the scoreboard shows "-" for these
+# agents rather than money nobody was charged. Tokens ARE real and still counted.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
+
+prompt_via: stdin
+timeout: 20m # cloud-served models are slower; matched to the panel (see claude.yaml)
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # ollama needs to find its server; the wrapped claude harness needs nothing more.
+    - OLLAMA_HOST
