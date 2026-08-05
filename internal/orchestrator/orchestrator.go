@@ -1076,9 +1076,12 @@ func (o *Orchestrator) squashTo(ctx context.Context, rec *model.RoundRecord, bas
 // report the excess and then drop it -- the closing round would fix 8 of 26 coverage
 // gaps and the run would read as complete. Processing more than one session's worth
 // means more sessions, not a bigger session. Re-reviewing between passes is not
-// waste either: pass 2 sees the tests pass 1 wrote, so it reports what is genuinely
-// still missing rather than working from a list computed before the code changed --
-// which is also what makes the phase terminate on its own.
+// waste either: pass 2 sees the tree as pass 1 left it, so it reports what is
+// genuinely still missing rather than working from a list computed before the code
+// changed -- which is also what makes the phase terminate on its own. The one thing
+// pass 2 is NOT shown is the paths loop.final_skip_run_edits hides, recomputed per
+// pass so that a pass never reviews the files its predecessor just wrote; see
+// runFinalFixPasses' hideRunEdits call.
 //
 // The ADVISORY lenses then run exactly ONCE, last. They are reports, and a report
 // wants to describe the code that actually shipped -- which is only known once the
