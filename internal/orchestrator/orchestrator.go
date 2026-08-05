@@ -23,6 +23,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
+	"github.com/dsaiko/fixpoint/internal/review"
 	"github.com/dsaiko/fixpoint/internal/target"
 	"github.com/dsaiko/fixpoint/internal/verify"
 )
@@ -39,6 +40,10 @@ type Orchestrator struct {
 	// notion of "which lens is this" everywhere.
 	templates map[string]*template.Template
 	logf      func(format string, args ...any)
+	// ci is what the forge reported about the reviewed head, when a provider could
+	// be asked. Zero value means "not known", which never blocks a verdict but is
+	// recorded in its reasons -- see internal/review.CI.
+	ci review.CI
 	// gitExclude holds the logs dir as a repo-relative path when it lives
 	// inside target.path, so round commits and clean checks never touch the
 	// run's own logs.
@@ -1864,14 +1869,18 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		return true, nil //nolint:nilerr // interruption is a normal termination, not a round error
 	}
 
-	// Review-only runs exactly one round, and it only counts as a successful
-	// review if every reviewer completed: reporting success over a partial
-	// round would let automation trust an incomplete review. The round record
-	// stays in the summary either way.
+	// Review-only runs exactly one round, and ends with a VERDICT rather than a
+	// bare success.
+	//
+	// A partial panel used to fail the run outright, on the argument that
+	// reporting success over an incomplete review would let automation trust it.
+	// The verdict is a better answer to the same worry and keeps the guarantee:
+	// without quorum it cannot approve, so the process still exits non-zero -- but
+	// it exits with a reason naming who was missing, instead of an error that
+	// cannot tell an infrastructure failure from a reviewer that timed out on one
+	// lens of four. See internal/review.
 	if o.cfg.Loop.ReviewOnly {
-		if len(recP.ReviewErrors) > 0 {
-			return false, roundReviewErr(recP)
-		}
+		o.decideVerdict(recP, sum)
 		sum.Termination = model.TermReviewOnly
 		return true, nil
 	}
@@ -3767,4 +3776,29 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 		o.logf("round %d: verification-correction output was unparseable: %v", rec.Round, parseErr)
 	}
 	return nil
+}
+
+// decideVerdict computes a review run's conclusion and records it on the summary.
+//
+// The inputs are all facts the round already carries: which agents were assigned,
+// which of their steps failed, and what survived as issues. Nothing here asks a
+// model anything -- see internal/review for why the verdict must not.
+func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSummary) {
+	failed := map[string]int{}
+	for _, st := range rec.Steps {
+		if st.Role == "review" && st.Failed {
+			failed[st.Agent]++
+		}
+	}
+	d := review.Decide(review.Input{
+		Issues:  rec.Issues,
+		Quorum:  review.QuorumFrom(rec.Assignments, failed),
+		CI:      o.ci,
+		BlockAt: o.cfg.Review.BlockAt,
+	})
+	sum.Verdict = d.Summary()
+	o.logf("verdict: %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	for _, r := range d.Reasons {
+		o.logf("  %s", r)
+	}
 }

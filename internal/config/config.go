@@ -15,6 +15,8 @@ import (
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/dsaiko/fixpoint/internal/model"
 )
 
 // Config is the whole of fixpoint.yaml: what to review, who reviews and
@@ -40,6 +42,9 @@ type Config struct {
 	// trivial prompt (in parallel) and abort if any fails. Catches expired
 	// logins and broken CLIs before tokens are spent. Default true.
 	PingAgents *bool `yaml:"ping_agents"`
+	// Review is the verdict policy for review-only runs; ignored by a fix run,
+	// which has no verdict.
+	Review ReviewPolicy `yaml:"review"`
 }
 
 // Ping reports whether the preflight agent ping is enabled.
@@ -1201,6 +1206,9 @@ func (c *Config) Validate() error {
 	if c.Loop.CleanRoundsToStop < 0 {
 		return fmt.Errorf("loop.clean_rounds_to_stop: must not be negative, got %d", c.Loop.CleanRoundsToStop)
 	}
+	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
+		return fmt.Errorf("review.block_at: unknown severity %q (want %s)", c.Review.BlockAt, strings.Join(model.Severities, " | "))
+	}
 	for i, g := range c.Loop.FinalSkipRunEdits {
 		// An empty pattern compiles to ^$, which matches no real path -- so it would
 		// sit in the config looking like an active rule and hide nothing. Refused for
@@ -1771,6 +1779,19 @@ type Verify struct {
 	// Timeout bounds EACH command. A hung test suite must not hang the run.
 	Timeout  Duration        `yaml:"timeout"`
 	Commands []VerifyCommand `yaml:"commands"`
+}
+
+// ReviewPolicy holds what a REVIEW run concludes with, as opposed to what it
+// looks for. It is empty by default and every field has a working default, so a
+// config that says nothing about reviews still produces a verdict.
+type ReviewPolicy struct {
+	// BlockAt is the severity at or above which a surviving finding forces
+	// CHANGES_REQUESTED (default: high). Lower it to medium for a stricter gate,
+	// knowing what that costs: across 19 measured runs the panel produced 322
+	// issues of which only 66 were high or critical, so a medium floor blocks
+	// nearly every review -- and a gate that always fires is one people route
+	// around.
+	BlockAt string `yaml:"block_at"`
 }
 
 // VerifyCommand is one check. Argv, not a shell string: there is no shell to

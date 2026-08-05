@@ -348,16 +348,24 @@ func TestRunAllRejectedWithReviewerErrorFails(t *testing.T) {
 
 // A review-only run whose only reviewer failed must not exit successfully:
 // automation would read "review-only" termination as a completed review.
-func TestRunReviewOnlyFailsOnReviewerError(t *testing.T) {
+//
+// It is no longer a run ERROR, though. The run did what it was asked; the REVIEW
+// is what came back incomplete, and those are different facts. The verdict says
+// which -- INCONCLUSIVE, naming the reviewer that did not finish -- and the exit
+// status stays non-zero, which is the property that actually protects automation.
+func TestRunReviewOnlyWithNoSurvivingReviewerIsInconclusive(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1, ReviewOnly: true})
 	f.respond(1, "no review block") // reviewer error, zero findings
 
 	sum, err := f.orchestrator().Run(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "reviewer(s) failed") {
-		t.Fatalf("Run() err = %v, want aggregated reviewer failure", err)
+	if err != nil {
+		t.Fatalf("Run() err = %v: an incomplete review is a verdict, not a run failure", err)
 	}
-	if sum.Termination != model.TermError {
-		t.Errorf("termination = %q, want error", sum.Termination)
+	if sum.Verdict == nil || sum.Verdict.Outcome != model.VerdictInconclusive {
+		t.Fatalf("verdict = %+v, want inconclusive", sum.Verdict)
+	}
+	if model.ExitCodeFor(sum) == 0 {
+		t.Error("exit = 0: automation would read an incomplete review as a completed one")
 	}
 	if len(sum.Rounds) != 1 || len(sum.Rounds[0].ReviewErrors) != 1 {
 		t.Errorf("partial round record must be kept: %+v", sum.Rounds)
@@ -510,8 +518,13 @@ func TestRunReportsTheOriginalContractErrorWhenReformatAlsoFails(t *testing.T) {
 	f.respond(2, "<review>[]</review>") // valid JSON, wrong shape: array, not object
 
 	sum, err := f.orchestrator().Run(t.Context())
-	if err == nil {
-		t.Fatal("Run() err = nil, want the reviewer failure to surface after a failed salvage")
+	if err != nil {
+		t.Fatalf("Run() err = %v: in a review run a dead reviewer is a verdict, not a run failure", err)
+	}
+	// It still has to SURFACE: the panel lost its only member, so there is no quorum
+	// and the run cannot approve.
+	if sum.Verdict == nil || sum.Verdict.Outcome != model.VerdictInconclusive {
+		t.Fatalf("verdict = %+v, want inconclusive after a failed salvage", sum.Verdict)
 	}
 	if len(sum.Rounds) != 1 || len(sum.Rounds[0].ReviewErrors) != 1 {
 		t.Fatalf("want exactly one reviewer error recorded, got %+v", sum.Rounds)
@@ -6612,5 +6625,125 @@ func TestAFailedHiddenSetRecomputeDropsTheEarlierPassesNarrowing(t *testing.T) {
 				t.Errorf("warning printed = %v, want %v:\n%s", warned, tc.wantWarn, logs())
 			}
 		})
+	}
+}
+
+// reviewOnly turns the fixture into a review run: no coder, one round, and the
+// panel fanned out the way the shipped review configs do it.
+func (f *fixture) reviewOnly(agents ...string) {
+	f.t.Helper()
+	f.cfg.Loop.ReviewOnly = true
+	f.cfg.Roles.Review.Strategy = config.StrategyAll
+	if len(agents) > 0 {
+		for _, name := range agents {
+			if _, ok := f.cfg.Agents[name]; !ok {
+				f.cfg.Agents[name] = f.cfg.Agents["mock"]
+			}
+		}
+		f.cfg.Roles.Review.Agents = agents
+		f.cfg.Roles.Review.Prompts[0].Agent = "" // unpin so `all` fans it out
+	}
+}
+
+// A review run ends with a verdict, and the verdict decides the exit status: a
+// review that requested changes terminated perfectly normally, so without this the
+// process would exit 0 and tell CI the branch was fine.
+func TestReviewOnlyRunEndsWithAVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		findings []model.ReviewFinding
+		want     string
+		wantExit int
+	}{
+		{"clean review approves", nil, model.VerdictApprove, 0},
+		{
+			"a high requests changes",
+			[]model.ReviewFinding{{Category: "bug", Severity: "high", File: "main.go", Line: 1, Title: "boom"}},
+			model.VerdictChangesRequested, model.ExitChangesRequested,
+		},
+		{
+			"a medium alone still approves at the default floor",
+			[]model.ReviewFinding{{Category: "bug", Severity: "medium", File: "main.go", Line: 2, Title: "meh"}},
+			model.VerdictApprove, 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly()
+			f.respond(1, reviewResponse(t, tc.findings...))
+
+			sum, err := f.orchestrator().Run(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sum.Verdict == nil {
+				t.Fatal("a review run recorded no verdict")
+			}
+			if sum.Verdict.Outcome != tc.want {
+				t.Errorf("verdict = %q, want %q (reasons %v)", sum.Verdict.Outcome, tc.want, sum.Verdict.Reasons)
+			}
+			if got := model.ExitCodeFor(sum); got != tc.wantExit {
+				t.Errorf("exit = %d, want %d", got, tc.wantExit)
+			}
+			if sum.Termination != model.TermReviewOnly {
+				t.Errorf("termination = %q, want review-only: the verdict is a separate axis from how the loop ended", sum.Termination)
+			}
+		})
+	}
+}
+
+// A partial panel used to fail the run outright. It now produces INCONCLUSIVE,
+// which keeps the guarantee that mattered -- automation cannot read it as an
+// approval, because the exit status is non-zero -- while saying who was missing
+// instead of collapsing every cause into "error".
+func TestReviewOnlyWithAFailedReviewerIsInconclusiveNotApproved(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	// Two agents, one dead. A panel of two needs BOTH, since a strict majority of
+	// two is two -- with three agents, losing one still meets a quorum of two, which
+	// is the point of counting rather than demanding everyone.
+	f.reviewOnly("mock", "mock2")
+	bad := f.cfg.Agents["mock2"]
+	bad.Command = []string{"false"}
+	f.cfg.Agents["mock2"] = bad
+	f.respond(1, reviewResponse(t))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v: a partial panel is a verdict, not a run failure", err)
+	}
+	if sum.Verdict == nil {
+		t.Fatal("no verdict recorded")
+	}
+	if sum.Verdict.Outcome != model.VerdictInconclusive {
+		t.Errorf("verdict = %q, want inconclusive: a clean result from an incomplete panel is not an approval", sum.Verdict.Outcome)
+	}
+	if got := model.ExitCodeFor(sum); got == 0 {
+		t.Error("exit = 0; automation must not be able to read an incomplete review as success")
+	}
+	if !strings.Contains(strings.Join(sum.Verdict.Reasons, " "), "mock2") {
+		t.Errorf("reasons %v should name the reviewer that did not finish", sum.Verdict.Reasons)
+	}
+}
+
+// A high found by an incomplete panel is still a high. Quorum governs whether
+// SILENCE is evidence; it never softens a finding that was actually made.
+func TestAHighBlocksEvenWhenThePanelIsIncomplete(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock", "mock2") // a panel of two with one dead cannot reach quorum
+	bad := f.cfg.Agents["mock2"]
+	bad.Command = []string{"false"}
+	f.cfg.Agents["mock2"] = bad
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "security", Severity: "high", File: "main.go", Line: 3, Title: "token compared with =="}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Verdict.Outcome != model.VerdictChangesRequested {
+		t.Errorf("verdict = %q, want changes_requested", sum.Verdict.Outcome)
+	}
+	if model.ExitCodeFor(sum) != model.ExitChangesRequested {
+		t.Errorf("exit = %d, want %d", model.ExitCodeFor(sum), model.ExitChangesRequested)
 	}
 }

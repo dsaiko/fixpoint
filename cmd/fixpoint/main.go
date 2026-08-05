@@ -187,7 +187,7 @@ Flags:
 		return 1
 	}
 	logOutcome(sum, logf)
-	return model.ExitCode(sum.Termination)
+	return model.ExitCodeFor(sum)
 }
 
 // logOutcome prints the one-line, timestamped, greppable outcome that goes

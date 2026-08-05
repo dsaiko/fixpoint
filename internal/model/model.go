@@ -272,6 +272,24 @@ type RunSummary struct {
 	// the loop's outcome.
 	LoopTermination string `json:"loop_termination,omitempty"`
 	Error           string `json:"error,omitempty"`
+	// Verdict is set for a review-only run: what the review concluded, and why.
+	// A fix run has no verdict -- its outcome is the commits it made and the
+	// termination above.
+	Verdict *ReviewVerdict `json:"verdict,omitempty"`
+}
+
+// ReviewVerdict is the serializable form of a review's conclusion. The rule that
+// produces it lives in internal/review; this is only how the summary carries it,
+// which is why it holds issue IDS rather than issues -- the findings themselves are
+// already in the rounds, and duplicating them here would let the two disagree.
+type ReviewVerdict struct {
+	Outcome  string   `json:"outcome"`
+	Reasons  []string `json:"reasons"`
+	Blocking []string `json:"blocking,omitempty"`
+	Panel    int      `json:"panel"`
+	Present  int      `json:"present"`
+	Required int      `json:"required"`
+	Missing  []string `json:"missing,omitempty"`
 }
 
 // ExitCode maps a termination to the process exit status, so the run summary and
@@ -295,6 +313,49 @@ func ExitCode(termination string) int {
 		return 1
 	}
 }
+
+// ExitCodeFor is ExitCode with a review run's VERDICT taken into account, and it
+// is what both the CLI and the summary must call: a review that requested changes
+// terminated perfectly normally, so the termination alone would exit 0 and tell
+// automation the branch was fine.
+//
+// A verdict only ever makes the status WORSE. A review whose loop errored or was
+// interrupted keeps that exit code, because an incomplete run's approval is not
+// an approval -- and Decide cannot approve without quorum anyway, so the two
+// agree rather than compete.
+func ExitCodeFor(sum *RunSummary) int {
+	if sum == nil {
+		return ExitCode("")
+	}
+	base := ExitCode(sum.Termination)
+	if sum.Verdict == nil || base != 0 {
+		return base
+	}
+	switch sum.Verdict.Outcome {
+	case VerdictChangesRequested:
+		return ExitChangesRequested
+	case VerdictInconclusive:
+		return ExitInconclusive
+	}
+	return base
+}
+
+// Verdict outcomes, mirroring internal/review's Outcome values. They are declared
+// here too because the summary is decoded by tools that must not have to import
+// the decision logic to read what it decided.
+const (
+	VerdictApprove          = "approve"
+	VerdictChangesRequested = "changes_requested"
+	VerdictInconclusive     = "inconclusive"
+)
+
+// Exit codes above the terminations': a review verdict is a different axis from
+// how the loop ended, so it gets its own numbers rather than overloading
+// all-rejected.
+const (
+	ExitChangesRequested = 4
+	ExitInconclusive     = 5
+)
 
 // Termination reasons.
 const (

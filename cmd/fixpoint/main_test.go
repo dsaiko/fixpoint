@@ -758,13 +758,25 @@ func TestRunTearsDownSignalHandlerBeforeScoreboard(t *testing.T) {
 	}
 }
 
-func TestRunReviewerFailureExits1(t *testing.T) {
+func TestRunReviewerFailureExitsNonZeroAsInconclusive(t *testing.T) {
 	f := newFixture(t)
 	f.respond(1, "no review block") // reviewer contract violation
 	var buf bytes.Buffer
 	cfg := f.configFile("directory", "", "  review_only: true")
-	if got := run([]string{"-config", cfg}, &buf, &buf); got != 1 {
-		t.Fatalf("run() = %d, want 1; stderr:\n%s", got, buf.String())
+	// The panel is one agent, so losing it leaves nothing: no quorum, therefore no
+	// approval. It exits 5 (inconclusive) rather than 1 (error) because the run did
+	// not fail -- the REVIEW was incomplete, which is a different fact and one the
+	// verdict can name. What must not change is that automation cannot read it as
+	// success.
+	got := run([]string{"-config", cfg}, &buf, &buf)
+	if got == 0 {
+		t.Fatalf("run() = 0; an incomplete review must never exit success; stderr:\n%s", buf.String())
+	}
+	if got != model.ExitInconclusive {
+		t.Fatalf("run() = %d, want %d (inconclusive); stderr:\n%s", got, model.ExitInconclusive, buf.String())
+	}
+	if !strings.Contains(buf.String(), "INCONCLUSIVE") {
+		t.Errorf("the verdict should be stated on stderr:\n%s", buf.String())
 	}
 }
 
@@ -782,8 +794,8 @@ func TestRunRedactsSecretsInLoggedErrors(t *testing.T) {
 	}))
 	var buf bytes.Buffer
 	cfg := f.configFile("directory", "", "  review_only: true")
-	if got := run([]string{"-config", cfg}, &buf, &buf); got != 1 {
-		t.Fatalf("run() = %d, want 1 for a reviewer contract violation; stderr:\n%s", got, buf.String())
+	if got := run([]string{"-config", cfg}, &buf, &buf); got != model.ExitInconclusive {
+		t.Fatalf("run() = %d, want %d for a reviewer contract violation; stderr:\n%s", got, model.ExitInconclusive, buf.String())
 	}
 	if strings.Contains(buf.String(), secret) {
 		t.Errorf("stderr leaked the credential-shaped value:\n%s", buf.String())
@@ -885,8 +897,12 @@ func TestRunReviewOnlyFlagOverride(t *testing.T) {
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	var buf bytes.Buffer
 	cfg := f.configFile("directory", "", "  max_iterations: 3")
-	if got := run([]string{"-config", cfg, "-review-only"}, &buf, &buf); got != 0 {
-		t.Fatalf("run(-review-only) = %d, want 0; stderr:\n%s", got, buf.String())
+	// The fixture finding is a high, so the review's VERDICT is changes-requested
+	// and the exit status says so. That is incidental to what this test is about --
+	// the flag suppressing the coder -- but it has to be asserted rather than
+	// ignored, or a future change to the verdict rule would go unnoticed here.
+	if got := run([]string{"-config", cfg, "-review-only"}, &buf, &buf); got != model.ExitChangesRequested {
+		t.Fatalf("run(-review-only) = %d, want %d; stderr:\n%s", got, model.ExitChangesRequested, buf.String())
 	}
 	if got := f.invocations(); got != 1 {
 		t.Errorf("agent invocations = %d, want 1 (flag must suppress the coder)", got)
