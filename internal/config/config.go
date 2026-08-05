@@ -1792,6 +1792,13 @@ type ReviewPolicy struct {
 	// nearly every review -- and a gate that always fires is one people route
 	// around.
 	BlockAt string `yaml:"block_at"`
+	// Signature is appended to the rendered review, with {agents} {run} {version}
+	// {config} {verdict} substituted. Empty uses review.DefaultSignature.
+	//
+	// It is rendered by fixpoint from fixpoint's own facts and placed outside every
+	// region carrying agent text: a signature composed from a finding's prose could
+	// be forged by whatever wrote that prose.
+	Signature string `yaml:"signature"`
 }
 
 // VerifyCommand is one check. Argv, not a shell string: there is no shell to

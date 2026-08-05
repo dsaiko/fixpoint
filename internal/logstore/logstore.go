@@ -186,6 +186,33 @@ func (s *Store) Prompt(role, agentName, promptName string, round int, text strin
 	return writeArtifact(name, []byte(agent.EscapeTerminalBlock(agent.RedactSecrets(text))))
 }
 
+// RunID identifies this run: the timestamp segment of its log directory, which is
+// what every artifact path already carries and what an operator types when asked
+// which run something came from.
+func (s *Store) RunID() string { return filepath.Base(s.runDir) }
+
+// ReviewBody writes the rendered review document at the run root, next to the
+// summary, and returns its path.
+//
+// It is a first-class artifact rather than a section of the summary because it is
+// the thing a human is meant to READ -- and, on the posting path, the exact bytes
+// that go to a pull request. Keeping it a separate file means "what would be
+// posted?" is answered by opening one file, not by extracting part of another.
+//
+// Redacted and terminal-escaped like every other artifact: it carries finding
+// titles and descriptions, which are agent-authored and may quote a discovered
+// secret.
+func (s *Store) ReviewBody(text string) (string, error) {
+	if err := s.ensureDir(); err != nil {
+		return "", err
+	}
+	name := filepath.Join(s.runDir, "review-body.md")
+	if err := writeArtifact(name, []byte(agent.EscapeTerminalBlock(agent.RedactSecrets(text)))); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 // Summary writes the run summary as md + json (raw does not apply).
 func (s *Store) Summary(sum *model.RunSummary) (string, error) {
 	if err := s.ensureDir(); err != nil {

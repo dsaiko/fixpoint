@@ -3806,6 +3806,66 @@ func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSumma
 	for _, r := range d.Reasons {
 		o.logf("  %s", r)
 	}
+	o.writeReviewBody(rec, sum, d)
+}
+
+// writeReviewBody renders the review document and puts it in the run directory.
+//
+// It is written even when the verdict is an approval with nothing to say: the file
+// is the run's answer, and an operator who has to work out from its ABSENCE
+// whether the review ran is being asked the wrong question. Failure to write it is
+// a warning, not a run failure -- the verdict is already in the summary, the
+// journal and the exit code.
+func (o *Orchestrator) writeReviewBody(rec *model.RoundRecord, sum *model.RunSummary, d review.Decision) {
+	panel := map[string]bool{}
+	for _, a := range rec.Assignments {
+		panel[a.Agent] = true
+	}
+	agents := make([]string, 0, len(panel))
+	for name := range panel {
+		agents = append(agents, name)
+	}
+	sort.Strings(agents)
+
+	body := review.RenderBody(review.BodyInput{
+		Config:   configBaseName(o.source.Config),
+		Target:   describeTarget(o.cfg.Target),
+		Decision: d,
+		Issues:   rec.Issues,
+		Advisory: rec.Advisory,
+		Panel:    agents,
+		Signature: review.Signature(o.cfg.Review.Signature, review.SignatureFacts{
+			Agents:  agents,
+			Run:     o.logs.RunID(),
+			Version: review.Version(),
+			Config:  configBaseName(o.source.Config),
+			Verdict: string(d.Outcome),
+		}),
+	})
+	path, err := o.logs.ReviewBody(body)
+	if err != nil {
+		o.logf("WARNING: failed to write the review body: %v", err)
+		return
+	}
+	sum.ReviewBody = path
+	o.logf("review body: %s", path)
+}
+
+// describeTarget names what was reviewed in one phrase, for the review's footer.
+func describeTarget(t config.Target) string {
+	if t.Mode == config.ModePR && t.PR > 0 {
+		return fmt.Sprintf("pull request #%d", t.PR)
+	}
+	if t.Mode == config.ModeGitDiff && t.BaseRef != "" {
+		return "the changes since " + t.BaseRef
+	}
+	return string(t.Mode)
+}
+
+// configBaseName is the config's bare name, as `fixpoint --list` shows it.
+func configBaseName(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
 // readForgeChecks asks the forge what its own checks say about the reviewed head,

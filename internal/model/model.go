@@ -272,6 +272,10 @@ type RunSummary struct {
 	// the loop's outcome.
 	LoopTermination string `json:"loop_termination,omitempty"`
 	Error           string `json:"error,omitempty"`
+	// ReviewBody is where the rendered review document was written, for a review
+	// run. It is the file an operator reads, and on the posting path the exact
+	// bytes that were sent.
+	ReviewBody string `json:"review_body,omitempty"`
 	// Verdict is set for a review-only run: what the review concluded, and why.
 	// A fix run has no verdict -- its outcome is the commits it made and the
 	// termination above.

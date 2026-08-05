@@ -406,18 +406,9 @@ func escapeContractTags(s string) string {
 // zero-width joiners, which survive whitespace collapsing) and forge the output
 // contract's envelope.
 func defang(s string) string {
-	s = strings.Map(func(r rune) rune {
-		switch {
-		case r == '\n':
-			return r
-		case r == '\t', unicode.Is(unicode.Zl, r), unicode.Is(unicode.Zp, r):
-			return ' '
-		case unicode.IsControl(r), unicode.Is(unicode.Cf, r):
-			return -1
-		}
-		return r
-	}, s)
-	return escapeContractTags(s)
+	// The character half of the rule is model.StripControl, shared with the review
+	// renderer: one definition, because two copies of a security rule drift.
+	return escapeContractTags(model.StripControl(s))
 }
 
 // Quote renders untrusted free text as a markdown blockquote. Every line carries

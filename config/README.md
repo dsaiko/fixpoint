@@ -115,6 +115,49 @@ and `{round}`/`{fixed}`/`{rejected}` for a squashed one. See
 one-issue-per-session rule is not itself configurable, and why
 `loop.max_findings_per_round` no longer defaults to 8.
 
+## What a review run concludes
+
+A `review-` config ends with a VERDICT, computed in code from what the run
+recorded. No model is asked for it.
+
+```yaml
+review:
+  block_at: high        # severity that forces CHANGES_REQUESTED (default: high)
+  signature: "..."      # appended to the review; see below
+```
+
+The rules apply in this order:
+
+1. A surviving finding at `block_at` or above → **CHANGES_REQUESTED**, quorum or
+   not. An incomplete panel is a reason to doubt *silence*, never a reason to
+   doubt a finding that was actually made.
+2. Failing forge checks → **CHANGES_REQUESTED**. This half costs nothing and no
+   model can argue with it.
+3. No quorum → **INCONCLUSIVE**. Never an approval.
+4. Otherwise → **APPROVE**.
+
+Quorum is a strict majority of the panel's **agents**, and an agent counts only if
+every lens it was given succeeded — under `strategy: all` one agent runs all of
+them, so a reviewer that answered three and timed out on the fourth has a blind
+spot exactly the size of that lens.
+
+`block_at` defaults to **high** on measurement, not taste: across 19 runs the
+panel produced 322 issues of which 66 were high or critical, so a `medium` floor
+blocks nearly every review — and a gate that always fires is one people route
+around.
+
+The exit status carries the verdict: `0` approve, `4` changes requested, `5`
+inconclusive. A verdict only ever makes the status worse, so an errored or
+interrupted run keeps its own code.
+
+Every run writes `review-body.md` at the root of its log directory — the document
+a human reads, and on the posting path the exact bytes that get sent.
+
+`signature` is appended to it, with `{agents}` `{run}` `{version}` `{config}`
+`{verdict}` substituted. It is rendered by fixpoint from fixpoint's own facts and
+placed **outside** every region carrying agent text: a signature composed from a
+finding's prose could be forged by whatever wrote that prose.
+
 ## Reporting what a run cost
 
 An agent file may declare where its CLI reports token usage and cost, and fixpoint
