@@ -197,6 +197,11 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 			return nil, err
 		}
 	}
+	if j := cfg.Roles.Judge; j.Prompt != "" {
+		if err := load(j.Prompt, j.PromptPath, prompt.JudgeData{}); err != nil {
+			return nil, err
+		}
+	}
 	for _, l := range cfg.Roles.Review.Prompts {
 		if err := load(l.Prompt, l.PromptFile(), prompt.ReviewData{}); err != nil {
 			return nil, err
@@ -1881,7 +1886,8 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		// Judge the merged set before concluding anything from it: the verdict, the
 		// review body and the exit code all read what survives this.
 		o.runRefutation(ctx, recP, material)
-		o.decideVerdict(recP, sum)
+		judged := o.runJudge(ctx, recP, material)
+		o.decideVerdict(recP, sum, judged)
 		sum.Termination = model.TermReviewOnly
 		return true, nil
 	}
@@ -3784,7 +3790,7 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 // The inputs are all facts the round already carries: which agents were assigned,
 // which of their steps failed, and what survived as issues. Nothing here asks a
 // model anything -- see internal/review for why the verdict must not.
-func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSummary) {
+func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSummary, judged bool) {
 	failed := map[string]int{}
 	for _, st := range rec.Steps {
 		if st.Role == "review" && st.Failed {
@@ -3792,10 +3798,11 @@ func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSumma
 		}
 	}
 	d := review.Decide(review.Input{
-		Issues:  rec.Issues,
-		Quorum:  review.QuorumFrom(rec.Assignments, failed),
-		CI:      o.ci,
-		BlockAt: o.cfg.Review.BlockAt,
+		Issues:       rec.Issues,
+		Quorum:       review.QuorumFrom(rec.Assignments, failed),
+		CI:           o.ci,
+		BlockAt:      o.cfg.Review.BlockAt,
+		FilterFailed: !judged,
 	})
 	sum.Verdict = d.Summary()
 	o.logf("verdict: %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
@@ -3994,7 +4001,12 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
 		Mode: d.Mode, Path: d.Path, Round: d.Round, ModeGuidance: d.ModeGuidance, Target: d.Target,
 	})
-	text, err := prompt.Render(o.templates[o.cfg.Review.Refute], d)
+	tmpl, ok := o.templates[o.cfg.Review.Refute]
+	if !ok || tmpl == nil {
+		o.logf("WARNING: %s: refute prompt %q was never loaded; this reviewer casts no position", label, o.cfg.Review.Refute)
+		return nil
+	}
+	text, err := prompt.Render(tmpl, d)
 	if err != nil {
 		o.logf("WARNING: %s: render failed (%v); this reviewer casts no position", label, err)
 		return nil
@@ -4070,4 +4082,125 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string][]model.RefuteP
 			logf("refutation: %s uncertain -- no reviewer could decide it from the evidence", it.ID)
 		}
 	}
+}
+
+// runJudge is the last filter before a review is published: one read-only agent
+// sees what survived refutation and decides which findings are worth a human's
+// attention.
+//
+// It is a separate role from the coder, deliberately. The coder already makes this
+// judgment in a fix run -- fix.md asks it to reject what is correct but not worth
+// fixing -- but the coder is can_edit, and a review- config's whole promise is that
+// it never invokes anything that can modify the target. Same judgment, different
+// hands.
+//
+// It became necessary rather than nice-to-have when the verdict gained a hard
+// severity gate: if one `high` blocks a merge, something must filter severity
+// BEFORE the gate, or the noisiest reviewer decides the outcome. Measured, that
+// reviewer is real -- one panel member's highs were rejected half the time.
+//
+// Fails closed. A judge that dies leaves every finding standing AND prevents an
+// approval, because a review whose filter never ran has not been filtered, and
+// approving on that basis would be trusting a step that did not happen.
+func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, material string) (ran bool) {
+	j := o.cfg.Roles.Judge
+	if j.Agent == "" || j.Prompt == "" || len(rec.Issues) == 0 || ctx.Err() != nil {
+		return true // not configured is not a failure; there is nothing to fail closed about
+	}
+	open := 0
+	for _, it := range rec.Issues {
+		if it.StatusOrDefault() != model.VerdictRejected {
+			open++
+		}
+	}
+	if open == 0 {
+		return true
+	}
+	o.logf("=== judge: %s weighing %d surviving finding(s) ===", j.Agent, open)
+
+	d := prompt.JudgeData{
+		Mode:           o.cfg.Target.Mode,
+		Path:           o.cfg.Target.Path,
+		Round:          rec.Round,
+		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
+		Target:         material,
+		Canonical:      prompt.FormatCanonical(undecidedIssues(rec)),
+		OutputContract: prompt.JudgeContract,
+	}
+	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
+		Mode: d.Mode, Path: d.Path, Round: d.Round, ModeGuidance: d.ModeGuidance, Target: d.Target,
+	})
+	tmpl, ok := o.templates[j.Prompt]
+	if !ok || tmpl == nil {
+		// Defensive: New loads this template, so reaching here means a hand-built
+		// Orchestrator. Rendering a nil template PANICS, which would take down a run
+		// over a filter -- fail the filter closed instead.
+		o.logf("WARNING: judge prompt %q was never loaded; every finding stands and the review cannot approve", j.Prompt)
+		return false
+	}
+	text, err := prompt.Render(tmpl, d)
+	if err != nil {
+		o.logf("WARNING: judge: render failed (%v); every finding stands and the review cannot approve", err)
+		return false
+	}
+	res := o.runAgent(ctx, "judge: "+j.Agent, "judge", j.Agent, j.Prompt, rec.Round, text)
+	var out model.JudgeOutput
+	parseErr := res.Err
+	if parseErr == nil {
+		parseErr = agent.ExtractJSON(res.Stdout, "review", &out)
+	}
+	rec.Steps = append(rec.Steps, stepStat("judge", j.Agent, j.Prompt, len(text), res, parseErr != nil))
+	if parseErr != nil {
+		o.logf("WARNING: judge failed (%v); every finding stands and the review cannot approve", parseErr)
+		return false
+	}
+	applyJudgment(rec, out.Verdicts, o.logf)
+	return true
+}
+
+// undecidedIssues are the findings still standing after refutation -- the only
+// ones worth a judge's session.
+func undecidedIssues(rec *model.RoundRecord) []model.Issue {
+	out := make([]model.Issue, 0, len(rec.Issues))
+	for _, it := range rec.Issues {
+		if it.StatusOrDefault() != model.VerdictRejected {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// applyJudgment records the arbiter's decisions.
+//
+// A finding it does not mention is KEPT. The judge is a filter, and a filter that
+// removes what it forgot to consider is not a filter -- it is a leak whose size
+// depends on how long the reply was.
+func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, logf func(string, ...any)) {
+	decided := map[string]model.JudgeVerdict{}
+	for _, v := range verdicts {
+		if !model.ValidJudgeVerdict(v.Verdict) {
+			logf("WARNING: judge returned an unknown verdict %q on %s; the finding stands", v.Verdict, v.Issue)
+			continue
+		}
+		v.Verdict = strings.ToLower(strings.TrimSpace(v.Verdict))
+		decided[v.Issue] = v
+	}
+	for i := range rec.Issues {
+		it := &rec.Issues[i]
+		v, ok := decided[it.ID]
+		if !ok || v.Verdict != model.JudgeDrop || it.StatusOrDefault() == model.VerdictRejected {
+			continue
+		}
+		it.Status = model.VerdictRejected
+		it.Verdict = model.VerdictRejected
+		it.VerdictDetail = "judged not worth reporting: " + v.Reason
+		logf("judge: %s dropped -- %s", it.ID, firstLineOf(v.Reason))
+	}
+}
+
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

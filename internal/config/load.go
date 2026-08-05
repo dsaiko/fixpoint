@@ -411,6 +411,13 @@ func (c *Config) resolvePrompts(r *Resolver, into map[string]string) error {
 		}
 		c.Roles.Review.Prompts[i].PromptPath = p
 	}
+	if c.Roles.Judge.Prompt != "" {
+		p, err := resolve(c.Roles.Judge.Prompt)
+		if err != nil {
+			return err
+		}
+		c.Roles.Judge.PromptPath = p
+	}
 	if c.Review.Refute != "" {
 		p, err := resolve(c.Review.Refute)
 		if err != nil {

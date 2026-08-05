@@ -95,6 +95,12 @@ type Input struct {
 	// BlockAt is the severity at or above which a surviving finding forces
 	// CHANGES_REQUESTED. Empty means the default, high.
 	BlockAt string
+	// FilterFailed reports that a configured filter -- today the judge -- did not
+	// run to completion. It cannot make a finding appear, so it never forces
+	// CHANGES_REQUESTED; it blocks the APPROVAL, because a review whose filter never
+	// ran has not been filtered, and approving on that basis trusts a step that did
+	// not happen.
+	FilterFailed bool
 }
 
 // Decision is the verdict plus the whole reason it was reached, in the order the
@@ -168,6 +174,13 @@ func Decide(in Input) Decision {
 		d.Outcome = Inconclusive
 		d.Reasons = append(d.Reasons,
 			fmt.Sprintf("no finding at %s or above, but the panel did not reach quorum, so that silence is not evidence", blockAt),
+			quorumNote(in.Quorum))
+		return d
+	}
+	if in.FilterFailed {
+		d.Outcome = Inconclusive
+		d.Reasons = append(d.Reasons,
+			"nothing blocking survived, but the judge did not finish, so the findings were never filtered",
 			quorumNote(in.Quorum))
 		return d
 	}

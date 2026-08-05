@@ -6903,3 +6903,98 @@ func TestRefutationWithNoUsableRepliesKeepsEveryFinding(t *testing.T) {
 		t.Errorf("verdict = %q, want changes_requested", sum.Verdict.Outcome)
 	}
 }
+
+// judgeRole points the fixture at a read-only judge.
+func (f *fixture) judgeRole(agentName string) {
+	f.t.Helper()
+	if _, ok := f.cfg.Agents[agentName]; !ok {
+		f.cfg.Agents[agentName] = f.cfg.Agents["mock"]
+	}
+	path := filepath.Join(f.t.TempDir(), "judge.md")
+	if err := os.WriteFile(path, []byte("{{.Prelude}}\n{{.Canonical}}\n{{.OutputContract}}"), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	f.cfg.Roles.Judge = config.RoleRef{Agent: agentName, Prompt: "judge", PromptPath: path}
+}
+
+// A finding the judge drops must not reach the verdict, and the reason it gave has
+// to survive with it: a dropped finding vanishes from the review, and the only
+// thing between that and an unaccountable filter is a sentence a human can read.
+func TestJudgeDropsAFindingAndRecordsWhy(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.judgeRole("judgemock")
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "style", Severity: "high", File: "main.go", Line: 1, Title: "naming could be better"}))
+	f.respond(2, `<review>{"verdicts":[{"issue":"i1","verdict":"drop","reason":"style preference with no consequence named"}]}</review>`)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Verdict.Outcome != model.VerdictApprove {
+		t.Errorf("verdict = %q, want approve after the only high was dropped (%v)", sum.Verdict.Outcome, sum.Verdict.Reasons)
+	}
+	it := sum.Rounds[0].Issues[0]
+	if it.Status != model.VerdictRejected {
+		t.Fatalf("issue status = %q, want rejected", it.Status)
+	}
+	if !strings.Contains(it.VerdictDetail, "style preference") {
+		t.Errorf("the judge's reason was lost: %q", it.VerdictDetail)
+	}
+}
+
+// A judge that dies must leave every finding standing AND block the approval: a
+// review whose filter never ran has not been filtered, and approving on that basis
+// trusts a step that did not happen.
+func TestJudgeFailureKeepsEveryFindingAndBlocksApproval(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.judgeRole("judgemock")
+	bad := f.cfg.Agents["judgemock"]
+	bad.Command = []string{"false"}
+	f.cfg.Agents["judgemock"] = bad
+	// Only a low finding, so nothing else could block the approval.
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "bug", Severity: "low", File: "main.go", Line: 1, Title: "minor"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v: a dead judge is a verdict, not a run failure", err)
+	}
+	if sum.Verdict.Outcome != model.VerdictInconclusive {
+		t.Errorf("verdict = %q, want inconclusive", sum.Verdict.Outcome)
+	}
+	if it := sum.Rounds[0].Issues[0]; it.Status == model.VerdictRejected {
+		t.Error("a finding was dropped by a judge that never answered")
+	}
+	if !strings.Contains(strings.Join(sum.Verdict.Reasons, " "), "judge did not finish") {
+		t.Errorf("the reasons must say the filter did not run: %v", sum.Verdict.Reasons)
+	}
+}
+
+// A filter that removes what it forgot to consider is not a filter. A finding the
+// judge does not mention has to survive.
+func TestJudgeSilenceOnAFindingKeepsIt(t *testing.T) {
+	rec := &model.RoundRecord{Issues: []model.Issue{
+		{ID: "i1", Severity: "high", Title: "mentioned"},
+		{ID: "i2", Severity: "high", Title: "forgotten"},
+	}}
+	applyJudgment(rec, []model.JudgeVerdict{{Issue: "i1", Verdict: model.JudgeDrop, Reason: "not worth it"}}, func(string, ...any) {})
+	if rec.Issues[0].Status != model.VerdictRejected {
+		t.Error("the mentioned finding should have been dropped")
+	}
+	if rec.Issues[1].Status == model.VerdictRejected {
+		t.Error("a finding the judge never mentioned was dropped")
+	}
+}
+
+// An unknown verdict string is not permission to delete: it means the judge did not
+// follow the contract, and the safe reading is that the finding stands.
+func TestJudgeUnknownVerdictKeepsTheFinding(t *testing.T) {
+	rec := &model.RoundRecord{Issues: []model.Issue{{ID: "i1", Severity: "high", Title: "t"}}}
+	applyJudgment(rec, []model.JudgeVerdict{{Issue: "i1", Verdict: "maybe", Reason: "unsure"}}, func(string, ...any) {})
+	if rec.Issues[0].Status == model.VerdictRejected {
+		t.Error("an unrecognized verdict dropped a finding")
+	}
+}

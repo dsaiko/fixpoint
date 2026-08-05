@@ -686,3 +686,36 @@ no evidence is indistinguishable from not having looked.
 
 The <review> block must be the LAST thing you print. The JSON must be valid: no
 comments, no trailing commas, no markdown fences inside the block.`
+
+// JudgeData is the placeholder set for the arbiter prompt. Same shape as the
+// refuter's: it must be able to check a finding against the code, not just read it.
+type JudgeData struct {
+	Mode           config.Mode
+	Path           string
+	Round          int
+	ModeGuidance   string
+	Target         string
+	Prelude        string
+	Canonical      string
+	OutputContract string
+}
+
+// JudgeContract is the arbiter's output contract.
+const JudgeContract = `## Required output format
+End your response with exactly one <review> block containing valid JSON:
+
+<review>
+{
+  "verdicts": [
+    {"issue": "i1", "verdict": "keep|drop", "reason": "why this is or is not worth reporting"}
+  ]
+}
+</review>
+
+Return exactly one verdict for every finding id above, and no others. The reason
+is required for both verdicts: a dropped finding vanishes from the review, and the
+only thing between that and an unaccountable filter is a sentence a human can read
+afterwards and disagree with.
+
+The <review> block must be the LAST thing you print. The JSON must be valid: no
+comments, no trailing commas, no markdown fences inside the block.`

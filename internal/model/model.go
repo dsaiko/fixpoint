@@ -540,3 +540,34 @@ func ValidPosition(p string) bool {
 	}
 	return false
 }
+
+// JudgeOutput is the arbiter's answer: one verdict on every finding it was shown.
+type JudgeOutput struct {
+	Verdicts []JudgeVerdict `json:"verdicts"`
+}
+
+// JudgeVerdict is keep-or-drop on one issue, with the reason recorded.
+//
+// The reason is not decoration. A dropped finding disappears from the review, and
+// the only thing standing between that and an unaccountable filter is a sentence a
+// human can read afterwards and disagree with.
+type JudgeVerdict struct {
+	Issue   string `json:"issue"`
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
+}
+
+// What a judge may decide.
+const (
+	JudgeKeep = "keep"
+	JudgeDrop = "drop"
+)
+
+// ValidJudgeVerdict reports whether v is one the judge may return.
+func ValidJudgeVerdict(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case JudgeKeep, JudgeDrop:
+		return true
+	}
+	return false
+}

@@ -89,6 +89,14 @@ type Target struct {
 type Roles struct {
 	Coder  RoleRef `yaml:"coder"`
 	Review Review  `yaml:"review"`
+	// Judge is the optional arbiter for a REVIEW run: a read-only agent that sees
+	// the surviving findings and decides which are worth reporting.
+	//
+	// It is a separate role from the coder rather than the coder itself, and that is
+	// load-bearing: the coder is can_edit, and a review- config's whole promise is
+	// that it never invokes something that can modify the target. Same judgment,
+	// different hands.
+	Judge RoleRef `yaml:"judge"`
 }
 
 // RoleRef points one role at an agent and a prompt, both by BARE NAME:
@@ -1205,6 +1213,22 @@ func (c *Config) Validate() error {
 	}
 	if c.Loop.CleanRoundsToStop < 0 {
 		return fmt.Errorf("loop.clean_rounds_to_stop: must not be negative, got %d", c.Loop.CleanRoundsToStop)
+	}
+	if j := c.Roles.Judge; j.Agent != "" || j.Prompt != "" {
+		if j.Agent == "" || j.Prompt == "" {
+			return errors.New("roles.judge: both agent and prompt are required when either is set")
+		}
+		a, ok := c.Agents[j.Agent]
+		if !ok {
+			return fmt.Errorf("roles.judge.agent: agent %q is not defined", j.Agent)
+		}
+		// The judge decides what a review reports; it never edits. Allowing a
+		// write-capable agent here would put an editing agent inside a review- config,
+		// whose entire promise is that it cannot modify the target -- the same rule
+		// that keeps write-capable agents out of the reviewer pool.
+		if a.CanEdit {
+			return fmt.Errorf("roles.judge.agent: %q declares can_edit; the judge must be read-only, since a review config never modifies its target", j.Agent)
+		}
 	}
 	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
 		return fmt.Errorf("review.block_at: unknown severity %q (want %s)", c.Review.BlockAt, strings.Join(model.Severities, " | "))
