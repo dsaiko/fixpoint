@@ -11,6 +11,16 @@ command:
   - --json # JSONL event stream: carries the turn's token usage
   - --model {{model}}
   - -c model_reasoning_effort={{effort}}
+  # Codex spells structured output as a PATH, not inline the way Claude Code does
+  # ({{schema}}), so this is the {{schema_file}} placeholder: fixpoint writes the
+  # schema to a 0600 temp file for the invocation and removes it afterwards. As on
+  # the Claude agents, its presence also switches the prompt to the schema-flavored
+  # contract and the extractor to reading the whole reply.
+  #
+  # Unverified end to end: codex was out of session budget when this landed, so
+  # the flag comes from `codex exec --help` rather than from a run. Drop this line
+  # if it misbehaves -- everything else about the agent is unaffected.
+  - --output-schema {{schema_file}}
   - "-" # read the prompt from stdin, keeping it off argv (ps / /proc)
 
 # codex streams one JSON object per line, so the LAST value of each path wins: the

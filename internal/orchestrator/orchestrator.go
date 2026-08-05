@@ -3015,7 +3015,7 @@ func heartbeat(done <-chan struct{}, ticks <-chan time.Time, log func()) {
 // input is still inspectable), invokes the agent with a heartbeat, and
 // returns the result. label prefixes the heartbeat lines, e.g.
 // "fix: claude-coder".
-func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, lensName string, round int, text string) agent.Result {
+func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, lensName string, round int, text string, opts ...agent.Option) agent.Result {
 	if err := o.logs.Prompt(role, agentName, lensName, round, text); err != nil {
 		o.logf("WARNING: writing %s prompt log: %v", role, err)
 	}
@@ -3041,7 +3041,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 			o.progressf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
 		})
 	}()
-	res := agent.Run(ctx, o.cfg.Agents[agentName], text, o.cfg.Target.Path)
+	res := agent.Run(ctx, o.cfg.Agents[agentName], text, o.cfg.Target.Path, opts...)
 	close(done)
 	hb.Wait()
 	return res
@@ -3066,6 +3066,9 @@ func stepStat(role, agentName, lensName string, promptLen int, res agent.Result,
 func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assignment, round int, material string, history []model.RoundRecord) ([]model.ReviewFinding, model.StepStat, error) {
 	lensName := config.LensName(asg.Lens)
 	label := fmt.Sprintf("review: %s via %s", asg.Agent, lensName)
+	// One decision, consulted three times below -- contract, invocation, extractor.
+	// They must agree: see config.Agent.UsesSchema.
+	schemaEnforced := o.cfg.Agents[asg.Agent].UsesSchema()
 	d := prompt.ReviewData{
 		Mode:         o.cfg.Target.Mode,
 		Path:         o.cfg.Target.Path,
@@ -3073,10 +3076,11 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 		ModeGuidance: prompt.ModeGuidance(o.cfg.Target.Mode),
 		Target:       material,
 		History:      prompt.FormatHistory(history),
-		// Nothing lens- or agent-specific may reach the prelude: it is what the
-		// round's reviewers share a cache prefix on, and one varying byte costs all
-		// of it. asg is deliberately not consulted here.
-		OutputContract: prompt.ReviewContract,
+		// The contract is the one agent-specific part of a review prompt, and it sits
+		// at the TAIL: the prelude above is what the round's reviewers share a cache
+		// prefix on, and one varying byte there costs all of it. asg reaches the
+		// contract and nothing above it.
+		OutputContract: reviewContractFor(schemaEnforced),
 	}
 	d.Prelude = prompt.FormatPrelude(d)
 	text, err := prompt.Render(o.templates[asg.Lens], d)
@@ -3086,11 +3090,11 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 		return nil, stepStat("review", asg.Agent, lensName, len(text), agent.Result{}, true), err
 	}
 	o.logf("%s starting (prompt %s)", label, logstore.SizeDesc(len(text)))
-	res := o.runAgent(ctx, label, "review", asg.Agent, lensName, round, text)
+	res := o.runAgent(ctx, label, "review", asg.Agent, lensName, round, text, reviewSchemaOpts(schemaEnforced)...)
 	var out model.ReviewOutput
 	parseErr := res.Err
 	if parseErr == nil {
-		parseErr = agent.ExtractJSON(res.Stdout, "review", &out)
+		parseErr = extractReview(res.Stdout, schemaEnforced, &out)
 	}
 	if parseErr == nil {
 		parseErr = validateReviewFindings(out.Findings)
@@ -3170,8 +3174,12 @@ func (o *Orchestrator) logStep(role, agentName, promptName string, round int, ok
 // under-reports what a salvage cost.
 func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg model.Assignment, lensName string, round int, first agent.Result, firstErr error) (model.ReviewOutput, agent.Result, salvageCost, error) {
 	o.logf("%s output did not meet the contract (%v); asking it to restate the block", label, firstErr)
-	text := prompt.FormatReformat(first.Stdout, firstErr, prompt.ReviewContract)
-	res := o.runAgent(ctx, label+" (reformat)", "review", asg.Agent, config.ReformatLensName(lensName), round, text)
+	// Restated under the SAME contract the first attempt was given: re-asking a
+	// schema-enforced agent for a <review> block would make the salvage itself
+	// unsatisfiable, and the schema is still enforced on this attempt too.
+	schemaEnforced := o.cfg.Agents[asg.Agent].UsesSchema()
+	text := prompt.FormatReformat(first.Stdout, firstErr, reviewContractFor(schemaEnforced))
+	res := o.runAgent(ctx, label+" (reformat)", "review", asg.Agent, config.ReformatLensName(lensName), round, text, reviewSchemaOpts(schemaEnforced)...)
 	// Bill both attempts to this step whatever happens: a salvage that fails must
 	// not look cheaper than one that succeeds. Usage and wall clock merge onto the
 	// Result; the byte counts cannot (Stdout is what the parser reads, so it stays
@@ -3189,7 +3197,7 @@ func (o *Orchestrator) reformatReview(ctx context.Context, label string, asg mod
 	var out model.ReviewOutput
 	err := res.Err
 	if err == nil {
-		err = agent.ExtractJSON(res.Stdout, "review", &out)
+		err = extractReview(res.Stdout, schemaEnforced, &out)
 	}
 	if err == nil {
 		err = validateReviewFindings(out.Findings)
@@ -3454,6 +3462,8 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		promptName += "-" + active[0].ID
 		label += " on " + active[0].ID
 	}
+	// As in the review path: contract, invocation and extractor share one decision.
+	schemaEnforced := o.cfg.Agents[coder.Agent].UsesSchema()
 	d := prompt.FixData{
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
@@ -3462,7 +3472,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		History:        prompt.FormatHistory(history),
 		Stale:          prompt.FormatStale(stale),
 		Conversations:  o.conversations(),
-		OutputContract: prompt.FixContract,
+		OutputContract: fixContractFor(schemaEnforced),
 	}
 	text, err := prompt.Render(o.templates[coder.Prompt], d)
 	if err != nil {
@@ -3470,11 +3480,11 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	}
 	o.phase("FIX %s  %s", fixSubject(active), firstLineOf(fixTitle(active)))
 	o.logf("%s starting on %d issue(s) (prompt %s)", label, len(active), logstore.SizeDesc(len(text)))
-	res := o.runAgent(ctx, label, "fix", coder.Agent, promptName, rec.Round, text)
+	res := o.runAgent(ctx, label, "fix", coder.Agent, promptName, rec.Round, text, fixSchemaOpts(schemaEnforced)...)
 	var out model.FixOutput
 	runErr := res.Err
 	if runErr == nil {
-		runErr = agent.ExtractJSON(res.Stdout, "fix", &out)
+		runErr = extractFix(res.Stdout, schemaEnforced, &out)
 	}
 
 	// The coder contract requires every finding exactly once with a valid
@@ -4137,6 +4147,10 @@ func (o *Orchestrator) rejectUnverifiedSalvage(ctx context.Context, rec *model.R
 func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundRecord, blocking []verify.Result, fixed model.Issue) error {
 	coder := o.cfg.Roles.Coder
 	a := o.cfg.Agents[coder.Agent]
+	// The correction is the same coder under the same contract as the fix it
+	// follows; splitting the two would ask one session for tags and the next for a
+	// bare value.
+	schemaEnforced := a.UsesSchema()
 	d := prompt.FixData{
 		Mode:  o.cfg.Target.Mode,
 		Path:  o.cfg.Target.Path,
@@ -4147,7 +4161,7 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 		// anything else would ask it to correct a check using work it cannot see.
 		Findings:       prompt.FormatIssues([]model.Issue{fixed}),
 		Verification:   verify.FormatForCoder(blocking),
-		OutputContract: prompt.FixContract,
+		OutputContract: fixContractFor(schemaEnforced),
 	}
 	text, err := prompt.Render(o.templates[coder.Prompt], d)
 	if err != nil {
@@ -4160,9 +4174,9 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 	if err := o.logs.Prompt("fix", coder.Agent, lens, rec.Round, text); err != nil {
 		o.logf("WARNING: failed to write the verification-correction prompt: %v", err)
 	}
-	res := agent.Run(ctx, a, text, o.cfg.Target.Path)
+	res := agent.Run(ctx, a, text, o.cfg.Target.Path, fixSchemaOpts(schemaEnforced)...)
 	var out model.FixOutput
-	parseErr := agent.ExtractJSON(res.Stdout, "fix", &out)
+	parseErr := extractFix(res.Stdout, schemaEnforced, &out)
 	stepErr := res.Err
 	if stepErr == nil {
 		stepErr = parseErr
@@ -5156,6 +5170,26 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 	return nil
 }
 
+// The three places a schema-enforced agent differs from an enveloped one. They
+// are helpers rather than inline conditionals because they must be decided by the
+// SAME predicate: a prompt asking for a bare JSON value while the extractor hunts
+// for <review> tags fails every step, and the reverse asks the provider to
+// enforce a schema on a reply the prompt told the model to wrap in tags.
+
+func reviewContractFor(schemaEnforced bool) string {
+	if schemaEnforced {
+		return prompt.ReviewSchemaContract
+	}
+	return prompt.ReviewContract
+}
+
+func reviewSchemaOpts(schemaEnforced bool) []agent.Option {
+	if schemaEnforced {
+		return []agent.Option{agent.WithSchema(model.ReviewJSONSchema())}
+	}
+	return nil
+}
+
 // inlineComments anchors each surviving finding to its line, so a reader meets it
 // where the code is rather than in a list at the bottom.
 //
@@ -5528,4 +5562,32 @@ func looksLikeCommit(s string) bool {
 		}
 	}
 	return true
+}
+
+func extractReview(output string, schemaEnforced bool, out *model.ReviewOutput) error {
+	if schemaEnforced {
+		return agent.ExtractSchemaJSON(output, out)
+	}
+	return agent.ExtractJSON(output, "review", out)
+}
+
+func fixContractFor(schemaEnforced bool) string {
+	if schemaEnforced {
+		return prompt.FixSchemaContract
+	}
+	return prompt.FixContract
+}
+
+func fixSchemaOpts(schemaEnforced bool) []agent.Option {
+	if schemaEnforced {
+		return []agent.Option{agent.WithSchema(model.FixJSONSchema())}
+	}
+	return nil
+}
+
+func extractFix(output string, schemaEnforced bool, out *model.FixOutput) error {
+	if schemaEnforced {
+		return agent.ExtractSchemaJSON(output, out)
+	}
+	return agent.ExtractJSON(output, "fix", out)
 }

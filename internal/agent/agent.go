@@ -228,15 +228,12 @@ func RedactSecrets(s string) string { return redactSecrets(s) }
 // in the README: run an agent CLI you do not trust under an external
 // container/VM, and do not grant it env.inherit_all -- an escaped descendant
 // keeps whatever environment its agent was given.
-func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
-	argv := a.Argv()
-	// Defensive: config validation rejects an empty command, but an agent
-	// reaching Run with no argv (e.g. a blank pool entry that slipped past
-	// validation) would otherwise index argv[0] and panic the whole process.
-	// Fail this one invocation instead.
-	if len(argv) == 0 {
-		return Result{Err: errors.New("agent has no command configured (empty argv)")}
+func Run(ctx context.Context, a config.Agent, prompt, dir string, opts ...Option) Result {
+	argv, cleanup, err := prepareArgv(a, opts)
+	if err != nil {
+		return Result{Err: err}
 	}
+	defer cleanup()
 	// Defensive: config.Load defaults "" to "stdin" and Validate rejects any
 	// other value, but Run is exported and called with hand-built configs. Only
 	// "arg" and "stdin" actually deliver the prompt below; any other value would
@@ -364,6 +361,107 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 		rawStdout:      raw,
 	}
 }
+
+// prepareArgv applies the caller's options and builds the command line, including
+// whatever a schema-enforcing CLI needs written to disk first.
+//
+// Split out of Run so that function stays under the complexity limit -- the
+// argument list it produces is the one thing here with several independent
+// reasons to fail, and each one has to be a REFUSAL rather than a fallback: an
+// invocation that runs without the schema enforces nothing while the prompt has
+// already told the model to return a bare JSON value and the extractor expects
+// one.
+func prepareArgv(a config.Agent, opts []Option) ([]string, func(), error) {
+	var inv invocation
+	for _, opt := range opts {
+		opt(&inv)
+	}
+	argv, cleanup, err := buildArgv(a, inv)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	// Defensive: config validation rejects an empty command, but an agent reaching
+	// Run with no argv (e.g. a blank pool entry that slipped past validation) would
+	// otherwise index argv[0] and panic the whole process. Fail this one invocation.
+	if len(argv) == 0 {
+		cleanup()
+		return nil, func() {}, errors.New("agent has no command configured (empty argv)")
+	}
+	return argv, cleanup, nil
+}
+
+// buildArgv resolves the command line for one invocation, materializing the
+// output schema when this agent asked for one and a caller supplied it. The
+// returned cleanup is always safe to call.
+func buildArgv(a config.Agent, inv invocation) (argv []string, cleanup func(), err error) {
+	if len(inv.schema) == 0 || !a.UsesSchema() {
+		return a.Argv(), func() {}, nil
+	}
+	path, cleanup, err := schemaFile(a, inv.schema)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("write output schema: %w", err)
+	}
+	return a.ArgvWithSchema(string(inv.schema), path), cleanup, nil
+}
+
+// schemaFile materializes the schema for a command that wants a PATH
+// ({{schema_file}}, Codex). A command that takes the document inline (Claude
+// Code) needs no file, so none is written -- there is no reason to touch the disk
+// once per reviewer per round for a CLI that will not read it.
+//
+// 0600 and the OS temp dir: the schema is fixpoint's own contract shape and holds
+// nothing from the target, but a world-readable file for every invocation is a
+// habit worth not forming. The cleanup closure is always safe to call.
+func schemaFile(a config.Agent, doc []byte) (path string, cleanup func(), err error) {
+	needsFile := false
+	for _, tok := range a.Command {
+		if strings.Contains(tok, config.SchemaFilePlaceholder) {
+			needsFile = true
+			break
+		}
+	}
+	if !needsFile {
+		return "", func() {}, nil
+	}
+	f, err := os.CreateTemp("", "fixpoint-schema-*.json")
+	if err != nil {
+		return "", func() {}, err
+	}
+	name := f.Name()
+	remove := func() { _ = os.Remove(name) }
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		remove()
+		return "", func() {}, err
+	}
+	if _, err := f.Write(doc); err != nil {
+		_ = f.Close()
+		remove()
+		return "", func() {}, err
+	}
+	if err := f.Close(); err != nil {
+		remove()
+		return "", func() {}, err
+	}
+	return name, remove, nil
+}
+
+// Option configures a single invocation. Options exist rather than more Run
+// parameters because they are per-CALL, not per-agent: the same agent definition
+// is invoked for a schema-enforced review and for the startup ping, and the ping
+// must not be handed a schema.
+type Option func(*invocation)
+
+type invocation struct{ schema []byte }
+
+// WithSchema supplies the output schema for agents whose command asks for one
+// (config.Agent.UsesSchema). It is ignored by an agent that does not, so a caller
+// may pass it unconditionally for a role.
+//
+// The caller that passes this MUST also render the schema-flavored output
+// contract into the prompt -- see config.Agent.UsesSchema for why the two cannot
+// be separated.
+func WithSchema(doc []byte) Option { return func(i *invocation) { i.schema = doc } }
 
 // firstLine is the first non-empty line of s, trimmed. Agent replies are wrapped
 // into one-line errors, and a CLI's failure message routinely carries a multi-line
@@ -637,4 +735,35 @@ func ExtractJSON(output, tag string, out any) error {
 		return fmt.Errorf("no <%s> block found in agent output", tag)
 	}
 	return fmt.Errorf("invalid JSON in <%s> block: %w", tag, lastErr)
+}
+
+// ExtractSchemaJSON reads the reply of an agent whose CLI enforced the output
+// schema: the whole output is the JSON value, with no envelope to find.
+//
+// It is a separate function rather than a fallback inside ExtractJSON, and that
+// is deliberate. ExtractJSON refuses to look past the LAST </tag> precisely so a
+// reviewer that quotes a valid block and then emits a malformed real answer
+// cannot have the quoted one accepted -- an embedded {"findings":[]} would turn a
+// failed reviewer into a clean review and cause false convergence. A "if no tag
+// is found, try the whole output" fallback would reopen that hole for every
+// agent, to serve the few whose provider already guarantees the shape.
+//
+// Fenced output is still tolerated. The schema is enforced by the provider, so a
+// reply that arrives wrapped in ```json means the harness passed the model's text
+// through rather than its structured value -- worth accepting, since the payload
+// is exactly as trustworthy as the unfenced case.
+func ExtractSchemaJSON(output string, out any) error {
+	payload := strings.TrimSpace(output)
+	if payload == "" {
+		return errors.New("agent returned no output (its CLI was asked to enforce an output schema, so a reply was expected to be one JSON value)")
+	}
+	if fenced := strings.TrimPrefix(payload, "```json"); fenced != payload {
+		payload = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(fenced), "```"))
+	} else if fenced := strings.TrimPrefix(payload, "```"); fenced != payload {
+		payload = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(fenced), "```"))
+	}
+	if err := json.Unmarshal([]byte(payload), out); err != nil {
+		return fmt.Errorf("agent output is not the single JSON value its schema required: %w", err)
+	}
+	return nil
 }

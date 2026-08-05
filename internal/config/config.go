@@ -462,11 +462,56 @@ type AgentEnv struct {
 // placeholderValues maps each supported command placeholder to its
 // configured value. Supporting a new optional setting means adding one entry
 // here; Argv's expansion rules apply to it automatically.
+// The schema placeholders default to EMPTY here, so plain Argv drops whichever
+// command token carries one. Without that, an agent that asks for a schema would
+// pass the literal "{{schema}}" to its CLI on every path that has no schema to
+// give -- the startup ping most of all, which asks for one word.
 func (a Agent) placeholderValues() map[string]string {
 	return map[string]string{
-		"{{model}}":  a.Model,
-		"{{effort}}": a.Effort,
+		"{{model}}":           a.Model,
+		"{{effort}}":          a.Effort,
+		SchemaPlaceholder:     "",
+		SchemaFilePlaceholder: "",
 	}
+}
+
+// Schema placeholders. A CLI that can enforce an output schema takes it either
+// INLINE ({{schema}}, Claude Code's `--json-schema`) or as a FILE
+// ({{schema_file}}, Codex's `--output-schema`). Two placeholders rather than one
+// because the difference is real and invisible from the config: passing a path
+// where the CLI wants a document fails with "not valid JSON: Unrecognized token
+// '/'", which reads like a corrupt schema rather than a wrong spelling.
+const (
+	SchemaPlaceholder     = "{{schema}}"
+	SchemaFilePlaceholder = "{{schema_file}}"
+)
+
+// UsesSchema reports whether this agent's command asks for an output schema.
+//
+// Callers use it to decide two things together, and they must stay together: the
+// schema is supplied to the CLI, AND the prompt gets the schema-flavored contract
+// instead of the <review>/<fix> envelope one. Doing only the first asks a model to
+// satisfy two contradictory output formats; doing only the second asks for a bare
+// JSON value with nothing enforcing it and an extractor still hunting for tags.
+func (a Agent) UsesSchema() bool {
+	for _, tok := range a.Command {
+		if strings.Contains(tok, SchemaPlaceholder) || strings.Contains(tok, SchemaFilePlaceholder) {
+			return true
+		}
+	}
+	return false
+}
+
+// ArgvWithSchema is Argv with the schema placeholders bound: doc is the schema
+// document itself and path a file already holding it. Either may be empty, and an
+// empty one DROPS its whole command token the way an unset {{effort}} does -- that
+// is what lets the same agent definition serve a schema-enforced review and the
+// startup ping, which asks for one word and would be refused by a schema.
+func (a Agent) ArgvWithSchema(doc, path string) []string {
+	values := a.placeholderValues()
+	values[SchemaPlaceholder] = doc
+	values[SchemaFilePlaceholder] = path
+	return a.argv(values)
 }
 
 // Argv renders the command template into argv. Each Command element is a
@@ -483,8 +528,9 @@ func (a Agent) placeholderValues() map[string]string {
 // load the target's settings, hooks and MCP servers after all. Validate refuses
 // such a value outright (see validCommandValue); this keeps the refusal from
 // being the only thing between a config field and the argument list.
-func (a Agent) Argv() []string {
-	values := a.placeholderValues()
+func (a Agent) Argv() []string { return a.argv(a.placeholderValues()) }
+
+func (a Agent) argv(values map[string]string) []string {
 	var argv []string
 	for _, tok := range a.Command {
 		fields := strings.Fields(tok)

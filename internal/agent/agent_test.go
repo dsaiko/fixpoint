@@ -515,3 +515,61 @@ func TestRunAllowsAPromptAtOrUnderTheBudgetAndIgnoresAZeroBudget(t *testing.T) {
 		})
 	}
 }
+
+// A schema-enforced reply is the JSON value and nothing else, so there is no
+// envelope to find. The fenced cases are tolerated because a harness that passed
+// the model's text through rather than its structured value produces exactly that
+// shape, and the payload is no less trustworthy for it.
+func TestExtractSchemaJSONReadsTheWholeReply(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{"bare object", `{"findings":[{"title":"a"}]}`, 1},
+		{"surrounding whitespace", "\n  {\"findings\":[{\"title\":\"a\"}]}\n\n", 1},
+		{"empty findings", `{"findings":[]}`, 0},
+		{"json fence", "```json\n{\"findings\":[{\"title\":\"a\"}]}\n```", 1},
+		{"bare fence", "```\n{\"findings\":[]}\n```", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out model.ReviewOutput
+			if err := ExtractSchemaJSON(tc.output, &out); err != nil {
+				t.Fatalf("ExtractSchemaJSON() err = %v", err)
+			}
+			if len(out.Findings) != tc.want {
+				t.Errorf("got %d findings, want %d", len(out.Findings), tc.want)
+			}
+		})
+	}
+}
+
+// Failure has to stay loud. A schema-enforced agent that returns prose has had
+// its contract broken by its own provider, and reading that as a clean review is
+// the false-convergence hole the tagged extractor exists to close.
+func TestExtractSchemaJSONRejectsAnythingButOneJSONValue(t *testing.T) {
+	for _, tc := range []struct{ name, output string }{
+		{"empty", "   "},
+		{"prose", "I reviewed the code and found nothing."},
+		{"prose then json", `Here you go: {"findings":[]}`},
+		{"json then prose", `{"findings":[]} -- hope that helps`},
+		{"truncated", `{"findings":[{"title":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out model.ReviewOutput
+			if err := ExtractSchemaJSON(tc.output, &out); err == nil {
+				t.Errorf("ExtractSchemaJSON(%q) = nil error, want a failure", tc.output)
+			}
+		})
+	}
+}
+
+// The tagged extractor must NOT gain a whole-output fallback: an agent that
+// quotes a clean block and then answers untagged would otherwise have the quoted
+// block accepted. This pins that the two extractors stayed separate.
+func TestExtractJSONStillRefusesAnUntaggedReply(t *testing.T) {
+	var out model.ReviewOutput
+	if err := ExtractJSON(`{"findings":[]}`, "review", &out); err == nil {
+		t.Error("ExtractJSON accepted an untagged reply; the tag anchor is what keeps a quoted block from being read as the answer")
+	}
+}

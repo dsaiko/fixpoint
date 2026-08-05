@@ -12,6 +12,20 @@ command:
   - --dangerously-skip-permissions # required to edit; see can_edit below
   - --model {{model}}
   - --effort {{effort}}
+  # Structured output enforced by the CLI, not asked for in the prompt. Claude
+  # Code takes the schema INLINE (a path is refused with "not valid JSON:
+  # Unrecognized token '/'"), which is why the placeholder is {{schema}} and not
+  # {{schema_file}}; Codex spells the same idea as --output-schema <FILE>. With it
+  # the reply is one bare JSON value, so fixpoint sends the schema-flavored output
+  # contract and reads the whole reply instead of hunting for a <review> block --
+  # all three switch together on this line being present.
+  #
+  # It removes a real failure mode rather than a hypothetical one: this project's
+  # contract errors were never wrong findings, they were sound reviews wrapped in
+  # prose or fenced in markdown, each costing a salvage round trip or the step.
+  # The token drops out of the argv wherever no schema applies (the startup ping),
+  # exactly as an unset {{effort}} does.
+  - --json-schema {{schema}}
   - --setting-sources user # target-supplied hooks/MCP/skills stay out; see below
 # The CLI reports what it actually spent; fixpoint reads it from here rather than
 # estimating from the bytes it exchanged (which miss the whole agentic session in

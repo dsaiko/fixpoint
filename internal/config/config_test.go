@@ -1396,3 +1396,85 @@ func TestJudgeAgentGoesThroughTheCommonAgentCheck(t *testing.T) {
 		})
 	}
 }
+
+// An agent that asks for an output schema must not leak the placeholder to its
+// CLI on a path that has none to give -- the startup ping asks for one word, and
+// a literal "{{schema}}" on the command line either errors or, worse, is taken as
+// the schema. Dropping the whole token is the same rule an unset {{effort}}
+// follows.
+func TestArgvDropsSchemaPlaceholdersWhenNoSchemaIsSupplied(t *testing.T) {
+	a := Agent{
+		Model:   "claude-opus-5",
+		Command: []string{"claude", "-p", "--model {{model}}", "--json-schema {{schema}}", "--output-schema {{schema_file}}"},
+	}
+	got := a.Argv()
+	want := []string{"claude", "-p", "--model", "claude-opus-5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Argv() = %v, want %v", got, want)
+	}
+	if !a.UsesSchema() {
+		t.Error("UsesSchema() = false for a command carrying {{schema}}")
+	}
+}
+
+// The two spellings are not interchangeable: Claude Code takes the document
+// inline and Codex takes a path, and passing one where the other is expected
+// fails with a message about invalid JSON rather than about the wrong form.
+func TestArgvWithSchemaBindsInlineAndFileSpellingsSeparately(t *testing.T) {
+	doc := `{"type":"object"}`
+	for _, tc := range []struct {
+		name    string
+		command []string
+		want    []string
+	}{
+		{
+			"inline", []string{"claude", "--json-schema {{schema}}"},
+			[]string{"claude", "--json-schema", doc},
+		},
+		{
+			"file", []string{"codex", "--output-schema {{schema_file}}"},
+			[]string{"codex", "--output-schema", "/tmp/s.json"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Agent{Command: tc.command}.ArgvWithSchema(doc, "/tmp/s.json")
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ArgvWithSchema() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The document is one argv element however it is spelled. A schema carrying a
+// space (a description, a title) must not become several arguments -- that is the
+// same splitting hazard model/effort are validated against, and here the value is
+// fixpoint's own so validation cannot be the guard.
+func TestArgvWithSchemaKeepsAWhitespaceBearingDocumentInOneArgument(t *testing.T) {
+	doc := `{"type":"object", "title":"review output"}`
+	got := Agent{Command: []string{"claude", "--json-schema {{schema}}"}}.ArgvWithSchema(doc, "")
+	want := []string{"claude", "--json-schema", doc}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ArgvWithSchema() = %#v, want %#v", got, want)
+	}
+}
+
+// UsesSchema is what makes the prompt contract, the invocation and the extractor
+// agree, so it has to see a placeholder wherever a command can carry one.
+func TestUsesSchemaIsFalseOnlyWhenNoPlaceholderIsPresent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command []string
+		want    bool
+	}{
+		{"no placeholder", []string{"claude", "-p", "--model {{model}}"}, false},
+		{"inline", []string{"claude", "--json-schema {{schema}}"}, true},
+		{"file", []string{"codex", "--output-schema {{schema_file}}"}, true},
+		{"glued to a flag", []string{"agent", "--schema={{schema}}"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (Agent{Command: tc.command}).UsesSchema(); got != tc.want {
+				t.Errorf("UsesSchema() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

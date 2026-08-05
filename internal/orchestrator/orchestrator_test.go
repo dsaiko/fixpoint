@@ -9918,3 +9918,79 @@ func TestInlineCommentsStillAnchorADifferentDefectOnACommentedLine(t *testing.T)
 		t.Errorf("a distinct defect on an already-commented line was suppressed:\n%s", got[0].Body)
 	}
 }
+
+// schemaAgent rewires the fixture's mock behind a wrapper that records its argv,
+// and gives it a command asking for an inline output schema. The wrapper execs the
+// mock so stdin (the prompt) still flows through untouched.
+func (f *fixture) schemaAgent() string {
+	f.t.Helper()
+	argvLog := filepath.Join(f.t.TempDir(), "argv.log")
+	wrapper := filepath.Join(f.t.TempDir(), "wrapper.sh")
+	mock := f.cfg.Agents["mock"].Command[0]
+	body := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '" + argvLog + "'\nexec '" + mock + "'\n"
+	if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	a := f.cfg.Agents["mock"]
+	a.Command = []string{wrapper, "--json-schema {{schema}}"}
+	f.cfg.Agents["mock"] = a
+	return argvLog
+}
+
+// End to end for the native-schema path: an agent whose command asks for a schema
+// must get the schema on its command line, the schema-flavored contract in its
+// prompt, and have a BARE JSON reply accepted. All three or none -- a prompt that
+// asks for a raw value while the extractor hunts for <review> tags fails every
+// step, and the reverse enforces a schema on a reply the model was told to wrap.
+func TestSchemaEnforcedReviewerGetsTheSchemaAndReturnsABareValue(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1})
+	argvLog := f.schemaAgent()
+	// No <review> envelope anywhere: this is what a schema-enforced CLI returns.
+	f.respond(1, `{"findings":[]}`)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v: a bare JSON reply must be accepted from a schema-enforced agent", err)
+	}
+	if sum.Termination != model.TermConverged {
+		t.Errorf("termination = %q, want converged", sum.Termination)
+	}
+
+	argv, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(argv), "--json-schema") {
+		t.Errorf("the schema flag never reached the command line:\n%s", argv)
+	}
+	if !strings.Contains(string(argv), `"findings"`) || !strings.Contains(string(argv), `"enum"`) {
+		t.Errorf("the schema document was not substituted into argv:\n%s", argv)
+	}
+
+	p := f.reviewPrompt(1)
+	if !strings.Contains(p, "Return exactly one raw JSON value") {
+		t.Errorf("a schema-enforced reviewer was not given the schema contract:\n%s", p)
+	}
+	if strings.Contains(p, "<review> block") {
+		t.Errorf("a schema-enforced reviewer was also asked for a <review> block; the two contracts cannot both be satisfied:\n%s", p)
+	}
+}
+
+// The envelope path must be untouched by all of this: an agent with no schema
+// placeholder still gets the <review> contract, no schema on its command line, and
+// a bare JSON reply is still a contract failure for it.
+func TestAgentWithoutASchemaPlaceholderKeepsTheEnvelopeContract(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	p := f.reviewPrompt(1)
+	if !strings.Contains(p, "<review> block") {
+		t.Errorf("an ordinary reviewer lost the envelope contract:\n%s", p)
+	}
+	if strings.Contains(p, "Return exactly one raw JSON value") {
+		t.Errorf("an ordinary reviewer was given the schema contract:\n%s", p)
+	}
+}

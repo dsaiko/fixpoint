@@ -484,6 +484,39 @@ usage:
   cost_usd: modelUsage.*.costUSD                 # omit when the CLI reports none
 ```
 
+## Letting the CLI enforce the output shape
+
+An agent whose CLI supports structured output can have the JSON shape enforced by
+the provider instead of asked for in the prompt. Put a schema placeholder in the
+command and fixpoint does the rest:
+
+```yaml
+command:
+  - claude
+  - --json-schema {{schema}}        # the document, inline (Claude Code)
+  # - --output-schema {{schema_file}}  # a path to it (Codex)
+```
+
+Two placeholders because the CLIs genuinely differ: Claude Code takes the schema
+**inline** and refuses a path (`not valid JSON: Unrecognized token '/'`), while
+Codex takes a **file**. `{{schema_file}}` makes fixpoint write the document to a
+0600 temp file for the invocation and remove it afterwards.
+
+The placeholder switches three things **together**, and they cannot be separated:
+the CLI gets the schema, the prompt gets a contract asking for one bare JSON value
+instead of a `<review>`/`<fix>` block, and the reply is read whole instead of
+being scanned for that block. A prompt asking for a raw value while the extractor
+hunts for tags fails every step; the reverse asks the provider to enforce a shape
+on a reply the model was told to wrap.
+
+Wherever no schema applies — the startup ping, which asks for a single word — the
+whole token drops out of the command line, exactly as an unset `{{effort}}` does.
+So one agent definition serves both.
+
+This is worth doing where it is supported. In this project's own runs the contract
+failures were never wrong findings: they were sound reviews wrapped in prose or
+fenced in markdown, and each one cost a salvage round trip or the whole step.
+
 `text` is **required** whenever `format` is set: fixpoint swaps the envelope for
 the reply before extracting the output contract, so machine-readable mode stays
 invisible to everything downstream. Omit it and every round fails to parse;

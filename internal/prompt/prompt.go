@@ -287,14 +287,37 @@ func ModeGuidance(mode config.Mode) string {
 	}
 }
 
-// ReviewContract is the output contract injected into review prompts. It carries
-// the severity rubric as well as the JSON shape: severity decides which findings
-// reach the coder when a round is capped, so it is a scheduling input, not a
-// label. Left to each lens, the same issue drew "low" from one agent and "high"
-// from another in one run, and a missing test outranked a credential-leak gap.
-// Keeping the rubric here means every lens inherits it and a new lens cannot
-// forget it.
-const ReviewContract = `## Severity
+// ReviewContract is the output contract injected into review prompts: the
+// severity rubric plus instructions to wrap the JSON in a <review> block. It is
+// what an agent whose CLI cannot enforce a schema gets, which is most of them.
+//
+// The rubric lives here rather than in each lens because severity decides which
+// findings reach the coder when a round is capped -- it is a scheduling input,
+// not a label. Left to each lens, the same issue drew "low" from one agent and
+// "high" from another in one run, and a missing test outranked a credential-leak
+// gap. Keeping it here means every lens inherits it and a new lens cannot forget
+// it, in either contract form.
+const ReviewContract = reviewRubric + reviewEnvelope
+
+// ReviewSchemaContract is the same rubric for an agent whose CLI enforces the
+// schema natively (see model.ReviewJSONSchema). The envelope instructions are
+// REPLACED rather than kept alongside: a schema-enforced reply is one bare JSON
+// value, so asking for <review> tags around it would be asking for output the
+// provider will refuse, and the two instructions cannot both be satisfied.
+//
+// The rubric stays because a schema cannot carry it. `severity` being one of four
+// strings is enforceable; WHICH of the four a given defect deserves is a judgment
+// the enum says nothing about, and severity decides what the coder sees first
+// when a round is capped.
+const ReviewSchemaContract = reviewRubric + `## Required output format
+Return exactly one raw JSON value matching the schema your harness enforces. No
+prose before or after it, no markdown fences, and no <review> wrapper: the schema
+is the contract here, and anything outside the JSON value is a protocol error.
+
+If you have no findings, return "findings": [].
+Set "issue" only to re-report a problem already listed in History; omit it otherwise.`
+
+const reviewRubric = `## Severity
 Severity decides which findings reach the fixer first when a round is capped, so
 rate by impact on the running system:
 
@@ -308,7 +331,9 @@ one-line documentation error stays low even though it is trivial to fix. A missi
 test for a security control is high — not because tests matter in the abstract,
 but because that control can silently stop working with nothing to catch it.
 
-## Required output format
+`
+
+const reviewEnvelope = `## Required output format
 End your response with exactly one <review> block containing valid JSON:
 
 <review>
@@ -333,8 +358,25 @@ Set "issue" only to re-report a problem already listed in History; omit it other
 The <review> block must be the LAST thing you print. The JSON must be valid:
 no comments, no trailing commas, no markdown fences inside the block.`
 
-// FixContract is the output contract injected into the coder prompt.
-const FixContract = `## Required output format
+// FixContract is the output contract injected into the coder prompt, in the
+// envelope form.
+const FixContract = fixEnvelope
+
+// FixSchemaContract is the coder contract for a CLI that enforces the schema
+// natively. The accounting rule survives the envelope: the orchestrator matches
+// every issue it handed over against exactly one result, and a schema can require
+// each result to be well-formed but not that the SET of ids is the one that was
+// asked about.
+const FixSchemaContract = `## Required output format
+Return exactly one raw JSON value matching the schema your harness enforces. No
+prose before or after it, no markdown fences, and no <fix> wrapper.
+
+Every ISSUE id you were given must appear exactly once in results. Use verdict
+"fixed" for issues you resolved and "rejected" for ones you decided not to act on,
+with the reason in detail. Duplicate reports have already been merged into single
+issues, so you should not need to reconcile them yourself.`
+
+const fixEnvelope = `## Required output format
 End your response with exactly one <fix> block containing valid JSON:
 
 <fix>
