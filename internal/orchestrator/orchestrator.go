@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -890,22 +889,11 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 // must not reach a reader's clipboard, and a bidi override must not make the
 // finding read as something the reviewer never wrote.
 func flattenField(s string) string {
-	one := agent.EscapeTerminal(strings.Join(strings.Fields(s), " "))
-	return forgeIssueRef.ReplaceAllString(forgeIssueURL.ReplaceAllString(one, "$1 $2"), "$1 $2")
+	// forge.BreakReferences is shared with the review body: a commit message and a
+	// review comment are both read by a forge's closing-keyword grammar, so the rule
+	// has one definition rather than two that can drift.
+	return forge.BreakReferences(agent.EscapeTerminal(strings.Join(strings.Fields(s), " ")))
 }
-
-// forgeIssueRef matches the issue references a forge's closing-keyword grammar
-// accepts and an injected string can name without knowing the repository: `#42`
-// -- which is also the tail of `owner/repo#42` -- and `GH-42`. Both groups are
-// captured so the rewrite can put the digit back after a space.
-var forgeIssueRef = regexp.MustCompile(`(?i)(#|\bGH-)(\d)`)
-
-// forgeIssueURL matches the other reference form that grammar accepts: the full
-// URL of an issue or a pull/merge request. The `//host/` prefix is required so
-// only a URL is rewritten -- a plain path like `docs/issues/1-intro.md` names no
-// issue and keeps its spelling. Groups match forgeIssueRef's so one replacement
-// string serves both.
-var forgeIssueURL = regexp.MustCompile(`(?i)(//\S+/(?:issues|pull|pulls|merge_requests)/)(\d)`)
 
 // verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
 // a round commit -- nothing lands unverified -- with the granularity moved down to

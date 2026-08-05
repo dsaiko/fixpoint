@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -144,15 +145,15 @@ func writeIssue(b *strings.Builder, it model.Issue) {
 }
 
 // mdText is the ONE place agent-authored text enters the document, and every
-// caller above goes through it. Right now it only strips the control characters
-// that would corrupt any renderer; the forge-specific neutralization (@mentions,
-// issue references, closing keywords) is layered on top of this by whoever posts
-// it, because those hazards exist on a pull request and not in a local file.
+// caller above goes through it. Keeping the funnel narrow is the point: a future
+// field rendered directly would bypass every protection at once, and a reviewer's
+// prose is written by a model that has just read code somebody else controls.
 //
-// Keeping the funnel narrow is the point: a future field rendered directly would
-// bypass every protection at once, and a reviewer's prose is written by a model
-// that has just read code somebody else controls.
-func mdText(s string) string { return model.StripControl(s) }
+// It applies the FORGE rules (see forge.SanitizeText) even when the document is
+// only going to a file. That is deliberate: the file is what an operator reads to
+// decide whether posting is safe, so it has to be byte-for-byte what would be
+// posted. Sanitizing on the way out instead would make that inspection worthless.
+func mdText(s string) string { return forge.SanitizeText(s) }
 
 func mdTexts(in []string) []string {
 	out := make([]string, 0, len(in))
