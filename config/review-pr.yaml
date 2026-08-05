@@ -30,7 +30,14 @@ roles:
     # panel. Cost is pool-size x lenses, which for a one-shot review is affordable
     # in a way it is not for a five-round fix loop.
     strategy: all
-    agents: [codex, claude]
+    # The panel is INHERITED from defaults.yaml rather than narrowed here.
+    #
+    # It used to be pinned to two models, on the argument that externally-authored
+    # code deserves a smaller blast radius. Two things retired that: the diff
+    # already leaves the building the moment any hosted model reviews it, so
+    # dropping one vendor changed the count and not the category; and the
+    # refutation round below now makes a noisy reviewer cheap, because a weak
+    # finding is refuted by the others instead of being published.
     prompts:
       - review-bugs
       - review-security

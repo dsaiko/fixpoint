@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -296,4 +297,121 @@ func (gitlabProvider) Checks(ctx context.Context, dir string, mr int) (Checks, e
 		res.Pending = append(res.Pending, label)
 	}
 	return res, nil
+}
+
+// Event is the kind of review to post.
+type Event string
+
+const (
+	// Comment publishes the findings and takes no position. It is the safe default
+	// and what -post alone does: a machine review becomes visible without spending
+	// an approval or blocking somebody's merge.
+	Comment Event = "comment"
+	// EventApprove approves the pull request. Reached only through a second,
+	// explicit flag: it spends an approval on somebody's change.
+	EventApprove Event = "approve"
+	// EventRequestChanges formally blocks the pull request. Same gate, and a social
+	// act as much as a technical one.
+	EventRequestChanges Event = "request_changes"
+)
+
+// Poster is a provider that can publish a review. It is separate from Provider
+// because reading and writing are different privileges: every run may read, and
+// writing needs an assertion the operator makes per invocation.
+type Poster interface {
+	Provider
+	// PostReview publishes body on the pull request and returns a URL for it when
+	// the forge gives one.
+	PostReview(ctx context.Context, dir string, pr int, body string, event Event) (string, error)
+}
+
+// PosterFor is For, narrowed to providers that can also write.
+func PosterFor(ctx context.Context, dir string) Poster {
+	p, _ := For(ctx, dir).(Poster)
+	return p
+}
+
+// PostReview publishes through `gh pr review`, which reads the body from a file
+// so no part of it ever reaches an argument list.
+//
+// That is not tidiness: argv is world-readable on this host for the life of the
+// process, and the body carries findings quoted out of the code under review --
+// which in a review-only run may be the credential that the review is ABOUT.
+// It is the same reasoning that makes prompt_via: stdin the default for agents.
+func (githubProvider) PostReview(ctx context.Context, dir string, pr int, body string, event Event) (string, error) {
+	f, err := os.CreateTemp("", "fixpoint-review-*.md")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if _, err := f.WriteString(body); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	flag := "--comment"
+	switch event {
+	case EventApprove:
+		flag = "--approve"
+	case EventRequestChanges:
+		flag = "--request-changes"
+	case Comment:
+	}
+	if _, err := run(ctx, dir, "gh", "pr", "review", strconv.Itoa(pr), flag, "--body-file", f.Name()); err != nil {
+		return "", err
+	}
+	// gh prints nothing useful on success, so the URL is read back rather than
+	// parsed out of its output.
+	return latestReviewURL(ctx, dir, pr), nil
+}
+
+// latestReviewURL best-effort resolves a link to what was just posted. A missing
+// URL is cosmetic -- the review is already published -- so every failure here
+// yields an empty string rather than an error that would misreport a successful
+// post as a failed one.
+func latestReviewURL(ctx context.Context, dir string, pr int) string {
+	out, err := run(ctx, dir, "gh", "pr", "view", strconv.Itoa(pr), "--json", "url")
+	if err != nil {
+		return ""
+	}
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return ""
+	}
+	return payload.URL
+}
+
+// PostReview publishes on GitLab: a note for a comment, and the approval endpoints
+// for the two verdicts.
+//
+// UNVERIFIED end to end, like the GitLab reader: glab was not installed where this
+// was written. Unlike a read, a failed WRITE is reported to the caller rather than
+// degraded silently -- an operator who asked to publish must not be told it
+// happened when it did not.
+func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, body string, event Event) (string, error) {
+	if _, err := run(ctx, dir, "glab", "mr", "note", strconv.Itoa(mr), "--message", body); err != nil {
+		return "", err
+	}
+	switch event {
+	case EventApprove:
+		if _, err := run(ctx, dir, "glab", "mr", "approve", strconv.Itoa(mr)); err != nil {
+			return "", fmt.Errorf("note posted, but approving failed: %w", err)
+		}
+	case EventRequestChanges:
+		// GitLab has no "request changes" review event; unapproving is the closest
+		// equivalent and is what the note above explains.
+		if _, err := run(ctx, dir, "glab", "mr", "unapprove", strconv.Itoa(mr)); err != nil {
+			return "", fmt.Errorf("note posted, but unapproving failed: %w", err)
+		}
+	case Comment:
+	}
+	return "", nil
 }

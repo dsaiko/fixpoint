@@ -78,7 +78,15 @@ type Overrides struct {
 	// be copied and edited once per PR.
 	PR                int
 	AllowUntrustedFix bool
-	TrustedTarget     bool
+	// Post publishes the review on the pull request, and PostVerdict additionally
+	// lets it carry the verdict (approve / request changes) instead of a comment.
+	//
+	// Flags, never config keys, for the same reason the trust gates are: publishing
+	// is an action on somebody else's pull request, and the config that would grant
+	// it may have been shipped by the repository under review. See TrustedTarget.
+	Post          bool
+	PostVerdict   bool
+	TrustedTarget bool
 }
 
 // apply folds the overrides into the configuration being compiled.
@@ -90,6 +98,12 @@ func (o Overrides) apply(c *Config) {
 	}
 	if o.AllowUntrustedFix {
 		c.Loop.AllowUntrustedFix = true
+	}
+	if o.Post {
+		c.Review.Post = true
+	}
+	if o.PostVerdict {
+		c.Review.PostVerdict = true
 	}
 	if o.TrustedTarget {
 		c.Loop.TrustedTarget = true

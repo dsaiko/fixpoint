@@ -58,6 +58,8 @@ Flags:
 	pr := fs.Int("pr", 0, "override target.pr in pr mode; which PR to review is per-invocation, so review-pr ships without a number (0 = use config)")
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
+	post := fs.Bool("post", false, "publish the review on the pull request as a COMMENT: findings become visible, no verdict is acted on")
+	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
 	porcelain := fs.Bool("porcelain", false, "with --list, emit a stable tab-separated form for scripts and shell completion")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
@@ -114,6 +116,8 @@ Flags:
 		PR:                *pr,
 		AllowUntrustedFix: *allowUntrustedFix,
 		TrustedTarget:     *trustedTarget,
+		Post:              *post,
+		PostVerdict:       *postVerdict,
 	})
 	if err != nil {
 		logf("config: %v", err)

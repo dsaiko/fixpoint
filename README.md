@@ -313,6 +313,52 @@ Per-lens modifiers:
   costs a full agent session per run. Both prompts remain in the bundle, so the
   advisory shape is one line away if that changes.
 
+## What a review run does
+
+A `review-` config never invokes the coder, so it cannot modify the target — and
+it no longer even names one. The pipeline is:
+
+```
+  panel  →  merge  →  refutation  →  judge  →  verdict  →  body  →  (post)
+```
+
+**Panel.** Every reviewer runs every lens (`strategy: all`). A review has one
+round and nothing after it, so a lens seen by a single model is a blind spot
+nothing catches.
+
+**Refutation.** Every reviewer is shown the *merged* finding set and must take an
+evidenced position on each one: maintain, refute, or unsure. What all of them
+refute is dropped; what any of them still stands behind is kept and marked
+contested.
+
+This replaces the obvious idea — keep only what two reviewers both found — which
+measurement ruled out. Across 19 runs, **under 4% of findings were reported by
+more than one reviewer, and none of the 25 later rejected as false positives were
+among them**: an intersection would have filtered none of the noise while
+discarding 237 of 248 confirmed defects. Reviewers here do not vote on a shared
+list, they sample from a large space of defensible observations, so each finding
+is judged on its own evidence instead.
+
+Unanimous refutation, not majority, because the errors are not symmetric: a wrong
+refutation deletes a real defect and nothing downstream looks for it again, while
+a wrongly-kept finding costs a human a paragraph.
+
+**Judge.** One read-only agent decides which survivors are worth a human's
+attention — the value judgment the coder makes in a fix run, in hands that cannot
+edit. It became necessary rather than optional when the verdict gained a hard
+severity gate: if one `high` blocks a merge, something must filter severity before
+the gate, or the noisiest reviewer decides the outcome. It fails closed — a judge
+that dies leaves every finding standing and blocks the approval.
+
+**Verdict.** Computed in code, never asked of a model. See
+[config/README.md](config/README.md#what-a-review-run-concludes) for the rules,
+the quorum, and why the floor is `high`.
+
+**Body.** `review-body.md` in the run directory: verdict first, blocking findings
+separated from the rest, signed. Agent-authored text is neutralized for a forge
+*at render time*, so the file you read is byte-for-byte what `-post` would
+publish.
+
 ## Observations and issues
 
 A reviewer's report is an **observation**. What the coder works from is an
@@ -733,8 +779,19 @@ Requirements:
 make build          # compile the fixpoint binary
 make check          # static validation of the configuration (no agents invoked)
 make check-live     # static validation + ping every configured agent
-make review-code    # one review round, coder never invoked (no edits; pr mode still checks out the PR branch)
-make run            # the full review->fix cycle (runs tests and vet first)
+make help           # every target, including one per shipped config
+```
+
+There is one target per shipped config, so the command says which one it is
+going to spend money on. (There is no `make run`: it took its config from a
+variable, which made the two-hour run and the five-minute one look identical.)
+
+```sh
+make review-code            # review the whole project, no edits
+make review-branch          # review only what this branch changed, no edits
+make review-pr PR=170       # review a pull request
+make fix-code               # review -> fix -> verify -> commit, whole project
+make fix-branch             # the same cycle over this branch's changes
 ```
 
 Or directly:
@@ -743,6 +800,30 @@ Or directly:
 ./fixpoint <config-name> [flags]      # e.g. ./fixpoint review-code
 ./fixpoint --config path/to/task.yaml [flags]
 ```
+
+### Reviewing a pull request
+
+```sh
+# 1. See what it would review, and what it would cost, before spending anything.
+./fixpoint review-pr -pr 170 --check
+
+# 2. Review it. The result is written to .fixpoint/<run>/review-body.md and
+#    nothing leaves this machine.
+./fixpoint review-pr -pr 170
+
+# 3. Read that file. It is byte-for-byte what step 4 would publish.
+#    Then publish the findings as a comment -- no approval, no block:
+./fixpoint review-pr -pr 170 -post
+
+# 4. Or let the review carry its verdict, approving or requesting changes:
+./fixpoint review-pr -pr 170 -post -post-verdict
+```
+
+`-post` and `-post-verdict` are two flags because they are two different acts.
+The first makes a machine review visible; the second approves somebody's change
+or formally blocks it. Neither can be set from a config file — the first bundle
+on the search path belongs to the target, so a YAML key would let reviewed code
+arrange to have a review posted under your identity.
 
 | Flag | Effect |
 |---|---|
@@ -755,13 +836,19 @@ Or directly:
 | `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. |
 | `-trusted-target` | Assert a directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without it). |
 | `-allow-untrusted-fix` | Permit fix rounds in `pr` mode (PR content is untrusted; see Security). |
+| `-post` | Publish the review on the pull request as a **comment**: findings become visible, no verdict is acted on. |
+| `-post-verdict` | With `-post`, let the review carry its verdict — approving, or requesting changes on someone's PR. An inconclusive verdict stays a comment regardless. |
 | `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](#choosing-a-base-in-git-diff-mode). |
 | `-check-live` | Validate, ping every agent, and exit. |
 
-Exit codes: `0` converged or review-only completed, `2` hit `max_iterations`
-without converging (or a usage error), `3` the coder rejected every issue so
-nothing changed — deliberately *not* `0`, since "nobody agreed there was a
-problem" is not "the code is clean", `1` any other failure or interruption. `SIGINT`/`SIGTERM` stop the run cleanly: the current step is abandoned and any edits
+Exit codes: `0` converged, or a review that **approved**; `2` hit
+`max_iterations` without converging (or a usage error); `3` the coder rejected
+every issue so nothing changed — deliberately *not* `0`, since "nobody agreed
+there was a problem" is not "the code is clean"; `4` the review **requested
+changes**; `5` the review was **inconclusive** (nothing blocking was found, but
+the panel did not reach quorum or the judge did not finish, so that silence is
+not evidence); `1` any other failure or interruption. A verdict only ever makes
+the status worse, so an errored or interrupted run keeps its own code. `SIGINT`/`SIGTERM` stop the run cleanly: the current step is abandoned and any edits
 in the tree are stashed, so nothing half-finished is left behind. Signal a second time to quit
 immediately without that reconciliation — which can leave the working tree dirty.
 

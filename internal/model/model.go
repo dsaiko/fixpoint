@@ -277,6 +277,11 @@ type RunSummary struct {
 	// run. It is the file an operator reads, and on the posting path the exact
 	// bytes that were sent.
 	ReviewBody string `json:"review_body,omitempty"`
+	// ReviewPosted names the event a review was published as ("comment",
+	// "approve", "request_changes"), or is empty when nothing was posted. An
+	// operator reading a summary should not have to infer from a log line whether
+	// their -post actually reached the forge.
+	ReviewPosted string `json:"review_posted,omitempty"`
 	// Verdict is set for a review-only run: what the review concluded, and why.
 	// A fix run has no verdict -- its outcome is the commits it made and the
 	// termination above.

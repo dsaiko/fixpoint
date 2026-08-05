@@ -6998,3 +6998,50 @@ func TestJudgeUnknownVerdictKeepsTheFinding(t *testing.T) {
 		t.Error("an unrecognized verdict dropped a finding")
 	}
 }
+
+// Posting is gated on an explicit flag AND on there being a pull request. Without
+// either, the review is still written and the operator is told where.
+func TestPostIsSkippedWithAWarningWhenThereIsNoPullRequest(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.cfg.Review.Post = true // directory mode: no PR to post to
+	f.respond(1, reviewResponse(t))
+
+	var logs strings.Builder
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}},
+		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.ReviewPosted != "" {
+		t.Errorf("ReviewPosted = %q, want empty: nothing was posted", sum.ReviewPosted)
+	}
+	if !strings.Contains(logs.String(), "reviews no pull request") {
+		t.Errorf("the operator must be told why -post did nothing:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), sum.ReviewBody) {
+		t.Errorf("the warning must name where the review actually is:\n%s", logs.String())
+	}
+}
+
+// Nothing is posted without the flag, however the review turned out.
+func TestNothingIsPostedWithoutTheFlag(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.respond(1, reviewResponse(t, aFinding("something")))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.ReviewPosted != "" {
+		t.Errorf("ReviewPosted = %q, want empty without -post", sum.ReviewPosted)
+	}
+	if sum.ReviewBody == "" {
+		t.Error("the review body must be written even when it is not posted")
+	}
+}

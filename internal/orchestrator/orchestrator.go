@@ -1889,7 +1889,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		// review body and the exit code all read what survives this.
 		o.runRefutation(ctx, recP, material)
 		judged := o.runJudge(ctx, recP, material)
-		o.decideVerdict(recP, sum, judged)
+		o.decideVerdict(ctx, recP, sum, judged)
 		sum.Termination = model.TermReviewOnly
 		return true, nil
 	}
@@ -3792,7 +3792,7 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 // The inputs are all facts the round already carries: which agents were assigned,
 // which of their steps failed, and what survived as issues. Nothing here asks a
 // model anything -- see internal/review for why the verdict must not.
-func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSummary, judged bool) {
+func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, judged bool) {
 	failed := map[string]int{}
 	for _, st := range rec.Steps {
 		if st.Role == "review" && st.Failed {
@@ -3811,7 +3811,7 @@ func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSumma
 	for _, r := range d.Reasons {
 		o.logf("  %s", r)
 	}
-	o.writeReviewBody(rec, sum, d)
+	o.writeReviewBody(ctx, rec, sum, d)
 }
 
 // writeReviewBody renders the review document and puts it in the run directory.
@@ -3821,7 +3821,7 @@ func (o *Orchestrator) decideVerdict(rec *model.RoundRecord, sum *model.RunSumma
 // whether the review ran is being asked the wrong question. Failure to write it is
 // a warning, not a run failure -- the verdict is already in the summary, the
 // journal and the exit code.
-func (o *Orchestrator) writeReviewBody(rec *model.RoundRecord, sum *model.RunSummary, d review.Decision) {
+func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, d review.Decision) {
 	panel := map[string]bool{}
 	for _, a := range rec.Assignments {
 		panel[a.Agent] = true
@@ -3854,6 +3854,7 @@ func (o *Orchestrator) writeReviewBody(rec *model.RoundRecord, sum *model.RunSum
 	}
 	sum.ReviewBody = path
 	o.logf("review body: %s", path)
+	o.postReview(ctx, sum, body)
 }
 
 // describeTarget names what was reviewed in one phrase, for the review's footer.
@@ -4205,4 +4206,63 @@ func firstLineOf(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// postReview publishes the rendered review on the pull request.
+//
+// Two assertions, because there are two risk levels and collapsing them would
+// price the smaller one at the larger one's rate. -post publishes the findings as
+// a COMMENT: the review becomes visible and nothing is spent -- no approval given,
+// nobody's merge blocked. -post-verdict additionally lets it carry the verdict,
+// which either approves somebody's change or formally requests changes on it, and
+// that is a social act as much as a technical one.
+//
+// Both are command-line flags and neither can come from YAML: the first bundle on
+// the search path belongs to the target, so a config key here would let reviewed
+// code arrange for a review to be posted under the operator's identity.
+//
+// A failed post is REPORTED, never swallowed. Reads in this package fail soft
+// because a missing datum only weakens the evidence; a write that the operator
+// asked for and did not get is the opposite -- silence there would tell them the
+// review is on the pull request when it is not.
+func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, body string) {
+	if !o.cfg.Review.Post {
+		return
+	}
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
+		o.logf("WARNING: -post was given but this run reviews no pull request; the review is in %s", sum.ReviewBody)
+		return
+	}
+	if ctx.Err() != nil {
+		o.logf("WARNING: interrupted before posting; the review is in %s", sum.ReviewBody)
+		return
+	}
+	p := forge.PosterFor(ctx, o.cfg.Target.Path)
+	if p == nil {
+		o.logf("WARNING: -post was given but no GitHub or GitLab remote was recognized; the review is in %s", sum.ReviewBody)
+		return
+	}
+	event := forge.Comment
+	if o.cfg.Review.PostVerdict {
+		switch sum.Verdict.Outcome {
+		case model.VerdictApprove:
+			event = forge.EventApprove
+		case model.VerdictChangesRequested:
+			event = forge.EventRequestChanges
+		}
+		// An INCONCLUSIVE verdict stays a comment under every flag. There is no forge
+		// event for "the review did not finish", and the two that exist would both be
+		// lies about a panel that never reached quorum.
+	}
+	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, body, event)
+	if err != nil {
+		o.logf("ERROR: posting the review to %s failed: %v -- it is written at %s", p.Kind(), err, sum.ReviewBody)
+		return
+	}
+	sum.ReviewPosted = string(event)
+	if url != "" {
+		o.logf("review posted to %s as %s: %s", p.Kind(), event, url)
+		return
+	}
+	o.logf("review posted to %s as %s", p.Kind(), event)
 }

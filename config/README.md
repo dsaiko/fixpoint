@@ -150,6 +150,12 @@ The exit status carries the verdict: `0` approve, `4` changes requested, `5`
 inconclusive. A verdict only ever makes the status worse, so an errored or
 interrupted run keeps its own code.
 
+Publishing is two command-line flags, never config keys: `-post` puts the review
+on the pull request as a comment, and `-post-verdict` additionally lets it approve
+or request changes. The first bundle on the search path belongs to the target, so
+a YAML key here would let reviewed code arrange to have a review posted under the
+operator's identity — the same argument as the trust gates.
+
 Every run writes `review-body.md` at the root of its log directory — the document
 a human reads, and on the posting path the exact bytes that get sent.
 
@@ -157,6 +163,29 @@ a human reads, and on the posting path the exact bytes that get sent.
 `{verdict}` substituted. It is rendered by fixpoint from fixpoint's own facts and
 placed **outside** every region carrying agent text: a signature composed from a
 finding's prose could be forged by whatever wrote that prose.
+
+## The refutation round and the judge
+
+```yaml
+roles:
+  judge: { agent: claude, prompt: judge }   # read-only; validation refuses can_edit
+review:
+  refute: refute                            # naming the prompt enables the round
+```
+
+After the panel reports, `refute` shows every reviewer the **merged** finding set
+and asks for an evidenced position on each: maintain, refute, or unsure. What all
+of them refute is dropped; one holdout keeps a finding, marked contested. Nobody
+answering drops nothing — reading silence as unanimous refutation is the one
+catastrophic misreading available here.
+
+`roles.judge` then decides which survivors are worth reporting. It is a separate
+role from the coder because the coder is `can_edit`, and a `review-` config's
+promise is that it invokes nothing that can modify the target. A finding the judge
+does not mention is kept: a filter that removes what it forgot to consider is a
+leak, not a filter.
+
+A `review-` config needs no `roles.coder` at all.
 
 ## Reporting what a run cost
 

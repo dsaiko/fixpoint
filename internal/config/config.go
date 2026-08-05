@@ -1860,6 +1860,16 @@ type ReviewPolicy struct {
 	Refute string `yaml:"refute"`
 	// RefutePath is the resolved file for Refute; filled in during loading.
 	RefutePath string `yaml:"-"`
+
+	// Post and PostVerdict are set ONLY by -post / -post-verdict on the command
+	// line; `yaml:"-"` is load-bearing security, not style. Publishing is an action
+	// on somebody else's pull request, and the first bundle on the search path is
+	// the target's own -- so a YAML-readable key would let reviewed code arrange to
+	// have a review posted under the operator's identity. Same argument as
+	// Loop.TrustedTarget, and the decoder's KnownFields(true) makes an attempt to
+	// set them a load error rather than a silent no-op.
+	Post        bool `yaml:"-"`
+	PostVerdict bool `yaml:"-"`
 }
 
 // VerifyCommand is one check. Argv, not a shell string: there is no shell to
