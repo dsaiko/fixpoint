@@ -1160,6 +1160,18 @@ func (o *Orchestrator) hideRunEdits(ctx context.Context, runBase string) {
 	if len(globs) == 0 || runBase == "" {
 		return
 	}
+	// Drop the previous call's set before recomputing. This runs once per closing
+	// pass, so on every path that does not install a fresh set -- a cancellation, a
+	// git failure -- an earlier pass's narrowing would otherwise stay installed:
+	// stale, since it predates the files the intervening pass committed, and the
+	// exact opposite of the warning below, which promises the whole tree. Clearing
+	// cannot fail with nil arguments.
+	_, _ = o.collector.HideRunEdits(nil, nil)
+	// A canceled context makes ChangedSince fail instantly, and warning about a
+	// phase that is being abandoned anyway tells the operator nothing.
+	if ctx.Err() != nil {
+		return
+	}
 	changed, err := o.collector.ChangedSince(ctx, runBase)
 	if err != nil {
 		o.logf("WARNING: could not list this run's own edits (%v); the closing round reviews the whole tree, including files it wrote (loop.final_skip_run_edits)", err)

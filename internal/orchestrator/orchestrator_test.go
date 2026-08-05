@@ -6414,3 +6414,69 @@ func TestClosingReportRecomputesWhatToHideAfterTheFixPasses(t *testing.T) {
 		t.Errorf("the report lost the non-test file the run changed:\n%s", report)
 	}
 }
+
+// hideRunEdits runs once per closing pass, so a pass that cannot recompute the
+// hidden set must not inherit the previous pass's: that set predates whatever the
+// intervening pass committed, and every failure path here tells the operator the
+// opposite -- that the whole tree is reviewed. Stale narrowing is the one kind of
+// gap nobody can see, since a reviewer that is not shown a file reports no findings
+// about it, which reads exactly like a clean bill of health.
+func TestAFailedHiddenSetRecomputeDropsTheEarlierPassesNarrowing(t *testing.T) {
+	// An unresolvable base is what a broken ChangedSince looks like from here (a git
+	// index lock or an operation timeout arrives the same way).
+	const brokenBase = "0000000000000000000000000000000000000000"
+	for _, tc := range []struct {
+		name     string
+		base     string
+		canceled bool
+		wantWarn bool
+	}{
+		{name: "git failure", base: brokenBase, wantWarn: true},
+		// A cancellation fails ChangedSince instantly, but the phase is being
+		// abandoned anyway, so it must clear the set WITHOUT crying wolf about a
+		// narrowing nobody is waiting on.
+		{name: "cancellation", base: "unused", canceled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{FinalSkipRunEdits: []string{"**/*_test.go"}})
+			o, logs := f.capturingOrchestrator()
+			base := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(f.repo, "x_test.go"), []byte("package main\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitRun(t, f.repo, "add", ".")
+			gitRun(t, f.repo, "commit", "-q", "-m", "the pass writes a test")
+
+			// Pass 1: the set is computed and installed.
+			o.hideRunEdits(t.Context(), base)
+			material, err := o.collector.Collect(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(material, "x_test.go") {
+				t.Fatalf("the test file this run wrote was not hidden, so the case cannot test what happens next:\n%s", material)
+			}
+
+			// Pass 2: the recompute fails.
+			ctx := t.Context()
+			if tc.canceled {
+				canceled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = canceled
+			}
+			o.hideRunEdits(ctx, tc.base)
+
+			material, err = o.collector.Collect(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(material, "x_test.go") {
+				t.Errorf("pass 1's hidden set survived a failed recompute, so this pass silently reviews less than it is told:\n%s", material)
+			}
+			warned := strings.Contains(logs(), "could not list this run's own edits")
+			if warned != tc.wantWarn {
+				t.Errorf("warning printed = %v, want %v:\n%s", warned, tc.wantWarn, logs())
+			}
+		})
+	}
+}
