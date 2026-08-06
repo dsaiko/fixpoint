@@ -4105,11 +4105,17 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	var wg sync.WaitGroup
 	for i, name := range panel {
 		wg.Add(1)
-		go func() {
+		// i and name are passed in rather than captured, matching review() and Ping().
+		// Per-iteration loop variables would make this correct today, but the slot a
+		// goroutine writes decides which agent's positions land in which reply -- and
+		// applyRefutations counts one vote per distinct agent -- so the binding is
+		// fixed at spawn time instead of resting on what a later edit to the loop body
+		// does to i or name.
+		go func(i int, name string) {
 			defer wg.Done()
 			positions, answered, step := o.refuteWith(ctx, name, rec, material)
 			replies[i] = reply{agent: name, answered: answered, positions: positions, step: step}
-		}()
+		}(i, name)
 	}
 	wg.Wait()
 	// Collected AFTER the join, into rec in panel order. Appending from inside the
