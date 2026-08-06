@@ -7,7 +7,48 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
+
+// A forge CLI that leaves a child behind holding its stdout must not hold the
+// read with it. `gh` forks credential helpers and git subprocesses routinely, and
+// one of those can outlive the leader: with a pipe os/exec owned, cmd.Wait would
+// then wait for an EOF that only the descendant can send, and the reads on the
+// critical path of a run -- the checks rollup, the head read before a post --
+// would hang past cliTimeout and past a Ctrl-C, since cancellation kills the
+// leader alone. The helpers own their pipes and kill the process group instead,
+// so the call returns on the leader's exit.
+func TestALeftBehindChildDoesNotHoldTheRead(t *testing.T) {
+	bin := t.TempDir()
+	// Exits at once, having backgrounded a child that inherited stdout and will hold
+	// its write end far longer than any bound this test is willing to wait for.
+	script := "#!/bin/sh\nsleep 120 &\nprintf 'answered'\n"
+	if err := os.WriteFile(filepath.Join(bin, "lingerer"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := run(t.Context(), t.TempDir(), "lingerer")
+		done <- result{out, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("run() = %v", got.err)
+		}
+		if got.out != "answered" {
+			t.Errorf("stdout = %q, want the leader's own output %q", got.out, "answered")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run() is still blocked long after the CLI itself exited -- a descendant holding the stdout pipe is outlasting the call, so cliTimeout does not bound it")
+	}
+}
 
 // The HOST decides, not a substring of the URL. A GitLab instance hosting a
 // repository named "github-mirror" must not be driven with `gh`, and the path is

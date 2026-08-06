@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dsaiko/fixpoint/internal/agent"
 )
 
 // Kind is which forge a remote points at.
@@ -140,15 +142,23 @@ func remoteURL(ctx context.Context, dir string) string {
 
 // run executes a CLI in the target directory with a bounded timeout, returning
 // stdout. stderr is folded into the error so a caller's log line explains itself.
+//
+// Through agent.Supervise rather than cmd.Run, so cliTimeout is the bound the
+// package header claims it is. These CLIs fork children -- a credential helper, a
+// git subprocess -- that inherit whatever descriptors they are given. With an
+// ordinary writer as cmd.Stdout, os/exec owns the pipe and cmd.Wait waits for its
+// copy goroutine to see EOF: a descendant that outlives the leader holds the write
+// end, no EOF arrives, and the deadline killing the leader alone frees nothing. The
+// review then hangs past cliTimeout and past a Ctrl-C, since cancellation is the
+// same mechanism. Supervise owns the pipes and kills the process group, so Wait
+// returns on the leader's exit and the descendant goes with it.
 func run(ctx context.Context, dir string, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if _, err := agent.Supervise(ctx, cmd, &stdout, &stderr); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = strings.TrimSpace(stdout.String())
@@ -162,7 +172,9 @@ func run(ctx context.Context, dir string, name string, args ...string) (string, 
 }
 
 // runStdin is run with a payload on standard input, for content too large or too
-// sensitive to place on a command line.
+// sensitive to place on a command line. Supervised for the same reason as run --
+// and the stdin feed needs it as much as the output does, since exec's stdin copy
+// is a goroutine cmd.Wait joins just the same.
 func runStdin(ctx context.Context, dir, stdin, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
@@ -170,8 +182,9 @@ func runStdin(ctx context.Context, dir, stdin, name string, args ...string) erro
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
 	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	// stdout is discarded, as it was when exec sent it to /dev/null: these calls are
+	// posts, and every caller reads the outcome from the error alone.
+	if _, err := agent.Supervise(ctx, cmd, nil, &stderr); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, firstLine(msg))
 		}
