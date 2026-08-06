@@ -1,5 +1,10 @@
-// Package forge talks to the code-hosting service a pull request lives on:
-// GitHub or GitLab. It reads what the forge already knows about the reviewed head
+// Package forge talks to the code-hosting service a pull request lives on.
+//
+// GitHub works. GITLAB DOES NOT, and not because it is untested: target's pr-mode
+// Prepare shells to `gh pr checkout` unconditionally, so a run against a GitLab
+// remote fails before anything here is reached. The GitLab provider below is
+// scaffolding for a checkout path that does not exist yet -- keep it honest by
+// saying so rather than letting the type assertions imply otherwise. It reads what the forge already knows about the reviewed head
 // and, on the posting path, writes the review back.
 //
 // It shells out to the vendors' own CLIs (`gh`, `glab`) rather than speaking HTTP.

@@ -377,6 +377,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 			Prompts: o.source.Prompts,
 		},
 		Mode:                string(o.cfg.Target.Mode),
+		PR:                  o.cfg.Target.PR,
 		Path:                o.cfg.Target.Path,
 		Strategy:            string(o.cfg.Roles.Review.Strategy),
 		ReviewOnly:          o.cfg.Loop.ReviewOnly,
@@ -785,7 +786,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 			return false, committed, ctx.Err()
 		}
 		fixedBefore := rec.Fixed
-		salvaged, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it}, o.staleFiles(ctx, reviewedAt, it))
+		salvaged, replies, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it}, o.staleFiles(ctx, reviewedAt, it))
 		if err != nil {
 			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
@@ -837,8 +838,32 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		if did {
 			committed++
 		}
+		o.answerConversations(ctx, it.ID, did, replies)
 	}
 	return false, committed, nil
+}
+
+// answerConversations posts this session's replies, but only once its fix is
+// COMMITTED.
+//
+// Until that point the work can still be withdrawn: the gate can fail, the
+// correction attempt can revert it, the edits can end up stashed. Posting on the
+// coder's say-so alone put a claim on somebody's pull request, under the
+// operator's identity, that nothing had verified.
+//
+// A rejected issue's replies are dropped rather than posted. An answer explaining
+// why nothing was changed would often be welcome, but it cannot be told apart here
+// from one claiming work that did not land, and over-posting is the failure being
+// fixed. The skip is logged so it is a decision rather than a disappearance.
+func (o *Orchestrator) answerConversations(ctx context.Context, issueID string, committed bool, replies []model.FixReply) {
+	if len(replies) == 0 {
+		return
+	}
+	if !committed {
+		o.logf("%d conversation repl(y|ies) for %s were not posted: the fix did not commit", len(replies), issueID)
+		return
+	}
+	o.postReplies(ctx, replies)
 }
 
 // staleFiles reports which of the issue's files have been committed to since
@@ -3136,7 +3161,7 @@ func (o *Orchestrator) discardEdits(ctx context.Context, d discard) error {
 //
 // stale names files an earlier session of this same round has already committed to
 // since the reviewers read the tree; empty when nothing moved. See staleFiles.
-func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue, stale []string) (salvaged bool, err error) {
+func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue, stale []string) (salvaged bool, replies []model.FixReply, err error) {
 	coder := o.cfg.Roles.Coder
 	promptName := config.LensName(coder.Prompt)
 	label := "fix: " + coder.Agent
@@ -3162,7 +3187,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	}
 	text, err := prompt.Render(o.templates[coder.Prompt], d)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	o.logf("%s starting on %d issue(s) (prompt %s)", label, len(active), logstore.SizeDesc(len(text)))
 	res := o.runAgent(ctx, label, "fix", coder.Agent, promptName, rec.Round, text)
@@ -3178,11 +3203,10 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	if runErr == nil {
 		runErr = o.applyVerdicts(rec, out.Results, active)
 	}
-	// Answers go out only once the verdicts parsed: a reply claiming a change from
-	// a session whose report fixpoint could not read would be asserting something
-	// nothing verified.
+	// The replies are carried back to the caller rather than posted here. They may
+	// only go out once the fix they describe is COMMITTED -- see runFixSessions.
 	if runErr == nil {
-		o.postReplies(ctx, out.Replies)
+		replies = out.Replies
 	}
 
 	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, promptName, len(text), res, runErr != nil))
@@ -3223,15 +3247,16 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		if interrupted == nil {
 			interrupted = ctx.Err()
 		}
-		return false, o.reconcileInterrupt(rec.Round, interrupted) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+		return false, nil, o.reconcileInterrupt(rec.Round, interrupted) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
 	}
 	if runErr != nil {
 		if !allowSalvage {
-			return false, o.discardFailedFix(ctx, rec.Round, runErr)
+			return false, nil, o.discardFailedFix(ctx, rec.Round, runErr)
 		}
-		return o.salvagePartialFix(ctx, rec, runErr)
+		salvaged, err := o.salvagePartialFix(ctx, rec, runErr)
+		return salvaged, nil, err
 	}
-	return false, nil
+	return false, replies, nil
 }
 
 // discardFailedFix handles a failed coder in a round nothing follows -- the
@@ -3893,6 +3918,12 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	}
 	sum.ReviewBody = path
 	o.logf("review body: %s", path)
+	// Recorded before any posting, so `-post-run` can publish exactly this review
+	// later without re-running the panel -- and so an operator who reads the file
+	// first is reading the bytes that will actually go out.
+	for _, c := range inlineComments(rec, o.material) {
+		sum.ReviewInline = append(sum.ReviewInline, model.ReviewAnchor{Path: c.Path, Line: c.Line, Body: c.Body})
+	}
 	o.postReview(ctx, rec, sum, published)
 }
 
@@ -4020,7 +4051,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		o.logf("refutation: no reviewer returned a usable position; every finding stands")
 		return
 	}
-	applyRefutations(rec, byIssue, o.logf)
+	applyRefutations(rec, byIssue, responded, o.logf)
 }
 
 // panelAgents lists the distinct non-advisory agents a round assigned, in a
@@ -4073,6 +4104,13 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 		parseErr = agent.ExtractJSON(res.Stdout, "review", &out)
 	}
 	step := stepStat("refute", agentName, o.cfg.Review.Refute, len(text), res, parseErr != nil)
+	// Persisted like a review step. The product of this round is JUDGMENT WITH
+	// EVIDENCE, and without the artifact none of it survives: a refuter that is
+	// outvoted leaves no trace of what it argued, and "who refuted what, on what
+	// grounds" cannot be answered even from a run you have in front of you. That
+	// was true of the first three runs and made the round impossible to evaluate.
+	o.logStep("refute", agentName, o.cfg.Review.Refute, rec.Round, parseErr == nil, out,
+		logstore.RenderRefuteMD(agentName, rec.Round, out.Positions, parseErr), res, "")
 	if parseErr != nil {
 		o.logf("WARNING: %s failed (%v); this reviewer casts no position", label, parseErr)
 		return nil, &step
@@ -4097,9 +4135,17 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 // human one paragraph. With that asymmetry the bar for deletion belongs at the top:
 // one reviewer still standing behind a defect is enough to keep it.
 //
-// Issues nobody took a position on are untouched. A reviewer that ran out of
-// context before reaching the last finding must not thereby delete it.
-func applyRefutations(rec *model.RoundRecord, byIssue map[string][]model.RefutePosition, logf func(string, ...any)) {
+// Unanimity is measured over the reviewers that RESPONDED, not over the positions
+// that happen to have arrived for one finding -- and the difference is the whole
+// safety property. Counting `refuted == len(positions)` made a single refuter
+// enough whenever the others simply omitted that id, which is the likely failure:
+// the contract asks for a position on every finding and nothing enforces coverage,
+// so a refuter working through thirty of them truncates. One reviewer could then
+// delete a finding on its own word, contradicting what the README, the config
+// documentation and the refutation prompt all promise.
+//
+// Issues nobody took a position on are untouched, for the same reason.
+func applyRefutations(rec *model.RoundRecord, byIssue map[string][]model.RefutePosition, responded int, logf func(string, ...any)) {
 	for i := range rec.Issues {
 		it := &rec.Issues[i]
 		positions := byIssue[it.ID]
@@ -4122,11 +4168,18 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string][]model.RefuteP
 			}
 		}
 		switch {
-		case refuted == len(positions):
+		case refuted == responded && len(positions) == responded:
 			it.Status = model.VerdictRejected
 			it.Verdict = model.VerdictRejected
 			it.VerdictDetail = "refuted by every reviewer that judged it: " + evidence
-			logf("refutation: %s dropped -- %d/%d refuted", it.ID, refuted, len(positions))
+			logf("refutation: %s dropped -- all %d responding reviewer(s) refuted it", it.ID, responded)
+		case refuted == len(positions) && len(positions) < responded:
+			// Everyone who spoke about this finding refuted it, but not everyone spoke.
+			// Silence is not agreement: the reviewers that omitted the id may never have
+			// looked at it. Kept and flagged rather than deleted on a partial count.
+			it.Contested = true
+			logf("refutation: %s refuted by %d of %d responding reviewer(s), the rest did not say -- kept",
+				it.ID, refuted, responded)
 		case refuted > 0:
 			// Kept, but the disagreement is recorded: a reader deciding what to do about
 			// this finding should know somebody who looked did not believe it.
@@ -4213,6 +4266,11 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 		parseErr = agent.ExtractJSON(res.Stdout, "review", &out)
 	}
 	rec.Steps = append(rec.Steps, stepStat("judge", j.Agent, j.Prompt, len(text), res, parseErr != nil))
+	// Persisted for the same reason as the refutation: a dropped finding's reason
+	// reaches the summary, but a KEPT one's does not, and neither does anything
+	// about how the judge weighed the rest.
+	o.logStep("judge", j.Agent, j.Prompt, rec.Round, parseErr == nil, out,
+		logstore.RenderJudgeMD(j.Agent, rec.Round, out.Verdicts, parseErr), res, "")
 	if parseErr != nil {
 		o.logf("WARNING: judge failed (%v); every finding stands and the review cannot approve", parseErr)
 		return false

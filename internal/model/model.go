@@ -252,11 +252,15 @@ type RunSummary struct {
 	// agents that edit code and the config holds the trust gates, so which FILE
 	// each name resolved to is part of the run's record -- a project-local prompt
 	// shadowing the installed one is otherwise invisible after the fact.
-	Sources    RunSources `json:"sources"`
-	Mode       string     `json:"mode"`
-	Path       string     `json:"path"`
-	Strategy   string     `json:"strategy"`
-	ReviewOnly bool       `json:"review_only"`
+	Sources RunSources `json:"sources"`
+	Mode    string     `json:"mode"`
+	// PR is the pull request this run reviewed, in pr mode. Recorded because the
+	// number is part of "what was run" and because publishing a finished run later
+	// has to know where it goes.
+	PR         int    `json:"pr,omitempty"`
+	Path       string `json:"path"`
+	Strategy   string `json:"strategy"`
+	ReviewOnly bool   `json:"review_only"`
 	// The effective limits and command-line assertions the run used. They are what
 	// make the counts readable after the fact: "17 deferred" means nothing without
 	// the per-round cap that deferred them, and "fix rounds ran" needs the flag that
@@ -285,6 +289,10 @@ type RunSummary struct {
 	// operator reading a summary should not have to infer from a log line whether
 	// their -post actually reached the forge.
 	ReviewPosted string `json:"review_posted,omitempty"`
+	// ReviewInline are the anchors the run computed for its findings, kept so a
+	// later publish sends exactly what this run produced rather than recomputing it
+	// against a diff that may have moved.
+	ReviewInline []ReviewAnchor `json:"review_inline,omitempty"`
 	// Verdict is set for a review-only run: what the review concluded, and why.
 	// A fix run has no verdict -- its outcome is the commits it made and the
 	// termination above.
@@ -589,4 +597,11 @@ func ValidJudgeVerdict(v string) bool {
 type FixReply struct {
 	Thread  string `json:"thread"`
 	Message string `json:"message"`
+}
+
+// ReviewAnchor is one inline comment as the summary carries it.
+type ReviewAnchor struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Body string `json:"body"`
 }

@@ -158,7 +158,10 @@ a YAML key here would let reviewed code arrange to have a review posted under th
 operator's identity — the same argument as the trust gates.
 
 Every run writes `review-body.md` at the root of its log directory — the document
-a human reads, and on the posting path the exact bytes that get sent.
+a human reads, and on the posting path the exact bytes that get sent. `fixpoint
+-post-run <that directory>` publishes it later without invoking an agent, which is
+what makes reading it first meaningful: re-running with `-post` would produce a
+different review, since the panel is not deterministic.
 
 `signature` is appended to it, with `{agents}` `{run}` `{version}` `{config}`
 `{verdict}` substituted. The default deliberately does **not** name fixpoint:

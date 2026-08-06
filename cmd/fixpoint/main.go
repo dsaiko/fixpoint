@@ -59,6 +59,7 @@ Flags:
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
 	post := fs.Bool("post", false, "publish the review on the pull request as a COMMENT: findings become visible, no verdict is acted on")
+	postRunDir := fs.String("post-run", "", "publish the review a FINISHED run already produced, from its .fixpoint/<run> directory; invokes no agent")
 	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
 	porcelain := fs.Bool("porcelain", false, "with --list, emit a stable tab-separated form for scripts and shell completion")
@@ -96,6 +97,14 @@ Flags:
 	// Modes that print something and exit, before any config is resolved.
 	if code, handled := earlyExit(resolver, projectRoot, positionals, *list, *porcelain, stdout, stderr); handled {
 		return code
+	}
+
+	// Publishing a finished run needs no configuration at all: everything it acts
+	// on -- the pull request, the body, the anchors -- is recorded in that run's own
+	// summary. Resolving a bundle here would let a config decide something about a
+	// review that was already produced under a different one.
+	if *postRunDir != "" {
+		return postRun(*postRunDir, *postVerdict, logf)
 	}
 
 	name, err := configName(positionals, *cfgPath)

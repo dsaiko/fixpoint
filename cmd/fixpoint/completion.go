@@ -33,7 +33,7 @@ var completionScripts = map[string]string{"bash": bashCompletion, "zsh": zshComp
 // deriving them would only be accurate until the next upgrade, which is a worse
 // kind of wrong than a list a reader can see and check.
 const completionFlags = "--list --porcelain --config --review-only --max-iterations --base-ref --pr " +
-	"--trusted-target --allow-untrusted-fix --post --post-verdict --check --check-live"
+	"--trusted-target --allow-untrusted-fix --post --post-verdict --post-run --check --check-live"
 
 const bashCompletion = `# fixpoint completion for bash. Install with:
 #   fixpoint completion bash > /etc/bash_completion.d/fixpoint
@@ -120,6 +120,7 @@ const zshFlagPairs = `'--list:list the configs available here' ` +
 	`'--allow-untrusted-fix:permit fix rounds in pr mode' ` +
 	`'--post:publish the review on the pull request as a comment' ` +
 	`'--post-verdict:with --post, let the review approve or request changes' ` +
+	`'--post-run:publish the review a finished run already produced' ` +
 	`'--check:validate the configuration and exit' ` +
 	`'--check-live:validate, ping every agent, and exit'`
 
@@ -148,6 +149,7 @@ complete -c fixpoint -l trusted-target -d 'assert the target holds trusted code,
 complete -c fixpoint -l allow-untrusted-fix -d 'permit fix rounds in pr mode'
 complete -c fixpoint -l post -d 'publish the review on the pull request as a comment'
 complete -c fixpoint -l post-verdict -d 'with --post, let the review approve or request changes'
+complete -c fixpoint -l post-run -d 'publish the review a finished run already produced'
 complete -c fixpoint -l check -d 'validate the configuration and exit'
 complete -c fixpoint -l check-live -d 'validate, ping every agent, and exit'
 `

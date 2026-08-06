@@ -528,3 +528,42 @@ func renderSources(sb *strings.Builder, src model.RunSources) {
 		}
 	}
 }
+
+// RenderRefuteMD is the human rendering of one reviewer's refutation pass.
+//
+// It exists so the round can be argued about afterwards. The positions carry the
+// evidence a reviewer offered, and the aggregate log line ("3 contested") throws
+// all of it away -- including, for an outvoted refuter, the entire argument.
+func RenderRefuteMD(agentName string, round int, positions []model.RefutePosition, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# refutation by %s (round %d)\n\n", agentName, round)
+	if err != nil {
+		fmt.Fprintf(&b, "**failed:** %v\n\n", err)
+	}
+	if len(positions) == 0 {
+		b.WriteString("_No positions returned._\n")
+		return b.String()
+	}
+	for _, p := range positions {
+		fmt.Fprintf(&b, "## %s — %s\n\n%s\n\n", p.Issue, p.Position, strings.TrimSpace(p.Evidence))
+	}
+	return b.String()
+}
+
+// RenderJudgeMD is the human rendering of the arbiter's pass. A dropped finding's
+// reason reaches the summary; a kept one's reaches nothing else.
+func RenderJudgeMD(agentName string, round int, verdicts []model.JudgeVerdict, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# judgment by %s (round %d)\n\n", agentName, round)
+	if err != nil {
+		fmt.Fprintf(&b, "**failed:** %v\n\n", err)
+	}
+	if len(verdicts) == 0 {
+		b.WriteString("_No verdicts returned._\n")
+		return b.String()
+	}
+	for _, v := range verdicts {
+		fmt.Fprintf(&b, "## %s — %s\n\n%s\n\n", v.Issue, v.Verdict, strings.TrimSpace(v.Reason))
+	}
+	return b.String()
+}

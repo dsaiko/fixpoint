@@ -6818,7 +6818,9 @@ func TestApplyRefutations(t *testing.T) {
 			if tc.positions != nil {
 				by["i1"] = tc.positions
 			}
-			applyRefutations(rec, by, func(string, ...any) {})
+			// Every case here has the whole panel responding; partial coverage is the
+			// subject of its own test below.
+			applyRefutations(rec, by, len(tc.positions), func(string, ...any) {})
 			got := rec.Issues[0]
 			if got.Status != tc.wantStatus {
 				t.Errorf("Status = %q, want %q", got.Status, tc.wantStatus)
@@ -6908,7 +6910,8 @@ func TestRefutationWithNoUsableRepliesKeepsEveryFinding(t *testing.T) {
 }
 
 // judgeRole points the fixture at a read-only judge.
-func (f *fixture) judgeRole(agentName string) {
+func (f *fixture) judgeRole() {
+	const agentName = "judgemock"
 	f.t.Helper()
 	if _, ok := f.cfg.Agents[agentName]; !ok {
 		f.cfg.Agents[agentName] = f.cfg.Agents["mock"]
@@ -6926,7 +6929,7 @@ func (f *fixture) judgeRole(agentName string) {
 func TestJudgeDropsAFindingAndRecordsWhy(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1})
 	f.reviewOnly("mock")
-	f.judgeRole("judgemock")
+	f.judgeRole()
 	f.respond(1, reviewResponse(t, model.ReviewFinding{
 		Category: "style", Severity: "high", File: "main.go", Line: 1, Title: "naming could be better"}))
 	f.respond(2, `<review>{"verdicts":[{"issue":"i1","verdict":"drop","reason":"style preference with no consequence named"}]}</review>`)
@@ -6953,7 +6956,7 @@ func TestJudgeDropsAFindingAndRecordsWhy(t *testing.T) {
 func TestJudgeFailureKeepsEveryFindingAndBlocksApproval(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1})
 	f.reviewOnly("mock")
-	f.judgeRole("judgemock")
+	f.judgeRole()
 	bad := f.cfg.Agents["judgemock"]
 	bad.Command = []string{"false"}
 	f.cfg.Agents["judgemock"] = bad
@@ -7317,4 +7320,127 @@ func (r *fakeReader) Threads(context.Context, string, int) ([]forge.Thread, erro
 func (r *fakeReader) Reply(_ context.Context, _ string, _ int, threadID, _ string) error {
 	*r.replied = append(*r.replied, threadID)
 	return nil
+}
+
+// A refuter that omits a finding has not agreed with the one that refuted it.
+//
+// Unanimity is measured over the reviewers that RESPONDED, not over the positions
+// that happen to have arrived for one finding. Counting the latter let a single
+// refuter delete a finding whenever the others truncated their reply -- the likely
+// failure, since the contract asks for full coverage and nothing enforces it.
+func TestRefutationNeedsEveryResponderNotEveryPositionReceived(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		positions  []model.RefutePosition
+		responded  int
+		wantStatus string
+		contested  bool
+	}{
+		{
+			"one refuter, three responded: the silent two never said they agreed",
+			[]model.RefutePosition{{Issue: "i1", Position: model.PositionRefute, Evidence: "guarded"}},
+			3, "", true,
+		},
+		{
+			"two of three refuted, one silent",
+			[]model.RefutePosition{
+				{Issue: "i1", Position: model.PositionRefute, Evidence: "guarded"},
+				{Issue: "i1", Position: model.PositionRefute, Evidence: "unreachable"},
+			},
+			3, "", true,
+		},
+		{
+			"all three responded and all three refuted",
+			[]model.RefutePosition{
+				{Issue: "i1", Position: model.PositionRefute, Evidence: "guarded"},
+				{Issue: "i1", Position: model.PositionRefute, Evidence: "unreachable"},
+				{Issue: "i1", Position: model.PositionRefute, Evidence: "not the code that is there"},
+			},
+			3, model.VerdictRejected, false,
+		},
+		{
+			"a lone responder that refutes is still unanimous among responders",
+			[]model.RefutePosition{{Issue: "i1", Position: model.PositionRefute, Evidence: "guarded"}},
+			1, model.VerdictRejected, false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &model.RoundRecord{Issues: []model.Issue{{ID: "i1", Severity: "high", Title: "t"}}}
+			applyRefutations(rec, map[string][]model.RefutePosition{"i1": tc.positions}, tc.responded, func(string, ...any) {})
+			if got := rec.Issues[0].Status; got != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", got, tc.wantStatus)
+			}
+			if rec.Issues[0].Contested != tc.contested {
+				t.Errorf("Contested = %v, want %v", rec.Issues[0].Contested, tc.contested)
+			}
+		})
+	}
+}
+
+// The refutation and judge passes must leave artifacts, not just a count in the
+// log. Their product is judgment WITH EVIDENCE: an outvoted refuter's argument
+// exists nowhere else, and "who refuted what, on what grounds" was unanswerable
+// even from a run you had in front of you.
+func TestRefutationAndJudgmentAreRecordedAsArtifacts(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.refuteLens()
+	f.judgeRole()
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "bug", Severity: "high", File: "main.go", Line: 1, Title: "a finding"}))
+	f.respond(2, `<review>{"positions":[{"issue":"i1","position":"maintain","evidence":"main.go:1 still reads that way"}]}</review>`)
+	f.respond(3, `<review>{"verdicts":[{"issue":"i1","verdict":"keep","reason":"a real defect worth reporting"}]}</review>`)
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct{ glob, content string }{
+		{"refute-*-refute-*.md", "main.go:1 still reads that way"},
+		{"refute-*-refute-*.json", "maintain"},
+		{"judge-*-judge-*.md", "a real defect worth reporting"},
+		{"judge-*-judge-*.json", "keep"},
+	} {
+		matches, err := filepath.Glob(filepath.Join(f.cfg.Logs.StaticBase(), "*", "round-1", want.glob))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) == 0 {
+			t.Errorf("no artifact matched %s; the round is unauditable without it", want.glob)
+			continue
+		}
+		b, err := os.ReadFile(matches[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), want.content) {
+			t.Errorf("%s does not carry the reviewer's own words (%q):\n%s", want.glob, want.content, b)
+		}
+	}
+}
+
+// The guard that a stopped judge fails closed had no test, and it had already
+// regressed once: an interrupted review reported APPROVE with exit 0 over findings
+// nothing had filtered.
+func TestACancelledJudgeCannotReportItselfAsHavingFiltered(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.judgeRole()
+
+	o := f.orchestrator()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rec := &model.RoundRecord{
+		Round:  1,
+		Issues: []model.Issue{{ID: "i1", Severity: "low", Title: "minor"}},
+	}
+	if ran := o.runJudge(ctx, rec, "material"); ran {
+		t.Error("runJudge reported a stopped judge as having filtered")
+	}
+	// And the verdict must refuse to approve on that basis, even with nothing
+	// blocking: a review whose filter never ran has not been filtered.
+	sum := &model.RunSummary{}
+	o.decideVerdict(ctx, rec, sum, false)
+	if sum.Verdict.Outcome == model.VerdictApprove {
+		t.Errorf("verdict = approve after an unfiltered review: %v", sum.Verdict.Reasons)
+	}
 }
