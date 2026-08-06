@@ -112,7 +112,7 @@ Every fix is made in its own coder session and committed on its own.
 `per_round` squashes each round into one, `per_run` squashes the whole run — and
 `loop.commit_message` supplies the header, with `{issue}`/`{title}` for a single fix
 and `{round}`/`{fixed}`/`{rejected}` for a squashed one. See
-[One fix, one commit](../README.md#one-fix-one-commit) in the root README for why the
+[One fix, one commit](../docs/concepts.md#one-fix-one-commit) in the root README for why the
 one-issue-per-session rule is not itself configurable, and why
 `loop.max_findings_per_round` no longer defaults to 8.
 
@@ -123,8 +123,10 @@ recorded. No model is asked for it.
 
 ```yaml
 review:
-  block_at: high        # severity that forces CHANGES_REQUESTED (default: high)
-  signature: "..."      # appended to the review; see below
+  block_at: high            # severity that forces CHANGES_REQUESTED (default: high)
+  refute_at: high           # floor for the refutation round (default: high)
+  signature: "..."          # appended to the review; see below
+  reply_signature: "..."    # appended to a conversation reply
 ```
 
 The rules apply in this order:
@@ -176,6 +178,14 @@ panel" is the fact that changes how much weight the comment deserves. It is rend
 placed **outside** every region carrying agent text: a signature composed from a
 finding's prose could be forged by whatever wrote that prose.
 
+`reply_signature` does the same for an answer posted into a conversation, and it
+is a separate key because a reply is not a review: the default reads *"Answered by
+AI panel"* rather than "Reviewed by", and its `{agents}` is the single coder that
+wrote the answer, not the panel. Neither can be switched off — a blank template
+falls back to the default. A reply arrives in a human's notifications under their
+own question, looking exactly like a colleague's, and it is the one place in this
+tool where a reader could be misled about who they are talking to.
+
 ## The refutation round and the judge
 
 ```yaml
@@ -185,11 +195,19 @@ review:
   refute: refute                            # naming the prompt enables the round
 ```
 
-After the panel reports, `refute` shows every reviewer the **merged** finding set
-and asks for an evidenced position on each: maintain, refute, or unsure. What all
-of them refute is dropped; one holdout keeps a finding, marked contested. Nobody
-answering drops nothing — reading silence as unanimous refutation is the one
-catastrophic misreading available here.
+After the panel reports, `refute` shows every reviewer the findings at
+`refute_at` or above and asks for an evidenced position on each: maintain, refute,
+or unsure. What all of them refute is dropped; one holdout keeps a finding, marked
+contested. Nobody answering drops nothing — reading silence as unanimous refutation
+is the one catastrophic misreading available here.
+
+`refute_at` defaults to `high`, the same floor as `block_at`, and may be looser but
+never stricter — a stricter one is refused at load, because a blocking finding the
+round never saw is one the judge could then never drop however wrong it was. The
+scope is measured: over the two runs that put every finding to the round (97 of
+them) it returned 29 contested and dropped **zero** unanimously, so as a filter it
+has never fired. What pays for it is the judge gate below, which covers blocking
+findings only. Set `refute_at: low` to refute everything.
 
 `roles.judge` then decides which survivors are worth reporting. It is a separate
 role from the coder because the coder is `can_edit`, and a `review-` config's

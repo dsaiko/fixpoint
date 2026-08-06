@@ -58,5 +58,11 @@ loop:
 # more than one reviewer, and NONE of the 25 the coder rejected as false positives
 # were among them. An intersection would have filtered none of the noise while
 # discarding 237 of 248 confirmed defects.
+#
+# refute_at (default high, inherited) decides WHICH findings it is asked about: the
+# ones the judge gate protects. The round costs a full pass per reviewer per round
+# and has never dropped anything -- 97 findings over two measured runs, 29
+# contested, zero unanimous -- so it is kept for the gate, not as a filter, and
+# scoped to what the gate covers. Set refute_at: low to put everything to it.
 review:
   refute: refute
