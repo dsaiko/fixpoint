@@ -265,6 +265,78 @@ func TestGitHubPostRefusesAfterTheHeadMoved(t *testing.T) {
 	}
 }
 
+// stubGHMovingHead answers the FIRST head read with before and every later one with
+// after, which is the author pushing into the window between requireHead's read and
+// the submission. It records the submitted payload like stubGH, so a test can tell
+// "refused before publishing" apart from "published, then noticed".
+func stubGHMovingHead(t *testing.T, before, after string) (dir string, payload func() string) {
+	t.Helper()
+	bin := t.TempDir()
+	capture := filepath.Join(bin, "payload.json")
+	seen := filepath.Join(bin, "head-read")
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"*'--json headRefOid'*) if [ -f " + seen + " ]; then printf '{\"headRefOid\":\"" + after + "\"}'; " +
+		"else : > " + seen + "; printf '{\"headRefOid\":\"" + before + "\"}'; fi ;;\n" +
+		"*'--json url'*) printf '{\"url\":\"https://example.test/pr/7\"}' ;;\n" +
+		"*'api --method POST'*) cat > " + capture + " ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return t.TempDir(), func() string {
+		raw, err := os.ReadFile(capture)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+}
+
+// requireHead reads the head and the submission is a separate round trip, so a push
+// landing in between passes the check on a stale snapshot. commit_id keeps the review
+// itself about the reviewed commit, but GitHub accepts an approval for a commit that
+// is no longer the head, and that approval counts toward the pull request unless the
+// repository dismisses stale reviews. It cannot be un-posted -- it must not be
+// reported as a clean approval either.
+func TestAnApprovalThatLandedOnAMovedHeadIsNotReportedAsSuccess(t *testing.T) {
+	const reviewed = "0123456789abcdef0123456789abcdef01234567"
+	dir, payload := stubGHMovingHead(t, reviewed, "fedcba9876543210fedcba9876543210fedcba98")
+
+	url, err := (githubProvider{}).PostReview(t.Context(), dir, 7, reviewed, "the review", EventApprove, nil)
+	if err == nil {
+		t.Fatal("PostReview() = nil; an approval on a head nobody reviewed was reported as a clean post")
+	}
+	if payload() == "" {
+		t.Fatal("nothing was submitted -- this must exercise the post-submission check, not requireHead")
+	}
+	for _, want := range []string{"PUBLISHED", "dismissed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the report does not tell the operator what happened (%q): %v", want, err)
+		}
+	}
+	// The review is on the pull request, so the caller must still be able to name it.
+	if url == "" {
+		t.Error("no URL was returned for a review that was published")
+	}
+	// A second submission here would put two reviews on somebody's pull request.
+	if AnchorRejection(err) {
+		t.Errorf("a published-then-moved approval must not look like an anchor rejection: %v", err)
+	}
+}
+
+// Only the approval is alarmed on. A comment review that lands on a moved head is
+// stale, not dangerous, and turning that into a nonzero exit trains operators to
+// ignore the one message that matters.
+func TestACommentReviewIsNotAlarmedOnWhenTheHeadMoves(t *testing.T) {
+	const reviewed = "0123456789abcdef0123456789abcdef01234567"
+	dir, _ := stubGHMovingHead(t, reviewed, "fedcba9876543210fedcba9876543210fedcba98")
+
+	if _, err := (githubProvider{}).PostReview(t.Context(), dir, 7, reviewed, "the review", Comment, nil); err != nil {
+		t.Errorf("PostReview() = %v, want nil -- a comment grants nothing", err)
+	}
+}
+
 // stubGHRefusingInline answers the head read, then fails the inline submission
 // with the given stderr line, the way gh reports whatever the API answered. The
 // returned func reports what -- if anything -- the body-only path submitted.

@@ -385,6 +385,12 @@ type Poster interface {
 // operator's identity, and "which commit does this land on?" unanswered is not a
 // license to take it. It costs nothing in practice: the same CLI does the posting,
 // so a call that cannot read the head could not have published either.
+//
+// It is a check, though, and the act is a separate round trip: on its own it refuses
+// a head that moved BEFORE the read, not one that moves between the read and the
+// submission. commit_id binds the review to the commit for GitHub, gitlabApprove's
+// sha does for GitLab, and confirmApproval reports the residue GitHub's API cannot
+// refuse -- an approval that was accepted for a commit which is no longer the head.
 func requireHead(pr int, reviewed, current string) error {
 	if reviewed == "" {
 		return fmt.Errorf("refusing to post on #%d: the run did not record which commit it reviewed, so the review cannot be bound to one -- review again to produce a run that can be published", pr)
@@ -501,7 +507,54 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 	}
 	// gh prints nothing useful on success, so the URL is read back rather than
 	// parsed out of its output.
-	return latestReviewURL(ctx, dir, pr), nil
+	url := latestReviewURL(ctx, dir, pr)
+	// Published either way -- the URL is returned even when the check below refuses
+	// to call it a clean approval, because a caller that wants to name what has to be
+	// dismissed needs it.
+	return url, confirmApproval(ctx, dir, pr, head, event, url)
+}
+
+// confirmApproval re-reads the head AFTER an approval has been submitted, and
+// refuses to report a clean post when the pull request moved while it was in flight.
+//
+// requireHead is a check-then-act: it reads the head, and the submission that
+// follows is a separate round trip. commit_id closes that gap for what the review
+// SAYS -- the forge records it against the commit that was read, and marks its
+// comments outdated once the branch moves -- but not for what it GRANTS. GitHub
+// accepts a commit_id that is no longer the head, and the approval it then records
+// counts toward whatever the pull request proposes next, unless the repository
+// happens to dismiss stale reviews. An author who pushes into that window collects
+// an approval for code nobody read: the attack requireHead exists to refuse,
+// narrowed to the read-to-submit window rather than closed.
+//
+// Nothing here can withdraw what is already on the pull request. What it can do is
+// stop calling it a success: the mismatch comes back as an error, so the caller logs
+// it and the run exits nonzero, and the message names the review a human has to
+// dismiss before anyone merges on it. A read that fails counts too -- "the approval
+// is bound" is a claim, and an unanswered head read does not support it.
+//
+// APPROVALS only. A comment review that lands on a moved head is stale, not
+// dangerous, and REQUEST_CHANGES errs in the harmless direction for the same reason
+// GitLab's unapprove does: neither can clear code nobody read. Alarming on those
+// would spend an operator's attention -- and an exit code -- on a post that cost
+// nothing.
+func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, event Event, url string) error {
+	if event != EventApprove {
+		return nil
+	}
+	where := ""
+	if url != "" {
+		where = " (" + url + ")"
+	}
+	cur, err := githubHead(ctx, dir, pr)
+	if err != nil {
+		return fmt.Errorf("the approval was PUBLISHED on #%d%s, but whether it is still the head could not be established afterwards (%w) -- confirm it before merging", pr, where, err)
+	}
+	if !strings.EqualFold(reviewed, cur) {
+		return fmt.Errorf("the approval was PUBLISHED on #%d%s, but the head moved while it was in flight (reviewed %s, now %s) -- it approves a commit nobody read and has to be dismissed before merging",
+			pr, where, shortSHA(reviewed), shortSHA(cur))
+	}
+	return nil
 }
 
 // githubSubmitReview submits one review carrying the summary and whatever per-line
