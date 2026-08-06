@@ -44,6 +44,9 @@ type Orchestrator struct {
 	// be asked. Zero value means "not known", which never blocks a verdict but is
 	// recorded in its reasons -- see internal/review.CI.
 	ci review.CI
+	// material is the round's collected diff, kept so the poster can tell which
+	// lines a forge will accept a comment on.
+	material string
 	// threads are the pull request's OPEN review conversations, read once at start.
 	// Empty for every target that is not a pull request, and for a forge that
 	// cannot be asked.
@@ -1892,6 +1895,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	if o.cfg.Loop.ReviewOnly {
 		// Judge the merged set before concluding anything from it: the verdict, the
 		// review body and the exit code all read what survives this.
+		o.material = material
 		o.runRefutation(ctx, recP, material)
 		judged := o.runJudge(ctx, recP, material)
 		// Re-checked HERE, not only above: the two phases between that check and this
@@ -4319,7 +4323,7 @@ func (o *Orchestrator) postReview(ctx context.Context, rec *model.RoundRecord, s
 		// event for "the review did not finish", and the two that exist would both be
 		// lies about a panel that never reached quorum.
 	}
-	inline := inlineComments(rec)
+	inline := inlineComments(rec, o.material)
 	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, body, event, inline)
 	if err != nil && len(inline) > 0 && strings.HasPrefix(err.Error(), "inline:") {
 		// The forge refused the anchors, not the review. Publishing the summary alone
@@ -4351,14 +4355,20 @@ func (o *Orchestrator) postReview(ctx context.Context, rec *model.RoundRecord, s
 // The text is the finding's own, already sanitized by the body renderer's rules,
 // with the severity leading so a reader skimming the Files tab can tell a blocker
 // from a note without opening anything.
-func inlineComments(rec *model.RoundRecord) []forge.InlineComment {
+func inlineComments(rec *model.RoundRecord, diff string) []forge.InlineComment {
+	// A forge accepts an anchor only inside the pull request's own diff, and it
+	// rejects the WHOLE review when one falls outside -- with a 422 that names
+	// nothing. Measured on this project's own pull request: without this filter
+	// every anchor was refused, every time, because most findings point at code the
+	// change did not touch.
+	addressable := forge.AddressableLines(diff)
 	out := make([]forge.InlineComment, 0, len(rec.Issues))
 	for _, it := range rec.Issues {
 		switch it.StatusOrDefault() {
 		case model.VerdictFixed, model.VerdictRejected:
 			continue
 		}
-		if it.File == "" || it.Line <= 0 {
+		if it.File == "" || it.Line <= 0 || !addressable[it.File][it.Line] {
 			continue
 		}
 		out = append(out, forge.InlineComment{

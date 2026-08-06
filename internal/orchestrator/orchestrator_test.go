@@ -7146,7 +7146,10 @@ func TestInlineCommentsCoverLocatedSurvivingFindingsOnly(t *testing.T) {
 		{ID: "i3", Severity: "high", File: "b.go", Line: 3, Title: "dropped", Status: model.VerdictRejected},
 		{ID: "i4", Severity: "low", File: "c.go", Line: 0, Title: "file but no line"},
 	}}
-	got := inlineComments(rec)
+	// Every finding's line is inside this diff, so the filter keeps what it should.
+	diff := "+++ b/a.go\n@@ -1,20 +1,20 @@\n" + strings.Repeat(" x\n", 20) +
+		"+++ b/b.go\n@@ -1,5 +1,5 @@\n" + strings.Repeat(" y\n", 5)
+	got := inlineComments(rec, diff)
 	if len(got) != 1 {
 		t.Fatalf("got %d inline comments, want 1: %+v", len(got), got)
 	}
@@ -7187,6 +7190,9 @@ func TestInlineRejectionFallsBackToTheSummaryAlone(t *testing.T) {
 		Assignments: []model.Assignment{{Agent: "mock", Lens: "review"}},
 		Issues:      []model.Issue{{ID: "i1", Severity: "high", File: "a.go", Line: 9, Title: "boom"}},
 	}
+	// a.go:9 is inside this diff, so an anchor IS produced -- which is what makes
+	// the rejection path reachable at all.
+	o.material = "+++ b/a.go\n@@ -1,12 +1,12 @@\n" + strings.Repeat(" x\n", 12)
 	sum := &model.RunSummary{}
 	o.writeReviewBody(t.Context(), rec, sum, review.Decide(review.Input{
 		Issues: rec.Issues, Quorum: review.QuorumFrom(rec.Assignments, nil)}))

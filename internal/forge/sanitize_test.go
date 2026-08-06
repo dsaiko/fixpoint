@@ -194,3 +194,62 @@ func TestBothProvidersCanPost(*testing.T) {
 	var _ Poster = githubProvider{}
 	var _ Poster = gitlabProvider{}
 }
+
+// The filter is what makes inline comments land at all: a forge rejects the whole
+// review when one anchor falls outside the diff, and most findings point at code
+// the change did not touch.
+func TestAddressableLinesReadsTheNewSideOfEveryHunk(t *testing.T) {
+	diff := `diff --git a/keep.go b/keep.go
+--- a/keep.go
++++ b/keep.go
+@@ -10,3 +10,4 @@ func x() {
+ context at 10
+-removed, old side only
++added at 11
+ context at 12
++added at 13
+diff --git a/gone.go b/gone.go
+--- a/gone.go
++++ /dev/null
+@@ -1,2 +0,0 @@
+-all gone
+-really gone
+`
+	got := AddressableLines(diff)
+	want := map[int]bool{10: true, 11: true, 12: true, 13: true}
+	if len(got["keep.go"]) != len(want) {
+		t.Fatalf("keep.go lines = %v, want %v", got["keep.go"], want)
+	}
+	for line := range want {
+		if !got["keep.go"][line] {
+			t.Errorf("line %d should be addressable: %v", line, got["keep.go"])
+		}
+	}
+	// A line the change removed exists only on the old side; a RIGHT comment cannot
+	// name it, and asking for one is what gets the whole review refused.
+	if got["keep.go"][14] {
+		t.Error("a line past the hunk was reported as addressable")
+	}
+	if len(got["gone.go"]) != 0 {
+		t.Errorf("a deleted file has no side to comment on: %v", got["gone.go"])
+	}
+}
+
+// Context lines count, not just additions: a finding about a line the change
+// merely moved past is still anchorable.
+func TestAddressableLinesIncludesContextNotJustAdditions(t *testing.T) {
+	got := AddressableLines("+++ b/a.go\n@@ -5,2 +5,2 @@\n unchanged\n unchanged too\n")
+	if !got["a.go"][5] || !got["a.go"][6] {
+		t.Errorf("context lines should be addressable: %v", got["a.go"])
+	}
+}
+
+// Junk must not panic or invent anchors -- the input is a diff of code somebody
+// else wrote.
+func TestAddressableLinesIgnoresMalformedInput(t *testing.T) {
+	for _, in := range []string{"", "not a diff at all", "@@ nonsense @@\n line", "+++ b/a.go\n@@ -x,y +z,w @@\n line"} {
+		if got := AddressableLines(in); len(got) != 0 {
+			t.Errorf("AddressableLines(%q) = %v, want nothing", in, got)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package forge
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -90,3 +91,77 @@ var (
 // A team handle (`@org/team`) notifies a whole group, and it is matched by the
 // same rule: the break lands on the @ itself, so everything after it is inert.
 func breakMentions(s string) string { return mention.ReplaceAllString(s, "$1@<!---->$2") }
+
+// AddressableLines reports which lines of which files a forge will accept a
+// comment on: the new-file side of every hunk in a unified diff.
+//
+// Without this the feature never lands. A review comment can only anchor inside
+// the pull request's own diff, and most findings point at code the change did not
+// touch -- the guard three functions up, the caller in another file. GitHub
+// rejects the ENTIRE review when one comment falls outside, with a 422 that names
+// nothing, so a single such finding silently costs every anchor on the review.
+// Measured on this project's own pull request: every inline comment was refused.
+//
+// Context lines count, not just additions. A finding about a line the change
+// merely moved past is still anchorable, and GitHub accepts it as long as the
+// line appears in a hunk.
+func AddressableLines(diff string) map[string]map[int]bool {
+	out := map[string]map[int]bool{}
+	var path string
+	var newLine int
+	inHunk := false
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++ "):
+			// "+++ b/path" -- and "+++ /dev/null" for a deletion, which has no side to
+			// comment on.
+			path = strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, "+++ ")), "b/")
+			if path == "/dev/null" {
+				path = ""
+			}
+			inHunk = false
+		case strings.HasPrefix(line, "@@"):
+			start, ok := hunkNewStart(line)
+			inHunk = ok && path != ""
+			newLine = start
+		case !inHunk:
+			continue
+		// Inside a hunk ONLY these three prefixes are content; anything else ends it.
+		// Counting by "not a header I recognize" instead let `diff --git`, `index`
+		// and `similarity index` lines advance the counter and hand back anchors one
+		// past the end of the hunk -- which is exactly the kind of line a forge
+		// refuses, taking the whole review with it.
+		case strings.HasPrefix(line, "+"), strings.HasPrefix(line, " "):
+			if out[path] == nil {
+				out[path] = map[int]bool{}
+			}
+			out[path][newLine] = true
+			newLine++
+		case strings.HasPrefix(line, "-"):
+			// Removed: it exists only on the old side, which RIGHT comments cannot name.
+		case strings.HasPrefix(line, "\\"):
+			// "\ No newline at end of file" -- a note about the previous line.
+		default:
+			inHunk = false
+		}
+	}
+	return out
+}
+
+// hunkNewStart pulls the new-file start line out of "@@ -a,b +c,d @@".
+func hunkNewStart(header string) (int, bool) {
+	plus := strings.Index(header, "+")
+	if plus < 0 {
+		return 0, false
+	}
+	rest := header[plus+1:]
+	end := strings.IndexAny(rest, ", @")
+	if end < 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
