@@ -356,7 +356,11 @@ attention — the value judgment the coder makes in a fix run, in hands that can
 edit. It became necessary rather than optional when the verdict gained a hard
 severity gate: if one `high` blocks a merge, something must filter severity before
 the gate, or the noisiest reviewer decides the outcome. It fails closed — a judge
-that dies leaves every finding standing and blocks the approval.
+that dies leaves every finding standing and blocks the approval — and it cannot
+delete a blocker alone: dropping a finding at or above the blocking severity is
+honoured only where the refutation round already doubted it, so removing what would
+block a merge takes two independent agents rather than the one that could be talked
+around by the code it is reading.
 
 **Verdict.** Computed in code, never asked of a model. See
 [config/README.md](config/README.md#what-a-review-run-concludes) for the rules,

@@ -4391,7 +4391,7 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 		o.logf("WARNING: judge failed (%v); every finding stands and the review cannot approve", parseErr)
 		return false
 	}
-	applyJudgment(rec, out.Verdicts, o.logf)
+	applyJudgment(rec, out.Verdicts, o.cfg.Review.BlockAt, o.logf)
 	return true
 }
 
@@ -4412,7 +4412,27 @@ func undecidedIssues(rec *model.RoundRecord) []model.Issue {
 // A finding it does not mention is KEPT. The judge is a filter, and a filter that
 // removes what it forgot to consider is not a filter -- it is a leak whose size
 // depends on how long the reply was.
-func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, logf func(string, ...any)) {
+//
+// A drop with no reason is also kept. The reason is the only thing standing between
+// a filter and an unaccountable one, and an empty string cannot be disagreed with.
+//
+// Above all, ONE judge cannot delete a BLOCKING finding on its own word. The judge
+// prompt already forbids dropping a high or critical for cost or unlikelihood --
+// only for being wrong -- but a prompt is not a control: this single agent reads the
+// same untrusted material the panel read, so a pull request carrying injection text
+// aimed at the judge could retract exactly the finding that was about to block it,
+// and -post-verdict would then approve it. Code cannot check whether the judge
+// PROVED a finding wrong, so it checks the one mechanical fact that a second,
+// independent agent produced: the refutation round recorded disagreement about it.
+// A blocking finding every responding reviewer stood behind survives the judge, and
+// the verdict blocks -- the wrong answer costs a human one paragraph, and the other
+// wrong answer is an approval nobody gave. Two agents must now agree to remove a
+// blocker, one of them in a round that never sees the judge's reasoning.
+func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockAt string, logf func(string, ...any)) {
+	if blockAt == "" {
+		blockAt = review.DefaultBlockAt
+	}
+	floor := model.SeverityRank(blockAt)
 	decided := map[string]model.JudgeVerdict{}
 	for _, v := range verdicts {
 		if !model.ValidJudgeVerdict(v.Verdict) {
@@ -4428,10 +4448,23 @@ func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, logf f
 		if !ok || v.Verdict != model.JudgeDrop || it.StatusOrDefault() == model.VerdictRejected {
 			continue
 		}
+		reason := strings.TrimSpace(v.Reason)
+		if reason == "" {
+			logf("WARNING: judge dropped %s with no reason; a drop nobody can argue with is not a judgment -- kept", it.ID)
+			continue
+		}
+		if model.SeverityRank(it.Severity) <= floor && !it.Contested {
+			// Recorded as contested for the reader: the judge is a reviewer of the panel's
+			// work, and its dissent is evidence even when it is not authority.
+			it.Contested = true
+			logf("judge: %s is %s and no reviewer refuted it, so one judge may not drop it alone -- kept and contested (%s)",
+				it.ID, model.NormalizeSeverity(it.Severity), firstLineOf(reason))
+			continue
+		}
 		it.Status = model.VerdictRejected
 		it.Verdict = model.VerdictRejected
 		it.VerdictDetail = "judged not worth reporting: " + v.Reason
-		logf("judge: %s dropped -- %s", it.ID, firstLineOf(v.Reason))
+		logf("judge: %s dropped -- %s", it.ID, firstLineOf(reason))
 	}
 }
 

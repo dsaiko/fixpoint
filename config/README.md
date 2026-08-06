@@ -195,7 +195,13 @@ catastrophic misreading available here.
 role from the coder because the coder is `can_edit`, and a `review-` config's
 promise is that it invokes nothing that can modify the target. A finding the judge
 does not mention is kept: a filter that removes what it forgot to consider is a
-leak, not a filter.
+leak, not a filter. Neither is a drop with no reason, nor — and this one is a
+security control, not a taste — a drop of a finding at or above `review.block_at`
+that the refutation round did not already doubt. The judge reads the same untrusted
+code the panel read, so no single agent may delete the finding that blocks a merge:
+that takes the judge *and* a refuter, and the refuter never sees the judge's
+reasoning. Such a finding is kept and marked contested, carrying the judge's dissent
+to the reader.
 
 A `review-` config needs no `roles.coder` at all.
 
