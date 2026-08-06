@@ -7469,6 +7469,51 @@ func TestACancelledJudgeCannotReportItselfAsHavingFiltered(t *testing.T) {
 	}
 }
 
+// An advisory lens gates nothing for the findings, so it must not gate the
+// verdict either. Counting its failure among the quorum's made a reviewer that
+// answered every panel lens Missing over a lens QuorumFrom deliberately excludes
+// from the panel -- enough, on a panel of three, to turn APPROVE into
+// INCONCLUSIVE and exit 5 over a review whose gating half succeeded.
+func TestAFailedAdvisoryLensDoesNotCostAQuorumSlot(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock", "mock2", "mock3")
+
+	o := f.orchestrator()
+	rec := &model.RoundRecord{
+		Round: 1,
+		Assignments: []model.Assignment{
+			{Agent: "mock", Lens: "review-bugs"},
+			{Agent: "mock2", Lens: "review-bugs"},
+			{Agent: "mock3", Lens: "review-bugs"},
+			{Agent: "mock2", Lens: "review-design", Advisory: true},
+		},
+		Steps: []model.StepStat{
+			{Role: "review", Agent: "mock", Lens: "review-bugs"},
+			{Role: "review", Agent: "mock2", Lens: "review-bugs"},
+			{Role: "review", Agent: "mock3", Lens: "review-bugs"},
+			{Role: "review", Agent: "mock2", Lens: "review-design", Failed: true},
+		},
+	}
+	sum := &model.RunSummary{}
+	o.decideVerdict(t.Context(), rec, sum, true)
+	if sum.Verdict.Present != 3 || len(sum.Verdict.Missing) != 0 {
+		t.Errorf("present = %d, missing = %v; the advisory failure took a panel member out",
+			sum.Verdict.Present, sum.Verdict.Missing)
+	}
+	if sum.Verdict.Outcome != model.VerdictApprove {
+		t.Errorf("verdict = %s, want approve: every gating lens was answered (%v)",
+			sum.Verdict.Outcome, sum.Verdict.Reasons)
+	}
+
+	// The same agent failing a GATING lens must still cost it its slot.
+	rec.Steps[1].Failed = true
+	o.decideVerdict(t.Context(), rec, sum, true)
+	if sum.Verdict.Present != 2 || len(sum.Verdict.Missing) != 1 {
+		t.Errorf("present = %d, missing = %v; a failed panel lens must deny quorum",
+			sum.Verdict.Present, sum.Verdict.Missing)
+	}
+}
+
 // One reviewer must not be able to forge unanimity by repeating itself.
 //
 // Counting position RECORDS instead of distinct agents let a single

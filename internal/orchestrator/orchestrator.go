@@ -3843,11 +3843,31 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 // which of their steps failed, and what survived as issues. Nothing here asks a
 // model anything -- see internal/review for why the verdict must not.
 func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, judged bool) {
+	// Only failures on GATING lenses may deny a quorum. An advisory lens is
+	// reported for a human and QuorumFrom leaves it out of the panel entirely, so
+	// counting its failure here would let a lens that gates nothing for the
+	// findings gate everything for the verdict: an agent that answered every
+	// gating lens and merely timed out on an advisory one would be Missing, and on
+	// a small panel that alone turns an approval into INCONCLUSIVE.
+	//
+	// Assignment.Lens is the configured reference and StepStat.Lens the basename it
+	// was logged under, so the two are matched through config.LensName.
+	advisory := map[string]bool{}
+	for _, a := range rec.Assignments {
+		if a.Advisory {
+			advisory[a.Agent+"\x00"+config.LensName(a.Lens)] = true
+		}
+	}
 	failed := map[string]int{}
 	for _, st := range rec.Steps {
-		if st.Role == "review" && st.Failed {
-			failed[st.Agent]++
+		if st.Role != "review" || !st.Failed {
+			continue
 		}
+		if advisory[st.Agent+"\x00"+st.Lens] {
+			o.logf("advisory lens %s failed for %s; it gates nothing, so it does not cost a quorum slot", st.Lens, st.Agent)
+			continue
+		}
+		failed[st.Agent]++
 	}
 	d := review.Decide(review.Input{
 		Issues:       rec.Issues,
