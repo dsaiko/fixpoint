@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dsaiko/fixpoint/internal/model"
+	"github.com/dsaiko/fixpoint/internal/forge"
 )
 
 // DefaultSignature is what a review is signed with when a config says nothing.
@@ -44,11 +44,17 @@ func Signature(tmpl string, f SignatureFacts) string {
 		"{config}", f.Config,
 		"{verdict}", f.Verdict,
 	)
-	// StripControl for the same reason the body's text goes through it: the config
-	// this template came from may have been shipped by the repository under review.
-	// One line: a signature that could carry a newline could append a second,
-	// unsigned-looking paragraph to a posted review.
-	return strings.ReplaceAll(model.StripControl(r.Replace(tmpl)), "\n", " ")
+	// Through the SAME forge funnel as the body's text (mdText), for the same reason:
+	// the config this template came from -- and the agent and config names it
+	// substitutes -- may have been shipped by the repository under review. An agent
+	// named `@victim` or `closer#1`, or a custom template writing `Closes #1`, would
+	// otherwise make the posted review notify a stranger or close an issue under the
+	// operator's identity, from the one region of the document that is placed after
+	// all agent text precisely because it is meant to be fixpoint's own words.
+	//
+	// One line, after sanitizing: a signature that could carry a newline could append
+	// a second, unsigned-looking paragraph to a posted review.
+	return strings.ReplaceAll(forge.SanitizeText(r.Replace(tmpl)), "\n", " ")
 }
 
 // SignatureFacts are the values a signature may name. Every one is fixpoint's own

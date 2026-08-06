@@ -191,6 +191,31 @@ func TestSignatureIsOneLineAndStripsControls(t *testing.T) {
 	}
 }
 
+// Everything a signature substitutes -- the agent names, the config name, the
+// template itself -- can come from the repository under review, which validates
+// agent names against path separators and nothing else. So the rendered signature
+// goes through the same forge funnel as agent prose: an agent called @victim must
+// not notify a stranger, and a target-supplied template must not close an issue,
+// from the one region of the review that is fixpoint speaking for itself.
+func TestSignatureIsSanitizedForForgeSyntax(t *testing.T) {
+	got := Signature("{config} · {agents} <!-- hide --> Closes #1 GH-2",
+		SignatureFacts{Agents: []string{"@victim"}, Config: "@team/review"})
+	// `<!--` on its own is not in the list: breakMentions neutralizes an @mention by
+	// inserting an empty comment, so the delimiter it writes itself is expected. What
+	// must not survive is the comment the TEMPLATE opened.
+	for _, live := range []string{"@victim", "@team", "<!-- hide", "hide -->", "#1", "GH-2"} {
+		if strings.Contains(got, live) {
+			t.Errorf("signature kept live forge syntax %q: %q", live, got)
+		}
+	}
+	// Neutralized, not deleted: the reader still sees what the config named.
+	for _, kept := range []string{"victim", "team", "&lt;!--", "--&gt;", "# 1", "GH- 2"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("signature lost %q: %q", kept, got)
+		}
+	}
+}
+
 // The signature must sit outside every region carrying agent text: one composed
 // from a finding's prose could be forged by whatever wrote that prose.
 func TestSignatureIsRenderedAfterAllAgentText(t *testing.T) {
