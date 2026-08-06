@@ -257,10 +257,18 @@ type RunSummary struct {
 	// PR is the pull request this run reviewed, in pr mode. Recorded because the
 	// number is part of "what was run" and because publishing a finished run later
 	// has to know where it goes.
-	PR         int    `json:"pr,omitempty"`
-	Path       string `json:"path"`
-	Strategy   string `json:"strategy"`
-	ReviewOnly bool   `json:"review_only"`
+	PR int `json:"pr,omitempty"`
+	// ReviewedHead is the commit the run reviewed, in pr mode: the head `gh pr
+	// checkout` left in the tree. A review is a statement about ONE commit, and the
+	// pull request can move while the panel runs or between the run and a later
+	// -post-run, so publishing compares this against the forge's current head and
+	// refuses when they differ -- otherwise an approval lands on code no reviewer
+	// read. Empty for a run from before it was recorded, which the posting paths
+	// treat as "cannot be bound" and refuse.
+	ReviewedHead string `json:"reviewed_head,omitempty"`
+	Path         string `json:"path"`
+	Strategy     string `json:"strategy"`
+	ReviewOnly   bool   `json:"review_only"`
 	// The effective limits and command-line assertions the run used. They are what
 	// make the counts readable after the fact: "17 deferred" means nothing without
 	// the per-round cap that deferred them, and "fix rounds ran" needs the flag that

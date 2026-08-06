@@ -45,6 +45,16 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		logf("post-run: %s records no pull request number. Runs from before that was recorded cannot be replayed; review again to produce one that can.", dir)
 		return 2
 	}
+	// Which commit the review is ABOUT. Refused here rather than left to the poster
+	// so the operator gets the same "review again" answer as the missing PR number
+	// above: a summary that cannot say what it reviewed cannot be published against
+	// anything. The poster refuses too, and additionally refuses when the pull
+	// request has moved since -- replaying a verdict onto a commit the panel never
+	// read is the reason this is checked at all.
+	if sum.ReviewedHead == "" {
+		logf("post-run: %s does not record which commit it reviewed, so the review cannot be bound to one. Runs from before that was recorded cannot be replayed; review again to produce one that can.", dir)
+		return 2
+	}
 	body, err := os.ReadFile(sum.ReviewBody)
 	if err != nil {
 		// The path is recorded as absolute, but a run directory can be copied or the
@@ -79,7 +89,7 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		inline = append(inline, forge.InlineComment{Path: a.Path, Line: a.Line, Body: a.Body})
 	}
 
-	url, err := p.PostReview(ctx, sum.Path, sum.PR, string(body), event, inline)
+	url, err := p.PostReview(ctx, sum.Path, sum.PR, sum.ReviewedHead, string(body), event, inline)
 	if err != nil && len(inline) > 0 && strings.HasPrefix(err.Error(), "inline:") {
 		// Only an anchor rejection earns a second submission, exactly as in
 		// Orchestrator.postReview. Retrying on ANY error would re-post after an auth
@@ -87,7 +97,7 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		// call the forge already accepted, leaving two identical reviews on the pull
 		// request and dropping the anchors this mode exists to replay.
 		logf("post-run: %s rejected the inline comments (%v); posting the summary without them", p.Kind(), err)
-		url, err = p.PostReview(ctx, sum.Path, sum.PR, string(body), event, nil)
+		url, err = p.PostReview(ctx, sum.Path, sum.PR, sum.ReviewedHead, string(body), event, nil)
 	}
 	if err != nil {
 		logf("post-run: publishing to %s failed: %v", p.Kind(), err)

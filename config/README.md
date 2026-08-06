@@ -163,6 +163,11 @@ a human reads, and on the posting path the exact bytes that get sent. `fixpoint
 what makes reading it first meaningful: re-running with `-post` would produce a
 different review, since the panel is not deterministic.
 
+Both posting paths refuse when the pull request has moved since the review: the run
+records the head it reviewed, and a forge would otherwise attach the review — and
+its verdict — to whatever the branch points at when it lands, approving code no
+reviewer read.
+
 `signature` is appended to it, with `{agents}` `{run}` `{version}` `{config}`
 `{verdict}` substituted. The default deliberately does **not** name fixpoint:
 reviews get posted into other people's repositories, where the tool's own name

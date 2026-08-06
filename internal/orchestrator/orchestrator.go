@@ -594,6 +594,9 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// a pre-existing failure is attributable to the project, not to this run).
 	o.captureVerifyBaseline(ctx)
 
+	// WHICH commit all of the above is about, pinned before any of it is read.
+	o.recordReviewedHead(ctx, sum)
+
 	// What the forge already knows about this head, read once before the panel
 	// runs so the reviewers' own context and the verdict see the same answer.
 	o.readForgeChecks(ctx)
@@ -641,6 +644,29 @@ func (o *Orchestrator) resolveRunBase(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return o.collector.HeadSHA(ctx)
+}
+
+// recordReviewedHead pins the commit this run reviews, for the posting paths.
+//
+// In pr mode the checked-out HEAD is the pull request's head: `gh pr checkout` put
+// it there, and the clean-tree check just proved nothing else has touched the tree.
+// Recording it is what lets a post -- now, or later through -post-run -- refuse when
+// the pull request has moved, so a review of one commit can never become an approval
+// of another. Only pr mode has a head to bind to; a directory run posts nothing.
+//
+// A failure is a warning, not a run failure: the review is still worth producing,
+// and the posting path fails closed on the missing SHA rather than publishing an
+// unbound verdict.
+func (o *Orchestrator) recordReviewedHead(ctx context.Context, sum *model.RunSummary) {
+	if o.cfg.Target.Mode != config.ModePR {
+		return
+	}
+	head, err := o.collector.HeadSHA(ctx)
+	if err != nil {
+		o.logf("WARNING: could not record which commit is under review (%v); publishing this review will refuse rather than post it against a commit that may have moved", err)
+		return
+	}
+	sum.ReviewedHead = head
 }
 
 // finishRun runs the closing phase and then applies a per_run squash over
@@ -4478,13 +4504,16 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 	for _, a := range sum.ReviewInline {
 		inline = append(inline, forge.InlineComment{Path: a.Path, Line: a.Line, Body: a.Body})
 	}
-	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, body, event, inline)
+	// sum.ReviewedHead binds the review to the commit the panel actually read. The
+	// poster refuses when the pull request has moved since -- an author who pushes
+	// while a review runs must not collect a verdict about the commit before it.
+	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead, body, event, inline)
 	if err != nil && len(inline) > 0 && strings.HasPrefix(err.Error(), "inline:") {
 		// The forge refused the anchors, not the review. Publishing the summary alone
 		// is strictly better than publishing nothing: every finding is in it, they
 		// just lose their line links.
 		o.logf("WARNING: %s rejected the inline comments (%v); posting the summary without them", p.Kind(), err)
-		url, err = p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, body, event, nil)
+		url, err = p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead, body, event, nil)
 	}
 	if err != nil {
 		o.logf("ERROR: posting the review to %s failed: %v -- it is written at %s", p.Kind(), err, sum.ReviewBody)

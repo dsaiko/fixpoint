@@ -2,7 +2,10 @@ package forge
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +95,119 @@ func TestCancelledAndSkippedChecksDoNotBlock(t *testing.T) {
 func TestUnnamedCheckStillGetsALabel(t *testing.T) {
 	if got := (ghCheck{}).label(); got == "" {
 		t.Error("label() = empty; an unnamed failing check would vanish from the reasons")
+	}
+}
+
+// A review is about one commit, and only publishing may decide whether that is
+// still the commit the pull request proposes. Every answer other than "yes"
+// refuses: an approval attached to a head nobody read is the whole risk, and an
+// author who pushes while the panel runs must not be able to collect one.
+func TestPostingRequiresTheReviewedHead(t *testing.T) {
+	const reviewed = "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct {
+		name             string
+		reviewed, actual string
+		wantErr          string
+	}{
+		{"the head is still the reviewed commit", reviewed, reviewed, ""},
+		{"oid case does not decide it", reviewed, strings.ToUpper(reviewed), ""},
+		{"the author pushed after the review", reviewed, "fedcba9876543210fedcba9876543210fedcba98", "has moved since it was reviewed"},
+		{"the run never recorded what it reviewed", "", reviewed, "did not record which commit it reviewed"},
+		{"the forge names no head", reviewed, "", "reported no head commit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireHead(7, tc.reviewed, tc.actual)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("requireHead() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("requireHead() = nil, want a refusal mentioning %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("refusal does not explain itself (%q): %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// stubGH puts a fake `gh` on PATH. It answers the head read, records the review
+// payload it is given on stdin, and fails any other call so an unexpected
+// invocation shows up as an error rather than as a silent success.
+func stubGH(t *testing.T, head string) (dir string, payload func() string) {
+	t.Helper()
+	bin := t.TempDir()
+	capture := filepath.Join(bin, "payload.json")
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"*'--json headRefOid'*) printf '{\"headRefOid\":\"" + head + "\"}' ;;\n" +
+		"*'--json url'*) printf '{\"url\":\"https://example.test/pr/7\"}' ;;\n" +
+		"*'api --method POST'*) cat > " + capture + " ;;\n" +
+		"*'pr review'*) printf 'body-only review submitted\\n' > " + capture + " ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Prepended, not replaced: the stub still needs the shell's own utilities, and
+	// coming first is what makes it shadow any real gh on this host.
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return t.TempDir(), func() string {
+		raw, err := os.ReadFile(capture)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+}
+
+// The GitHub submission carries commit_id, so the forge records the review against
+// the commit that was reviewed rather than against whatever the branch points at
+// when it lands -- which also closes the gap between the head read and the post.
+func TestGitHubReviewIsSubmittedAgainstTheReviewedCommit(t *testing.T) {
+	const reviewed = "0123456789abcdef0123456789abcdef01234567"
+	dir, payload := stubGH(t, reviewed)
+
+	if _, err := (githubProvider{}).PostReview(t.Context(), dir, 7, reviewed, "the review",
+		EventApprove, []InlineComment{{Path: "a.go", Line: 1, Body: "here"}}); err != nil {
+		t.Fatalf("PostReview() = %v", err)
+	}
+	var got struct {
+		CommitID string `json:"commit_id"`
+		Event    string `json:"event"`
+	}
+	if err := json.Unmarshal([]byte(payload()), &got); err != nil {
+		t.Fatalf("the submitted payload does not parse (%v): %s", err, payload())
+	}
+	if got.CommitID != reviewed {
+		t.Errorf("commit_id = %q, want the reviewed head %q -- an approval must name the commit it approves", got.CommitID, reviewed)
+	}
+	if got.Event != "APPROVE" {
+		t.Errorf("event = %q, want APPROVE", got.Event)
+	}
+}
+
+// And nothing is submitted at all once the pull request has moved: not the review
+// with its anchors, and not the body-only fallback that would otherwise approve the
+// new head with no anchors to make the mismatch visible.
+func TestGitHubPostRefusesAfterTheHeadMoved(t *testing.T) {
+	dir, payload := stubGH(t, "fedcba9876543210fedcba9876543210fedcba98")
+
+	_, err := (githubProvider{}).PostReview(t.Context(), dir, 7, "0123456789abcdef0123456789abcdef01234567",
+		"the review", EventApprove, []InlineComment{{Path: "a.go", Line: 1, Body: "here"}})
+	if err == nil {
+		t.Fatal("PostReview() = nil; an approval was published against a commit that was never reviewed")
+	}
+	if !strings.Contains(err.Error(), "has moved since it was reviewed") {
+		t.Errorf("refusal does not explain itself: %v", err)
+	}
+	if got := payload(); got != "" {
+		t.Errorf("something was submitted anyway: %s", got)
+	}
+	// The retry in both callers keys on this prefix, so a refusal must not wear it:
+	// a stale head is not an anchor problem, and re-posting body-only is exactly
+	// what must not happen.
+	if strings.HasPrefix(err.Error(), "inline:") {
+		t.Errorf("a stale-head refusal must not look like an anchor rejection: %v", err)
 	}
 }

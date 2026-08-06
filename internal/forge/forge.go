@@ -362,7 +362,51 @@ type Poster interface {
 	// PostReview publishes body on the pull request, with inline comments anchored
 	// to their lines where the forge accepts them, and returns a URL when it gives
 	// one.
-	PostReview(ctx context.Context, dir string, pr int, body string, event Event, inline []InlineComment) (string, error)
+	//
+	// head is the commit the review was produced from. An implementation must BIND
+	// the review to it and refuse to publish when the pull request has moved since
+	// -- see requireHead.
+	PostReview(ctx context.Context, dir string, pr int, head, body string, event Event, inline []InlineComment) (string, error)
+}
+
+// requireHead refuses to publish a review that is no longer about what the pull
+// request proposes.
+//
+// A review is a statement about ONE commit. A panel takes minutes and `-post-run`
+// can replay a run from yesterday, while a forge applies a review to whatever the
+// pull request points at NOW. So an author can push after the reviewed head was
+// checked out and collect an approval for code no reviewer read -- push something
+// clean, wait for the approval, push the payload. The inline anchors were computed
+// against the reviewed diff too, so a moved head makes them wrong as well as
+// unbound, and the body-only fallback then approves the new head with no anchors at
+// all.
+//
+// This is the one read in the package that FAILS CLOSED. The others weaken a
+// verdict's evidence when they fail; this one guards an action taken under the
+// operator's identity, and "which commit does this land on?" unanswered is not a
+// license to take it. It costs nothing in practice: the same CLI does the posting,
+// so a call that cannot read the head could not have published either.
+func requireHead(pr int, reviewed, current string) error {
+	if reviewed == "" {
+		return fmt.Errorf("refusing to post on #%d: the run did not record which commit it reviewed, so the review cannot be bound to one -- review again to produce a run that can be published", pr)
+	}
+	if current == "" {
+		return fmt.Errorf("refusing to post on #%d: the forge reported no head commit, so whether the reviewed commit is still the one proposed cannot be established", pr)
+	}
+	if !strings.EqualFold(reviewed, current) {
+		return fmt.Errorf("refusing to post on #%d: it has moved since it was reviewed (reviewed %s, now %s) -- publishing would attach the review, and any verdict in it, to a commit nobody read; review the new head instead",
+			pr, shortSHA(reviewed), shortSHA(current))
+	}
+	return nil
+}
+
+// shortSHA abbreviates a commit for a message a human reads. The full oid is not
+// what makes the sentence understandable, and two of them make it unreadable.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // PosterFor is For, narrowed to providers that can also write.
@@ -378,9 +422,18 @@ func PosterFor(ctx context.Context, dir string) Poster {
 // process, and the body carries findings quoted out of the code under review --
 // which in a review-only run may be the credential that the review is ABOUT.
 // It is the same reasoning that makes prompt_via: stdin the default for agents.
-func (githubProvider) PostReview(ctx context.Context, dir string, pr int, body string, event Event, inline []InlineComment) (string, error) {
+func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, body string, event Event, inline []InlineComment) (string, error) {
+	// Before anything is published, and before the fallback below can turn an anchor
+	// rejection into a body-only APPROVAL of whatever is at the head now.
+	cur, err := githubHead(ctx, dir, pr)
+	if err != nil {
+		return "", err
+	}
+	if err := requireHead(pr, head, cur); err != nil {
+		return "", err
+	}
 	if len(inline) > 0 {
-		if err := githubPostWithInline(ctx, dir, pr, body, event, inline); err == nil {
+		if err := githubPostWithInline(ctx, dir, pr, head, body, event, inline); err == nil {
 			return latestReviewURL(ctx, dir, pr), nil
 		} else if ctx.Err() == nil {
 			// One comment on a line the diff does not contain rejects the WHOLE review,
@@ -429,7 +482,12 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, body s
 // argv is world-readable for the life of the process -- the same reason the
 // body-only path writes a file. `{owner}/{repo}` are gh's own placeholders,
 // resolved from the checkout, so no repository identity has to be parsed here.
-func githubPostWithInline(ctx context.Context, dir string, pr int, body string, event Event, inline []InlineComment) error {
+//
+// commit_id pins the review to the commit it is about, so the forge records the
+// approval against that oid and marks its comments outdated if the branch moves
+// afterwards. requireHead has already established it is the current head; this
+// closes the gap between that read and this submission.
+func githubPostWithInline(ctx context.Context, dir string, pr int, head, body string, event Event, inline []InlineComment) error {
 	type ghComment struct {
 		Path string `json:"path"`
 		Line int    `json:"line"`
@@ -439,8 +497,9 @@ func githubPostWithInline(ctx context.Context, dir string, pr int, body string, 
 	payload := struct {
 		Body     string      `json:"body"`
 		Event    string      `json:"event"`
+		CommitID string      `json:"commit_id,omitempty"`
 		Comments []ghComment `json:"comments"`
-	}{Body: body, Event: githubEvent(event)}
+	}{Body: body, Event: githubEvent(event), CommitID: head}
 	for _, c := range inline {
 		// RIGHT is the head of the pull request. A finding is about the code as
 		// proposed, not the line it replaced.
@@ -452,6 +511,21 @@ func githubPostWithInline(ctx context.Context, dir string, pr int, body string, 
 	}
 	return runStdin(ctx, dir, string(doc), "gh", "api", "--method", "POST",
 		fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews", pr), "--input", "-")
+}
+
+// githubHead reads the commit a pull request currently proposes.
+func githubHead(ctx context.Context, dir string, pr int) (string, error) {
+	out, err := run(ctx, dir, "gh", "pr", "view", strconv.Itoa(pr), "--json", "headRefOid")
+	if err != nil {
+		return "", fmt.Errorf("read the head of #%d before posting: %w", pr, err)
+	}
+	var payload struct {
+		HeadRefOid string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return "", fmt.Errorf("parse gh headRefOid: %w", err)
+	}
+	return strings.TrimSpace(payload.HeadRefOid), nil
 }
 
 func githubEvent(e Event) string {
@@ -490,7 +564,16 @@ func latestReviewURL(ctx context.Context, dir string, pr int) string {
 // was written. Unlike a read, a failed WRITE is reported to the caller rather than
 // degraded silently -- an operator who asked to publish must not be told it
 // happened when it did not.
-func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, body string, event Event, inline []InlineComment) (string, error) {
+func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, head, body string, event Event, inline []InlineComment) (string, error) {
+	// GitLab's approval endpoint takes no commit, so the check below is the ONLY
+	// thing binding an approval to the code that was reviewed -- see requireHead.
+	cur, err := gitlabHead(ctx, dir, mr)
+	if err != nil {
+		return "", err
+	}
+	if err := requireHead(mr, head, cur); err != nil {
+		return "", err
+	}
 	for _, c := range inline {
 		// Best-effort per comment: GitLab positions a discussion with base/head/start
 		// SHAs this package does not carry, so an inline note is attempted as a plain
@@ -517,6 +600,33 @@ func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, body s
 	case Comment:
 	}
 	return "", nil
+}
+
+// gitlabHead reads the commit a merge request currently proposes. diff_refs is
+// preferred because it is the head the MR's own diff was computed against, which
+// is what a review is about; sha is the same commit for a normal MR and the
+// fallback when the field is absent.
+//
+// UNVERIFIED end to end like the rest of this provider, and it fails CLOSED: a read
+// that cannot answer refuses the post rather than publishing an unbound approval.
+func gitlabHead(ctx context.Context, dir string, mr int) (string, error) {
+	out, err := run(ctx, dir, "glab", "api", fmt.Sprintf("projects/:id/merge_requests/%d", mr))
+	if err != nil {
+		return "", fmt.Errorf("read the head of !%d before posting: %w", mr, err)
+	}
+	var payload struct {
+		SHA      string `json:"sha"`
+		DiffRefs struct {
+			HeadSHA string `json:"head_sha"`
+		} `json:"diff_refs"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return "", fmt.Errorf("parse glab merge request: %w", err)
+	}
+	if h := strings.TrimSpace(payload.DiffRefs.HeadSHA); h != "" {
+		return h, nil
+	}
+	return strings.TrimSpace(payload.SHA), nil
 }
 
 // Thread is one unresolved review conversation on a pull request.

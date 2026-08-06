@@ -59,6 +59,13 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 			model.RunSummary{Mode: "pr", Verdict: &model.ReviewVerdict{Outcome: model.VerdictApprove}},
 			"body", "records no pull request number",
 		},
+		{
+			// Without it the review cannot be bound to a commit, so publishing could
+			// attach the verdict to a head nobody reviewed.
+			"a run that does not say which commit it reviewed",
+			model.RunSummary{Mode: "pr", PR: 3, Verdict: &model.ReviewVerdict{Outcome: model.VerdictApprove}},
+			"body", "does not record which commit it reviewed",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs strings.Builder
@@ -94,8 +101,9 @@ func TestPostRunFallsBackToTheBodyBesideTheSummary(t *testing.T) {
 		t.Run(shape, func(t *testing.T) {
 			dir := writeRun(t, model.RunSummary{
 				Mode: "pr", PR: 3, Path: t.TempDir(),
-				ReviewBody: "/gone/review-body.md",
-				Verdict:    &model.ReviewVerdict{Outcome: model.VerdictApprove},
+				ReviewedHead: "0123456789abcdef0123456789abcdef01234567",
+				ReviewBody:   "/gone/review-body.md",
+				Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
 			}, "the review that was actually produced")
 			arg := dir
 			if shape == "the summary file" {

@@ -7079,6 +7079,7 @@ func TestNothingIsPostedWithoutTheFlag(t *testing.T) {
 type fakePoster struct {
 	body   *string
 	event  *forge.Event
+	head   *string
 	inline *[]forge.InlineComment
 }
 
@@ -7088,8 +7089,11 @@ func (fakePoster) Checks(context.Context, string, int) (forge.Checks, error) {
 	return forge.Checks{}, nil
 }
 
-func (f fakePoster) PostReview(_ context.Context, _ string, _ int, body string, event forge.Event, inline []forge.InlineComment) (string, error) {
+func (f fakePoster) PostReview(_ context.Context, _ string, _ int, head, body string, event forge.Event, inline []forge.InlineComment) (string, error) {
 	*f.body = body
+	if f.head != nil {
+		*f.head = head
+	}
 	if f.event != nil {
 		*f.event = event
 	}
@@ -7187,6 +7191,62 @@ func TestThePostedReviewIsExactlyWhatWasWrittenToDisk(t *testing.T) {
 	}
 }
 
+// A review is a statement about ONE commit, so the commit it was made from must
+// reach the poster: that is what lets the poster refuse a pull request the author
+// pushed to while the panel ran, and what binds an approval to the code that was
+// actually read. Dropping it here would publish a verdict the forge attaches to
+// whatever the branch points at, with nothing able to tell the difference.
+func TestThePostCarriesTheCommitThatWasReviewed(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	var posted, head string
+	prev := posterFor
+	posterFor = func(context.Context, string) forge.Poster {
+		return fakePoster{body: &posted, head: &head}
+	}
+	defer func() { posterFor = prev }()
+
+	sum := &model.RunSummary{ReviewedHead: "0123456789abcdef0123456789abcdef01234567"}
+	f.orchestrator().postReview(t.Context(), sum, "the review")
+
+	if posted == "" {
+		t.Fatal("nothing was posted")
+	}
+	if head != sum.ReviewedHead {
+		t.Errorf("posted against %q, want the reviewed commit %q", head, sum.ReviewedHead)
+	}
+}
+
+// The reviewed commit is recorded in pr mode, where the checked-out HEAD is the
+// pull request's head. A directory run has no pull request to bind to, and
+// recording its HEAD anyway would put a commit in the summary that no posting path
+// may use.
+func TestTheReviewedCommitIsRecordedForPullRequestsOnly(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+
+	sum := &model.RunSummary{}
+	f.orchestrator().recordReviewedHead(t.Context(), sum)
+	if sum.ReviewedHead != "" {
+		t.Errorf("ReviewedHead = %q for a directory review, want empty", sum.ReviewedHead)
+	}
+
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+	f.orchestrator().recordReviewedHead(t.Context(), sum)
+	want, err := target.New(config.Target{Path: f.repo}).HeadSHA(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.ReviewedHead != want || want == "" {
+		t.Errorf("ReviewedHead = %q, want the checked-out head %q", sum.ReviewedHead, want)
+	}
+}
+
 // Findings are anchored to their lines so a reader meets each one where the code
 // is. Only those with a location, and only those still standing.
 func TestInlineCommentsCoverLocatedSurvivingFindingsOnly(t *testing.T) {
@@ -7273,7 +7333,7 @@ func (*pickyPoster) Checks(context.Context, string, int) (forge.Checks, error) {
 	return forge.Checks{}, nil
 }
 
-func (p *pickyPoster) PostReview(_ context.Context, _ string, _ int, _ string, _ forge.Event, inline []forge.InlineComment) (string, error) {
+func (p *pickyPoster) PostReview(_ context.Context, _ string, _ int, _, _ string, _ forge.Event, inline []forge.InlineComment) (string, error) {
 	*p.attempts++
 	*p.lastInline = inline
 	if len(inline) > 0 {

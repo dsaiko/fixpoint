@@ -859,6 +859,16 @@ reading the file first mean anything. It refuses a run that has no verdict (a fi
 run), one that did not review a pull request, and one from before the PR number was
 recorded.
 
+Either way, the review is bound to the **commit it was about**. A run records the
+head it reviewed, and posting reads the pull request's current head first: if the
+author has pushed since — while the panel ran, or in the days between a run and its
+`-post-run` — nothing is published. A forge applies a review to whatever the pull
+request points at now, so without that check an approval could clear code no
+reviewer ever read: push something clean, collect the approval, push the payload.
+On GitHub the submission also names that commit (`commit_id`), so the review is
+recorded against it and its comments are marked outdated if the branch moves
+afterwards.
+
 `-post`/`-post-run` and `-post-verdict` are separate flags because they are
 separate acts. The first makes a machine review visible; the second approves
 somebody's change or formally blocks it. None of them can be set from a config
