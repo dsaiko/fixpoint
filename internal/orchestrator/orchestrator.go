@@ -820,6 +820,11 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 			// tree was clean when it started), so they are stashed and the loop moves
 			// to the next issue rather than ending the run with the remaining issues
 			// unheard. Only a stash failure aborts.
+			//
+			// The replies go through the same gate as a committed session's, which
+			// drops them and logs the skip: this is the case the gate was written for,
+			// and it is recorded before the stash so an abort there does not swallow it.
+			o.answerConversations(ctx, it.ID, false, replies)
 			if !clean {
 				if err := o.reconcileRejectedSession(ctx, rec, it); err != nil {
 					return false, committed, err
