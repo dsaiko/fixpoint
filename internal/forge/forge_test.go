@@ -457,6 +457,35 @@ func TestGitLabNotesKeepTheReviewOffTheCommandLine(t *testing.T) {
 	}
 }
 
+// The inline note names its location, and that location is agent-authored: unlike
+// the body and the comment text, it never went through SanitizeText when the review
+// was rendered. A backtick in the path would close the code span this line wraps it
+// in and leave the rest of the path rendering as live markdown -- a mention, in a
+// note posted under the operator's identity.
+func TestGitLabInlineNotePathCannotEscapeItsCodeSpan(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	dir, _, stdin := stubGlab(t, head)
+
+	if _, err := (gitlabProvider{}).PostReview(t.Context(), dir, 7, head, "the review", Comment,
+		[]InlineComment{{Path: "a`@victim **b**.go", Line: 9, Body: "the finding"}}); err != nil {
+		t.Fatalf("PostReview() = %v", err)
+	}
+	// Decoded, because json.Marshal escapes the `<` of the mention break: what
+	// matters is the note GitLab renders, not its wire encoding.
+	var note struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(strings.NewReader(stdin())).Decode(&note); err != nil {
+		t.Fatalf("decoding the first note: %v", err)
+	}
+	if strings.Contains(note.Body, "a`@victim") {
+		t.Errorf("the path closed its code span, so what follows renders as markdown: %s", note.Body)
+	}
+	if !strings.Contains(note.Body, "`a&#96;@<!---->victim **b**.go:9`") {
+		t.Errorf("the path was not escaped and sanitized in place: %s", note.Body)
+	}
+}
+
 // An approval must name the commit it is about. requireHead runs before the notes are
 // posted, so it alone would leave a window: an author who pushes after the head is
 // read collects an approval for code no reviewer saw. sha on the approve endpoint is

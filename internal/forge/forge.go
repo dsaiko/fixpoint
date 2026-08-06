@@ -666,7 +666,11 @@ func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, head, 
 		// Best-effort per comment: GitLab positions a discussion with base/head/start
 		// SHAs this package does not carry, so an inline note is attempted as a plain
 		// note naming its location rather than skipped outright.
-		if err := gitlabNote(ctx, dir, mr, fmt.Sprintf("`%s:%d`\n\n%s", c.Path, c.Line, c.Body)); err != nil {
+		// The path goes through codeSpan: it is the one agent-authored string that
+		// reaches a note without having been sanitized on the way in -- the body was,
+		// when the review was rendered -- and a backtick in it would break out of the
+		// span this line puts it in.
+		if err := gitlabNote(ctx, dir, mr, fmt.Sprintf("`%s:%d`\n\n%s", codeSpan(c.Path), c.Line, c.Body)); err != nil {
 			return "", err
 		}
 	}

@@ -92,6 +92,21 @@ var (
 // same rule: the break lands on the @ itself, so everything after it is inert.
 func breakMentions(s string) string { return mention.ReplaceAllString(s, "$1@<!---->$2") }
 
+// codeSpan renders one agent-authored string inside a markdown code span.
+//
+// SanitizeText on its own is not enough here, because the DELIMITERS are part of
+// the attack surface: a backtick in the string closes the span early, and
+// everything after it stops being quoted text and becomes live markdown in a note
+// posted under the operator's identity. So the backtick is escaped too.
+//
+// It becomes its HTML entity rather than being dropped, for the same reason
+// breakMentions keeps the name it neutralizes: the string is evidence -- a file
+// path a finding is about -- and a review that silently renames the file it points
+// at misquotes itself.
+func codeSpan(s string) string {
+	return strings.ReplaceAll(SanitizeText(s), "`", "&#96;")
+}
+
 // AddressableLines reports which lines of which files a forge will accept a
 // comment on: the new-file side of every hunk in a unified diff.
 //
