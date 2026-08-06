@@ -189,7 +189,22 @@ func (s *Store) Prompt(role, agentName, promptName string, round int, text strin
 // RunID identifies this run: the timestamp segment of its log directory, which is
 // what every artifact path already carries and what an operator types when asked
 // which run something came from.
-func (s *Store) RunID() string { return filepath.Base(s.runDir) }
+//
+// It claims the directory first, like every other exported method, for two
+// reasons. The name must be the directory the artifacts actually LAND in: until
+// ensureDir has run, s.runDir is the unsuffixed candidate, so a caller that asks
+// for the id before the first artifact write -- the review signature does exactly
+// that, before ReviewBody -- would name a run whose body then lands in a "-N"
+// directory claimed against a concurrent run started in the same timestamp
+// interval. And the read must be synchronized: ensureDir rewrites s.runDir on
+// collision from whichever goroutine gets there first, and going through the
+// sync.Once is what orders this read after that write. The error is dropped
+// deliberately -- a store that cannot claim its directory still has a name, and
+// every caller that writes something reports the failure itself.
+func (s *Store) RunID() string {
+	_ = s.ensureDir()
+	return filepath.Base(s.runDir)
+}
 
 // ReviewBody writes the rendered review document at the run root, next to the
 // summary, and returns its path.
