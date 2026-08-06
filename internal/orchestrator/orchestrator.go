@@ -1954,16 +1954,22 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		o.material = material
 		o.runRefutation(ctx, recP, material)
 		judged := o.runJudge(ctx, recP, material)
-		// Re-checked HERE, not only above: the two phases between that check and this
-		// one take minutes, and an interrupt inside them leaves a review that was
-		// never filtered. Recording it as a completed review-only run would exit 0
-		// over exactly that.
+		// The verdict is computed either way -- an interrupted review still owes the
+		// operator whatever it managed to conclude, and decideVerdict's own callees
+		// (postReview) decide for themselves what a canceled context permits.
+		o.decideVerdict(ctx, recP, sum, judged)
+		// Checked AFTER decideVerdict, not before it, and that ordering is the whole
+		// point: refutation and judging take minutes, and decideVerdict then writes
+		// the body and may spend up to the forge timeout posting it, so an interrupt
+		// anywhere in that span leaves a review that was never filtered or never
+		// published. Recording it as a completed review-only run would exit 0 over
+		// exactly that -- a cancellation must never be overwritten with a clean
+		// termination, because finishRun honors the canceled context by returning nil
+		// and leaves whatever this set standing.
 		if ctx.Err() != nil {
-			o.decideVerdict(ctx, recP, sum, judged)
 			sum.Termination = model.TermInterrupted
 			return true, nil //nolint:nilerr // an interruption is a termination, not a round error
 		}
-		o.decideVerdict(ctx, recP, sum, judged)
 		sum.Termination = model.TermReviewOnly
 		return true, nil
 	}

@@ -6727,6 +6727,52 @@ func TestReviewOnlyRunEndsWithAVerdict(t *testing.T) {
 	}
 }
 
+// Deciding the verdict is not instantaneous: it writes the review body and, with
+// -post, spends up to the forge timeout publishing it. An interrupt inside THAT
+// window used to be overwritten with review-only, because the termination was
+// assigned unconditionally once decideVerdict returned -- and finishRun honors a
+// canceled context by returning nil without touching it, so a clean verdict
+// exited 0 over a publication the operator interrupted.
+//
+// Canceling at the "verdict:" log line lands exactly there: after Decide, before
+// the body is written and before anything is posted.
+func TestAnInterruptionWhileTheVerdictIsPublishedIsNotReportedAsAFinishedReview(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly()
+	f.respond(1, reviewResponse(t)) // clean: the verdict itself is an approval
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	logf := func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		t.Log(msg)
+		if strings.HasPrefix(msg, "verdict: ") {
+			cancel()
+		}
+	}
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sum, err := o.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run() err = %v, want nil: an interruption is a clean stop, not a run failure", err)
+	}
+	// The verdict is still recorded -- an interrupted review owes the operator
+	// whatever it concluded -- which is what makes the termination the only thing
+	// standing between an unfinished publication and exit 0.
+	if sum.Verdict == nil || sum.Verdict.Outcome != model.VerdictApprove {
+		t.Fatalf("verdict = %+v, want the approval it had already computed", sum.Verdict)
+	}
+	if sum.Termination != model.TermInterrupted {
+		t.Fatalf("termination = %q, want %q: a cancellation must not be overwritten with a clean termination", sum.Termination, model.TermInterrupted)
+	}
+	if got := model.ExitCodeFor(sum); got == 0 {
+		t.Errorf("exit = 0, want non-zero: automation must not read an interrupted publication as a completed review")
+	}
+}
+
 // A partial panel used to fail the run outright. It now produces INCONCLUSIVE,
 // which keeps the guarantee that mattered -- automation cannot read it as an
 // approval, because the exit status is non-zero -- while saying who was missing
