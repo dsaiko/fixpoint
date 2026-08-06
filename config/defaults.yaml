@@ -42,13 +42,17 @@ roles:
   # Inheriting it works because `extends` decodes the child OVER this file: keys
   # the child does not set survive, so a config that declares
   # roles.review.strategy and roles.review.prompts keeps this agents list. Setting
-  # `agents` in a config REPLACES this list rather than adding to it -- review-pr
-  # does exactly that, deliberately narrowing the panel for untrusted code.
+  # `agents` in a config REPLACES this list rather than adding to it, which is how
+  # a config narrows the panel -- no shipped one does today; review-pr used to, and
+  # stopped once the refutation round made a noisy reviewer cheap.
   #
-  # codex is absent: its session budget ran out mid-run. Put it back by adding the
-  # name here once that resets.
+  # codex is back after its session budget reset. It earns the seat on measurement:
+  # across 19 runs it produced the highest share of high-severity findings of any
+  # panel member (34 high + 1 critical), a 6% rejection rate, and no marginal cost
+  # on ChatGPT-account auth -- the best value per session here. Drop it again if
+  # the budget runs out; the panel degrades to three and quorum with it.
   review:
-    agents: [claude, kimi-ollama, deepseek-ollama]
+    agents: [claude, codex, kimi-ollama, deepseek-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
