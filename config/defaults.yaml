@@ -46,13 +46,26 @@ roles:
   # a config narrows the panel -- no shipped one does today; review-pr used to, and
   # stopped once the refutation round made a noisy reviewer cheap.
   #
-  # codex is back after its session budget reset. It earns the seat on measurement:
-  # across 19 runs it produced the highest share of high-severity findings of any
-  # panel member (34 high + 1 critical), a 6% rejection rate, and no marginal cost
-  # on ChatGPT-account auth -- the best value per session here. Drop it again if
-  # the budget runs out; the panel degrades to three and quorum with it.
+  # codex earns its seat on measurement: across 19 runs it produced the highest
+  # share of high-severity findings of any panel member (34 high + 1 critical), a
+  # 6% rejection rate, and no marginal cost on ChatGPT-account auth -- the best
+  # value per session here.
+  #
+  # TEMPORARY, 2026-08-06: the two ollama reviewers are out because Ollama Cloud's
+  # weekly limit is spent (kimi 3249 requests, deepseek 1497), and it resets around
+  # 2026-08-09. Leaving them in is worse than a smaller panel: a dead agent does not
+  # fail fast, it burns its full 20m timeout writing nothing while the round waits
+  # for its slowest reviewer -- and quorum counts agents whose every lens succeeded,
+  # so four minus two dead is 2 of 4, not a strict majority, and every verdict lands
+  # on INCONCLUSIVE regardless of what the survivors found.
+  #
+  # To restore: put deepseek-ollama back first. Over 16 runs it returned 7 findings
+  # from 5 steps at 3.3M tokens each against kimi's 45 from 33 at 4.3M, with a 14%
+  # rejection rate against kimi's 18% -- and in the 2026-08-06 fix run it produced
+  # the best finding no in-house model had (unsanitized verdict reasons), while two
+  # of kimi's three were on the unreachable GitLab path.
   review:
-    agents: [claude, codex, kimi-ollama, deepseek-ollama]
+    agents: [claude, codex]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
