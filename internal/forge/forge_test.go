@@ -340,9 +340,8 @@ func stubGlab(t *testing.T, head string) (dir string, argv, stdin func() string)
 	args := filepath.Join(bin, "argv.txt")
 	body := filepath.Join(bin, "stdin.txt")
 	script := "#!/bin/sh\necho \"$*\" >> " + args + "\ncase \"$*\" in\n" +
-		"*notes*) cat >> " + body + " ;;\n" +
+		"*notes*|*approve*) cat >> " + body + " ;;\n" +
 		"*merge_requests/7) printf '{\"diff_refs\":{\"head_sha\":\"" + head + "\"}}' ;;\n" +
-		"*approve*) ;;\n" +
 		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "glab"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -383,5 +382,24 @@ func TestGitLabNotesKeepTheReviewOffTheCommandLine(t *testing.T) {
 	}
 	if !strings.Contains(got, `"body"`) {
 		t.Errorf("the note was not posted as an API payload: %s", got)
+	}
+}
+
+// An approval must name the commit it is about. requireHead runs before the notes are
+// posted, so it alone would leave a window: an author who pushes after the head is
+// read collects an approval for code no reviewer saw. sha on the approve endpoint is
+// what closes it -- GitLab answers 409 when it no longer matches the source branch.
+func TestGitLabApprovalIsBoundToTheReviewedCommit(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	dir, argv, stdin := stubGlab(t, head)
+
+	if _, err := (gitlabProvider{}).PostReview(t.Context(), dir, 7, head, "the review", EventApprove, nil); err != nil {
+		t.Fatalf("PostReview() = %v", err)
+	}
+	if got := argv(); !strings.Contains(got, "merge_requests/7/approve") {
+		t.Errorf("the approval did not go through the endpoint that accepts a commit: %s", got)
+	}
+	if got := stdin(); !strings.Contains(got, `"sha":"`+head+`"`) {
+		t.Errorf("the approval did not carry the reviewed commit, so it lands on whatever the head is when it arrives: %s", got)
 	}
 }

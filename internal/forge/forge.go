@@ -598,8 +598,10 @@ func latestReviewURL(ctx context.Context, dir string, pr int) string {
 // degraded silently -- an operator who asked to publish must not be told it
 // happened when it did not.
 func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, head, body string, event Event, inline []InlineComment) (string, error) {
-	// GitLab's approval endpoint takes no commit, so the check below is the ONLY
-	// thing binding an approval to the code that was reviewed -- see requireHead.
+	// requireHead first, so a moved head is refused before any note is posted and the
+	// operator reads why. It is not what BINDS the approval, though: notes are posted
+	// between this read and the approval, so on its own it would be a check-then-act
+	// with a window an author can push into. gitlabApprove closes that.
 	cur, err := gitlabHead(ctx, dir, mr)
 	if err != nil {
 		return "", err
@@ -620,12 +622,14 @@ func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, head, 
 	}
 	switch event {
 	case EventApprove:
-		if _, err := run(ctx, dir, "glab", "mr", "approve", strconv.Itoa(mr)); err != nil {
+		if err := gitlabApprove(ctx, dir, mr, head); err != nil {
 			return "", fmt.Errorf("note posted, but approving failed: %w", err)
 		}
 	case EventRequestChanges:
 		// GitLab has no "request changes" review event; unapproving is the closest
-		// equivalent and is what the note above explains.
+		// equivalent and is what the note above explains. No commit to bind: removing
+		// an approval cannot approve code nobody read, so a head that moves under this
+		// call errs in the harmless direction.
 		if _, err := run(ctx, dir, "glab", "mr", "unapprove", strconv.Itoa(mr)); err != nil {
 			return "", fmt.Errorf("note posted, but unapproving failed: %w", err)
 		}
@@ -652,6 +656,35 @@ func gitlabNote(ctx context.Context, dir string, mr int, body string) error {
 	}
 	return runStdin(ctx, dir, string(payload), "glab", "api", "--method", "POST",
 		fmt.Sprintf("projects/:id/merge_requests/%d/notes", mr), "--input", "-")
+}
+
+// gitlabApprove approves a merge request AND binds the approval to the commit that
+// was reviewed.
+//
+// The endpoint's optional sha is what makes that possible: GitLab compares it to the
+// source branch's current head and answers 409 when they differ, so the approval is
+// either about the reviewed commit or it does not happen. It is GitLab's equivalent
+// of the commit_id githubSubmitReview sends, and it is needed for the same reason --
+// requireHead reads the head, then every note is posted, and only then does this
+// call arrive. An author who pushes into that window would otherwise collect an
+// approval for code the panel never read, which is exactly the attack requireHead
+// exists to stop.
+//
+// Not `glab mr approve`: the CLI's own verb sends no sha, so it cannot make that
+// statement. The api passthrough is the one gitlabHead and gitlabNote already use.
+//
+// UNVERIFIED end to end like the rest of this provider, and it fails CLOSED: a 409,
+// an unsupported attribute or any other refusal is reported as a failed approval,
+// leaving the notes published and the approval to a human.
+func gitlabApprove(ctx context.Context, dir string, mr int, head string) error {
+	payload, err := json.Marshal(struct {
+		SHA string `json:"sha"`
+	}{head})
+	if err != nil {
+		return err
+	}
+	return runStdin(ctx, dir, string(payload), "glab", "api", "--method", "POST",
+		fmt.Sprintf("projects/:id/merge_requests/%d/approve", mr), "--input", "-")
 }
 
 // gitlabHead reads the commit a merge request currently proposes. diff_refs is
