@@ -385,13 +385,18 @@ func (c *Config) resolveAgents(r *Resolver, into map[string]string) error {
 }
 
 // referencedAgents names the agents a run is built around: every active reviewer
-// plus the coder. Resolution and the env.inherit_all gate judge exactly this set,
-// so "the agents this configuration is about" has one definition. The coder is
-// included even for -review-only: it is resolved eagerly there too, and an agent
-// declaration that would be refused is better refused before a later invocation
-// makes it live.
+// plus the coder and the judge. Resolution and the env.inherit_all gate judge
+// exactly this set, so "the agents this configuration is about" has one
+// definition. The coder is included even for -review-only: it is resolved
+// eagerly there too, and an agent declaration that would be refused is better
+// refused before a later invocation makes it live. The judge is included for the
+// same reason and because it is invoked on the review-only path, where it reads
+// the untrusted code and the findings written about it -- an inline-only judge
+// agent that never appears here would skip resolution and slip past the
+// unconditional env.inherit_all refusal. Unset roles contribute an empty name,
+// which resolveAgents and the refusal loop already skip.
 func (c *Config) referencedAgents() []string {
-	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent)
+	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent, c.Roles.Judge.Agent)
 }
 
 // resolvePrompts turns every bare prompt name into a concrete file path, stored

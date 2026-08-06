@@ -1218,17 +1218,6 @@ func (c *Config) Validate() error {
 		if j.Agent == "" || j.Prompt == "" {
 			return errors.New("roles.judge: both agent and prompt are required when either is set")
 		}
-		a, ok := c.Agents[j.Agent]
-		if !ok {
-			return fmt.Errorf("roles.judge.agent: agent %q is not defined", j.Agent)
-		}
-		// The judge decides what a review reports; it never edits. Allowing a
-		// write-capable agent here would put an editing agent inside a review- config,
-		// whose entire promise is that it cannot modify the target -- the same rule
-		// that keeps write-capable agents out of the reviewer pool.
-		if a.CanEdit {
-			return fmt.Errorf("roles.judge.agent: %q declares can_edit; the judge must be read-only, since a review config never modifies its target", j.Agent)
-		}
 	}
 	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
 		return fmt.Errorf("review.block_at: unknown severity %q (want %s)", c.Review.BlockAt, strings.Join(model.Severities, " | "))
@@ -1450,6 +1439,26 @@ func (c *Config) Validate() error {
 		// committed as coder fixes. Keep write access exclusive to the coder.
 		if c.Agents[name].CanEdit {
 			return fmt.Errorf("roles.review: agent %q has can_edit: true -- reviewers run concurrently against the shared working tree and must be read-only; only roles.coder may edit files", name)
+		}
+	}
+	// The judge goes through the SAME check as every other invoked agent, not a
+	// reduced one. Two of check's rules are security controls the judge needs most:
+	// the pr-mode refusal of a command element resolving inside target.path (the
+	// judge would otherwise be a second way to exec PR-authored code as a fixpoint
+	// agent), and the permission-bypass cross-check that keeps a can_edit: false
+	// claim from being contradicted by the argv. The shipped configs pin the judge
+	// to an agent that is also in the reviewer pool and so was checked there; a
+	// judge-only agent has no other place to be validated.
+	if j := c.Roles.Judge; j.Agent != "" {
+		if err := check("roles.judge", j.Agent); err != nil {
+			return err
+		}
+		// The judge decides what a review reports; it never edits. Allowing a
+		// write-capable agent here would put an editing agent inside a review- config,
+		// whose entire promise is that it cannot modify the target -- the same rule
+		// that keeps write-capable agents out of the reviewer pool.
+		if c.Agents[j.Agent].CanEdit {
+			return fmt.Errorf("roles.judge.agent: %q declares can_edit; the judge must be read-only, since a review config never modifies its target", j.Agent)
 		}
 	}
 

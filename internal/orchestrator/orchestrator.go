@@ -2560,10 +2560,19 @@ func (o *Orchestrator) warnTargetSuppliedCommand() {
 }
 
 // activeAgentNames returns the sorted, distinct set of agents this run will
-// invoke: the coder (unless review-only) plus every active reviewer agent.
-// Ping and warnArgModePrompts share it so "the agents this run uses" has a
-// single definition. Sorted so per-agent log lines and failure lists are
-// deterministic run-to-run, matching review's index-ordered collection.
+// invoke: the coder (unless review-only) plus every active reviewer agent and the
+// judge when one is configured. Ping and warnArgModePrompts share it so "the
+// agents this run uses" has a single definition. Sorted so per-agent log lines
+// and failure lists are deterministic run-to-run, matching review's index-ordered
+// collection.
+//
+// The judge is unconditional once configured: it runs on the review-only path
+// too, so it is active whenever it is set. Leaving it out silently dropped all
+// four per-agent preflights for it -- prompt_via: arg (the judge prompt embeds
+// the material AND every finding's text, so argv exposure is at its worst there),
+// env.inherit_all, a target-supplied command, and the ping that would have caught
+// an expired login before the panel was paid for rather than after, where a
+// failing judge downgrades the verdict to inconclusive.
 func (o *Orchestrator) activeAgentNames() []string {
 	seen := map[string]bool{}
 	var names []string
@@ -2578,6 +2587,9 @@ func (o *Orchestrator) activeAgentNames() []string {
 	}
 	for _, a := range o.cfg.Roles.Review.ActiveAgents() {
 		add(a)
+	}
+	if o.cfg.Roles.Judge.Agent != "" {
+		add(o.cfg.Roles.Judge.Agent)
 	}
 	sort.Strings(names)
 	return names

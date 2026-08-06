@@ -1169,3 +1169,47 @@ func TestJudgeMustBeReadOnly(t *testing.T) {
 		t.Errorf("Validate() = %v, want a read-only judge accepted", err)
 	}
 }
+
+// The judge is invoked like any other agent, so it must clear the same check the
+// coder and the reviewers clear -- not a reduced one that only asks whether it is
+// defined and read-only. A judge-only agent has no other place to be validated:
+// the shipped configs happen to pin the judge to an agent that is also in the
+// reviewer pool, which hid this.
+func TestJudgeAgentGoesThroughTheCommonAgentCheck(t *testing.T) {
+	cases := []struct {
+		name    string
+		agent   Agent
+		wantErr string
+	}{
+		// can_edit: false contradicted by the argv. Validate rejects a judge whose
+		// YAML says can_edit: true; without check() a judge that merely CLAIMS to be
+		// read-only while handing the model the write tools was accepted into a
+		// review- config, the exact contradiction the reviewer rule prevents.
+		{"a permission-bypass flag behind can_edit: false", Agent{
+			Command: []string{"echo", "--dangerously-skip-permissions"}, PromptVia: "stdin",
+		}, "--dangerously-skip-permissions"},
+		{"a binary that is not on PATH", Agent{
+			Command: []string{"fixpoint-no-such-judge-binary"}, PromptVia: "stdin",
+		}, "not found on PATH"},
+		{"an invalid prompt_via", Agent{
+			Command: []string{"echo"}, PromptVia: "carrier-pigeon",
+		}, "prompt_via"},
+		{"a negative timeout", Agent{
+			Command: []string{"echo"}, PromptVia: "stdin", Timeout: Duration(-time.Second),
+		}, "timeout must not be negative"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig(t)
+			c.Agents["judge"] = tc.agent
+			c.Roles.Judge = RoleRef{Agent: "judge", Prompt: c.Roles.Coder.Prompt}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Validate() = %v, want an error containing %q", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "judge") {
+				t.Errorf("Validate() = %v, want the error to name the judge role or agent", err)
+			}
+		})
+	}
+}

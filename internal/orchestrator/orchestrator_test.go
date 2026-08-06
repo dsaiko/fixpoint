@@ -2903,6 +2903,35 @@ func TestWarnArgModePrompts(t *testing.T) {
 			t.Error("active arg-mode reviewer was not warned")
 		}
 	})
+
+	// The judge runs on the review-only path, so it is active whenever it is
+	// configured -- and its prompt is the worst one to put on argv, since it
+	// carries the collected material AND the text of every finding. While
+	// activeAgentNames omitted it, this warning (and the inherit_all warning, the
+	// target-supplied-command warning and the preflight ping) silently did not
+	// apply to it.
+	t.Run("a configured judge is warned about too", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		reviewPrompt := f.cfg.Roles.Review.Prompts[0].Prompt
+		f.cfg.Agents = map[string]config.Agent{
+			"coder":     {Command: []string{"x"}, PromptVia: "stdin", Timeout: config.Duration(time.Minute), CanEdit: true},
+			"rev-stdin": {Command: []string{"x"}, PromptVia: "stdin", Timeout: config.Duration(time.Minute)},
+			"judge-arg": argMode(),
+		}
+		f.cfg.Roles.Coder.Agent = "coder"
+		f.cfg.Roles.Review.Strategy = "fixed"
+		f.cfg.Roles.Review.Prompts = []config.ReviewLens{{Agent: "rev-stdin", Prompt: reviewPrompt}}
+		judgePrompt := filepath.Join(t.TempDir(), "judge.md")
+		if err := os.WriteFile(judgePrompt, []byte("{{.Canonical}}\n{{.OutputContract}}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f.cfg.Roles.Judge = config.RoleRef{Agent: "judge-arg", Prompt: judgePrompt, PromptPath: judgePrompt}
+
+		warned, n := collect(t, f)
+		if n != 1 || !warned["judge-arg"] {
+			t.Errorf("arg-mode warnings = %d for %v, want exactly the judge warned", n, warned)
+		}
+	})
 }
 
 // config.Validate refuses an agent command that resolves into a pr-mode target;

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,5 +108,36 @@ func TestShippedReviewConfigsDeclareNoCoder(t *testing.T) {
 				t.Errorf("%s judge %q is write-capable", name, j.Agent)
 			}
 		})
+	}
+}
+
+// An agent used ONLY as the judge must be resolved from its own
+// agents/<name>.yaml like every other role's agent. While referencedAgents left
+// the judge out, that file was never read and Validate then rejected the judge as
+// undefined -- so the only judge a config could actually declare was an inline
+// one, which is also the form that skipped the common agent check.
+func TestJudgeAgentIsResolvedFromItsOwnFile(t *testing.T) {
+	root := t.TempDir()
+	dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+		"task": "target: {mode: directory}\n" + taskBody + "  judge: {agent: arbiter, prompt: judge}\n",
+	}, []string{"fix", "review-bugs", "judge"}, []string{"mock"})
+	// Not via bundle's agent helper: that writes can_edit: true, which the judge
+	// must not have.
+	if err := os.WriteFile(filepath.Join(dir, agentsDir, "arbiter"+configExt), []byte("command: [true]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+	if err != nil {
+		t.Fatalf("LoadBundle() = %v, want a judge declared in agents/arbiter.yaml to load", err)
+	}
+	a, ok := l.Config.Agents["arbiter"]
+	if !ok {
+		t.Fatalf("agents = %v, want the judge's own declaration resolved", l.Config.Agents)
+	}
+	if len(a.Command) != 1 || a.Command[0] != "true" {
+		t.Errorf("agents.arbiter.command = %v, want the file's [true]", a.Command)
+	}
+	if l.Config.Roles.Judge.PromptPath == "" {
+		t.Error("roles.judge.prompt_path is empty; the judge prompt was not resolved")
 	}
 }
