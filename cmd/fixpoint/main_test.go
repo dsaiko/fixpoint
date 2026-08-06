@@ -16,6 +16,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
+	"github.com/dsaiko/fixpoint/internal/runlog"
 	"github.com/dsaiko/fixpoint/internal/testfixture"
 )
 
@@ -731,15 +732,17 @@ func TestRunTearsDownSignalHandlerBeforeScoreboard(t *testing.T) {
 			stopped = true
 		}
 	}
+	// The scoreboard is recognized by the horizontal rule that opens it, which
+	// appears in no timestamped line. Observed at the WRITER rather than around the
+	// log's method, because what matters is when the bytes land relative to the
+	// handler teardown.
 	origLogger := newRunLogger
-	newRunLogger = func(stderr io.Writer) (func(string, ...any), func(string)) {
-		logf, logRaw := origLogger(stderr)
-		return logf, func(s string) {
+	newRunLogger = func(stderr io.Writer) *runlog.Log {
+		return origLogger(&watchWriter{w: stderr, mark: strings.Repeat("\u2500", 10), seen: func() {
 			if !sawScoreboard {
 				sawScoreboard, stillLive = true, !stopped
 			}
-			logRaw(s)
-		}
+		}})
 	}
 	t.Cleanup(func() {
 		installSignals, newRunLogger = origInstall, origLogger
@@ -1475,7 +1478,8 @@ func (w *gateWriter) recorded() []string {
 // the concurrent line arrive first here.
 func TestLogRawSerializesAgainstLogLines(t *testing.T) {
 	w := &gateWriter{mark: "TABLE", hold: 200 * time.Millisecond, started: make(chan struct{})}
-	logf, logRaw := newLogger(w)
+	l := newLogger(w)
+	logf, logRaw := l.Logf(), l.Raw
 
 	done := make(chan struct{})
 	go func() {
@@ -1511,35 +1515,41 @@ func TestRunScoreboardWritesThroughLockedWriter(t *testing.T) {
 
 	// The horizontal rule opens the table and appears in no timestamped line.
 	w := &gateWriter{mark: strings.Repeat("─", 10), hold: 200 * time.Millisecond, started: make(chan struct{})}
-	tables := 0 // only run()'s goroutine touches this, and only before run returns
 	orig := newRunLogger
-	t.Cleanup(func() { newRunLogger = orig })
-	newRunLogger = func(io.Writer) (func(string, ...any), func(string)) {
-		logf, logRaw := newLogger(w)
-		return logf, func(s string) {
-			tables++
-			// Race a log line against the table write, joined before returning so
-			// nothing outlives the run: logMu must hold it back until the table is
-			// whole. Without the shared lock it lands first, as it would mid-table.
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				<-w.started
-				logf("concurrent")
-			}()
-			logRaw(s)
-			<-done
-		}
+	racer := make(chan struct{})
+	newRunLogger = func(io.Writer) *runlog.Log {
+		l := newLogger(w)
+		// Race a log line against the table write: the gate closes w.started as the
+		// marked write begins and then holds it open, so this line is offered to the
+		// log while the table is half-written. The lock must hold it back until the
+		// table is whole; without it the line lands first, as it would mid-table.
+		go func() {
+			defer close(racer)
+			<-w.started
+			l.Printf("concurrent")
+		}()
+		return l
 	}
+	t.Cleanup(func() { newRunLogger = orig })
 
 	var buf bytes.Buffer
 	if got := run([]string{"-config", f.configFile("directory", "", "  review_only: true")}, &buf, &buf); got != 0 {
 		t.Fatalf("run() = %d, want 0; log:\n%s", got, strings.Join(w.recorded(), ""))
 	}
-	if tables != 1 {
-		t.Fatalf("scoreboard reached the locked writer %d times, want 1: run() is not printing the table through logRaw", tables)
-	}
+	// Joined before anything is measured: the racer only reaches the writer once
+	// the table has released the lock, which is the whole property under test.
+	<-racer
+
 	got := w.recorded()
+	tables := 0
+	for _, s := range got {
+		if strings.Contains(s, w.mark) {
+			tables++
+		}
+	}
+	if tables != 1 {
+		t.Fatalf("the scoreboard reached the locked writer %d times, want 1: run() is not printing the table through Raw", tables)
+	}
 	table, concurrent := -1, -1
 	for i, s := range got {
 		if strings.Contains(s, w.mark) && table < 0 {
@@ -1556,4 +1566,21 @@ func TestRunScoreboardWritesThroughLockedWriter(t *testing.T) {
 		t.Errorf("concurrent line at %d precedes the table at %d: the scoreboard did not hold the log lock\nwrites = %q",
 			concurrent, table, got)
 	}
+}
+
+// watchWriter calls seen the first time a write carries mark, then passes it
+// through untouched. It exists so a test can observe WHEN a particular piece of
+// output lands without wrapping the logger's own methods.
+type watchWriter struct {
+	w    io.Writer
+	mark string
+	once sync.Once
+	seen func()
+}
+
+func (w *watchWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), w.mark) {
+		w.once.Do(w.seen)
+	}
+	return w.w.Write(p)
 }

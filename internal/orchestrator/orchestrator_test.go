@@ -6782,7 +6782,7 @@ func TestReviewOnlyRunEndsWithAVerdict(t *testing.T) {
 // canceled context by returning nil without touching it, so a clean verdict
 // exited 0 over a publication the operator interrupted.
 //
-// Canceling at the "verdict:" log line lands exactly there: after Decide, before
+// Canceling as the VERDICT block opens lands exactly there: after Decide, before
 // the body is written and before anything is posted.
 func TestAnInterruptionWhileTheVerdictIsPublishedIsNotReportedAsAFinishedReview(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1})
@@ -6794,7 +6794,7 @@ func TestAnInterruptionWhileTheVerdictIsPublishedIsNotReportedAsAFinishedReview(
 	logf := func(format string, args ...any) {
 		msg := fmt.Sprintf(format, args...)
 		t.Log(msg)
-		if strings.HasPrefix(msg, "verdict: ") {
+		if strings.HasPrefix(msg, "VERDICT ") {
 			cancel()
 		}
 	}
@@ -7662,7 +7662,7 @@ func TestAConversationReplyIsSignedAndSanitized(t *testing.T) {
 	}
 }
 
-// A custom template is honoured, and a blank one still signs: attribution on a
+// A custom template is honored, and a blank one still signs: attribution on a
 // machine reply is not something a config can switch off by accident.
 func TestReplySignatureTemplateIsConfigurable(t *testing.T) {
 	for name, tmpl := range map[string]string{"custom": "-- answered by {agents}", "blank": ""} {
@@ -7910,7 +7910,7 @@ func TestRefutationIsSkippedWhenNothingReachesTheFloor(t *testing.T) {
 	}
 }
 
-// Lowering the floor restores the old behaviour, so a project that wants every
+// Lowering the floor restores the old behavior, so a project that wants every
 // finding refuted can still have it.
 func TestRefuteAtLowSendsEveryFindingToRefutation(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1})

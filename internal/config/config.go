@@ -1894,7 +1894,7 @@ type ReviewPolicy struct {
 	// judge.
 	//
 	// The round pays for itself as a SAFETY GATE, not as a filter, and the gate only
-	// covers blocking findings -- applyJudgment honours a drop on one of those only
+	// covers blocking findings -- applyJudgment honors a drop on one of those only
 	// where refutation recorded doubt, so no single agent can delete a blocker.
 	// Below the floor the judge already decides alone and a second opinion changes
 	// nothing about what it may do.

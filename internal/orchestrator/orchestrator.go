@@ -40,6 +40,11 @@ type Orchestrator struct {
 	// notion of "which lens is this" everywhere.
 	templates map[string]*template.Template
 	logf      func(format string, args ...any)
+	// progress declares the run's STRUCTURE -- which phase a line belongs to -- so
+	// the sink can render it. Optional: nil means every call degrades to an ordinary
+	// logf line, which is what the tests (and anything embedding the orchestrator)
+	// get without arranging for a renderer.
+	progress Phaser
 	// ci is what the forge reported about the reviewed head, when a provider could
 	// be asked. Zero value means "not known", which never blocks a verdict but is
 	// recorded in its reasons -- see internal/review.CI.
@@ -249,6 +254,59 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		o.collector.ExcludeLogs(rel)
 	}
 	return o, nil
+}
+
+// Phaser receives the run's structure: which block is open, and what closed it.
+// internal/runlog implements it; anything that only wants the text can ignore it
+// and read logf, which every phase call also has a plain equivalent for.
+type Phaser interface {
+	Rule(format string, args ...any)
+	Phase(format string, args ...any)
+	EndPhase(format string, args ...any)
+	Progress(format string, args ...any)
+}
+
+// WithProgress installs the structure sink and returns o, so a caller can build
+// and configure in one expression. Safe to call with nil.
+func (o *Orchestrator) WithProgress(p Phaser) *Orchestrator {
+	o.progress = p
+	return o
+}
+
+// rule, phase, endPhase and progress are the four structural log calls. Each
+// falls back to an ordinary line when no sink is installed, so the orchestrator
+// never has to ask whether one is -- and a test reading the log still sees every
+// word, just without the shape.
+func (o *Orchestrator) rule(format string, args ...any) {
+	if o.progress != nil {
+		o.progress.Rule(format, args...)
+		return
+	}
+	o.logf("=== "+format+" ===", args...)
+}
+
+func (o *Orchestrator) phase(format string, args ...any) {
+	if o.progress != nil {
+		o.progress.Phase(format, args...)
+		return
+	}
+	o.logf(format, args...)
+}
+
+func (o *Orchestrator) endPhase(format string, args ...any) {
+	if o.progress != nil {
+		o.progress.EndPhase(format, args...)
+		return
+	}
+	o.logf(format, args...)
+}
+
+func (o *Orchestrator) progressf(format string, args ...any) {
+	if o.progress != nil {
+		o.progress.Progress(format, args...)
+		return
+	}
+	o.logf(format, args...)
 }
 
 // logsDirWithin returns the logs dir as a path relative to the target root if
@@ -545,10 +603,12 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// Then ping (spends a little on each agent), then Prepare (may mutate
 	// state -- pr checkout): each stage fails before the next spends more.
 	if o.cfg.Ping() {
-		o.logf("preflight: pinging agents...")
+		o.phase("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
 		if err := o.Ping(ctx); err != nil {
+			o.endPhase("PREFLIGHT  failed")
 			return err
 		}
+		o.endPhase("PREFLIGHT  every agent responded")
 	}
 
 	// Prepare can switch branches (pr mode runs gh pr checkout), which invalidates
@@ -856,6 +916,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 					return false, committed, err
 				}
 			}
+			o.endPhase("FIX %s  rejected by the coder", it.ID)
 			continue
 		}
 		if clean {
@@ -864,14 +925,27 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		}
 		did, err := o.verifyAndCommitFix(ctx, rec, it)
 		if err != nil {
+			o.endPhase("FIX %s  failed: %v", it.ID, err)
 			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
 		if did {
 			committed++
 		}
 		o.answerConversations(ctx, it.ID, did, replies)
+		o.closeFix(it.ID, did)
 	}
 	return false, committed, nil
+}
+
+// closeFix ends a fix block with what became of the issue. Its own function so
+// the outcome is stated in one place -- and so runFixSessions, which is already at
+// the complexity limit, does not grow a branch for a log line.
+func (o *Orchestrator) closeFix(issueID string, committed bool) {
+	if committed {
+		o.endPhase("FIX %s  committed", issueID)
+		return
+	}
+	o.endPhase("FIX %s  not committed; the finding stays open", issueID)
 }
 
 // answerConversations posts this session's replies, but only once its fix is
@@ -1401,7 +1475,7 @@ func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary, passes int) {
 // reaches the coder.
 func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, asgs []model.Assignment, label string) (done bool, err error) {
 	round := len(sum.Rounds) + 1
-	o.logf("=== closing round, %s (round %d): %d reviewer(s) over the finished tree ===", label, round, len(asgs))
+	o.phase("CLOSING %s  round %d, %d reviewer(s) over the finished tree", label, round, len(asgs))
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
@@ -1432,7 +1506,7 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 		Issues:       len(recP.Issues),
 		Corroborated: corroboratedCount(recP.Issues),
 	})
-	o.logf("closing %s: %d finding(s), %d advisory, %d reviewer error(s)",
+	o.endPhase("CLOSING %s  %d finding(s), %d advisory, %d reviewer error(s)",
 		label, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
 	// A failed closing reviewer is a failed closing pass, checked BEFORE an empty
 	// finding set is read as a completed final review. Nothing follows to catch what
@@ -1883,7 +1957,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		sum.Termination = model.TermInterrupted
 		return true, nil //nolint:nilerr // interruption is a normal termination, not a round error
 	}
-	o.logf("=== round %d/%d ===", round, o.cfg.Loop.MaxIterations)
+	o.rule("round %d/%d", round, o.cfg.Loop.MaxIterations)
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
@@ -1904,6 +1978,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	o.journal(model.EvRoundStarted, round, model.JournalRoundStarted{
 		Assignments: journalAssignments(rec.Assignments),
 	})
+	o.phase("REVIEW  %d reviewer(s), %d lens(es)", len(panelAgents(rec.Assignments)), len(rec.Assignments))
 	o.review(ctx, &rec, material, sum.Rounds)
 	sum.Rounds = append(sum.Rounds, rec)
 	recP := &sum.Rounds[len(sum.Rounds)-1]
@@ -1930,8 +2005,8 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		Corroborated: corroboratedCount(recP.Issues),
 	})
 
-	o.logf("round %d: %d finding(s), %d advisory, %d reviewer error(s)",
-		round, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
+	o.endPhase("REVIEW  %d finding(s), %d advisory, %d reviewer error(s)",
+		len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
 
 	if ctx.Err() != nil {
 		sum.Termination = model.TermInterrupted
@@ -2812,7 +2887,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 		t := time.NewTicker(every)
 		defer t.Stop()
 		heartbeat(done, t.C, func() {
-			o.logf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
+			o.progressf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
 		})
 	}()
 	res := agent.Run(ctx, o.cfg.Agents[agentName], text, o.cfg.Target.Path)
@@ -2881,7 +2956,11 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 	md := logstore.RenderReviewMD(asg.Agent, lensName, round, findings, parseErr)
 	o.logStep("review", asg.Agent, lensName, round, parseErr == nil, out, md, res, salvage.raw)
 	outBytes := len(res.Stdout) + len(res.Stderr) + salvage.outputBytes
-	o.logf("%s done (%d findings, %s, output %s)", label, len(out.Findings), res.Duration.Round(time.Second), logstore.SizeDesc(outBytes))
+	if parseErr != nil {
+		o.logf("%s FAILED after %s (%v)", label, res.Duration.Round(time.Second), parseErr)
+	} else {
+		o.logf("%s done (%d findings, %s, output %s)", label, len(out.Findings), res.Duration.Round(time.Second), logstore.SizeDesc(outBytes))
+	}
 	// A salvaged step is billed for both invocations: res already carries the
 	// summed usage and duration, and salvage carries the byte counts that cannot
 	// live on a single Result. See reformatReview.
@@ -3238,6 +3317,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	if err != nil {
 		return false, nil, err
 	}
+	o.phase("FIX %s  %s", fixSubject(active), firstLineOf(fixTitle(active)))
 	o.logf("%s starting on %d issue(s) (prompt %s)", label, len(active), logstore.SizeDesc(len(text)))
 	res := o.runAgent(ctx, label, "fix", coder.Agent, promptName, rec.Round, text)
 	var out model.FixOutput
@@ -3269,7 +3349,11 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	}
 	md := logstore.RenderFixMD(coder.Agent, rec.Round, seen, out.Notes, runErr)
 	o.logStep("fix", coder.Agent, promptName, rec.Round, runErr == nil, out, md, res, "")
-	o.logf("%s done (%s, output %s)", label, res.Duration.Round(time.Second), logstore.SizeDesc(len(res.Stdout)+len(res.Stderr)))
+	if runErr != nil {
+		o.logf("%s FAILED after %s (%v)", label, res.Duration.Round(time.Second), runErr)
+	} else {
+		o.logf("%s done (%s, output %s)", label, res.Duration.Round(time.Second), logstore.SizeDesc(len(res.Stdout)+len(res.Stderr)))
+	}
 	// The coder's self-report, recorded as such. Whether any of it survives is
 	// decided by the verify_finished record that follows.
 	fixEv := model.JournalFixFinished{
@@ -3613,7 +3697,12 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 	if !o.cfg.Verify.Enabled() || o.cfg.Loop.ReviewOnly {
 		return
 	}
-	o.logf("verify: capturing baseline (%d command(s))", len(o.cfg.Verify.Commands))
+	o.phase("BASELINE  capturing %d verification command(s)", len(o.cfg.Verify.Commands))
+	// Closed on every path, including the returns in the middle: the block's summary
+	// is the last thing said about the baseline, and an unclosed block would indent
+	// the whole run under it.
+	outcome := "no baseline"
+	defer func() { o.endPhase("BASELINE  %s", outcome) }()
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
 	// A cancellation inside the baseline is ordinary -- it is the longest step before
 	// round 1, a full build and test suite over an untouched tree -- and it leaves a
@@ -3632,6 +3721,7 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 			Checks:      journalChecks(rep.Results),
 		})
 		o.logf("verify baseline: interrupted (%v) -- no baseline was captured; the commands that had started were stopped by the run, not by the project", ctx.Err())
+		outcome = "interrupted; no baseline captured"
 		return
 	}
 	o.verifyBaseline = rep
@@ -3644,9 +3734,10 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 		Checks: journalChecks(rep.Results),
 	})
 	if rep.Passed() {
-		o.logf("verify baseline: all checks pass")
+		outcome = "all checks pass"
 		return
 	}
+	outcome = rep.Summary()
 	o.logf("verify baseline: %s", rep.Summary())
 	// What a red baseline MEANS depends entirely on the policy, and saying the
 	// wrong one here is worse than saying nothing: Report.Blocking reads the
@@ -3926,11 +4017,12 @@ func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord
 		FilterFailed: !judged,
 	})
 	sum.Verdict = d.Summary()
-	o.logf("verdict: %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	o.phase("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
 	for _, r := range d.Reasons {
-		o.logf("  %s", r)
+		o.logf("%s", r)
 	}
 	o.writeReviewBody(ctx, rec, sum, d)
+	o.endPhase("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
 }
 
 // writeReviewBody renders the review document and puts it in the run directory.
@@ -4102,7 +4194,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		o.logf("refutation: skipped -- none of the %d finding(s) is %s or above", len(rec.Issues), floor)
 		return
 	}
-	o.logf("=== refutation: %d reviewer(s) judging %d of %d finding(s) at %s or above ===",
+	o.phase("REFUTE  %d reviewer(s) judging %d of %d finding(s) at %s or above",
 		len(panel), len(subject), len(rec.Issues), floor)
 
 	type reply struct {
@@ -4194,7 +4286,8 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		o.logf("refutation: no reviewer returned a usable position; every finding stands")
 		return
 	}
-	applyRefutations(rec, byIssue, responded, o.logf)
+	dropped, contested := applyRefutations(rec, byIssue, responded, o.logf)
+	o.endPhase("REFUTE  %d responder(s), %d dropped, %d contested", responded, dropped, contested)
 }
 
 // issuesAtOrAbove selects the findings a refutation round is asked about: those
@@ -4324,7 +4417,7 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, round i
 // documentation and the refutation prompt all promise.
 //
 // Issues nobody took a position on are untouched, for the same reason.
-func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]model.RefutePosition, responded int, logf func(string, ...any)) {
+func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]model.RefutePosition, responded int, logf func(string, ...any)) (dropped, contested int) {
 	for i := range rec.Issues {
 		it := &rec.Issues[i]
 		positions := byIssue[it.ID]
@@ -4360,24 +4453,29 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 			it.Status = model.VerdictRejected
 			it.Verdict = model.VerdictRejected
 			it.VerdictDetail = "refuted by every reviewer that judged it: " + evidence
+			dropped++
 			logf("refutation: %s dropped -- all %d responding reviewer(s) refuted it", it.ID, responded)
 		case refuted == len(positions) && len(positions) < responded:
 			// Everyone who spoke about this finding refuted it, but not everyone spoke.
 			// Silence is not agreement: the reviewers that omitted the id may never have
 			// looked at it. Kept and flagged rather than deleted on a partial count.
 			it.Contested = true
+			contested++
 			logf("refutation: %s refuted by %d of %d responding reviewer(s), the rest did not say -- kept",
 				it.ID, refuted, responded)
 		case refuted > 0:
 			// Kept, but the disagreement is recorded: a reader deciding what to do about
 			// this finding should know somebody who looked did not believe it.
 			it.Contested = true
+			contested++
 			logf("refutation: %s contested (%d refute, %d maintain, %d unsure) -- kept", it.ID, refuted, maintained, unsure)
 		case unsure == len(positions):
 			it.Contested = true
+			contested++
 			logf("refutation: %s uncertain -- no reviewer could decide it from the evidence", it.ID)
 		}
 	}
+	return dropped, contested
 }
 
 // runJudge is the last filter before a review is published: one read-only agent
@@ -4420,7 +4518,7 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 	if open == 0 {
 		return true
 	}
-	o.logf("=== judge: %s weighing %d surviving finding(s) ===", j.Agent, open)
+	o.phase("JUDGE  %s weighing %d surviving finding(s)", j.Agent, open)
 
 	d := prompt.JudgeData{
 		Mode:           o.cfg.Target.Mode,
@@ -4461,9 +4559,11 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 		logstore.RenderJudgeMD(j.Agent, rec.Round, out.Verdicts, parseErr), res, "")
 	if parseErr != nil {
 		o.logf("WARNING: judge failed (%v); every finding stands and the review cannot approve", parseErr)
+		o.endPhase("JUDGE  did not finish; every finding stands")
 		return false
 	}
-	applyJudgment(rec, out.Verdicts, o.cfg.Review.BlockAt, o.logf)
+	kept, dropped := applyJudgment(rec, out.Verdicts, o.cfg.Review.BlockAt, o.logf)
+	o.endPhase("JUDGE  %d kept, %d dropped", kept, dropped)
 	return true
 }
 
@@ -4500,7 +4600,7 @@ func undecidedIssues(rec *model.RoundRecord) []model.Issue {
 // the verdict blocks -- the wrong answer costs a human one paragraph, and the other
 // wrong answer is an approval nobody gave. Two agents must now agree to remove a
 // blocker, one of them in a round that never sees the judge's reasoning.
-func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockAt string, logf func(string, ...any)) {
+func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockAt string, logf func(string, ...any)) (kept, dropped int) {
 	if blockAt == "" {
 		blockAt = model.DefaultBlockAt
 	}
@@ -4536,8 +4636,37 @@ func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockA
 		it.Status = model.VerdictRejected
 		it.Verdict = model.VerdictRejected
 		it.VerdictDetail = "judged not worth reporting: " + v.Reason
+		dropped++
 		logf("judge: %s dropped -- %s", it.ID, firstLineOf(reason))
 	}
+	for _, it := range rec.Issues {
+		if it.StatusOrDefault() != model.VerdictRejected {
+			kept++
+		}
+	}
+	return kept, dropped
+}
+
+// fixSubject and fixTitle name a coder session's block. One issue per session is
+// the rule (see runFixSessions), so the usual answer is that issue's id and title;
+// the plural forms exist only for a config that batches, and for the closing
+// round's correction pass.
+func fixSubject(active []model.Issue) string {
+	switch len(active) {
+	case 0:
+		return "(nothing)"
+	case 1:
+		return active[0].ID
+	default:
+		return fmt.Sprintf("%d issues", len(active))
+	}
+}
+
+func fixTitle(active []model.Issue) string {
+	if len(active) != 1 {
+		return ""
+	}
+	return active[0].Title
 }
 
 func firstLineOf(s string) string {

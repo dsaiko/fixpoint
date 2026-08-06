@@ -24,6 +24,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/orchestrator"
+	"github.com/dsaiko/fixpoint/internal/runlog"
 )
 
 func main() {
@@ -75,7 +76,8 @@ Flags:
 		return 2
 	}
 
-	logf, logRaw := newRunLogger(stderr)
+	runLog := newRunLogger(stderr)
+	logf, logRaw := runLog.Logf(), runLog.Raw
 
 	// Anchor the run at the project root -- the git root, or the nearest directory
 	// holding a config bundle, found by walking up from the working directory. Every
@@ -157,6 +159,9 @@ Flags:
 	agent.SetExtraRedactions(extraRedactions)
 
 	o, err := orchestrator.New(loaded, logf)
+	if o != nil {
+		o.WithProgress(runLog)
+	}
 	if err != nil {
 		logf("startup validation: %v", err)
 		return 1
@@ -309,42 +314,29 @@ func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Co
 // a table written straight to stderr would never reach the wrapper.
 var newRunLogger = newLogger
 
-// newLogger builds the run's two stderr writers over ONE mutex: logf for the
-// timestamped single lines everything logs, and logRaw for pre-formatted
-// multi-line output. It is a function rather than two closures inside run() so
-// a test can drive both against a writer of its own and pin the shared lock --
-// the interleaving it prevents needs a concurrent writer, which a normal run
-// only has in a window (the end-of-run table racing the signal handler) that a
-// full-CLI test cannot open on demand.
-func newLogger(stderr io.Writer) (logf func(string, ...any), logRaw func(string)) {
-	var logMu sync.Mutex // reviewer goroutines log concurrently
-	logf = func(format string, args ...any) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		// Redact before writing: reviewer/coder/git errors flow through here
-		// verbatim, and a prompt-injected agent can smuggle a credential into one
-		// (e.g. inside an invalid severity that validateReviewFindings echoes back).
-		// Persisted logs already mask these; stderr and CI console logs must too.
-		//
-		// Then escape, so every line is display-only. The same target-controlled text
-		// reaches here as reaches the listing: agent/prompt names and the bundle paths
-		// they resolved to (logSource), the ProjectSuppliedPolicy listing the operator
-		// reads before asserting -trusted-target, and git/agent output quoted into an
-		// error. Escaping last means the redaction mask itself is never split by an
-		// escape, and that a name embedding ESC/CSI cannot scroll the other entries of
-		// a refusal off the screen and get trust asserted on a listing it drew.
-		msg := agent.EscapeTerminal(agent.RedactSecrets(fmt.Sprintf(format, args...)))
-		fmt.Fprintf(stderr, "%s %s\n", time.Now().Format("15:04:05"), msg)
-	}
-	// logRaw writes pre-formatted, multi-line output under the same lock as logf,
-	// so a heartbeat or signal-handler line cannot land mid-table and shred the
-	// column alignment. Callers own redaction/escaping for what they pass.
-	logRaw = func(s string) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		fmt.Fprint(stderr, s)
-	}
-	return logf, logRaw
+// newLogger builds the run's output: one runlog.Log over stderr, which renders
+// the run's phase structure and holds the single mutex every writer shares.
+//
+// It is a function rather than a closure inside run() so a test can drive it
+// against a writer of its own and pin that lock -- the interleaving it prevents
+// needs a concurrent writer, which a normal run only has in a window (the
+// end-of-run table racing the signal handler) that a full-CLI test cannot open on
+// demand.
+//
+// Redaction and terminal escaping are installed as the log's transform rather than
+// applied at each call site: reviewer, coder and git errors flow through here
+// verbatim, and a prompt-injected agent can smuggle a credential into one (e.g.
+// inside an invalid severity that validateReviewFindings echoes back). Persisted
+// logs already mask these; stderr and CI console logs must too.
+//
+// Escaping runs after redaction, so the mask itself is never split by an escape,
+// and so a name embedding ESC/CSI cannot scroll the other entries of a refusal off
+// the screen and get trust asserted on a listing it drew. The log adds its own
+// color AFTER this transform, which is what keeps agent text unable to forge it.
+func newLogger(stderr io.Writer) *runlog.Log {
+	return runlog.New(stderr).Transform(func(s string) string {
+		return agent.EscapeTerminal(agent.RedactSecrets(s))
+	})
 }
 
 // forceQuit ends the process on a second interrupt, with the interrupted run's
