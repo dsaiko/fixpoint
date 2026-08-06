@@ -85,22 +85,33 @@ func TestPostRunRejectsANonRunDirectory(t *testing.T) {
 }
 
 // The summary path is absolute, but a run directory can be copied or the project
-// moved; the body beside the summary is then the right file.
+// moved; the body beside the summary is then the right file. Both documented input
+// shapes must find it -- the summary file names no directory to join under, so the
+// fallback has to be resolved against the summary that was loaded, not the
+// argument.
 func TestPostRunFallsBackToTheBodyBesideTheSummary(t *testing.T) {
-	dir := writeRun(t, model.RunSummary{
-		Mode: "pr", PR: 3, Path: t.TempDir(),
-		ReviewBody: "/gone/review-body.md",
-		Verdict:    &model.ReviewVerdict{Outcome: model.VerdictApprove},
-	}, "the review that was actually produced")
+	for _, shape := range []string{"the run directory", "the summary file"} {
+		t.Run(shape, func(t *testing.T) {
+			dir := writeRun(t, model.RunSummary{
+				Mode: "pr", PR: 3, Path: t.TempDir(),
+				ReviewBody: "/gone/review-body.md",
+				Verdict:    &model.ReviewVerdict{Outcome: model.VerdictApprove},
+			}, "the review that was actually produced")
+			arg := dir
+			if shape == "the summary file" {
+				arg = filepath.Join(dir, "summary-20260806-120000.json")
+			}
 
-	var logs strings.Builder
-	// No GitHub remote in that temp path, so this stops at the poster -- which is
-	// past the body read, which is what this test is about.
-	postRun(dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
-	if strings.Contains(logs.String(), "cannot read the review body") {
-		t.Errorf("the fallback to the body beside the summary did not happen:\n%s", logs.String())
-	}
-	if !strings.Contains(logs.String(), "no GitHub or GitLab remote") {
-		t.Errorf("expected to get as far as resolving the forge:\n%s", logs.String())
+			var logs strings.Builder
+			// No GitHub remote in that temp path, so this stops at the poster -- which is
+			// past the body read, which is what this test is about.
+			postRun(arg, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			if strings.Contains(logs.String(), "cannot read the review body") {
+				t.Errorf("the fallback to the body beside the summary did not happen:\n%s", logs.String())
+			}
+			if !strings.Contains(logs.String(), "no GitHub or GitLab remote") {
+				t.Errorf("expected to get as far as resolving the forge:\n%s", logs.String())
+			}
+		})
 	}
 }

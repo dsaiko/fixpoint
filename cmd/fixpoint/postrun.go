@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -27,7 +28,7 @@ import (
 // the anchors are the ones that run computed. Nothing is recalculated, so nothing
 // can differ from what was reviewed.
 func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
-	sum, err := loadRunSummary(dir)
+	sum, runDir, err := loadRunSummary(dir)
 	if err != nil {
 		logf("post-run: %v", err)
 		return 1
@@ -47,8 +48,10 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 	body, err := os.ReadFile(sum.ReviewBody)
 	if err != nil {
 		// The path is recorded as absolute, but a run directory can be copied or the
-		// project moved, so fall back to the file beside the summary.
-		alt := filepath.Join(dir, "review-body.md")
+		// project moved, so fall back to the file beside the summary. Beside the
+		// SUMMARY, not beside the argument: the argument may name the summary file
+		// itself, and joining under a file path can only fail.
+		alt := filepath.Join(runDir, "review-body.md")
 		body, err = os.ReadFile(alt)
 		if err != nil {
 			logf("post-run: cannot read the review body (%s or %s): %v", sum.ReviewBody, alt, err)
@@ -77,7 +80,12 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 	}
 
 	url, err := p.PostReview(ctx, sum.Path, sum.PR, string(body), event, inline)
-	if err != nil && len(inline) > 0 {
+	if err != nil && len(inline) > 0 && strings.HasPrefix(err.Error(), "inline:") {
+		// Only an anchor rejection earns a second submission, exactly as in
+		// Orchestrator.postReview. Retrying on ANY error would re-post after an auth
+		// failure or -- the case that costs something -- a client-side timeout on a
+		// call the forge already accepted, leaving two identical reviews on the pull
+		// request and dropping the anchors this mode exists to replay.
 		logf("post-run: %s rejected the inline comments (%v); posting the summary without them", p.Kind(), err)
 		url, err = p.PostReview(ctx, sum.Path, sum.PR, string(body), event, nil)
 	}
@@ -86,21 +94,26 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		return 1
 	}
 	if url != "" {
-		logf("posted %s to %s as %s: %s", filepath.Base(dir), p.Kind(), event, url)
+		logf("posted %s to %s as %s: %s", filepath.Base(runDir), p.Kind(), event, url)
 	} else {
-		logf("posted %s to %s as %s", filepath.Base(dir), p.Kind(), event)
+		logf("posted %s to %s as %s", filepath.Base(runDir), p.Kind(), event)
 	}
 	return 0
 }
 
 // loadRunSummary reads the summary from a run directory, accepting either the
 // directory itself or the summary file.
-func loadRunSummary(dir string) (*model.RunSummary, error) {
+//
+// It returns the run directory it resolved alongside the summary, because both
+// input shapes are supported and only one of them is a directory: a caller that
+// reused the argument to reach a sibling artifact would build a path underneath
+// the summary FILE.
+func loadRunSummary(dir string) (*model.RunSummary, string, error) {
 	path := dir
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		matches, err := filepath.Glob(filepath.Join(dir, "summary-*.json"))
 		if err != nil || len(matches) == 0 {
-			return nil, fmt.Errorf("%s holds no summary-*.json; is it a run directory?", dir)
+			return nil, "", fmt.Errorf("%s holds no summary-*.json; is it a run directory?", dir)
 		}
 		// Newest last by name, since the name carries the timestamp.
 		sort.Strings(matches)
@@ -108,14 +121,14 @@ func loadRunSummary(dir string) (*model.RunSummary, error) {
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var sum model.RunSummary
 	if err := json.Unmarshal(raw, &sum); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, "", fmt.Errorf("parse %s: %w", path, err)
 	}
 	if sum.ReviewBody == "" {
-		return nil, errors.New("that run wrote no review body")
+		return nil, "", errors.New("that run wrote no review body")
 	}
-	return &sum, nil
+	return &sum, filepath.Dir(path), nil
 }
