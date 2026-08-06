@@ -4247,6 +4247,19 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 			continue
 		}
 		p.Position = strings.ToLower(strings.TrimSpace(p.Position))
+		// A refutation with no evidence is not a refutation. Only this position
+		// DELETES a finding, and the contract, the prompt and RefutePosition's own
+		// doc all say the deletion has to be grounded in code -- but nothing checked
+		// it, so a bare {"issue":"i1","position":"refute"} counted toward unanimity
+		// and could drop a high finding, then leave the record asserting "refuted by
+		// every reviewer that judged it: " with nothing after the colon. Dropped
+		// here rather than in the aggregation so the reviewer still counts as a
+		// responder and casts no vote on this id, which fails closed: the finding is
+		// kept and marked contested instead of deleted.
+		if p.Position == model.PositionRefute && strings.TrimSpace(p.Evidence) == "" {
+			o.logf("WARNING: %s refuted %s with no evidence; ignored -- a refutation must say what in the code disproves it", label, p.Issue)
+			continue
+		}
 		valid = append(valid, p)
 	}
 	o.logf("%s done (%d position(s), %s)", label, len(valid), res.Duration.Round(time.Second))

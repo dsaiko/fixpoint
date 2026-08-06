@@ -7008,6 +7008,38 @@ func TestRefutationWithNoUsableRepliesKeepsEveryFinding(t *testing.T) {
 	}
 }
 
+// A refutation with no evidence is not a refutation. Only that position deletes a
+// finding, and the contract requires the deletion be grounded in code -- so a bare
+// {"issue":"i1","position":"refute"} must not count toward unanimity. The reviewer
+// still answered, so it stays a responder with no vote on this id, which keeps the
+// finding and marks it contested rather than dropping it.
+func TestAnEvidencelessRefutationDoesNotCountTowardUnanimity(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock", "mock2")
+	f.refuteLens()
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "security", Severity: "high", File: "auth.go", Line: 7, Title: "token compared with =="}))
+	f.respond(2, reviewResponse(t))
+	f.respond(3, `<review>{"positions":[{"issue":"i1","position":"refute","evidence":"auth.go:7 uses subtle.ConstantTimeCompare"}]}</review>`)
+	f.respond(4, `<review>{"positions":[{"issue":"i1","position":"refute","evidence":"   "}]}</review>`)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := sum.Rounds[0].Issues[0]
+	if it.Status == model.VerdictRejected {
+		t.Errorf("a high finding was deleted by a refutation with no evidence (detail %q)", it.VerdictDetail)
+	}
+	if !it.Contested {
+		t.Error("the one grounded refutation must still mark the finding contested")
+	}
+	if sum.Verdict.Outcome != model.VerdictChangesRequested {
+		t.Errorf("verdict = %q, want changes_requested: the high finding stands (%v)",
+			sum.Verdict.Outcome, sum.Verdict.Reasons)
+	}
+}
+
 // judgeRole points the fixture at a read-only judge.
 func (f *fixture) judgeRole() {
 	const agentName = "judgemock"
