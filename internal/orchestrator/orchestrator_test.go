@@ -7100,9 +7100,10 @@ func (f fakePoster) PostReview(_ context.Context, _ string, _ int, body string, 
 }
 
 // postedBodyForTest swaps the poster for one that records, returning a restore.
-func postedBodyForTest(into *string) func() {
+// The inline pointer may be nil for a test that only cares about the body.
+func postedBodyForTest(into *string, inline *[]forge.InlineComment) func() {
 	prev := posterFor
-	posterFor = func(context.Context, string) forge.Poster { return fakePoster{body: into} }
+	posterFor = func(context.Context, string) forge.Poster { return fakePoster{body: into, inline: inline} }
 	return func() { posterFor = prev }
 }
 
@@ -7115,6 +7116,11 @@ func postedBodyForTest(into *string) func() {
 // Driven through writeReviewBody rather than a whole run: pr mode would run
 // `gh pr checkout`, and the property under test is which bytes leave this
 // function, not how the branch got there.
+//
+// The finding is anchored INSIDE the diff, because the inline comments are the
+// review's second channel out and they carried the credential raw while the body
+// was masked -- the exact case a finding about a hardcoded credential produces,
+// since the line it quotes is one the diff contains.
 func TestThePostedReviewIsExactlyWhatWasWrittenToDisk(t *testing.T) {
 	const secret = "sk-ant-abcdef0123456789ABCDEF"
 	f := newFixture(t, config.Loop{MaxIterations: 1})
@@ -7124,7 +7130,8 @@ func TestThePostedReviewIsExactlyWhatWasWrittenToDisk(t *testing.T) {
 	f.cfg.Target.PR = 1
 
 	var posted string
-	restore := postedBodyForTest(&posted)
+	var inline []forge.InlineComment
+	restore := postedBodyForTest(&posted, &inline)
 	defer restore()
 
 	o := f.orchestrator()
@@ -7137,6 +7144,7 @@ func TestThePostedReviewIsExactlyWhatWasWrittenToDisk(t *testing.T) {
 			Description: "the token is " + secret,
 		}},
 	}
+	o.material = "+++ b/main.go\n@@ -1,3 +1,3 @@\n" + strings.Repeat(" x\n", 3)
 	sum := &model.RunSummary{}
 	o.writeReviewBody(t.Context(), rec, sum, review.Decide(review.Input{
 		Issues: rec.Issues, Quorum: review.QuorumFrom(rec.Assignments, nil),
@@ -7144,6 +7152,22 @@ func TestThePostedReviewIsExactlyWhatWasWrittenToDisk(t *testing.T) {
 
 	if posted == "" {
 		t.Fatal("nothing was posted")
+	}
+	if len(inline) != 1 {
+		t.Fatalf("got %d inline comment(s), want 1 anchored at main.go:1: %+v", len(inline), inline)
+	}
+	if inline[0].Path != "main.go" || inline[0].Line != 1 {
+		t.Errorf("anchor = %s:%d, want main.go:1", inline[0].Path, inline[0].Line)
+	}
+	if strings.Contains(inline[0].Body, secret) {
+		t.Errorf("the inline comment published a credential the body masked:\n%s", inline[0].Body)
+	}
+	if !strings.Contains(inline[0].Body, "[REDACTED]") {
+		t.Errorf("the inline comment carries no redaction mask:\n%s", inline[0].Body)
+	}
+	if len(sum.ReviewInline) != 1 || sum.ReviewInline[0].Path != "main.go" ||
+		sum.ReviewInline[0].Line != 1 || sum.ReviewInline[0].Body != inline[0].Body {
+		t.Errorf("the summary must record the anchors that were posted, for -post-run to replay them: %+v", sum.ReviewInline)
 	}
 	onDisk, err := os.ReadFile(sum.ReviewBody)
 	if err != nil {

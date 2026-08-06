@@ -3940,7 +3940,7 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	// comes with it because logstore applies both, and passing the same string
 	// through keeps the two copies identical rather than merely similar. Both
 	// transforms are idempotent, so logstore re-applying them changes nothing.
-	published := agent.EscapeTerminalBlock(agent.RedactSecrets(body))
+	published := publishedText(body)
 	path, err := o.logs.ReviewBody(published)
 	if err != nil {
 		o.logf("WARNING: failed to write the review body: %v", err)
@@ -3955,6 +3955,21 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 		sum.ReviewInline = append(sum.ReviewInline, model.ReviewAnchor{Path: c.Path, Line: c.Line, Body: c.Body})
 	}
 	o.postReview(ctx, sum, published)
+}
+
+// publishedText is the ONE transform between text an agent wrote and text that
+// leaves fixpoint -- to a file, to a terminal, or onto a pull request.
+//
+// It exists as a function because the review has TWO channels out: the summary
+// body and the inline comments. When only the body went through this pair, a
+// credential a prompt-injected reviewer had quoted into a finding was masked in
+// review-body.md and published verbatim in that finding's line comment -- the
+// operator read [REDACTED] and approved the post, and the leak went out beside it.
+// Naming the transform is what keeps the two channels from drifting again.
+//
+// Both transforms are idempotent, so logstore re-applying them changes nothing.
+func publishedText(s string) string {
+	return agent.EscapeTerminalBlock(agent.RedactSecrets(s))
 }
 
 // describeTarget names what was reviewed in one phrase, for the review's footer.
@@ -4513,7 +4528,11 @@ func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.Inli
 		out = append(out, forge.InlineComment{
 			Path: it.File,
 			Line: it.Line,
-			Body: review.RenderInline(it, signature),
+			// Through publishedText, exactly like the body: an inline comment is the
+			// second way agent text reaches the pull request, and a finding about a
+			// hardcoded credential quotes that credential on a line the diff contains,
+			// which is precisely the case that anchors.
+			Body: publishedText(review.RenderInline(it, signature)),
 		})
 	}
 	return out
