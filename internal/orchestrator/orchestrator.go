@@ -1889,6 +1889,15 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		// review body and the exit code all read what survives this.
 		o.runRefutation(ctx, recP, material)
 		judged := o.runJudge(ctx, recP, material)
+		// Re-checked HERE, not only above: the two phases between that check and this
+		// one take minutes, and an interrupt inside them leaves a review that was
+		// never filtered. Recording it as a completed review-only run would exit 0
+		// over exactly that.
+		if ctx.Err() != nil {
+			o.decideVerdict(ctx, recP, sum, judged)
+			sum.Termination = model.TermInterrupted
+			return true, nil //nolint:nilerr // an interruption is a termination, not a round error
+		}
 		o.decideVerdict(ctx, recP, sum, judged)
 		sum.Termination = model.TermReviewOnly
 		return true, nil
@@ -3847,14 +3856,28 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 			Verdict: string(d.Outcome),
 		}),
 	})
-	path, err := o.logs.ReviewBody(body)
+	// The PUBLISHED bytes, computed once and used for both the file and the post.
+	//
+	// This used to write agent.RedactSecrets(body) to disk and post the raw body,
+	// so a credential a prompt-injected reviewer had quoted into a finding was
+	// masked in the 0600 log directory and published verbatim on the pull request.
+	// It also falsified the control the whole posting design rests on: an operator
+	// reads review-body.md, sees [REDACTED], and publishes believing they checked
+	// the bytes that go out. Caught by the panel reviewing this branch.
+	//
+	// Redaction is what every other artifact already gets; the terminal escaping
+	// comes with it because logstore applies both, and passing the same string
+	// through keeps the two copies identical rather than merely similar. Both
+	// transforms are idempotent, so logstore re-applying them changes nothing.
+	published := agent.EscapeTerminalBlock(agent.RedactSecrets(body))
+	path, err := o.logs.ReviewBody(published)
 	if err != nil {
 		o.logf("WARNING: failed to write the review body: %v", err)
 		return
 	}
 	sum.ReviewBody = path
 	o.logf("review body: %s", path)
-	o.postReview(ctx, sum, body)
+	o.postReview(ctx, rec, sum, published)
 }
 
 // describeTarget names what was reviewed in one phrase, for the review's footer.
@@ -3939,6 +3962,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	type reply struct {
 		agent     string
 		positions []model.RefutePosition
+		step      *model.StepStat
 	}
 	replies := make([]reply, len(panel))
 	var wg sync.WaitGroup
@@ -3946,10 +3970,22 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			replies[i] = reply{agent: name, positions: o.refuteWith(ctx, name, rec, material)}
+			positions, step := o.refuteWith(ctx, name, rec, material)
+			replies[i] = reply{agent: name, positions: positions, step: step}
 		}()
 	}
 	wg.Wait()
+	// Collected AFTER the join, into rec in panel order. Appending from inside the
+	// goroutines raced -- two refuters could write the same slice index and one
+	// step would vanish, taking that reviewer's tokens out of the run's reported
+	// cost. This mirrors review(), which already collects into an indexed slice for
+	// the same reason; doing it here also makes the step order deterministic
+	// instead of dependent on which refuter finished first.
+	for _, r := range replies {
+		if r.step != nil {
+			rec.Steps = append(rec.Steps, *r.step)
+		}
+	}
 
 	byIssue := map[string][]model.RefutePosition{}
 	responded := 0
@@ -3990,7 +4026,7 @@ func panelAgents(assignments []model.Assignment) []string {
 // refuteWith runs one reviewer's refutation pass, returning nil if it produced
 // nothing usable. A failed refuter is not a round failure: it simply does not get
 // a vote, and unanimity is measured over those who answered.
-func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *model.RoundRecord, material string) []model.RefutePosition {
+func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *model.RoundRecord, material string) ([]model.RefutePosition, *model.StepStat) {
 	label := "refute: " + agentName
 	d := prompt.RefuteData{
 		Mode:           o.cfg.Target.Mode,
@@ -4007,12 +4043,12 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 	tmpl, ok := o.templates[o.cfg.Review.Refute]
 	if !ok || tmpl == nil {
 		o.logf("WARNING: %s: refute prompt %q was never loaded; this reviewer casts no position", label, o.cfg.Review.Refute)
-		return nil
+		return nil, nil
 	}
 	text, err := prompt.Render(tmpl, d)
 	if err != nil {
 		o.logf("WARNING: %s: render failed (%v); this reviewer casts no position", label, err)
-		return nil
+		return nil, nil
 	}
 	res := o.runAgent(ctx, label, "refute", agentName, o.cfg.Review.Refute, rec.Round, text)
 	var out model.RefuteOutput
@@ -4020,10 +4056,10 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 	if parseErr == nil {
 		parseErr = agent.ExtractJSON(res.Stdout, "review", &out)
 	}
-	rec.Steps = append(rec.Steps, stepStat("refute", agentName, o.cfg.Review.Refute, len(text), res, parseErr != nil))
+	step := stepStat("refute", agentName, o.cfg.Review.Refute, len(text), res, parseErr != nil)
 	if parseErr != nil {
 		o.logf("WARNING: %s failed (%v); this reviewer casts no position", label, parseErr)
-		return nil
+		return nil, &step
 	}
 	valid := out.Positions[:0]
 	for _, p := range out.Positions {
@@ -4035,7 +4071,7 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 		valid = append(valid, p)
 	}
 	o.logf("%s done (%d position(s), %s)", label, len(valid), res.Duration.Round(time.Second))
-	return valid
+	return valid, &step
 }
 
 // applyRefutations drops the findings every responder refuted, and marks the rest.
@@ -4107,8 +4143,16 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string][]model.RefuteP
 // approving on that basis would be trusting a step that did not happen.
 func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, material string) (ran bool) {
 	j := o.cfg.Roles.Judge
-	if j.Agent == "" || j.Prompt == "" || len(rec.Issues) == 0 || ctx.Err() != nil {
+	if j.Agent == "" || j.Prompt == "" || len(rec.Issues) == 0 {
 		return true // not configured is not a failure; there is nothing to fail closed about
+	}
+	// A judge that was STOPPED is the opposite: it was configured, it did not run, and
+	// saying otherwise here approves a review whose filter never happened. This
+	// line read `|| ctx.Err() != nil` above the early return and so reported a
+	// killed judge as having filtered -- caught by the panel reviewing this branch.
+	if ctx.Err() != nil {
+		o.logf("judge: interrupted before it could run; every finding stands and the review cannot approve")
+		return false
 	}
 	open := 0
 	for _, it := range rec.Issues {
@@ -4208,6 +4252,12 @@ func firstLineOf(s string) string {
 	return s
 }
 
+// posterFor is forge.PosterFor behind a variable so a test can observe what would
+// be published without a network call. The seam is here rather than in forge
+// because what needs asserting is the ORCHESTRATOR's choice of bytes and event,
+// not the CLI invocation.
+var posterFor = forge.PosterFor
+
 // postReview publishes the rendered review on the pull request.
 //
 // Two assertions, because there are two risk levels and collapsing them would
@@ -4225,7 +4275,7 @@ func firstLineOf(s string) string {
 // because a missing datum only weakens the evidence; a write that the operator
 // asked for and did not get is the opposite -- silence there would tell them the
 // review is on the pull request when it is not.
-func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, body string) {
+func (o *Orchestrator) postReview(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, body string) {
 	if !o.cfg.Review.Post {
 		return
 	}
@@ -4237,7 +4287,7 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 		o.logf("WARNING: interrupted before posting; the review is in %s", sum.ReviewBody)
 		return
 	}
-	p := forge.PosterFor(ctx, o.cfg.Target.Path)
+	p := posterFor(ctx, o.cfg.Target.Path)
 	if p == nil {
 		o.logf("WARNING: -post was given but no GitHub or GitLab remote was recognized; the review is in %s", sum.ReviewBody)
 		return
@@ -4254,7 +4304,15 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 		// event for "the review did not finish", and the two that exist would both be
 		// lies about a panel that never reached quorum.
 	}
-	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, body, event)
+	inline := inlineComments(rec)
+	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, body, event, inline)
+	if err != nil && len(inline) > 0 && strings.HasPrefix(err.Error(), "inline:") {
+		// The forge refused the anchors, not the review. Publishing the summary alone
+		// is strictly better than publishing nothing: every finding is in it, they
+		// just lose their line links.
+		o.logf("WARNING: %s rejected the inline comments (%v); posting the summary without them", p.Kind(), err)
+		url, err = p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, body, event, nil)
+	}
 	if err != nil {
 		o.logf("ERROR: posting the review to %s failed: %v -- it is written at %s", p.Kind(), err, sum.ReviewBody)
 		return
@@ -4265,4 +4323,34 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 		return
 	}
 	o.logf("review posted to %s as %s", p.Kind(), event)
+}
+
+// inlineComments anchors each surviving finding to its line, so a reader meets it
+// where the code is rather than in a list at the bottom.
+//
+// Only findings with a file AND a line: a forge has nowhere to hang the rest, and
+// including one without a location fails the whole submission. Decided findings
+// are left out for the same reason the body omits them -- they are not work
+// anybody has to act on.
+//
+// The text is the finding's own, already sanitized by the body renderer's rules,
+// with the severity leading so a reader skimming the Files tab can tell a blocker
+// from a note without opening anything.
+func inlineComments(rec *model.RoundRecord) []forge.InlineComment {
+	out := make([]forge.InlineComment, 0, len(rec.Issues))
+	for _, it := range rec.Issues {
+		switch it.StatusOrDefault() {
+		case model.VerdictFixed, model.VerdictRejected:
+			continue
+		}
+		if it.File == "" || it.Line <= 0 {
+			continue
+		}
+		out = append(out, forge.InlineComment{
+			Path: it.File,
+			Line: it.Line,
+			Body: review.RenderInline(it),
+		})
+	}
+	return out
 }

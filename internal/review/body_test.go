@@ -154,7 +154,7 @@ func TestSignature(t *testing.T) {
 	if got != want {
 		t.Errorf("Signature() = %q, want %q", got, want)
 	}
-	if def := Signature("", facts); !strings.Contains(def, "fixpoint") || !strings.Contains(def, "claude, kimi") {
+	if def := Signature("", facts); !strings.Contains(def, "AI panel") || !strings.Contains(def, "claude, kimi") {
 		t.Errorf("empty template should fall back to the default, got %q", def)
 	}
 	// A typo must be visible rather than silently deleting itself.
@@ -186,5 +186,31 @@ func TestSignatureIsRenderedAfterAllAgentText(t *testing.T) {
 	}, func(b *BodyInput) { b.Signature = "-- real signature" })
 	if !strings.HasSuffix(strings.TrimSpace(body), "-- real signature") {
 		t.Errorf("the real signature must be last:\n%s", body)
+	}
+}
+
+// A review is posted into somebody else's repository, where the tool's own name
+// means nothing to the reader and reads as an unexplained internal string. Nothing
+// fixpoint GENERATES may name it; a finding that quotes the reviewed code is a
+// different matter, since there the name belongs to the target.
+func TestNothingFixpointGeneratesNamesTheTool(t *testing.T) {
+	body := RenderBody(BodyInput{
+		Decision: Decide(Input{
+			Issues: []model.Issue{{ID: "i1", Severity: "high", File: "a.go", Line: 1, Title: "boom"}},
+			Quorum: full(2),
+		}),
+		Issues:   []model.Issue{{ID: "i1", Severity: "high", File: "a.go", Line: 1, Title: "boom"}},
+		Panel:    []string{"claude", "kimi"},
+		Target:   "pull request #7",
+		Advisory: []model.Finding{{Title: "a note", Description: "prose."}},
+		Signature: Signature("", SignatureFacts{
+			Agents: []string{"claude"}, Run: "20260806-0000", Config: "review-pr",
+		}),
+	})
+	if strings.Contains(strings.ToLower(body), "fixpoint") {
+		t.Errorf("the rendered review names the tool:\n%s", body)
+	}
+	if !strings.Contains(body, "AI panel") {
+		t.Errorf("the signature should say what kind of reviewer this was:\n%s", body)
 	}
 }

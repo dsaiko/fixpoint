@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,9 +16,11 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
+	"github.com/dsaiko/fixpoint/internal/review"
 	"github.com/dsaiko/fixpoint/internal/target"
 	"github.com/dsaiko/fixpoint/internal/testfixture"
 )
@@ -7044,4 +7047,182 @@ func TestNothingIsPostedWithoutTheFlag(t *testing.T) {
 	if sum.ReviewBody == "" {
 		t.Error("the review body must be written even when it is not posted")
 	}
+}
+
+// fakePoster records what would be published instead of calling a forge CLI.
+type fakePoster struct {
+	body   *string
+	event  *forge.Event
+	inline *[]forge.InlineComment
+}
+
+func (fakePoster) Kind() forge.Kind { return forge.GitHub }
+
+func (fakePoster) Checks(context.Context, string, int) (forge.Checks, error) {
+	return forge.Checks{}, nil
+}
+
+func (f fakePoster) PostReview(_ context.Context, _ string, _ int, body string, event forge.Event, inline []forge.InlineComment) (string, error) {
+	*f.body = body
+	if f.event != nil {
+		*f.event = event
+	}
+	if f.inline != nil {
+		*f.inline = inline
+	}
+	return "https://example.test/pr/1#review", nil
+}
+
+// postedBodyForTest swaps the poster for one that records, returning a restore.
+func postedBodyForTest(into *string) func() {
+	prev := posterFor
+	posterFor = func(context.Context, string) forge.Poster { return fakePoster{body: into} }
+	return func() { posterFor = prev }
+}
+
+// The bytes posted must be the bytes on disk. The file is what an operator reads
+// to decide whether publishing is safe, so any divergence makes that check
+// worthless -- and the divergence that existed was the dangerous direction: the
+// file was redacted and the post was not, so a credential a prompt-injected
+// reviewer had quoted into a finding would have been published verbatim.
+//
+// Driven through writeReviewBody rather than a whole run: pr mode would run
+// `gh pr checkout`, and the property under test is which bytes leave this
+// function, not how the branch got there.
+func TestThePostedReviewIsExactlyWhatWasWrittenToDisk(t *testing.T) {
+	const secret = "sk-ant-abcdef0123456789ABCDEF"
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 1
+
+	var posted string
+	restore := postedBodyForTest(&posted)
+	defer restore()
+
+	o := f.orchestrator()
+	rec := &model.RoundRecord{
+		Round:       1,
+		Assignments: []model.Assignment{{Agent: "mock", Lens: "review"}},
+		Issues: []model.Issue{{
+			ID: "i1", Severity: "high", File: "main.go", Line: 1,
+			Title:       "credential quoted out of the reviewed code",
+			Description: "the token is " + secret,
+		}},
+	}
+	sum := &model.RunSummary{}
+	o.writeReviewBody(t.Context(), rec, sum, review.Decide(review.Input{
+		Issues: rec.Issues, Quorum: review.QuorumFrom(rec.Assignments, nil),
+	}))
+
+	if posted == "" {
+		t.Fatal("nothing was posted")
+	}
+	onDisk, err := os.ReadFile(sum.ReviewBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posted != string(onDisk) {
+		t.Errorf("posted bytes differ from the file an operator would inspect:\nposted:\n%s\n\nfile:\n%s", posted, onDisk)
+	}
+	if strings.Contains(posted, secret) {
+		t.Errorf("a credential-shaped value was published verbatim:\n%s", posted)
+	}
+	if !strings.Contains(posted, "[REDACTED]") {
+		t.Errorf("the published body carries no redaction mask:\n%s", posted)
+	}
+	if sum.ReviewPosted == "" {
+		t.Error("the summary does not record that the review was posted")
+	}
+}
+
+// Findings are anchored to their lines so a reader meets each one where the code
+// is. Only those with a location, and only those still standing.
+func TestInlineCommentsCoverLocatedSurvivingFindingsOnly(t *testing.T) {
+	rec := &model.RoundRecord{Issues: []model.Issue{
+		{ID: "i1", Severity: "high", File: "a.go", Line: 12, Title: "anchored"},
+		{ID: "i2", Severity: "high", File: "", Line: 0, Title: "no location"},
+		{ID: "i3", Severity: "high", File: "b.go", Line: 3, Title: "dropped", Status: model.VerdictRejected},
+		{ID: "i4", Severity: "low", File: "c.go", Line: 0, Title: "file but no line"},
+	}}
+	got := inlineComments(rec)
+	if len(got) != 1 {
+		t.Fatalf("got %d inline comments, want 1: %+v", len(got), got)
+	}
+	if got[0].Path != "a.go" || got[0].Line != 12 {
+		t.Errorf("anchor = %s:%d, want a.go:12", got[0].Path, got[0].Line)
+	}
+	if !strings.Contains(got[0].Body, "HIGH") || !strings.Contains(got[0].Body, "anchored") {
+		t.Errorf("comment body should lead with the severity and the title: %q", got[0].Body)
+	}
+}
+
+// A forge that refuses the anchors must not cost the whole review: every finding
+// is in the summary, and publishing that is strictly better than publishing
+// nothing because one finding pointed at unchanged context.
+func TestInlineRejectionFallsBackToTheSummaryAlone(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 1
+
+	var attempts int
+	var lastInline []forge.InlineComment
+	prev := posterFor
+	posterFor = func(context.Context, string) forge.Poster {
+		return &pickyPoster{attempts: &attempts, lastInline: &lastInline}
+	}
+	defer func() { posterFor = prev }()
+
+	var logs strings.Builder
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}},
+		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &model.RoundRecord{
+		Round:       1,
+		Assignments: []model.Assignment{{Agent: "mock", Lens: "review"}},
+		Issues:      []model.Issue{{ID: "i1", Severity: "high", File: "a.go", Line: 9, Title: "boom"}},
+	}
+	sum := &model.RunSummary{}
+	o.writeReviewBody(t.Context(), rec, sum, review.Decide(review.Input{
+		Issues: rec.Issues, Quorum: review.QuorumFrom(rec.Assignments, nil)}))
+
+	if attempts != 2 {
+		t.Errorf("post attempts = %d, want 2 (inline, then summary alone)", attempts)
+	}
+	if len(lastInline) != 0 {
+		t.Errorf("the retry still carried %d inline comment(s)", len(lastInline))
+	}
+	if sum.ReviewPosted == "" {
+		t.Error("the fallback post was not recorded as posted")
+	}
+	if !strings.Contains(logs.String(), "rejected the inline comments") {
+		t.Errorf("the operator must be told the anchors were dropped:\n%s", logs.String())
+	}
+}
+
+// pickyPoster refuses any submission carrying inline comments, the way a forge
+// does when one anchor falls outside the diff.
+type pickyPoster struct {
+	attempts   *int
+	lastInline *[]forge.InlineComment
+}
+
+func (*pickyPoster) Kind() forge.Kind { return forge.GitHub }
+
+func (*pickyPoster) Checks(context.Context, string, int) (forge.Checks, error) {
+	return forge.Checks{}, nil
+}
+
+func (p *pickyPoster) PostReview(_ context.Context, _ string, _ int, _ string, _ forge.Event, inline []forge.InlineComment) (string, error) {
+	*p.attempts++
+	*p.lastInline = inline
+	if len(inline) > 0 {
+		return "", errors.New("inline: line 9 is not part of the diff")
+	}
+	return "", nil
 }

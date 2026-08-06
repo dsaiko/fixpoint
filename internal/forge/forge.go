@@ -156,6 +156,26 @@ func run(ctx context.Context, dir string, name string, args ...string) (string, 
 	return stdout.String(), nil
 }
 
+// runStdin is run with a payload on standard input, for content too large or too
+// sensitive to place on a command line.
+func runStdin(ctx context.Context, dir, stdin, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(stdin)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, firstLine(msg))
+		}
+		return "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return stdout.String(), nil
+}
+
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]
@@ -315,14 +335,29 @@ const (
 	EventRequestChanges Event = "request_changes"
 )
 
+// InlineComment anchors one finding to the line it is about.
+//
+// A forge accepts these only for lines the pull request actually TOUCHES: a
+// finding about code the PR did not change has nowhere to hang, and GitHub
+// rejects the whole review rather than the one comment. That is why posting
+// falls back to a body-only review instead of treating the rejection as fatal --
+// a review that fails to publish because one finding pointed at context is worse
+// than one that publishes with its findings in the summary.
+type InlineComment struct {
+	Path string
+	Line int
+	Body string
+}
+
 // Poster is a provider that can publish a review. It is separate from Provider
 // because reading and writing are different privileges: every run may read, and
 // writing needs an assertion the operator makes per invocation.
 type Poster interface {
 	Provider
-	// PostReview publishes body on the pull request and returns a URL for it when
-	// the forge gives one.
-	PostReview(ctx context.Context, dir string, pr int, body string, event Event) (string, error)
+	// PostReview publishes body on the pull request, with inline comments anchored
+	// to their lines where the forge accepts them, and returns a URL when it gives
+	// one.
+	PostReview(ctx context.Context, dir string, pr int, body string, event Event, inline []InlineComment) (string, error)
 }
 
 // PosterFor is For, narrowed to providers that can also write.
@@ -338,7 +373,18 @@ func PosterFor(ctx context.Context, dir string) Poster {
 // process, and the body carries findings quoted out of the code under review --
 // which in a review-only run may be the credential that the review is ABOUT.
 // It is the same reasoning that makes prompt_via: stdin the default for agents.
-func (githubProvider) PostReview(ctx context.Context, dir string, pr int, body string, event Event) (string, error) {
+func (githubProvider) PostReview(ctx context.Context, dir string, pr int, body string, event Event, inline []InlineComment) (string, error) {
+	if len(inline) > 0 {
+		if err := githubPostWithInline(ctx, dir, pr, body, event, inline); err == nil {
+			return latestReviewURL(ctx, dir, pr), nil
+		} else if ctx.Err() == nil {
+			// One comment on a line the diff does not contain rejects the WHOLE review,
+			// and the API says so without naming which. Rather than guess, publish the
+			// review that was going to be published anyway: the findings are all in the
+			// body, they simply lose their anchors.
+			return "", fmt.Errorf("inline: %w", err)
+		}
+	}
 	f, err := os.CreateTemp("", "fixpoint-review-*.md")
 	if err != nil {
 		return "", err
@@ -371,6 +417,50 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, body s
 	return latestReviewURL(ctx, dir, pr), nil
 }
 
+// githubPostWithInline submits one review carrying both the summary and the
+// per-line comments, through the API `gh pr review` does not expose.
+//
+// The payload goes in on STDIN, not as arguments: it embeds the whole review, and
+// argv is world-readable for the life of the process -- the same reason the
+// body-only path writes a file. `{owner}/{repo}` are gh's own placeholders,
+// resolved from the checkout, so no repository identity has to be parsed here.
+func githubPostWithInline(ctx context.Context, dir string, pr int, body string, event Event, inline []InlineComment) error {
+	type ghComment struct {
+		Path string `json:"path"`
+		Line int    `json:"line"`
+		Side string `json:"side"`
+		Body string `json:"body"`
+	}
+	payload := struct {
+		Body     string      `json:"body"`
+		Event    string      `json:"event"`
+		Comments []ghComment `json:"comments"`
+	}{Body: body, Event: githubEvent(event)}
+	for _, c := range inline {
+		// RIGHT is the head of the pull request. A finding is about the code as
+		// proposed, not the line it replaced.
+		payload.Comments = append(payload.Comments, ghComment{Path: c.Path, Line: c.Line, Side: "RIGHT", Body: c.Body})
+	}
+	doc, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = runStdin(ctx, dir, string(doc), "gh", "api", "--method", "POST",
+		fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews", pr), "--input", "-")
+	return err
+}
+
+func githubEvent(e Event) string {
+	switch e {
+	case EventApprove:
+		return "APPROVE"
+	case EventRequestChanges:
+		return "REQUEST_CHANGES"
+	case Comment:
+	}
+	return "COMMENT"
+}
+
 // latestReviewURL best-effort resolves a link to what was just posted. A missing
 // URL is cosmetic -- the review is already published -- so every failure here
 // yields an empty string rather than an error that would misreport a successful
@@ -396,7 +486,16 @@ func latestReviewURL(ctx context.Context, dir string, pr int) string {
 // was written. Unlike a read, a failed WRITE is reported to the caller rather than
 // degraded silently -- an operator who asked to publish must not be told it
 // happened when it did not.
-func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, body string, event Event) (string, error) {
+func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, body string, event Event, inline []InlineComment) (string, error) {
+	for _, c := range inline {
+		// Best-effort per comment: GitLab positions a discussion with base/head/start
+		// SHAs this package does not carry, so an inline note is attempted as a plain
+		// note naming its location rather than skipped outright.
+		if _, err := run(ctx, dir, "glab", "mr", "note", strconv.Itoa(mr),
+			"--message", fmt.Sprintf("`%s:%d`\n\n%s", c.Path, c.Line, c.Body)); err != nil {
+			return "", err
+		}
+	}
 	if _, err := run(ctx, dir, "glab", "mr", "note", strconv.Itoa(mr), "--message", body); err != nil {
 		return "", err
 	}

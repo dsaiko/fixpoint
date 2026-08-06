@@ -10,10 +10,16 @@ import (
 
 // DefaultSignature is what a review is signed with when a config says nothing.
 //
-// It names the tool, the panel and the run, because those are the three questions
-// a human asks of a machine-authored review they did not expect: what wrote this,
-// what did it consult, and where do I find the rest of it.
-const DefaultSignature = "🤖 Reviewed by fixpoint · {agents} · run {run}"
+// It answers the three questions a human asks of a machine-authored review they
+// did not expect: what wrote this, what did it consult, and where is the rest of
+// it. What it deliberately does NOT do is name the tool.
+//
+// Reviews get posted into other people's repositories, where "fixpoint" means
+// nothing to the reader and reads as an unexplained internal name. "An AI panel"
+// is the fact that matters -- it tells the reader how much weight to give the
+// comment. The run id stays because it is how the operator finds the artifacts;
+// the agent names stay because which models looked is the substance of the claim.
+const DefaultSignature = "🤖 Reviewed by AI panel · {agents} · run {run}"
 
 // Signature renders the operator's template.
 //

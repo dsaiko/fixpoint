@@ -172,3 +172,28 @@ func firstSentence(s string) string {
 	}
 	return s
 }
+
+// RenderInline is one finding as a comment on its own line.
+//
+// Shorter than its entry in the summary and deliberately so: it is read in a diff
+// with the code beside it, so the location it would otherwise repeat is already
+// on screen. Severity leads, because a reader skimming the Files tab needs to
+// tell a blocker from a note without opening anything.
+//
+// Same mdText funnel as the body: this text goes to the same place under the same
+// rules, and having a second path into a forge comment is how one of them ends up
+// without the protections.
+func RenderInline(it model.Issue) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%s** — %s\n\n", strings.ToUpper(mdText(it.Severity)), mdText(it.Title))
+	if d := strings.TrimSpace(it.Description); d != "" {
+		fmt.Fprintf(&b, "%s\n\n", mdText(d))
+	}
+	if s := strings.TrimSpace(it.Suggestion); s != "" {
+		fmt.Fprintf(&b, "_Suggested:_ %s\n", mdText(s))
+	}
+	if it.Contested {
+		b.WriteString("\n_The panel disagreed about this one._\n")
+	}
+	return b.String()
+}
