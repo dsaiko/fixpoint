@@ -114,14 +114,8 @@ type Decision struct {
 	Quorum   Quorum
 }
 
-// DefaultBlockAt is the severity floor that forces CHANGES_REQUESTED.
-//
-// high, not medium, and the choice is measured rather than tasteful. Across 19
-// runs the panel produced 322 issues of which 66 were high or critical: a medium
-// floor would block essentially every review, and a gate that always fires is one
-// people learn to bypass. It is deliberately permissive on the model's half --
-// which is why the deterministic half (failing CI) matters as much as this one.
-const DefaultBlockAt = "high"
+// The severity floors live in model, beside the vocabulary they are expressed in
+// and within reach of config's validation, which cannot import this package.
 
 // Decide applies the rules in a fixed order. The order is the rule:
 //
@@ -135,7 +129,7 @@ const DefaultBlockAt = "high"
 func Decide(in Input) Decision {
 	blockAt := in.BlockAt
 	if blockAt == "" {
-		blockAt = DefaultBlockAt
+		blockAt = model.DefaultBlockAt
 	}
 	d := Decision{Quorum: in.Quorum}
 	floor := model.SeverityRank(blockAt)

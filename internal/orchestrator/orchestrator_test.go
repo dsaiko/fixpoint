@@ -6699,6 +6699,25 @@ func (f *fixture) reviewOnly(agents ...string) {
 }
 
 // refuteLens points the fixture at a refutation prompt, enabling the round.
+// refutePrompt returns what the refuters were actually shown in a round, or ""
+// if the round ran none. Read from the persisted artifact rather than from a
+// capture hook, so it asserts the same bytes an operator can audit afterwards.
+func (f *fixture) refutePrompt(round int) string {
+	f.t.Helper()
+	prompts, err := filepath.Glob(filepath.Join(f.cfg.Logs.StaticBase(), "*", fmt.Sprintf("round-%d", round), "refute-*.prompt"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if len(prompts) == 0 {
+		return ""
+	}
+	b, err := os.ReadFile(prompts[0])
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return string(b)
+}
+
 func (f *fixture) refuteLens() {
 	f.t.Helper()
 	path := filepath.Join(f.t.TempDir(), "refute.md")
@@ -7700,6 +7719,117 @@ func TestRefutationAndJudgmentAreRecordedAsArtifacts(t *testing.T) {
 		if !strings.Contains(string(b), want.content) {
 			t.Errorf("%s does not carry the reviewer's own words (%q):\n%s", want.glob, want.content, b)
 		}
+	}
+}
+
+// The refutation round is scoped to the severities the judge gate protects.
+//
+// It costs a full extra pass per reviewer per round, and measured over the two runs
+// that ran it unrestricted (97 findings) it dropped nothing at all -- 29 contested,
+// zero unanimous. What it does earn is the gate in applyJudgment: a judge may drop a
+// BLOCKING finding only where refutation recorded doubt. Below the block floor the
+// judge already decides alone, so a second opinion there changes nothing it may do
+// and is not worth the pass.
+//
+// Two properties, and the second is the one with teeth: a low finding must not
+// reach the refuters, AND a position on it must not act if a reviewer names it
+// anyway. Filtering only the prompt would leave a refuter able to delete a finding
+// nobody was asked about.
+func TestRefutationOnlyAsksAboutFindingsTheGateProtects(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock", "mock2")
+	f.refuteLens()
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "bug", Severity: "high", File: "a.go", Line: 1, Title: "blocking defect"},
+		model.ReviewFinding{Category: "style", Severity: "low", File: "b.go", Line: 2, Title: "cosmetic nit"}))
+	f.respond(2, reviewResponse(t))
+	// Both refuters try to delete BOTH findings. Only the high was in front of them.
+	both := `<review>{"positions":[
+		{"issue":"i1","position":"maintain","evidence":"a.go:1 still reads that way"},
+		{"issue":"i2","position":"refute","evidence":"b.go:2 was never a defect"}]}</review>`
+	f.respond(3, both)
+	f.respond(4, both)
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := f.refutePrompt(1)
+	if !strings.Contains(prompt, "blocking defect") {
+		t.Errorf("the refutation prompt must carry the high finding:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "cosmetic nit") {
+		t.Errorf("a low finding must not be sent to refutation:\n%s", prompt)
+	}
+	for _, it := range sum.Rounds[0].Issues {
+		if it.Status == model.VerdictRejected {
+			t.Errorf("%s (%s) was deleted by a round that was not asked about it", it.ID, it.Severity)
+		}
+	}
+	if !strings.Contains(logs(), "judging 1 of 2 finding(s) at high or above") {
+		t.Errorf("the log should say how much of the round refutation covered:\n%s", logs())
+	}
+	if !strings.Contains(logs(), "was not in the set it was shown") {
+		t.Errorf("a position on an unshown finding should be reported:\n%s", logs())
+	}
+}
+
+// Nothing at or above the floor means no refutation pass at all -- not a pass over
+// an empty set. The saving is the whole point: a round of medium and low findings
+// must not spend one agent invocation per reviewer to learn there was nothing to
+// protect.
+func TestRefutationIsSkippedWhenNothingReachesTheFloor(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.refuteLens()
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "style", Severity: "medium", File: "a.go", Line: 1, Title: "a medium finding"}))
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.invocations(); got != 1 {
+		t.Errorf("agent invocations = %d, want 1: only the review ran", got)
+	}
+	if p := f.refutePrompt(1); p != "" {
+		t.Errorf("a refutation prompt was rendered for a round with nothing to protect:\n%s", p)
+	}
+	if !strings.Contains(logs(), "refutation: skipped") {
+		t.Errorf("the log should say the round was skipped and why:\n%s", logs())
+	}
+}
+
+// Lowering the floor restores the old behaviour, so a project that wants every
+// finding refuted can still have it.
+func TestRefuteAtLowSendsEveryFindingToRefutation(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.refuteLens()
+	f.cfg.Review.RefuteAt = "low"
+	f.respond(1, reviewResponse(t,
+		model.ReviewFinding{Category: "style", Severity: "low", File: "b.go", Line: 2, Title: "cosmetic nit"}))
+	f.respond(2, `<review>{"positions":[{"issue":"i1","position":"refute","evidence":"b.go:2 is a comment"}]}</review>`)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.refutePrompt(1), "cosmetic nit") {
+		t.Error("refute_at: low must send a low finding to refutation")
+	}
+	if sum.Rounds[0].Issues[0].Status != model.VerdictRejected {
+		t.Error("the sole responder refuted it with evidence; it should be gone")
 	}
 }
 

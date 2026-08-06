@@ -20,6 +20,29 @@ import "strings"
 // drift.
 var Severities = []string{"critical", "high", "medium", "low"}
 
+// DefaultBlockAt is the severity floor at or above which a surviving finding
+// forces CHANGES_REQUESTED.
+//
+// high, not medium, and the choice is measured rather than tasteful. Across 19
+// runs the panel produced 322 issues of which 66 were high or critical: a medium
+// floor would block essentially every review, and a gate that always fires is one
+// people learn to bypass. It is deliberately permissive on the model's half --
+// which is why the deterministic half (failing CI) matters as much as this one.
+//
+// DefaultRefuteAt is the floor for the refutation round, and it EQUALS this one on
+// purpose: the round earns its cost as the gate that stops a single judge from
+// deleting a blocking finding, so what it must cover is exactly what blocks.
+//
+// Both live here rather than beside their consumers for the reason stated above
+// Severities: severity is read by more than one package -- review applies these two
+// as fallbacks, the orchestrator selects on them, config validates against them --
+// and a floor that differed between the validator and the applier would be a load
+// error nobody could act on.
+const (
+	DefaultBlockAt  = "high"
+	DefaultRefuteAt = DefaultBlockAt
+)
+
 // severityRank maps a severity to its position in Severities.
 var severityRank = func() map[string]int {
 	m := make(map[string]int, len(Severities))

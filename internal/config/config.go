@@ -1222,6 +1222,18 @@ func (c *Config) Validate() error {
 	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
 		return fmt.Errorf("review.block_at: unknown severity %q (want %s)", c.Review.BlockAt, strings.Join(model.Severities, " | "))
 	}
+	if c.Review.RefuteAt != "" && !model.ValidSeverity(c.Review.RefuteAt) {
+		return fmt.Errorf("review.refute_at: unknown severity %q (want %s)", c.Review.RefuteAt, strings.Join(model.Severities, " | "))
+	}
+	// A floor stricter than the block floor would leave a blocking finding the
+	// refutation round never saw -- and applyJudgment only lets the judge drop a
+	// blocker where refutation recorded doubt, so such a finding could never be
+	// dropped however wrong it was. Refused at load rather than silently widened:
+	// the operator asked for two settings that cannot both hold.
+	if c.Review.Refute != "" && model.WorseSeverity(c.Review.RefuteFloor(), c.Review.BlockFloor()) {
+		return fmt.Errorf("review.refute_at (%s) is stricter than review.block_at (%s): a blocking finding would skip refutation, and the judge may only drop a blocker that refutation doubted",
+			c.Review.RefuteFloor(), c.Review.BlockFloor())
+	}
 	for i, g := range c.Loop.FinalSkipRunEdits {
 		// An empty pattern compiles to ^$, which matches no real path -- so it would
 		// sit in the config looking like an active rule and hide nothing. Refused for
@@ -1869,6 +1881,27 @@ type ReviewPolicy struct {
 	Refute string `yaml:"refute"`
 	// RefutePath is the resolved file for Refute; filled in during loading.
 	RefutePath string `yaml:"-"`
+	// RefuteAt is the severity floor for what the round is asked about (default:
+	// high). Findings below it skip refutation entirely and go straight to the
+	// judge.
+	//
+	// The round pays for itself as a SAFETY GATE, not as a filter, and the gate only
+	// covers blocking findings -- applyJudgment honours a drop on one of those only
+	// where refutation recorded doubt, so no single agent can delete a blocker.
+	// Below the floor the judge already decides alone and a second opinion changes
+	// nothing about what it may do.
+	//
+	// Measured over the two runs that ran it (97 findings): 29 contested, zero
+	// dropped unanimously, so as a filter it never fired. It is not worthless --
+	// contested findings were dropped by the judge at 55% against 26% for the rest
+	// (Fisher two-sided p = 0.010), and the judge does not see the flag, so those are
+	// two independent judgments agreeing -- but agreeing with a decision the judge
+	// makes anyway is not worth a full extra pass per reviewer per round. Restricting
+	// it to the severities the gate protects cut it to roughly a third of that cost:
+	// 37 of those 97 findings were high or critical.
+	//
+	// Set it to low to refute everything, as every run before 2026-08-06 did.
+	RefuteAt string `yaml:"refute_at"`
 
 	// Post and PostVerdict are set ONLY by -post / -post-verdict on the command
 	// line; `yaml:"-"` is load-bearing security, not style. Publishing is an action
@@ -1879,6 +1912,27 @@ type ReviewPolicy struct {
 	// set them a load error rather than a silent no-op.
 	Post        bool `yaml:"-"`
 	PostVerdict bool `yaml:"-"`
+}
+
+// BlockFloor is the resolved severity floor that forces CHANGES_REQUESTED.
+//
+// BlockFloor and RefuteFloor resolve the two floors the same way every consumer
+// must, so validation compares the values that will actually be applied rather than
+// the raw -- possibly empty -- strings, and the orchestrator selecting findings for
+// refutation reads the same answer this file validated.
+func (r ReviewPolicy) BlockFloor() string {
+	if r.BlockAt == "" {
+		return model.DefaultBlockAt
+	}
+	return model.NormalizeSeverity(r.BlockAt)
+}
+
+// RefuteFloor is the resolved severity floor for the refutation round.
+func (r ReviewPolicy) RefuteFloor() string {
+	if r.RefuteAt == "" {
+		return model.DefaultRefuteAt
+	}
+	return model.NormalizeSeverity(r.RefuteAt)
 }
 
 // VerifyCommand is one check. Argv, not a shell string: there is no shell to

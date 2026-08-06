@@ -4093,7 +4093,17 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	if len(panel) == 0 {
 		return
 	}
-	o.logf("=== refutation: %d reviewer(s) judging %d finding(s) ===", len(panel), len(rec.Issues))
+	// Only what the gate protects. Everything below the floor goes straight to the
+	// judge, which may already drop it alone -- a second opinion there buys nothing
+	// it can act on. See ReviewPolicy.RefuteAt for the measurement.
+	floor := o.cfg.Review.RefuteFloor()
+	subject := issuesAtOrAbove(rec.Issues, floor)
+	if len(subject) == 0 {
+		o.logf("refutation: skipped -- none of the %d finding(s) is %s or above", len(rec.Issues), floor)
+		return
+	}
+	o.logf("=== refutation: %d reviewer(s) judging %d of %d finding(s) at %s or above ===",
+		len(panel), len(subject), len(rec.Issues), floor)
 
 	type reply struct {
 		agent     string
@@ -4113,7 +4123,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		// does to i or name.
 		go func(i int, name string) {
 			defer wg.Done()
-			positions, answered, step := o.refuteWith(ctx, name, rec, material)
+			positions, answered, step := o.refuteWith(ctx, name, rec.Round, subject, material)
 			replies[i] = reply{agent: name, answered: answered, positions: positions, step: step}
 		}(i, name)
 	}
@@ -4139,8 +4149,12 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	// verdict ever saw it, which on a malicious pull request turns CHANGES_REQUESTED
 	// into APPROVE. Identity is the fix: a reviewer gets one vote per finding no
 	// matter how many times it says the same thing.
-	known := make(map[string]bool, len(rec.Issues))
-	for _, it := range rec.Issues {
+	// Keyed on what the refuters were SHOWN, not on every finding in the round: a
+	// position on an id that was below the floor is a position on something this
+	// reviewer never read, and counting it would let the round act on a finding it
+	// deliberately did not ask about.
+	known := make(map[string]bool, len(subject))
+	for _, it := range subject {
 		known[it.ID] = true
 	}
 	byIssue := map[string]map[string]model.RefutePosition{}
@@ -4183,6 +4197,27 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	applyRefutations(rec, byIssue, responded, o.logf)
 }
 
+// issuesAtOrAbove selects the findings a refutation round is asked about: those
+// at or worse than the floor, in the order they were merged.
+//
+// Undecided only. A finding the coder already fixed or rejected in an earlier
+// round is not a claim anyone still needs a position on, and asking would spend a
+// reviewer's pass on settled work.
+func issuesAtOrAbove(issues []model.Issue, floor string) []model.Issue {
+	rank := model.SeverityRank(floor)
+	out := make([]model.Issue, 0, len(issues))
+	for _, it := range issues {
+		switch it.StatusOrDefault() {
+		case model.VerdictFixed, model.VerdictRejected:
+			continue
+		}
+		if model.SeverityRank(it.Severity) <= rank {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
 // panelAgents lists the distinct non-advisory agents a round assigned, in a
 // stable order.
 func panelAgents(assignments []model.Assignment) []string {
@@ -4204,15 +4239,15 @@ func panelAgents(assignments []model.Assignment) []string {
 // and the caller needs both separately to count unanimity safely. A failed refuter
 // is not a round failure: it simply does not get a vote, and unanimity is measured
 // over those who answered.
-func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *model.RoundRecord, material string) ([]model.RefutePosition, bool, *model.StepStat) {
+func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, round int, subject []model.Issue, material string) ([]model.RefutePosition, bool, *model.StepStat) {
 	label := "refute: " + agentName
 	d := prompt.RefuteData{
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
-		Round:          rec.Round,
+		Round:          round,
 		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
 		Target:         material,
-		Canonical:      prompt.FormatCanonical(rec.Issues),
+		Canonical:      prompt.FormatCanonical(subject),
 		OutputContract: prompt.RefuteContract,
 	}
 	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
@@ -4228,7 +4263,7 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 		o.logf("WARNING: %s: render failed (%v); this reviewer casts no position", label, err)
 		return nil, false, nil
 	}
-	res := o.runAgent(ctx, label, "refute", agentName, o.cfg.Review.Refute, rec.Round, text)
+	res := o.runAgent(ctx, label, "refute", agentName, o.cfg.Review.Refute, round, text)
 	var out model.RefuteOutput
 	parseErr := res.Err
 	if parseErr == nil {
@@ -4240,8 +4275,8 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 	// outvoted leaves no trace of what it argued, and "who refuted what, on what
 	// grounds" cannot be answered even from a run you have in front of you. That
 	// was true of the first three runs and made the round impossible to evaluate.
-	o.logStep("refute", agentName, o.cfg.Review.Refute, rec.Round, parseErr == nil, out,
-		logstore.RenderRefuteMD(agentName, rec.Round, out.Positions, parseErr), res, "")
+	o.logStep("refute", agentName, o.cfg.Review.Refute, round, parseErr == nil, out,
+		logstore.RenderRefuteMD(agentName, round, out.Positions, parseErr), res, "")
 	if parseErr != nil {
 		o.logf("WARNING: %s failed (%v); this reviewer casts no position", label, parseErr)
 		return nil, false, &step
@@ -4467,7 +4502,7 @@ func undecidedIssues(rec *model.RoundRecord) []model.Issue {
 // blocker, one of them in a round that never sees the judge's reasoning.
 func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockAt string, logf func(string, ...any)) {
 	if blockAt == "" {
-		blockAt = review.DefaultBlockAt
+		blockAt = model.DefaultBlockAt
 	}
 	floor := model.SeverityRank(blockAt)
 	decided := map[string]model.JudgeVerdict{}

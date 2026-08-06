@@ -141,6 +141,34 @@ func TestValidate(t *testing.T) {
 		{"logs.dir rejects unknown placeholder", func(c *Config) {
 			c.Logs.Dir = "logs/{tiemstamp}/round-{round}"
 		}, "unknown placeholder {tiemstamp}"},
+		// The two severity floors. review.refute_at may be looser than block_at (that
+		// is the point of the default), but never stricter: a blocking finding the
+		// refutation round never saw is one applyJudgment can never let the judge drop,
+		// however wrong it is, so the pair is refused at load rather than silently
+		// widened.
+		{"unknown block_at", func(c *Config) { c.Review.BlockAt = "showstopper" }, "review.block_at: unknown severity"},
+		{"unknown refute_at", func(c *Config) { c.Review.RefuteAt = "urgent" }, "review.refute_at: unknown severity"},
+		{"refute_at equal to block_at", func(c *Config) {
+			c.Review.Refute = "refute"
+			c.Review.RefuteAt, c.Review.BlockAt = "high", "high"
+		}, ""},
+		{"refute_at looser than block_at", func(c *Config) {
+			c.Review.Refute = "refute"
+			c.Review.RefuteAt, c.Review.BlockAt = "low", "high"
+		}, ""},
+		{"refute_at stricter than block_at", func(c *Config) {
+			c.Review.Refute = "refute"
+			c.Review.RefuteAt, c.Review.BlockAt = "critical", "high"
+		}, "is stricter than review.block_at"},
+		{"refute_at stricter than an unset block_at", func(c *Config) {
+			c.Review.Refute = "refute"
+			c.Review.RefuteAt = "critical"
+		}, "is stricter than review.block_at"},
+		// Nothing to refute means nothing to protect: the pair is only a contradiction
+		// when the round actually runs.
+		{"refute_at stricter than block_at without a refutation round", func(c *Config) {
+			c.Review.RefuteAt, c.Review.BlockAt = "critical", "high"
+		}, ""},
 		{"unknown mode", func(c *Config) { c.Target.Mode = "svn" }, "unknown mode"},
 		{"pr mode without number", func(c *Config) { c.Target.Mode = "pr" }, "PR number required"},
 		{"pr mode with number", func(c *Config) { c.Target.Mode = "pr"; c.Target.PR = 7 }, ""},
