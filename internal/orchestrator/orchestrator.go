@@ -4013,6 +4013,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 
 	type reply struct {
 		agent     string
+		answered  bool
 		positions []model.RefutePosition
 		step      *model.StepStat
 	}
@@ -4022,8 +4023,8 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			positions, step := o.refuteWith(ctx, name, rec, material)
-			replies[i] = reply{agent: name, positions: positions, step: step}
+			positions, answered, step := o.refuteWith(ctx, name, rec, material)
+			replies[i] = reply{agent: name, answered: answered, positions: positions, step: step}
 		}()
 	}
 	wg.Wait()
@@ -4054,8 +4055,15 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	}
 	byIssue := map[string]map[string]model.RefutePosition{}
 	responded := 0
+	// "This reviewer answered" and "this reviewer listed positions" are separate
+	// facts, and conflating them was the second way to forge unanimity: an agent
+	// whose reply parsed but omitted the positions key (or set it to null) left a
+	// nil slice, was skipped here, and never counted toward `responded`. Three
+	// reviewers answering `{}` plus one refuter made responded == 1 and unanimity
+	// trivial. An answer with nothing in it is still an answer: it counts as a
+	// responder and casts no vote, which is what makes the count safe.
 	for _, r := range replies {
-		if r.positions == nil {
+		if !r.answered {
 			continue
 		}
 		responded++
@@ -4101,10 +4109,12 @@ func panelAgents(assignments []model.Assignment) []string {
 	return out
 }
 
-// refuteWith runs one reviewer's refutation pass, returning nil if it produced
-// nothing usable. A failed refuter is not a round failure: it simply does not get
-// a vote, and unanimity is measured over those who answered.
-func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *model.RoundRecord, material string) ([]model.RefutePosition, *model.StepStat) {
+// refuteWith runs one reviewer's refutation pass. The second return says whether
+// this reviewer ANSWERED -- which is not the same as whether it took any position,
+// and the caller needs both separately to count unanimity safely. A failed refuter
+// is not a round failure: it simply does not get a vote, and unanimity is measured
+// over those who answered.
+func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *model.RoundRecord, material string) ([]model.RefutePosition, bool, *model.StepStat) {
 	label := "refute: " + agentName
 	d := prompt.RefuteData{
 		Mode:           o.cfg.Target.Mode,
@@ -4121,12 +4131,12 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 	tmpl, ok := o.templates[o.cfg.Review.Refute]
 	if !ok || tmpl == nil {
 		o.logf("WARNING: %s: refute prompt %q was never loaded; this reviewer casts no position", label, o.cfg.Review.Refute)
-		return nil, nil
+		return nil, false, nil
 	}
 	text, err := prompt.Render(tmpl, d)
 	if err != nil {
 		o.logf("WARNING: %s: render failed (%v); this reviewer casts no position", label, err)
-		return nil, nil
+		return nil, false, nil
 	}
 	res := o.runAgent(ctx, label, "refute", agentName, o.cfg.Review.Refute, rec.Round, text)
 	var out model.RefuteOutput
@@ -4144,9 +4154,9 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 		logstore.RenderRefuteMD(agentName, rec.Round, out.Positions, parseErr), res, "")
 	if parseErr != nil {
 		o.logf("WARNING: %s failed (%v); this reviewer casts no position", label, parseErr)
-		return nil, &step
+		return nil, false, &step
 	}
-	valid := out.Positions[:0]
+	valid := make([]model.RefutePosition, 0, len(out.Positions))
 	for _, p := range out.Positions {
 		if !model.ValidPosition(p.Position) {
 			o.logf("WARNING: %s returned an unknown position %q on %s; ignored", label, p.Position, p.Issue)
@@ -4156,7 +4166,7 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 		valid = append(valid, p)
 	}
 	o.logf("%s done (%d position(s), %s)", label, len(valid), res.Duration.Round(time.Second))
-	return valid, &step
+	return valid, true, &step
 }
 
 // applyRefutations drops the findings every responder refuted, and marks the rest.
@@ -4185,7 +4195,16 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 		}
 		refuted, maintained, unsure := 0, 0, 0
 		var evidence string
-		for _, p := range positions {
+		// In agent order, not map order: the evidence a dropped finding records is
+		// persisted, and which refuter's words it quotes must not depend on a map
+		// walk. Two refuters produced a different VerdictDetail on every run.
+		names := make([]string, 0, len(positions))
+		for name := range positions {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			p := positions[name]
 			switch p.Position {
 			case model.PositionRefute:
 				refuted++

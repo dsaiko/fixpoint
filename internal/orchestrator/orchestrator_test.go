@@ -7529,3 +7529,37 @@ func TestRefutationAggregationKeepsOnePositionPerAgent(t *testing.T) {
 		}
 	}
 }
+
+// A reviewer that answers with no positions at all is still a responder.
+//
+// The one-vote-per-agent rule counted responders by whether their position slice
+// was non-nil, which made three spellings of "I have nothing to say" behave
+// differently: `{"positions":[]}` decoded to an empty non-nil slice and counted,
+// while `{}` and `{"positions":null}` decoded to nil and were skipped. A panel
+// where the others answer `{}` therefore shrank to the single refuter, and
+// "unanimous among responders" deleted a genuine high on one reviewer's word.
+func TestARefuterThatListsNoPositionsStillCountsAsAResponder(t *testing.T) {
+	for _, silence := range []string{`{}`, `{"positions":null}`, `{"positions":[]}`} {
+		t.Run(silence, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock", "mock2")
+			f.refuteLens()
+			f.respond(1, reviewResponse(t, model.ReviewFinding{
+				Category: "security", Severity: "high", File: "a.go", Line: 1, Title: "real defect"}))
+			f.respond(2, reviewResponse(t))
+			f.respond(3, `<review>{"positions":[{"issue":"i1","position":"refute","evidence":"no"}]}</review>`)
+			f.respond(4, "<review>"+silence+"</review>")
+
+			sum, err := f.orchestrator().Run(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sum.Rounds[0].Issues[0].Status == model.VerdictRejected {
+				t.Error("one refuter deleted the finding while the other reviewer answered with no positions")
+			}
+			if sum.Verdict.Outcome != model.VerdictChangesRequested {
+				t.Errorf("verdict = %q, want changes_requested: the high survived", sum.Verdict.Outcome)
+			}
+		})
+	}
+}
