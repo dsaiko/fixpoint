@@ -7407,7 +7407,7 @@ func (p *pickyPoster) PostReview(_ context.Context, _ string, _ int, _, _ string
 	*p.attempts++
 	*p.lastInline = inline
 	if len(inline) > 0 {
-		return "", errors.New("inline: line 9 is not part of the diff")
+		return "", forge.RejectedAnchors(errors.New("line 9 is not part of the diff"))
 	}
 	return "", nil
 }

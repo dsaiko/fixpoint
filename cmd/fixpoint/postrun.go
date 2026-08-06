@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -90,7 +89,7 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 	}
 
 	url, err := p.PostReview(ctx, sum.Path, sum.PR, sum.ReviewedHead, string(body), event, inline)
-	if err != nil && len(inline) > 0 && strings.HasPrefix(err.Error(), "inline:") {
+	if forge.AnchorRejection(err) {
 		// Only an anchor rejection earns a second submission, exactly as in
 		// Orchestrator.postReview. Retrying on ANY error would re-post after an auth
 		// failure or -- the case that costs something -- a client-side timeout on a

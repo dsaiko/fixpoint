@@ -415,6 +415,52 @@ func PosterFor(ctx context.Context, dir string) Poster {
 	return p
 }
 
+// anchorError marks the ONE PostReview failure a caller may answer by sending
+// the same review again without its per-line comments.
+//
+// The distinction is about what already happened on the forge, not about what the
+// caller would like to do next. A rejected submission created nothing, so posting
+// again puts one review on the pull request. A submission that failed for any other
+// reason -- an expired token, a 5xx, a dropped connection, cliTimeout firing while
+// the request was in flight -- may well have been ACCEPTED before the failure was
+// observed, and answering that with a second submission is how somebody's pull
+// request ends up with two reviews on it under the operator's identity.
+//
+// A type rather than a string prefix: the callers used to test the rendered message,
+// which quietly classified every failure above as an anchor problem.
+type anchorError struct{ err error }
+
+func (e anchorError) Error() string { return "inline: " + e.err.Error() }
+
+func (e anchorError) Unwrap() error { return e.err }
+
+// AnchorRejection reports whether a PostReview failure was the forge refusing the
+// per-line comments rather than the review, and so whether the same review may be
+// published body-only instead. Every other failure must be reported, not retried.
+func AnchorRejection(err error) bool {
+	var a anchorError
+	return errors.As(err, &a)
+}
+
+// RejectedAnchors marks an error as that rejection, for Poster implementations
+// outside this package -- and for the fakes that stand in for them, which is the
+// only way a test can produce the failure PostReview's callers retry on.
+func RejectedAnchors(err error) error { return anchorError{err} }
+
+// invalidComment reports whether a failed submission was GitHub validating the
+// review away rather than failing to process it.
+//
+// 422 is the whole test, and it is a statement about the forge's state: GitHub
+// validates a review submission -- including every comment's path and line --
+// before it creates anything, so a 422 answer means no review exists. Nothing
+// weaker can be concluded from any other outcome, which is why everything else
+// propagates unchanged. If gh ever stops naming the status in its message this
+// fails closed: the post is reported as failed and the operator publishes by hand,
+// which is the harmless direction to be wrong in.
+func invalidComment(err error) bool {
+	return strings.Contains(err.Error(), "HTTP 422")
+}
+
 // PostReview publishes through `gh pr review`, which reads the body from a file
 // so no part of it ever reaches an argument list.
 //
@@ -433,15 +479,20 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 		return "", err
 	}
 	if len(inline) > 0 {
-		if err := githubPostWithInline(ctx, dir, pr, head, body, event, inline); err == nil {
+		err := githubPostWithInline(ctx, dir, pr, head, body, event, inline)
+		if err == nil {
 			return latestReviewURL(ctx, dir, pr), nil
-		} else if ctx.Err() == nil {
-			// One comment on a line the diff does not contain rejects the WHOLE review,
-			// and the API says so without naming which. Rather than guess, publish the
-			// review that was going to be published anyway: the findings are all in the
-			// body, they simply lose their anchors.
-			return "", fmt.Errorf("inline: %w", err)
 		}
+		if !invalidComment(err) {
+			// Not the anchors. Returned as it is, so the callers' retry does not fire:
+			// see anchorError for why a second submission is only safe here.
+			return "", err
+		}
+		// One comment on a line the diff does not contain rejects the WHOLE review,
+		// and the API says so without naming which. Rather than guess, publish the
+		// review that was going to be published anyway: the findings are all in the
+		// body, they simply lose their anchors.
+		return "", anchorError{err}
 	}
 	f, err := os.CreateTemp("", "fixpoint-review-*.md")
 	if err != nil {

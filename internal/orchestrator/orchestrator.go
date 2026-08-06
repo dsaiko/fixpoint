@@ -4541,10 +4541,11 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 	// poster refuses when the pull request has moved since -- an author who pushes
 	// while a review runs must not collect a verdict about the commit before it.
 	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead, body, event, inline)
-	if err != nil && len(inline) > 0 && strings.HasPrefix(err.Error(), "inline:") {
+	if forge.AnchorRejection(err) {
 		// The forge refused the anchors, not the review. Publishing the summary alone
 		// is strictly better than publishing nothing: every finding is in it, they
-		// just lose their line links.
+		// just lose their line links. Any other failure is reported below and NOT
+		// retried -- it may have been accepted before it failed.
 		o.logf("WARNING: %s rejected the inline comments (%v); posting the summary without them", p.Kind(), err)
 		url, err = p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead, body, event, nil)
 	}
