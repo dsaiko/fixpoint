@@ -142,6 +142,14 @@ func writeIssue(b *strings.Builder, it model.Issue) {
 	if s := strings.TrimSpace(it.Suggestion); s != "" {
 		fmt.Fprintf(b, "_Suggested:_ %s\n\n", mdText(s))
 	}
+	if it.Contested {
+		// The same notice RenderInline gives, for the same reason: a finding the
+		// panel split over must not read like one it agreed on. Most findings never
+		// get an inline comment -- they have no addressable line, or the review is
+		// posted body-only -- so this section is the only place the reader would
+		// learn it.
+		b.WriteString("_The panel disagreed about this one._\n\n")
+	}
 }
 
 // mdText is the ONE place agent-authored text enters the document, and every

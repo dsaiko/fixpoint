@@ -147,6 +147,21 @@ func TestBodyNotesWhenMoreThanOneReviewerFoundIt(t *testing.T) {
 	}
 }
 
+// A finding the panel split over must not read like one it agreed on. The inline
+// comment says so, but most findings have no addressable line and a body-only
+// review has no inline comments at all, so the body has to say it too.
+func TestBodyMarksAContestedFinding(t *testing.T) {
+	contested := model.Issue{ID: "i1", Severity: "high", File: "a.go", Line: 1, Title: "one reviewer doubted it", Contested: true}
+	agreed := model.Issue{ID: "i2", Severity: "high", File: "b.go", Line: 2, Title: "nobody doubted it"}
+	body := bodyFor(t, Input{Issues: []model.Issue{contested, agreed}, Quorum: full(2)}, nil)
+	if !strings.Contains(body, "The panel disagreed about this one.") {
+		t.Errorf("a contested finding must be marked as such:\n%s", body)
+	}
+	if strings.Count(body, "The panel disagreed") != 1 {
+		t.Errorf("an uncontested finding must not carry the marker:\n%s", body)
+	}
+}
+
 func TestSignature(t *testing.T) {
 	facts := SignatureFacts{Agents: []string{"kimi", "claude"}, Run: "20260805-1200", Version: "abc123", Config: "review-pr", Verdict: "approve"}
 	got := Signature("{config} v{version} · {agents} · {run} · {verdict}", facts)
