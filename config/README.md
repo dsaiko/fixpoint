@@ -160,7 +160,10 @@ Every run writes `review-body.md` at the root of its log directory — the docum
 a human reads, and on the posting path the exact bytes that get sent.
 
 `signature` is appended to it, with `{agents}` `{run}` `{version}` `{config}`
-`{verdict}` substituted. It is rendered by fixpoint from fixpoint's own facts and
+`{verdict}` substituted. The default deliberately does **not** name fixpoint:
+reviews get posted into other people's repositories, where the tool's own name
+means nothing to the reader and reads as an unexplained internal string. "An AI
+panel" is the fact that changes how much weight the comment deserves. It is rendered by fixpoint from fixpoint's own facts and
 placed **outside** every region carrying agent text: a signature composed from a
 finding's prose could be forged by whatever wrote that prose.
 

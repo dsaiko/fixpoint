@@ -825,6 +825,12 @@ or formally blocks it. Neither can be set from a config file — the first bundl
 on the search path belongs to the target, so a YAML key would let reviewed code
 arrange to have a review posted under your identity.
 
+Findings that name a file and a line are also posted as **inline comments**, so a
+reader meets each one beside the code instead of in a list at the bottom. A forge
+only accepts an anchor on a line the pull request actually touches; if it refuses
+any of them it refuses the whole submission, so fixpoint retries with the summary
+alone and says so. Nothing is lost either way — every finding is in the body.
+
 **GitHub refuses an approval or a change request on your OWN pull request**, so
 `-post-verdict` only does anything when the token belongs to somebody other than
 the PR's author — a bot account, or a reviewer running it on a colleague's branch.
