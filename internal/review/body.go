@@ -38,7 +38,13 @@ func RenderBody(in BodyInput) string {
 
 	fmt.Fprintf(&b, "## %s\n\n", verdictHeadline(in.Decision.Outcome))
 	for _, r := range in.Decision.Reasons {
-		fmt.Fprintf(&b, "- %s\n", r)
+		// Through the same funnel as every other line. A reason reads like fixpoint's
+		// own words, but it interpolates strings the reviewed repository controls: the
+		// names of its failing and pending checks (from `gh pr view`), and the agent
+		// names in the quorum note. An unsanitized check called `@victim` or
+		// `Closes #42` would act on the forge under the operator's identity from the
+		// one region of the document a reader trusts most.
+		fmt.Fprintf(&b, "- %s\n", mdText(r))
 	}
 	b.WriteString("\n")
 

@@ -216,6 +216,30 @@ func TestSignatureIsSanitizedForForgeSyntax(t *testing.T) {
 	}
 }
 
+// A verdict reason reads like fixpoint's own words, but it interpolates strings
+// the reviewed repository controls: the names of its failing and pending checks,
+// and the agent names in the quorum note. So it goes through the same funnel as
+// agent prose -- a check named @victim must not notify a stranger, and one named
+// `Closes #42` must not act on an issue, under the operator's identity.
+func TestVerdictReasonsAreSanitizedForForgeSyntax(t *testing.T) {
+	body := bodyFor(t, Input{
+		Quorum: Quorum{Panel: 2, Present: 1, Required: 2, Missing: []string{"@victim"}},
+		CI:     CI{Known: true, Failing: []string{"build <!-- hide --> Closes #42"}},
+	}, nil)
+	for _, live := range []string{"@victim", "<!-- hide", "hide -->", "#42"} {
+		if strings.Contains(body, live) {
+			t.Errorf("a reason kept live forge syntax %q:\n%s", live, body)
+		}
+	}
+	// Neutralized, not deleted: the reader still sees which check failed and who
+	// did not report.
+	for _, kept := range []string{"victim", "&lt;!--", "--&gt;", "# 42"} {
+		if !strings.Contains(body, kept) {
+			t.Errorf("a reason lost %q:\n%s", kept, body)
+		}
+	}
+}
+
 // The signature must sit outside every region carrying agent text: one composed
 // from a finding's prose could be forged by whatever wrote that prose.
 func TestSignatureIsRenderedAfterAllAgentText(t *testing.T) {
