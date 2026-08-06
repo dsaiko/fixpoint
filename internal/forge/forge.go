@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -461,13 +460,20 @@ func invalidComment(err error) bool {
 	return strings.Contains(err.Error(), "HTTP 422")
 }
 
-// PostReview publishes through `gh pr review`, which reads the body from a file
-// so no part of it ever reaches an argument list.
+// PostReview publishes through the reviews API, with the payload on stdin so no
+// part of it ever reaches an argument list.
 //
 // That is not tidiness: argv is world-readable on this host for the life of the
 // process, and the body carries findings quoted out of the code under review --
 // which in a review-only run may be the credential that the review is ABOUT.
 // It is the same reasoning that makes prompt_via: stdin the default for agents.
+//
+// ONE submission path, whether or not there are anchors. `gh pr review` would post
+// the body just as well, but it cannot name a commit, so a body-only review -- the
+// common case, since most findings are filtered out of inline posting, and the
+// destination of the anchor-rejection fallback -- would land unbound on whatever
+// the branch points at when it arrives. requireHead narrows that window; only
+// commit_id closes it.
 func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, body string, event Event, inline []InlineComment) (string, error) {
 	// Before anything is published, and before the fallback below can turn an anchor
 	// rejection into a body-only APPROVAL of whatever is at the head now.
@@ -478,47 +484,19 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 	if err := requireHead(pr, head, cur); err != nil {
 		return "", err
 	}
-	if len(inline) > 0 {
-		err := githubPostWithInline(ctx, dir, pr, head, body, event, inline)
-		if err == nil {
-			return latestReviewURL(ctx, dir, pr), nil
+	if err := githubSubmitReview(ctx, dir, pr, head, body, event, inline); err != nil {
+		// Only a submission that CARRIED anchors can have been rejected for them.
+		// Without any, the same 422 is about the review itself and a body-only retry
+		// would just fail again -- so it propagates like every other failure.
+		if len(inline) > 0 && invalidComment(err) {
+			// One comment on a line the diff does not contain rejects the WHOLE review,
+			// and the API says so without naming which. Rather than guess, let the caller
+			// publish the review that was going to be published anyway: the findings are
+			// all in the body, they simply lose their anchors.
+			return "", anchorError{err}
 		}
-		if !invalidComment(err) {
-			// Not the anchors. Returned as it is, so the callers' retry does not fire:
-			// see anchorError for why a second submission is only safe here.
-			return "", err
-		}
-		// One comment on a line the diff does not contain rejects the WHOLE review,
-		// and the API says so without naming which. Rather than guess, publish the
-		// review that was going to be published anyway: the findings are all in the
-		// body, they simply lose their anchors.
-		return "", anchorError{err}
-	}
-	f, err := os.CreateTemp("", "fixpoint-review-*.md")
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = os.Remove(f.Name()) }()
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		return "", err
-	}
-	if _, err := f.WriteString(body); err != nil {
-		_ = f.Close()
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		return "", err
-	}
-	flag := "--comment"
-	switch event {
-	case EventApprove:
-		flag = "--approve"
-	case EventRequestChanges:
-		flag = "--request-changes"
-	case Comment:
-	}
-	if _, err := run(ctx, dir, "gh", "pr", "review", strconv.Itoa(pr), flag, "--body-file", f.Name()); err != nil {
+		// Not the anchors. Returned as it is, so the callers' retry does not fire:
+		// see anchorError for why a second submission is only safe there.
 		return "", err
 	}
 	// gh prints nothing useful on success, so the URL is read back rather than
@@ -526,19 +504,20 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 	return latestReviewURL(ctx, dir, pr), nil
 }
 
-// githubPostWithInline submits one review carrying both the summary and the
-// per-line comments, through the API `gh pr review` does not expose.
+// githubSubmitReview submits one review carrying the summary and whatever per-line
+// comments it has, through the API `gh pr review` does not expose.
 //
 // The payload goes in on STDIN, not as arguments: it embeds the whole review, and
-// argv is world-readable for the life of the process -- the same reason the
-// body-only path writes a file. `{owner}/{repo}` are gh's own placeholders,
-// resolved from the checkout, so no repository identity has to be parsed here.
+// argv is world-readable for the life of the process. `{owner}/{repo}` are gh's own
+// placeholders, resolved from the checkout, so no repository identity has to be
+// parsed here.
 //
 // commit_id pins the review to the commit it is about, so the forge records the
 // approval against that oid and marks its comments outdated if the branch moves
 // afterwards. requireHead has already established it is the current head; this
-// closes the gap between that read and this submission.
-func githubPostWithInline(ctx context.Context, dir string, pr int, head, body string, event Event, inline []InlineComment) error {
+// closes the gap between that read and this submission. It is why an empty inline
+// slice comes through here too rather than through the CLI's own review verb.
+func githubSubmitReview(ctx context.Context, dir string, pr int, head, body string, event Event, inline []InlineComment) error {
 	type ghComment struct {
 		Path string `json:"path"`
 		Line int    `json:"line"`
@@ -546,10 +525,13 @@ func githubPostWithInline(ctx context.Context, dir string, pr int, head, body st
 		Body string `json:"body"`
 	}
 	payload := struct {
-		Body     string      `json:"body"`
-		Event    string      `json:"event"`
-		CommitID string      `json:"commit_id,omitempty"`
-		Comments []ghComment `json:"comments"`
+		Body     string `json:"body"`
+		Event    string `json:"event"`
+		CommitID string `json:"commit_id,omitempty"`
+		// omitempty, not an empty array: a body-only review says nothing about lines,
+		// and the API reads a present-but-empty comments list as a claim it can
+		// validate.
+		Comments []ghComment `json:"comments,omitempty"`
 	}{Body: body, Event: githubEvent(event), CommitID: head}
 	for _, c := range inline {
 		// RIGHT is the head of the pull request. A finding is about the code as

@@ -187,6 +187,59 @@ func TestGitHubReviewIsSubmittedAgainstTheReviewedCommit(t *testing.T) {
 	}
 }
 
+// A review with no anchors is bound to the reviewed commit just the same. It is the
+// common case -- most findings never reach an inline comment -- and it is where the
+// anchor-rejection fallback lands, so `gh pr review`, which cannot name a commit,
+// must not be how it is published: that would approve whatever the branch points at
+// when the submission arrives.
+func TestABodyOnlyReviewIsAlsoBoundToTheReviewedCommit(t *testing.T) {
+	const reviewed = "0123456789abcdef0123456789abcdef01234567"
+	dir, payload := stubGH(t, reviewed)
+
+	if _, err := (githubProvider{}).PostReview(t.Context(), dir, 7, reviewed, "the review",
+		EventApprove, nil); err != nil {
+		t.Fatalf("PostReview() = %v", err)
+	}
+	raw := payload()
+	if raw == "body-only review submitted\n" {
+		t.Fatal("the review went out through `gh pr review`, which carries no commit_id")
+	}
+	var got struct {
+		CommitID string `json:"commit_id"`
+		Event    string `json:"event"`
+		Body     string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("the submitted payload does not parse (%v): %s", err, raw)
+	}
+	if got.CommitID != reviewed {
+		t.Errorf("commit_id = %q, want the reviewed head %q -- an approval must name the commit it approves", got.CommitID, reviewed)
+	}
+	if want := githubEvent(EventApprove); got.Event != want || got.Body != "the review" {
+		t.Errorf("event/body = %q/%q, want %q/%q", got.Event, got.Body, want, "the review")
+	}
+	// Present-but-empty would be a claim about lines that this review does not make.
+	if strings.Contains(raw, "\"comments\"") {
+		t.Errorf("a review with no anchors still sent a comments list: %s", raw)
+	}
+}
+
+// A 422 on a submission that carried no anchors is not an anchor rejection: there is
+// nothing to drop, and re-posting body-only would fail the same way. Classifying it
+// as one is how a caller's fallback turns one failure into two submissions.
+func TestAValidationFailureWithoutAnchorsIsNotAnAnchorRejection(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	dir, _ := stubGHRefusingInline(t, head, "gh: Validation Failed (HTTP 422)")
+
+	_, err := (githubProvider{}).PostReview(t.Context(), dir, 7, head, "the review", EventApprove, nil)
+	if err == nil {
+		t.Fatal("PostReview() = nil although the submission failed")
+	}
+	if AnchorRejection(err) {
+		t.Errorf("a body-only failure was reported as an anchor rejection: %v", err)
+	}
+}
+
 // And nothing is submitted at all once the pull request has moved: not the review
 // with its anchors, and not the body-only fallback that would otherwise approve the
 // new head with no anchors to make the mismatch visible.
