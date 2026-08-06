@@ -801,6 +801,21 @@ Or directly:
 ./fixpoint --config path/to/task.yaml [flags]
 ```
 
+### Fixing a pull request
+
+```sh
+./fixpoint review-pr -pr 170                        # read it first
+./fixpoint fix-pr -pr 170 --allow-untrusted-fix     # then let it edit
+./fixpoint fix-pr -pr 170 --allow-untrusted-fix -post   # …and answer the threads
+```
+
+`fix-pr` is the most dangerous config in the bundle and its flag says so: it edits
+a working tree holding **externally authored** code, with an agent whose
+permission checks are disabled. A payload in the diff, in a commit message, or in
+a review comment reaches the coder. It is also shown the pull request's
+unresolved conversations and may answer the ones its work addressed — see
+[config/README.md](config/README.md#answering-a-pull-requests-conversations).
+
 ### Reviewing a pull request
 
 ```sh

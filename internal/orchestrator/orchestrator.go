@@ -44,6 +44,10 @@ type Orchestrator struct {
 	// be asked. Zero value means "not known", which never blocks a verdict but is
 	// recorded in its reasons -- see internal/review.CI.
 	ci review.CI
+	// threads are the pull request's OPEN review conversations, read once at start.
+	// Empty for every target that is not a pull request, and for a forge that
+	// cannot be asked.
+	threads []forge.Thread
 	// gitExclude holds the logs dir as a repo-relative path when it lives
 	// inside target.path, so round commits and clean checks never touch the
 	// run's own logs.
@@ -589,6 +593,7 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// What the forge already knows about this head, read once before the panel
 	// runs so the reviewers' own context and the verdict see the same answer.
 	o.readForgeChecks(ctx)
+	o.readForgeThreads(ctx)
 
 	// Where the run's commits begin, for a per_run squash at the end. Captured on the
 	// same pristine tree as the verification baseline: everything after this point is
@@ -3148,6 +3153,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		Findings:       prompt.FormatIssues(active),
 		History:        prompt.FormatHistory(history),
 		Stale:          prompt.FormatStale(stale),
+		Conversations:  o.conversations(),
 		OutputContract: prompt.FixContract,
 	}
 	text, err := prompt.Render(o.templates[coder.Prompt], d)
@@ -3167,6 +3173,12 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	// miscounted (an empty result set must not read as "all rejected").
 	if runErr == nil {
 		runErr = o.applyVerdicts(rec, out.Results, active)
+	}
+	// Answers go out only once the verdicts parsed: a reply claiming a change from
+	// a session whose report fixpoint could not read would be asserting something
+	// nothing verified.
+	if runErr == nil {
+		o.postReplies(ctx, out.Replies)
 	}
 
 	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, promptName, len(text), res, runErr != nil))
@@ -4258,6 +4270,9 @@ func firstLineOf(s string) string {
 // not the CLI invocation.
 var posterFor = forge.PosterFor
 
+// readerFor is forge.ReaderFor behind a variable, for the same reason.
+var readerFor = forge.ReaderFor
+
 // postReview publishes the rendered review on the pull request.
 //
 // Two assertions, because there are two risk levels and collapsing them would
@@ -4353,4 +4368,86 @@ func inlineComments(rec *model.RoundRecord) []forge.InlineComment {
 		})
 	}
 	return out
+}
+
+// readForgeThreads loads the pull request's OPEN review conversations, so a fix
+// run can answer the humans who asked for the change rather than making it
+// silently.
+//
+// Unresolved only, and that filter is the point: a resolved thread is a settled
+// question, and handing it to a coder invites it to reopen something a person
+// already closed.
+//
+// Best-effort, like every other read: no gh, no permission, a forge without the
+// concept -- all leave the list empty, and a fix run then behaves exactly as it
+// did before conversations existed.
+func (o *Orchestrator) readForgeThreads(ctx context.Context) {
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 || o.cfg.Loop.ReviewOnly {
+		return
+	}
+	r := forge.ReaderFor(ctx, o.cfg.Target.Path)
+	if r == nil {
+		return
+	}
+	threads, err := r.Threads(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	if err != nil {
+		o.logf("WARNING: could not read the pull request's conversations (%v); the coder will not see them", err)
+		return
+	}
+	o.threads = threads
+	if len(threads) > 0 {
+		o.logf("%d open conversation(s) on this pull request will be shown to the coder", len(threads))
+	}
+}
+
+// conversations renders the open threads for the coder prompt.
+func (o *Orchestrator) conversations() string {
+	if len(o.threads) == 0 {
+		return ""
+	}
+	out := make([]prompt.Conversation, 0, len(o.threads))
+	for _, t := range o.threads {
+		out = append(out, prompt.Conversation{ID: t.ID, Path: t.Path, Line: t.Line, Author: t.Author, Body: t.Body})
+	}
+	return prompt.FormatConversations(out)
+}
+
+// postReplies answers the conversations the coder said its work addressed.
+//
+// Gated on -post, like every other write to a forge: an answer appears under a
+// human's comment with the operator's identity on it. Gated on the thread being
+// one we actually SHOWED the coder, too -- a reply addressed to an id it invented,
+// or to a resolved thread it remembered from somewhere, would post into a
+// conversation nobody asked it to touch.
+//
+// Failures are reported per reply and never abort the round: the fix is already
+// committed and verified, and losing that over a comment would be the wrong trade.
+func (o *Orchestrator) postReplies(ctx context.Context, replies []model.FixReply) {
+	if len(replies) == 0 || len(o.threads) == 0 {
+		return
+	}
+	if !o.cfg.Review.Post {
+		o.logf("%d conversation repl(y|ies) were written but not posted (-post was not given)", len(replies))
+		return
+	}
+	known := make(map[string]bool, len(o.threads))
+	for _, t := range o.threads {
+		known[t.ID] = true
+	}
+	r := readerFor(ctx, o.cfg.Target.Path)
+	if r == nil {
+		return
+	}
+	for _, reply := range replies {
+		if !known[reply.Thread] {
+			o.logf("WARNING: the coder answered thread %q, which it was not shown; not posted", reply.Thread)
+			continue
+		}
+		body := agent.EscapeTerminalBlock(agent.RedactSecrets(forge.SanitizeText(reply.Message)))
+		if err := r.Reply(ctx, o.cfg.Target.Path, o.cfg.Target.PR, reply.Thread, body); err != nil {
+			o.logf("ERROR: replying to conversation %s failed: %v", reply.Thread, err)
+			continue
+		}
+		o.logf("replied to conversation %s", reply.Thread)
+	}
 }

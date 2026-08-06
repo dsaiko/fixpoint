@@ -13,6 +13,7 @@ package forge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -158,22 +159,21 @@ func run(ctx context.Context, dir string, name string, args ...string) (string, 
 
 // runStdin is run with a payload on standard input, for content too large or too
 // sensitive to place on a command line.
-func runStdin(ctx context.Context, dir, stdin, name string, args ...string) (string, error) {
+func runStdin(ctx context.Context, dir, stdin, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
+	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, firstLine(msg))
+			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, firstLine(msg))
 		}
-		return "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
-	return stdout.String(), nil
+	return nil
 }
 
 func firstLine(s string) string {
@@ -445,9 +445,8 @@ func githubPostWithInline(ctx context.Context, dir string, pr int, body string, 
 	if err != nil {
 		return err
 	}
-	_, err = runStdin(ctx, dir, string(doc), "gh", "api", "--method", "POST",
+	return runStdin(ctx, dir, string(doc), "gh", "api", "--method", "POST",
 		fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews", pr), "--input", "-")
-	return err
 }
 
 func githubEvent(e Event) string {
@@ -513,4 +512,149 @@ func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, body s
 	case Comment:
 	}
 	return "", nil
+}
+
+// Thread is one unresolved review conversation on a pull request.
+//
+// Unresolved only: a resolved thread is a settled question, and handing it to a
+// coder invites it to reopen something a human already closed.
+type Thread struct {
+	// ID is what a reply is addressed to. It is the ROOT comment's id, because a
+	// forge threads replies under the comment that started the conversation.
+	ID     string
+	Path   string
+	Line   int
+	Author string
+	Body   string
+}
+
+// Reader is a provider that can also read a pull request's conversations. It is
+// separate from Provider so a forge that cannot do it simply does not implement
+// it, rather than returning an error every run has to interpret.
+type Reader interface {
+	Provider
+	// Threads lists the UNRESOLVED review conversations on a pull request.
+	Threads(ctx context.Context, dir string, pr int) ([]Thread, error)
+	// Reply posts a response into an existing conversation.
+	Reply(ctx context.Context, dir string, pr int, threadID, body string) error
+}
+
+// ReaderFor is For, narrowed to providers that can read conversations.
+func ReaderFor(ctx context.Context, dir string) Reader {
+	r, _ := For(ctx, dir).(Reader)
+	return r
+}
+
+// threadQuery asks for unresolved threads and the comment that opened each.
+//
+// GraphQL rather than the REST comment list, because "is this conversation still
+// open?" exists only in the GraphQL schema: REST returns every comment with no
+// resolution state, so a coder would be handed questions a human had already
+// settled -- and answering those is worse than not answering at all.
+const threadQuery = `query($owner:String!,$repo:String!,$pr:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$pr){
+      reviewThreads(first:100){
+        nodes{
+          isResolved
+          comments(first:1){nodes{path line databaseId body author{login}}}
+        }
+      }
+    }
+  }
+}`
+
+func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread, error) {
+	owner, repo, err := githubSlug(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	out, err := run(ctx, dir, "gh", "api", "graphql",
+		"-f", "query="+threadQuery,
+		"-F", "owner="+owner, "-F", "repo="+repo, "-F", fmt.Sprintf("pr=%d", pr))
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						Nodes []struct {
+							IsResolved bool `json:"isResolved"`
+							Comments   struct {
+								Nodes []struct {
+									Path       string `json:"path"`
+									Line       int    `json:"line"`
+									DatabaseID int64  `json:"databaseId"`
+									Body       string `json:"body"`
+									Author     struct {
+										Login string `json:"login"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return nil, fmt.Errorf("parse review threads: %w", err)
+	}
+	nodes := payload.Data.Repository.PullRequest.ReviewThreads.Nodes
+	threads := make([]Thread, 0, len(nodes))
+	for _, n := range nodes {
+		if n.IsResolved || len(n.Comments.Nodes) == 0 {
+			continue
+		}
+		c := n.Comments.Nodes[0]
+		threads = append(threads, Thread{
+			ID:     strconv.FormatInt(c.DatabaseID, 10),
+			Path:   c.Path,
+			Line:   c.Line,
+			Author: c.Author.Login,
+			Body:   c.Body,
+		})
+	}
+	return threads, nil
+}
+
+func (githubProvider) Reply(ctx context.Context, dir string, pr int, threadID, body string) error {
+	id, err := strconv.ParseInt(threadID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("thread id %q is not a comment id: %w", threadID, err)
+	}
+	// Body on stdin, not argv: a reply quotes the coder's own prose about code it
+	// just read, and argv is world-readable for the life of the process.
+	payload, err := json.Marshal(struct {
+		Body string `json:"body"`
+	}{body})
+	if err != nil {
+		return err
+	}
+	return runStdin(ctx, dir, string(payload), "gh", "api", "--method", "POST",
+		fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/comments/%d/replies", pr, id), "--input", "-")
+}
+
+// githubSlug resolves owner and repo for the API calls that cannot use gh's own
+// {owner}/{repo} placeholders -- the GraphQL endpoint takes them as variables.
+func githubSlug(ctx context.Context, dir string) (owner, repo string, err error) {
+	out, err := run(ctx, dir, "gh", "repo", "view", "--json", "owner,name")
+	if err != nil {
+		return "", "", err
+	}
+	var payload struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return "", "", fmt.Errorf("parse repository identity: %w", err)
+	}
+	if payload.Owner.Login == "" || payload.Name == "" {
+		return "", "", errors.New("gh reported no repository owner or name")
+	}
+	return payload.Owner.Login, payload.Name, nil
 }

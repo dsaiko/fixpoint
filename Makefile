@@ -12,7 +12,7 @@ STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
 .PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live \
-        fix-code fix-branch review-code review-branch review-pr clean clean-logs run help
+        fix-code fix-branch fix-pr review-code review-branch review-pr clean clean-logs run help
 
 all: build
 
@@ -111,6 +111,15 @@ review-code: build
 ## review-branch: one review round over only what this branch changed
 review-branch: build
 	./$(BINARY) review-branch --trusted-target
+
+## fix-pr: review -> fix -> verify -> commit over a pull request, answering its
+## open conversations. Pass the number as PR=<n>.
+##   make fix-pr PR=170
+## The most dangerous target here: it edits a tree holding externally-authored
+## code, so it asserts -allow-untrusted-fix. Run review-pr first and read it.
+fix-pr: build test vet
+	@test -n "$(PR)" || { echo "usage: make fix-pr PR=<number>"; exit 2; }
+	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix
 
 ## review-pr: review a pull request; pass the number as PR=<n>
 ##   make review-pr PR=170

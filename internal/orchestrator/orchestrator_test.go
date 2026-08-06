@@ -7226,3 +7226,89 @@ func (p *pickyPoster) PostReview(_ context.Context, _ string, _ int, _ string, _
 	}
 	return "", nil
 }
+
+// A reply is posted under a human's comment with the operator's identity on it,
+// so fixpoint only ever answers a conversation it actually showed the coder. An
+// id the coder invented -- or remembered from a resolved thread -- must not become
+// a comment somebody has to read.
+func TestRepliesGoOnlyToConversationsTheCoderWasShown(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	var logs strings.Builder
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}},
+		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.threads = []forge.Thread{{ID: "100", Path: "a.go", Line: 1, Author: "human", Body: "why?"}}
+
+	var replied []string
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader {
+		return &fakeReader{threads: o.threads, replied: &replied}
+	}
+	defer func() { readerFor = prev }()
+
+	o.postReplies(t.Context(), []model.FixReply{
+		{Thread: "100", Message: "changed a.go:1 to use the guard"},
+		{Thread: "999", Message: "answering a conversation nobody showed me"},
+	})
+
+	if len(replied) != 1 || replied[0] != "100" {
+		t.Errorf("replied to %v, want only the thread the coder was shown", replied)
+	}
+	if !strings.Contains(logs.String(), "not shown") {
+		t.Errorf("the unknown thread must be reported:\n%s", logs.String())
+	}
+}
+
+// Without -post nothing reaches the forge, however much the coder wrote.
+func TestRepliesAreNotPostedWithoutTheFlag(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	var logs strings.Builder
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}},
+		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.threads = []forge.Thread{{ID: "100"}}
+
+	var replied []string
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader { return &fakeReader{replied: &replied} }
+	defer func() { readerFor = prev }()
+
+	o.postReplies(t.Context(), []model.FixReply{{Thread: "100", Message: "hello"}})
+	if len(replied) != 0 {
+		t.Errorf("posted %d repl(y|ies) without -post", len(replied))
+	}
+	if !strings.Contains(logs.String(), "not posted") {
+		t.Errorf("the operator should be told the replies were withheld:\n%s", logs.String())
+	}
+}
+
+type fakeReader struct {
+	threads []forge.Thread
+	replied *[]string
+}
+
+func (*fakeReader) Kind() forge.Kind { return forge.GitHub }
+
+func (*fakeReader) Checks(context.Context, string, int) (forge.Checks, error) {
+	return forge.Checks{}, nil
+}
+
+func (r *fakeReader) Threads(context.Context, string, int) ([]forge.Thread, error) {
+	return r.threads, nil
+}
+
+func (r *fakeReader) Reply(_ context.Context, _ string, _ int, threadID, _ string) error {
+	*r.replied = append(*r.replied, threadID)
+	return nil
+}

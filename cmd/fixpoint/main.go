@@ -279,6 +279,17 @@ func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Co
 	}
 	logf("configuration OK: %d review lens(es), %s, strategy %s",
 		len(cfg.Roles.Review.Prompts), who, cfg.Roles.Review.Strategy)
+	// --check is static, so the fix-trust gate has not fired -- but reporting
+	// "configuration OK" for a run that will refuse to start on its first step is a
+	// half-truth the operator finds out about after waiting for a PR checkout.
+	if !cfg.Loop.ReviewOnly {
+		switch {
+		case cfg.Target.Mode == config.ModePR && !cfg.Loop.AllowUntrustedFix:
+			logf("NOTE: fix rounds over a pull request need -allow-untrusted-fix; this run would refuse to start without it")
+		case cfg.Target.Mode != config.ModePR && !cfg.Loop.TrustedTarget && !cfg.Loop.AllowUntrustedFix:
+			logf("NOTE: fix rounds need -trusted-target; this run would refuse to start without it")
+		}
+	}
 	return 0
 }
 

@@ -125,6 +125,9 @@ type ReviewFinding struct {
 type FixOutput struct {
 	Results []FixResult `json:"results"`
 	Notes   string      `json:"notes,omitempty"`
+	// Replies are answers to the pull request's open conversations, when the coder
+	// was shown any. Optional: a fix run over a PR with no threads returns none.
+	Replies []FixReply `json:"replies,omitempty"`
 }
 
 // FixResult is the coder's verdict on one finding.
@@ -575,4 +578,15 @@ func ValidJudgeVerdict(v string) bool {
 		return true
 	}
 	return false
+}
+
+// FixReply is the coder's answer to one open review conversation.
+//
+// fixpoint does not compose these. A reply appears under a human's comment with
+// the operator's identity on it, so the words have to come from the agent that
+// actually did the work and can say what it changed -- not from a template that
+// claims something happened.
+type FixReply struct {
+	Thread  string `json:"thread"`
+	Message string `json:"message"`
 }
