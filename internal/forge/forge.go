@@ -611,12 +611,11 @@ func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, head, 
 		// Best-effort per comment: GitLab positions a discussion with base/head/start
 		// SHAs this package does not carry, so an inline note is attempted as a plain
 		// note naming its location rather than skipped outright.
-		if _, err := run(ctx, dir, "glab", "mr", "note", strconv.Itoa(mr),
-			"--message", fmt.Sprintf("`%s:%d`\n\n%s", c.Path, c.Line, c.Body)); err != nil {
+		if err := gitlabNote(ctx, dir, mr, fmt.Sprintf("`%s:%d`\n\n%s", c.Path, c.Line, c.Body)); err != nil {
 			return "", err
 		}
 	}
-	if _, err := run(ctx, dir, "glab", "mr", "note", strconv.Itoa(mr), "--message", body); err != nil {
+	if err := gitlabNote(ctx, dir, mr, body); err != nil {
 		return "", err
 	}
 	switch event {
@@ -633,6 +632,26 @@ func (gitlabProvider) PostReview(ctx context.Context, dir string, mr int, head, 
 	case Comment:
 	}
 	return "", nil
+}
+
+// gitlabNote posts one note on a merge request, with the text on STDIN.
+//
+// Not `glab mr note --message <body>`: that puts the whole note on the argument
+// list, and argv is world-readable on this host for the life of the process. The
+// note carries findings quoted out of the code under review -- which in a
+// review-only run may be the credential the review is ABOUT, and redaction is
+// shape-based, so it cannot be relied on to have masked it. The API passthrough
+// is the same one gitlabHead and Checks already use, and it accepts the payload on
+// stdin the way githubSubmitReview does.
+func gitlabNote(ctx context.Context, dir string, mr int, body string) error {
+	payload, err := json.Marshal(struct {
+		Body string `json:"body"`
+	}{body})
+	if err != nil {
+		return err
+	}
+	return runStdin(ctx, dir, string(payload), "glab", "api", "--method", "POST",
+		fmt.Sprintf("projects/:id/merge_requests/%d/notes", mr), "--input", "-")
 }
 
 // gitlabHead reads the commit a merge request currently proposes. diff_refs is

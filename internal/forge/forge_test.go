@@ -330,3 +330,58 @@ func TestOnlyAValidationFailureIsAnAnchorRejection(t *testing.T) {
 		})
 	}
 }
+
+// stubGlab puts a fake `glab` on PATH. It answers the head read, records every
+// invocation's argument list and whatever arrived on its standard input, and fails
+// anything else so an unexpected call is an error rather than a silent success.
+func stubGlab(t *testing.T, head string) (dir string, argv, stdin func() string) {
+	t.Helper()
+	bin := t.TempDir()
+	args := filepath.Join(bin, "argv.txt")
+	body := filepath.Join(bin, "stdin.txt")
+	script := "#!/bin/sh\necho \"$*\" >> " + args + "\ncase \"$*\" in\n" +
+		"*notes*) cat >> " + body + " ;;\n" +
+		"*merge_requests/7) printf '{\"diff_refs\":{\"head_sha\":\"" + head + "\"}}' ;;\n" +
+		"*approve*) ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "glab"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	read := func(path string) func() string {
+		return func() string {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return ""
+			}
+			return string(raw)
+		}
+	}
+	return t.TempDir(), read(args), read(body)
+}
+
+// The review never reaches an argument list, on GitLab as on GitHub. argv is
+// world-readable for the life of the process and the review quotes the code it is
+// about -- which in a review-only run may be the credential the review is ABOUT,
+// and redaction is shape-based, so it cannot be assumed to have masked it.
+func TestGitLabNotesKeepTheReviewOffTheCommandLine(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	const secret = "sk-ant-api03-nothing-real-here"
+	dir, argv, stdin := stubGlab(t, head)
+
+	if _, err := (gitlabProvider{}).PostReview(t.Context(), dir, 7, head, "the review quotes "+secret,
+		EventApprove, []InlineComment{{Path: "a.go", Line: 9, Body: "so does this comment: " + secret}}); err != nil {
+		t.Fatalf("PostReview() = %v", err)
+	}
+	if got := argv(); strings.Contains(got, secret) {
+		t.Errorf("the note text reached the argument list: %s", got)
+	}
+	// And it did arrive: both notes, as JSON bodies on stdin.
+	got := stdin()
+	if n := strings.Count(got, secret); n != 2 {
+		t.Errorf("stdin carried the text %d time(s), want 2 (the inline note and the body): %s", n, got)
+	}
+	if !strings.Contains(got, `"body"`) {
+		t.Errorf("the note was not posted as an API payload: %s", got)
+	}
+}
