@@ -3882,20 +3882,25 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	}
 	sort.Strings(agents)
 
+	// One signature for the whole review, used by the summary AND by every inline
+	// comment: an inline comment is read on its own in the Files tab, with no sight
+	// of the review it belongs to, so an unsigned one is an unattributed assertion
+	// sitting on somebody's code.
+	signature := review.Signature(o.cfg.Review.Signature, review.SignatureFacts{
+		Agents:  agents,
+		Run:     o.logs.RunID(),
+		Version: review.Version(),
+		Config:  configBaseName(o.source.Config),
+		Verdict: string(d.Outcome),
+	})
 	body := review.RenderBody(review.BodyInput{
-		Config:   configBaseName(o.source.Config),
-		Target:   describeTarget(o.cfg.Target),
-		Decision: d,
-		Issues:   rec.Issues,
-		Advisory: rec.Advisory,
-		Panel:    agents,
-		Signature: review.Signature(o.cfg.Review.Signature, review.SignatureFacts{
-			Agents:  agents,
-			Run:     o.logs.RunID(),
-			Version: review.Version(),
-			Config:  configBaseName(o.source.Config),
-			Verdict: string(d.Outcome),
-		}),
+		Config:    configBaseName(o.source.Config),
+		Target:    describeTarget(o.cfg.Target),
+		Decision:  d,
+		Issues:    rec.Issues,
+		Advisory:  rec.Advisory,
+		Panel:     agents,
+		Signature: signature,
 	})
 	// The PUBLISHED bytes, computed once and used for both the file and the post.
 	//
@@ -3921,10 +3926,10 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	// Recorded before any posting, so `-post-run` can publish exactly this review
 	// later without re-running the panel -- and so an operator who reads the file
 	// first is reading the bytes that will actually go out.
-	for _, c := range inlineComments(rec, o.material) {
+	for _, c := range inlineComments(rec, o.material, signature) {
 		sum.ReviewInline = append(sum.ReviewInline, model.ReviewAnchor{Path: c.Path, Line: c.Line, Body: c.Body})
 	}
-	o.postReview(ctx, rec, sum, published)
+	o.postReview(ctx, sum, published)
 }
 
 // describeTarget names what was reviewed in one phrase, for the review's footer.
@@ -4034,7 +4039,20 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		}
 	}
 
-	byIssue := map[string][]model.RefutePosition{}
+	// Keyed by issue AND by the agent that spoke, at most one position each.
+	//
+	// A flat list let one reviewer forge unanimity: counting position RECORDS rather
+	// than distinct agents meant a single prompt-injected refuter emitting four
+	// duplicate refutes for one finding satisfied "every responder refuted it" while
+	// the other three never mentioned it -- deleting a genuine high before the
+	// verdict ever saw it, which on a malicious pull request turns CHANGES_REQUESTED
+	// into APPROVE. Identity is the fix: a reviewer gets one vote per finding no
+	// matter how many times it says the same thing.
+	known := make(map[string]bool, len(rec.Issues))
+	for _, it := range rec.Issues {
+		known[it.ID] = true
+	}
+	byIssue := map[string]map[string]model.RefutePosition{}
 	responded := 0
 	for _, r := range replies {
 		if r.positions == nil {
@@ -4042,7 +4060,20 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		}
 		responded++
 		for _, p := range r.positions {
-			byIssue[p.Issue] = append(byIssue[p.Issue], p)
+			switch {
+			case !known[p.Issue]:
+				// An id nobody was shown. It cannot affect a finding that exists, but a
+				// reviewer inventing them is worth saying out loud.
+				o.logf("WARNING: refute: %s took a position on %q, which was not in the set it was shown; ignored", r.agent, p.Issue)
+				continue
+			case byIssue[p.Issue] != nil && byIssue[p.Issue][r.agent] != model.RefutePosition{}:
+				o.logf("WARNING: refute: %s gave more than one position on %s; only the first counts", r.agent, p.Issue)
+				continue
+			}
+			if byIssue[p.Issue] == nil {
+				byIssue[p.Issue] = map[string]model.RefutePosition{}
+			}
+			byIssue[p.Issue][r.agent] = p
 		}
 	}
 	if responded == 0 {
@@ -4145,7 +4176,7 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, rec *mo
 // documentation and the refutation prompt all promise.
 //
 // Issues nobody took a position on are untouched, for the same reason.
-func applyRefutations(rec *model.RoundRecord, byIssue map[string][]model.RefutePosition, responded int, logf func(string, ...any)) {
+func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]model.RefutePosition, responded int, logf func(string, ...any)) {
 	for i := range rec.Issues {
 		it := &rec.Issues[i]
 		positions := byIssue[it.ID]
@@ -4352,7 +4383,7 @@ var readerFor = forge.ReaderFor
 // because a missing datum only weakens the evidence; a write that the operator
 // asked for and did not get is the opposite -- silence there would tell them the
 // review is on the pull request when it is not.
-func (o *Orchestrator) postReview(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, body string) {
+func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, body string) {
 	if !o.cfg.Review.Post {
 		return
 	}
@@ -4381,7 +4412,13 @@ func (o *Orchestrator) postReview(ctx context.Context, rec *model.RoundRecord, s
 		// event for "the review did not finish", and the two that exist would both be
 		// lies about a panel that never reached quorum.
 	}
-	inline := inlineComments(rec, o.material)
+	// The anchors RECORDED for this review, not a second computation of them.
+	// writeReviewBody already stored them, and recomputing here would let the posted
+	// review and the replayable one drift apart over the same run.
+	inline := make([]forge.InlineComment, 0, len(sum.ReviewInline))
+	for _, a := range sum.ReviewInline {
+		inline = append(inline, forge.InlineComment{Path: a.Path, Line: a.Line, Body: a.Body})
+	}
 	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, body, event, inline)
 	if err != nil && len(inline) > 0 && strings.HasPrefix(err.Error(), "inline:") {
 		// The forge refused the anchors, not the review. Publishing the summary alone
@@ -4413,7 +4450,7 @@ func (o *Orchestrator) postReview(ctx context.Context, rec *model.RoundRecord, s
 // The text is the finding's own, already sanitized by the body renderer's rules,
 // with the severity leading so a reader skimming the Files tab can tell a blocker
 // from a note without opening anything.
-func inlineComments(rec *model.RoundRecord, diff string) []forge.InlineComment {
+func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.InlineComment {
 	// A forge accepts an anchor only inside the pull request's own diff, and it
 	// rejects the WHOLE review when one falls outside -- with a 422 that names
 	// nothing. Measured on this project's own pull request: without this filter
@@ -4432,7 +4469,7 @@ func inlineComments(rec *model.RoundRecord, diff string) []forge.InlineComment {
 		out = append(out, forge.InlineComment{
 			Path: it.File,
 			Line: it.Line,
-			Body: review.RenderInline(it),
+			Body: review.RenderInline(it, signature),
 		})
 	}
 	return out

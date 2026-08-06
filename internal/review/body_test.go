@@ -214,3 +214,24 @@ func TestNothingFixpointGeneratesNamesTheTool(t *testing.T) {
 		t.Errorf("the signature should say what kind of reviewer this was:\n%s", body)
 	}
 }
+
+// An inline comment is read on its own, in the Files tab, with no sight of the
+// review it belongs to. Unsigned, it is an unattributed assertion sitting on
+// somebody's code and the reader cannot tell a machine from a colleague.
+func TestInlineCommentsAreSignedToo(t *testing.T) {
+	sig := Signature("", SignatureFacts{Agents: []string{"claude"}, Run: "20260806-1700"})
+	got := RenderInline(model.Issue{
+		Severity: "high", File: "a.go", Line: 4,
+		Title: "boom", Description: "why", Suggestion: "fix it",
+	}, sig)
+	if !strings.HasSuffix(strings.TrimSpace(got), strings.TrimSpace(sig)) {
+		t.Errorf("the signature must close the comment:\n%s", got)
+	}
+	if !strings.Contains(got, "AI panel") {
+		t.Errorf("the comment does not say what wrote it:\n%s", got)
+	}
+	// And it must sit after the agent's own words, so a finding cannot forge one.
+	if strings.Index(got, "fix it") > strings.Index(got, "AI panel") {
+		t.Errorf("the signature precedes agent text and could be forged:\n%s", got)
+	}
+}

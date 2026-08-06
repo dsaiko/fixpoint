@@ -25,6 +25,29 @@ import (
 	"github.com/dsaiko/fixpoint/internal/testfixture"
 )
 
+// captureLog collects the orchestrator's log lines from a test.
+//
+// Behind a mutex, because logf is called from the reviewer and refuter goroutines
+// concurrently -- the production logger holds one for exactly that reason (see
+// newLogger in cmd/fixpoint). A bare strings.Builder here is a data race in the
+// TEST, which the detector reports against the code under test and which cost a
+// confusing few minutes to place.
+func captureLog() (logf func(string, ...any), text func() string) {
+	var mu sync.Mutex
+	var b strings.Builder
+	logf = func(format string, a ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Fprintf(&b, format+"\n", a...)
+	}
+	text = func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return b.String()
+	}
+	return logf, text
+}
+
 // ---- test fixture -----------------------------------------------------------
 
 // fixture wires a temporary git repository, a scripted mock agent, and a
@@ -4239,9 +4262,8 @@ func TestRunLogsRefusedDeclarationOfRejectedIssue(t *testing.T) {
 	// and everything it logged.
 	loggedRun := func(t *testing.T, f *fixture) (*model.RunSummary, string) {
 		t.Helper()
-		var logs strings.Builder
-		o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}},
-			func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+		logf, logs := captureLog()
+		o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4249,7 +4271,7 @@ func TestRunLogsRefusedDeclarationOfRejectedIssue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run() err = %v", err)
 		}
-		return sum, logs.String()
+		return sum, logs()
 	}
 	// The defect the reviewer describes while citing i1: another file, another
 	// line, a title that agrees with nothing already known -- so the declaration is
@@ -4965,9 +4987,8 @@ func TestFinalRoundAdvisoryReviewerFailureDoesNotFailTheRun(t *testing.T) {
 	f.respond(4, reviewResponse(t)) // closing fix pass 2: clean -> the fix half is done
 	// The report then runs on "bad" and fails; it consumes no mock response.
 
-	var logs strings.Builder
-	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}},
-		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4986,8 +5007,8 @@ func TestFinalRoundAdvisoryReviewerFailureDoesNotFailTheRun(t *testing.T) {
 	if !last.Final || len(last.ReviewErrors) != 1 {
 		t.Fatalf("last round should be the report pass carrying its reviewer error: %+v", last)
 	}
-	if !strings.Contains(logs.String(), "advisory reviewer(s) failed") {
-		t.Errorf("an incomplete report must be warned about, got logs:\n%s", logs.String())
+	if !strings.Contains(logs(), "advisory reviewer(s) failed") {
+		t.Errorf("an incomplete report must be warned about, got logs:\n%s", logs())
 	}
 }
 
@@ -6814,9 +6835,12 @@ func TestApplyRefutations(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &model.RoundRecord{Issues: []model.Issue{{ID: "i1", Severity: "high", Title: "t"}}}
-			by := map[string][]model.RefutePosition{}
-			if tc.positions != nil {
-				by["i1"] = tc.positions
+			by := map[string]map[string]model.RefutePosition{}
+			for n, p := range tc.positions {
+				if by["i1"] == nil {
+					by["i1"] = map[string]model.RefutePosition{}
+				}
+				by["i1"][fmt.Sprintf("agent%d", n)] = p // one position per agent
 			}
 			// Every case here has the whole panel responding; partial coverage is the
 			// subject of its own test below.
@@ -7013,9 +7037,8 @@ func TestPostIsSkippedWithAWarningWhenThereIsNoPullRequest(t *testing.T) {
 	f.cfg.Review.Post = true // directory mode: no PR to post to
 	f.respond(1, reviewResponse(t))
 
-	var logs strings.Builder
-	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}},
-		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml"}}, logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7026,11 +7049,11 @@ func TestPostIsSkippedWithAWarningWhenThereIsNoPullRequest(t *testing.T) {
 	if sum.ReviewPosted != "" {
 		t.Errorf("ReviewPosted = %q, want empty: nothing was posted", sum.ReviewPosted)
 	}
-	if !strings.Contains(logs.String(), "reviews no pull request") {
-		t.Errorf("the operator must be told why -post did nothing:\n%s", logs.String())
+	if !strings.Contains(logs(), "reviews no pull request") {
+		t.Errorf("the operator must be told why -post did nothing:\n%s", logs())
 	}
-	if !strings.Contains(logs.String(), sum.ReviewBody) {
-		t.Errorf("the warning must name where the review actually is:\n%s", logs.String())
+	if !strings.Contains(logs(), sum.ReviewBody) {
+		t.Errorf("the warning must name where the review actually is:\n%s", logs())
 	}
 }
 
@@ -7152,7 +7175,7 @@ func TestInlineCommentsCoverLocatedSurvivingFindingsOnly(t *testing.T) {
 	// Every finding's line is inside this diff, so the filter keeps what it should.
 	diff := "+++ b/a.go\n@@ -1,20 +1,20 @@\n" + strings.Repeat(" x\n", 20) +
 		"+++ b/b.go\n@@ -1,5 +1,5 @@\n" + strings.Repeat(" y\n", 5)
-	got := inlineComments(rec, diff)
+	got := inlineComments(rec, diff, "-- AI panel")
 	if len(got) != 1 {
 		t.Fatalf("got %d inline comments, want 1: %+v", len(got), got)
 	}
@@ -7182,9 +7205,8 @@ func TestInlineRejectionFallsBackToTheSummaryAlone(t *testing.T) {
 	}
 	defer func() { posterFor = prev }()
 
-	var logs strings.Builder
-	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}},
-		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7209,8 +7231,8 @@ func TestInlineRejectionFallsBackToTheSummaryAlone(t *testing.T) {
 	if sum.ReviewPosted == "" {
 		t.Error("the fallback post was not recorded as posted")
 	}
-	if !strings.Contains(logs.String(), "rejected the inline comments") {
-		t.Errorf("the operator must be told the anchors were dropped:\n%s", logs.String())
+	if !strings.Contains(logs(), "rejected the inline comments") {
+		t.Errorf("the operator must be told the anchors were dropped:\n%s", logs())
 	}
 }
 
@@ -7246,9 +7268,8 @@ func TestRepliesGoOnlyToConversationsTheCoderWasShown(t *testing.T) {
 	f.cfg.Target.Mode = config.ModePR
 	f.cfg.Target.PR = 7
 
-	var logs strings.Builder
-	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}},
-		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7269,8 +7290,8 @@ func TestRepliesGoOnlyToConversationsTheCoderWasShown(t *testing.T) {
 	if len(replied) != 1 || replied[0] != "100" {
 		t.Errorf("replied to %v, want only the thread the coder was shown", replied)
 	}
-	if !strings.Contains(logs.String(), "not shown") {
-		t.Errorf("the unknown thread must be reported:\n%s", logs.String())
+	if !strings.Contains(logs(), "not shown") {
+		t.Errorf("the unknown thread must be reported:\n%s", logs())
 	}
 }
 
@@ -7280,9 +7301,8 @@ func TestRepliesAreNotPostedWithoutTheFlag(t *testing.T) {
 	f.cfg.Target.Mode = config.ModePR
 	f.cfg.Target.PR = 7
 
-	var logs strings.Builder
-	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}},
-		func(format string, a ...any) { fmt.Fprintf(&logs, format+"\n", a...) })
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7297,8 +7317,8 @@ func TestRepliesAreNotPostedWithoutTheFlag(t *testing.T) {
 	if len(replied) != 0 {
 		t.Errorf("posted %d repl(y|ies) without -post", len(replied))
 	}
-	if !strings.Contains(logs.String(), "not posted") {
-		t.Errorf("the operator should be told the replies were withheld:\n%s", logs.String())
+	if !strings.Contains(logs(), "not posted") {
+		t.Errorf("the operator should be told the replies were withheld:\n%s", logs())
 	}
 }
 
@@ -7366,7 +7386,11 @@ func TestRefutationNeedsEveryResponderNotEveryPositionReceived(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &model.RoundRecord{Issues: []model.Issue{{ID: "i1", Severity: "high", Title: "t"}}}
-			applyRefutations(rec, map[string][]model.RefutePosition{"i1": tc.positions}, tc.responded, func(string, ...any) {})
+			by := map[string]model.RefutePosition{}
+			for n, p := range tc.positions {
+				by[fmt.Sprintf("agent%d", n)] = p
+			}
+			applyRefutations(rec, map[string]map[string]model.RefutePosition{"i1": by}, tc.responded, func(string, ...any) {})
 			if got := rec.Issues[0].Status; got != tc.wantStatus {
 				t.Errorf("Status = %q, want %q", got, tc.wantStatus)
 			}
@@ -7442,5 +7466,66 @@ func TestACancelledJudgeCannotReportItselfAsHavingFiltered(t *testing.T) {
 	o.decideVerdict(ctx, rec, sum, false)
 	if sum.Verdict.Outcome == model.VerdictApprove {
 		t.Errorf("verdict = approve after an unfiltered review: %v", sum.Verdict.Reasons)
+	}
+}
+
+// One reviewer must not be able to forge unanimity by repeating itself.
+//
+// Counting position RECORDS instead of distinct agents let a single
+// prompt-injected refuter emit four duplicate refutes for one finding: "every
+// responder refuted it" then held while the other three had never mentioned it,
+// deleting a genuine high before the verdict saw it. On a malicious pull request
+// that turns CHANGES_REQUESTED into APPROVE.
+func TestOneReviewerCannotForgeUnanimityByRepeatingItself(t *testing.T) {
+	rec := &model.RoundRecord{Issues: []model.Issue{{ID: "i1", Severity: "high", Title: "a genuine defect"}}}
+	// Four responders, but only ONE of them said anything about i1 -- four times.
+	forged := map[string]map[string]model.RefutePosition{"i1": {
+		"injected": {Issue: "i1", Position: model.PositionRefute, Evidence: "no"},
+	}}
+	applyRefutations(rec, forged, 4, func(string, ...any) {})
+	if rec.Issues[0].Status == model.VerdictRejected {
+		t.Error("a finding was deleted on one reviewer's word among four responders")
+	}
+	if !rec.Issues[0].Contested {
+		t.Error("the lone refutation should at least mark the finding contested")
+	}
+}
+
+// The aggregation keeps one position per agent, so duplicates cannot inflate the
+// count in the first place, and ids nobody was shown are refused.
+func TestRefutationAggregationKeepsOnePositionPerAgent(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock", "mock2")
+	f.refuteLens()
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "security", Severity: "high", File: "a.go", Line: 1, Title: "real defect"}))
+	f.respond(2, reviewResponse(t))
+	// mock refutes i1 four times over and invents an id; mock2 says nothing about it.
+	f.respond(3, `<review>{"positions":[
+		{"issue":"i1","position":"refute","evidence":"one"},
+		{"issue":"i1","position":"refute","evidence":"two"},
+		{"issue":"i1","position":"refute","evidence":"three"},
+		{"issue":"i99","position":"refute","evidence":"an id nobody was shown"}]}</review>`)
+	f.respond(4, `<review>{"positions":[]}</review>`)
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Rounds[0].Issues[0].Status == model.VerdictRejected {
+		t.Error("duplicate refutations deleted the finding")
+	}
+	if sum.Verdict.Outcome != model.VerdictChangesRequested {
+		t.Errorf("verdict = %q, want changes_requested: the high survived", sum.Verdict.Outcome)
+	}
+	for _, want := range []string{"more than one position", "was not in the set it was shown"} {
+		if !strings.Contains(logs(), want) {
+			t.Errorf("the log should report %q:\n%s", want, logs())
+		}
 	}
 }

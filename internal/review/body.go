@@ -183,7 +183,14 @@ func firstSentence(s string) string {
 // Same mdText funnel as the body: this text goes to the same place under the same
 // rules, and having a second path into a forge comment is how one of them ends up
 // without the protections.
-func RenderInline(it model.Issue) string {
+//
+// SIGNED, like the summary. An inline comment is read on its own, in the Files
+// tab, with no sight of the review it belongs to -- so without a signature it is
+// an unattributed assertion sitting on somebody's code, and the reader cannot tell
+// a machine's opinion from a colleague's. The signature is rendered by fixpoint
+// and appended after all agent text, for the same reason it is in the body: one
+// composed from a finding's prose could be forged by whatever wrote that prose.
+func RenderInline(it model.Issue, signature string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s** — %s\n\n", strings.ToUpper(mdText(it.Severity)), mdText(it.Title))
 	if d := strings.TrimSpace(it.Description); d != "" {
@@ -194,6 +201,9 @@ func RenderInline(it model.Issue) string {
 	}
 	if it.Contested {
 		b.WriteString("\n_The panel disagreed about this one._\n")
+	}
+	if signature != "" {
+		fmt.Fprintf(&b, "\n%s\n", signature)
 	}
 	return b.String()
 }
