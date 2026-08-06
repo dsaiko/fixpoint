@@ -21,6 +21,19 @@ import (
 // the agent names stay because which models looked is the substance of the claim.
 const DefaultSignature = "🤖 Reviewed by AI panel · {agents} · run {run}"
 
+// DefaultReplySignature signs an answer posted into an existing conversation.
+//
+// A separate template because a reply is not a review and must not claim to be
+// one: "Reviewed by" under a two-line answer to somebody's question overstates
+// what happened, and the {agents} it names is the one coder that wrote the reply,
+// not the panel. What it keeps is the part that matters -- the reader is being
+// answered by a machine, and the run id says which one.
+//
+// It is not optional. A reply arrives in a human's notifications looking exactly
+// like a colleague's, and an unattributed machine answer in a thread is the one
+// place in this tool where a reader can be misled about who they are talking to.
+const DefaultReplySignature = "🤖 Answered by AI panel · {agents} · run {run}"
+
 // Signature renders the operator's template.
 //
 // It is rendered by fixpoint from facts fixpoint holds, and it is placed OUTSIDE
@@ -35,6 +48,20 @@ func Signature(tmpl string, f SignatureFacts) string {
 	if strings.TrimSpace(tmpl) == "" {
 		tmpl = DefaultSignature
 	}
+	return renderSignature(tmpl, f)
+}
+
+// ReplySignature renders the operator's template for a conversation reply,
+// falling back to DefaultReplySignature. Same rendering, same sanitizing, same
+// single line -- only the default differs.
+func ReplySignature(tmpl string, f SignatureFacts) string {
+	if strings.TrimSpace(tmpl) == "" {
+		tmpl = DefaultReplySignature
+	}
+	return renderSignature(tmpl, f)
+}
+
+func renderSignature(tmpl string, f SignatureFacts) string {
 	agents := append([]string(nil), f.Agents...)
 	sort.Strings(agents)
 	r := strings.NewReplacer(

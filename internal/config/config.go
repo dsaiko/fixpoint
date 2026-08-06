@@ -1866,6 +1866,14 @@ type ReviewPolicy struct {
 	// region carrying agent text: a signature composed from a finding's prose could
 	// be forged by whatever wrote that prose.
 	Signature string `yaml:"signature"`
+	// ReplySignature signs an answer posted into an existing conversation, with the
+	// same placeholders. Empty uses review.DefaultReplySignature.
+	//
+	// Its own key because a reply is not a review: the review signature says
+	// "Reviewed by", which is a claim a two-line answer in a thread does not
+	// support, and {agents} here is the single coder that wrote the reply rather
+	// than the panel that reviewed.
+	ReplySignature string `yaml:"reply_signature"`
 	// Refute names the prompt for the refutation round, or is empty to skip it.
 	//
 	// One key rather than a bool plus a name, because the two could disagree and

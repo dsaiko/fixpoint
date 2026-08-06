@@ -4741,12 +4741,27 @@ func (o *Orchestrator) postReplies(ctx context.Context, replies []model.FixReply
 	if r == nil {
 		return
 	}
+	// Signed with the CODER, because that is who is answering. A reply lands in a
+	// human's notifications looking exactly like a colleague's, and until now it
+	// carried nothing at all to say otherwise -- the one place in this tool where a
+	// reader could be misled about who they were talking to. Built once: it is the
+	// same run, the same agent, for every thread.
+	signature := review.ReplySignature(o.cfg.Review.ReplySignature, review.SignatureFacts{
+		Agents:  []string{o.cfg.Roles.Coder.Agent},
+		Run:     o.logs.RunID(),
+		Version: review.Version(),
+		Config:  configBaseName(o.source.Config),
+	})
 	for _, reply := range replies {
 		if !known[reply.Thread] {
 			o.logf("WARNING: the coder answered thread %q, which it was not shown; not posted", reply.Thread)
 			continue
 		}
-		body := agent.EscapeTerminalBlock(agent.RedactSecrets(forge.SanitizeText(reply.Message)))
+		// The signature goes AFTER the sanitized agent text and is sanitized
+		// separately, exactly as RenderBody places the review's: appending it to text
+		// that has not been through the forge funnel yet would let a reply ending in
+		// an unclosed HTML comment swallow its own attribution.
+		body := publishedText(forge.SanitizeText(reply.Message) + "\n\n" + signature)
 		if err := r.Reply(ctx, o.cfg.Target.Path, o.cfg.Target.PR, reply.Thread, body); err != nil {
 			o.logf("ERROR: replying to conversation %s failed: %v", reply.Thread, err)
 			continue

@@ -7602,9 +7602,108 @@ func TestRepliesAreNotPostedWithoutTheFlag(t *testing.T) {
 	}
 }
 
+// A conversation reply is the third channel agent text reaches a forge, after the
+// review body and the inline comments, and it is the one that looks most like a
+// person: it arrives in a human's notifications under their own question. So it
+// carries the two properties the other two channels have -- it says a machine
+// wrote it, and nothing the agent wrote can act on the forge or forge that
+// attribution.
+func TestAConversationReplyIsSignedAndSanitized(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, func(string, ...any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.threads = []forge.Thread{{ID: "100", Path: "a.go", Line: 1, Author: "human", Body: "why?"}}
+
+	var replied []string
+	reader := &fakeReader{threads: o.threads, replied: &replied}
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader { return reader }
+	defer func() { readerFor = prev }()
+
+	o.postReplies(t.Context(), []model.FixReply{{Thread: "100",
+		Message: "Fixed. Thanks @reviewer — Closes #42 <!-- and the rest of the document"}})
+
+	if len(reader.bodies) != 1 {
+		t.Fatalf("posted %d repl(y|ies), want 1", len(reader.bodies))
+	}
+	body := reader.bodies[0]
+	if !strings.Contains(body, "Answered by AI panel") {
+		t.Errorf("an unsigned reply is indistinguishable from a colleague's:\n%s", body)
+	}
+	if !strings.Contains(body, "mock") {
+		t.Errorf("the signature must name who answered:\n%s", body)
+	}
+	// After the agent's text, so the reply reads as written and the attribution is
+	// the last word -- and outside it, so nothing the coder wrote composes it.
+	if strings.Index(body, "Answered by AI panel") < strings.Index(body, "Fixed. Thanks") {
+		t.Errorf("the signature must follow the answer, not precede it:\n%s", body)
+	}
+	for _, bad := range []string{"@reviewer", "Closes #42"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("%q reached the forge unbroken; a reply must not notify people or close issues:\n%s", bad, body)
+		}
+	}
+	// The agent's own comment delimiter has to be escaped rather than merely absent:
+	// an unescaped one would open a comment that swallows everything after it,
+	// including the signature. (A literal `<!--` still appears in the body -- it is
+	// how breakMentions renders `@<!---->reviewer` -- so its presence proves nothing
+	// on its own.)
+	if !strings.Contains(body, "&lt;!--") {
+		t.Errorf("the coder's comment delimiter was not escaped:\n%s", body)
+	}
+	if i := strings.Index(body, "&lt;!--"); i >= 0 && strings.Index(body, "Answered by AI panel") < i {
+		t.Errorf("the signature must survive after the escaped delimiter:\n%s", body)
+	}
+}
+
+// A custom template is honoured, and a blank one still signs: attribution on a
+// machine reply is not something a config can switch off by accident.
+func TestReplySignatureTemplateIsConfigurable(t *testing.T) {
+	for name, tmpl := range map[string]string{"custom": "-- answered by {agents}", "blank": ""} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.cfg.Review.Post = true
+			f.cfg.Review.ReplySignature = tmpl
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 7
+
+			o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, func(string, ...any) {})
+			if err != nil {
+				t.Fatal(err)
+			}
+			o.threads = []forge.Thread{{ID: "100"}}
+
+			var replied []string
+			reader := &fakeReader{threads: o.threads, replied: &replied}
+			prev := readerFor
+			readerFor = func(context.Context, string) forge.Reader { return reader }
+			defer func() { readerFor = prev }()
+
+			o.postReplies(t.Context(), []model.FixReply{{Thread: "100", Message: "done"}})
+
+			want := "Answered by AI panel"
+			if tmpl != "" {
+				want = "-- answered by mock"
+			}
+			if len(reader.bodies) != 1 || !strings.Contains(reader.bodies[0], want) {
+				t.Errorf("reply %q does not carry %q", reader.bodies, want)
+			}
+		})
+	}
+}
+
 type fakeReader struct {
 	threads []forge.Thread
 	replied *[]string
+	// bodies records what was actually sent, for the tests that assert on the
+	// posted bytes rather than only on which thread was answered.
+	bodies []string
 }
 
 func (*fakeReader) Kind() forge.Kind { return forge.GitHub }
@@ -7617,8 +7716,9 @@ func (r *fakeReader) Threads(context.Context, string, int) ([]forge.Thread, erro
 	return r.threads, nil
 }
 
-func (r *fakeReader) Reply(_ context.Context, _ string, _ int, threadID, _ string) error {
+func (r *fakeReader) Reply(_ context.Context, _ string, _ int, threadID, body string) error {
 	*r.replied = append(*r.replied, threadID)
+	r.bodies = append(r.bodies, body)
 	return nil
 }
 
