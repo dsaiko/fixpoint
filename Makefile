@@ -117,9 +117,13 @@ review-branch: build
 ##   make fix-pr PR=170
 ## The most dangerous target here: it edits a tree holding externally-authored
 ## code, so it asserts -allow-untrusted-fix. Run review-pr first and read it.
+## It also asserts -trusted-target, which is a different claim: the target path
+## defaults to this project root, so the bundle under config/ is project-supplied
+## policy and the run is refused without it. That assertion is about OUR files,
+## not about the pull request's diff, which -allow-untrusted-fix covers.
 fix-pr: build test vet
 	@test -n "$(PR)" || { echo "usage: make fix-pr PR=<number>"; exit 2; }
-	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix
+	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-target
 
 ## review-pr: review a pull request; pass the number as PR=<n>
 ##   make review-pr PR=170
