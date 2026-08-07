@@ -7506,6 +7506,69 @@ func TestThePostCarriesTheCommitThatWasReviewed(t *testing.T) {
 	}
 }
 
+// Which forge event a verdict is published as is the most consequential mapping
+// the posting path makes: it decides whether fixpoint spends an approval on
+// somebody's pull request, formally blocks it, or only leaves the findings there.
+// Nothing pinned it, so swapping the two cases -- or letting an inconclusive panel
+// approve -- passed the whole suite.
+//
+// Asserted through postReview rather than on forge.EventFor alone, so a caller
+// that stops using the shared mapping is caught here and not only where it was
+// written. -post-run's replay in cmd/fixpoint takes its event from the same
+// function; it has no poster seam yet, so it cannot be driven the same way.
+func TestTheVerdictDecidesWhichForgeEventIsPosted(t *testing.T) {
+	for _, tc := range []struct {
+		outcome     string
+		postVerdict bool
+		want        forge.Event
+	}{
+		{model.VerdictApprove, true, forge.EventApprove},
+		{model.VerdictChangesRequested, true, forge.EventRequestChanges},
+		{model.VerdictInconclusive, true, forge.Comment},
+		{model.VerdictApprove, false, forge.Comment},
+		{model.VerdictChangesRequested, false, forge.Comment},
+		{model.VerdictInconclusive, false, forge.Comment},
+	} {
+		name := tc.outcome
+		if !tc.postVerdict {
+			name += " without -post-verdict"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			f.cfg.Review.Post = true
+			f.cfg.Review.PostVerdict = tc.postVerdict
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 7
+
+			var posted string
+			var event forge.Event
+			prev := posterFor
+			posterFor = func(context.Context, string) forge.Poster {
+				return fakePoster{body: &posted, event: &event}
+			}
+			defer func() { posterFor = prev }()
+
+			sum := &model.RunSummary{
+				ReviewedHead: strings.Repeat("a", 40),
+				Verdict:      &model.ReviewVerdict{Outcome: tc.outcome},
+			}
+			if err := f.orchestrator().postReview(t.Context(), sum, "the review"); err != nil {
+				t.Fatal(err)
+			}
+			if posted == "" {
+				t.Fatal("nothing was posted")
+			}
+			if event != tc.want {
+				t.Errorf("%s posted as %q, want %q", tc.outcome, event, tc.want)
+			}
+			if sum.ReviewPosted != string(tc.want) {
+				t.Errorf("ReviewPosted = %q, want %q -- the summary must record what was published", sum.ReviewPosted, tc.want)
+			}
+		})
+	}
+}
+
 // The reviewed commit is recorded in pr mode, where the checked-out HEAD is the
 // pull request's head. A directory run has no pull request to bind to, and
 // recording its HEAD anyway would put a commit in the summary that no posting path

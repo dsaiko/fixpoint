@@ -72,15 +72,10 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		logf("post-run: no GitHub or GitLab remote recognized at %s", sum.Path)
 		return 1
 	}
-	event := forge.Comment
-	if postVerdict {
-		switch sum.Verdict.Outcome {
-		case model.VerdictApprove:
-			event = forge.EventApprove
-		case model.VerdictChangesRequested:
-			event = forge.EventRequestChanges
-		}
-	}
+	// The same mapping the run itself would have used, from the same function --
+	// a replay that approved what the live path would have commented on would be a
+	// different review from the one the operator inspected.
+	event := forge.EventFor(sum.Verdict.Outcome, postVerdict)
 	inline := make([]forge.InlineComment, 0, len(sum.ReviewInline))
 	for _, a := range sum.ReviewInline {
 		inline = append(inline, forge.InlineComment{Path: a.Path, Line: a.Line, Body: a.Body})

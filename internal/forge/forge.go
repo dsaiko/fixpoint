@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
+	"github.com/dsaiko/fixpoint/internal/model"
 )
 
 // Kind is which forge a remote points at.
@@ -351,6 +352,31 @@ const (
 	// act as much as a technical one.
 	EventRequestChanges Event = "request_changes"
 )
+
+// EventFor is the single place a verdict becomes a forge event.
+//
+// It lives here, and takes the outcome as the string the summary records, so the
+// two callers that publish a review -- Orchestrator.postReview and the -post-run
+// replay in cmd/fixpoint -- cannot drift apart. They used to hold a copy each of
+// the same switch, and this is the most consequential mapping in the program: it
+// decides whether fixpoint approves somebody's pull request or formally blocks it.
+//
+// Without -post-verdict every outcome is a Comment: the findings become visible
+// and nothing is spent. An INCONCLUSIVE verdict is a Comment under every flag too
+// -- there is no forge event for "the review did not finish", and both that exist
+// would be lies about a panel that never reached quorum.
+func EventFor(outcome string, postVerdict bool) Event {
+	if !postVerdict {
+		return Comment
+	}
+	switch outcome {
+	case model.VerdictApprove:
+		return EventApprove
+	case model.VerdictChangesRequested:
+		return EventRequestChanges
+	}
+	return Comment
+}
 
 // InlineComment anchors one finding to the line it is about.
 //

@@ -4892,18 +4892,18 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 		// is no forge: Prepare already reached the pull request to check it out.
 		return fmt.Errorf("-post was given but no GitHub or GitLab remote was recognized; the review is in %s", sum.ReviewBody)
 	}
-	event := forge.Comment
-	if o.cfg.Review.PostVerdict {
-		switch sum.Verdict.Outcome {
-		case model.VerdictApprove:
-			event = forge.EventApprove
-		case model.VerdictChangesRequested:
-			event = forge.EventRequestChanges
-		}
-		// An INCONCLUSIVE verdict stays a comment under every flag. There is no forge
-		// event for "the review did not finish", and the two that exist would both be
-		// lies about a panel that never reached quorum.
+	// forge.EventFor, not a switch here: -post-run publishes the same verdicts from
+	// a finished run, and two hand-copied mappings of "which verdict approves
+	// somebody's pull request" is one edit away from disagreeing.
+	//
+	// A summary with no verdict posts as a comment. It should not happen -- the
+	// verdict is recorded before this is reached -- but the fallback a missing one
+	// deserves is the one that spends nothing.
+	outcome := ""
+	if sum.Verdict != nil {
+		outcome = sum.Verdict.Outcome
 	}
+	event := forge.EventFor(outcome, o.cfg.Review.PostVerdict)
 	// The anchors RECORDED for this review, not a second computation of them.
 	// writeReviewBody already stored them, and recomputing here would let the posted
 	// review and the replayable one drift apart over the same run.
