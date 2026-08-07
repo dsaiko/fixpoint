@@ -4376,6 +4376,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	// be part of what happens to a finding.
 	if ctx.Err() != nil {
 		o.logf("refutation: interrupted before it could run; every finding stands")
+		o.endPhase("REFUTE  interrupted; every finding stands")
 		return
 	}
 
@@ -4431,6 +4432,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		// Nobody judged anything. Dropping findings on the strength of an empty round
 		// would be the worst possible reading of silence.
 		o.logf("refutation: no reviewer returned a usable position; every finding stands")
+		o.endPhase("REFUTE  no usable position returned; every finding stands")
 		return
 	}
 	dropped, contested := applyRefutations(rec, byIssue, responded, len(panel), o.logf)
