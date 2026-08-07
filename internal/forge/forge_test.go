@@ -870,6 +870,14 @@ func TestThreadsAreTheUnresolvedConversationsThatStillHaveARoot(t *testing.T) {
 			t.Errorf("the graphql call does not carry %q: %s", field, query())
 		}
 	}
+	// The two String! variables go through gh's untyped -f. Under -F, a checkout of a
+	// repo named 2048 or null becomes a JSON number or JSON null, the server rejects
+	// the page against String!, and the pull request reads as having no conversations.
+	for _, typed := range []string{"-f owner=", "-f repo="} {
+		if !strings.Contains(query(), typed) {
+			t.Errorf("the graphql call does not pass %q untyped: %s", typed, query())
+		}
+	}
 }
 
 // A conversation longer than one page of comments, whose last word is this tool's.

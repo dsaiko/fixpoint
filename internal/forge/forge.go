@@ -1354,8 +1354,12 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 	// cannot spin forever. 100 pages is 10,000 conversations -- far past any real
 	// pull request, and the cap is reported rather than silently applied.
 	for range 100 {
+		// owner and repo go through -f, not -F: gh's typed flag would turn a repo
+		// named 2048 into a JSON number and null into JSON null, and the query
+		// declares both as String!, so the server would reject the whole page.
+		// Only pr is genuinely Int!.
 		args := []string{"api", "graphql", "-f", "query=" + threadQuery,
-			"-F", "owner=" + owner, "-F", "repo=" + repo, fmt.Sprintf("-Fpr=%d", pr)}
+			"-f", "owner=" + owner, "-f", "repo=" + repo, fmt.Sprintf("-Fpr=%d", pr)}
 		if cursor != "" {
 			args = append(args, "-f", "after="+cursor)
 		}
