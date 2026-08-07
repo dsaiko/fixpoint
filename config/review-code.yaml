@@ -9,8 +9,6 @@ description: Review a whole project once, no edits (-trusted-target if it ships 
 extends: defaults
 
 roles:
-  # Still required even though it never runs: validation checks the whole
-  # configuration up front rather than leaving a review-only run half-checked.
   # The judge: the last filter before a review is published, and read-only by
   # design -- a review- config must never invoke something that can edit.
   #
