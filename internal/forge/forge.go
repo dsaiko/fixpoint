@@ -222,22 +222,24 @@ func run(ctx context.Context, dir string, name string, args ...string) (string, 
 // sensitive to place on a command line. Supervised for the same reason as run --
 // and the stdin feed needs it as much as the output does, since exec's stdin copy
 // is a goroutine cmd.Wait joins just the same.
-func runStdin(ctx context.Context, dir, stdin, name string, args ...string) error {
+//
+// stdout is returned rather than discarded: these calls are posts, and most callers
+// read the outcome from the error alone, but a create answers with the identity of
+// what it created -- and a review's id is the only handle that can withdraw it.
+func runStdin(ctx context.Context, dir, stdin, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
-	var stderr strings.Builder
-	// stdout is discarded, as it was when exec sent it to /dev/null: these calls are
-	// posts, and every caller reads the outcome from the error alone.
-	if _, err := agent.Supervise(ctx, cmd, nil, &stderr); err != nil {
+	var stdout, stderr strings.Builder
+	if _, err := agent.Supervise(ctx, cmd, &stdout, &stderr); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, firstLine(msg))
+			return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, firstLine(msg))
 		}
-		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+		return "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
-	return nil
+	return stdout.String(), nil
 }
 
 func firstLine(s string) string {
@@ -575,7 +577,8 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 	if err := requireHead(pr, head, cur); err != nil {
 		return "", err
 	}
-	if err := githubSubmitReview(ctx, dir, pr, head, body, event, inline); err != nil {
+	id, url, err := githubSubmitReview(ctx, dir, pr, head, body, event, inline)
+	if err != nil {
 		// Only a submission that CARRIED anchors can have been rejected for them.
 		// Without any, the same 422 is about the review itself and a body-only retry
 		// would just fail again -- so it propagates like every other failure.
@@ -590,13 +593,17 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 		// see anchorError for why a second submission is only safe there.
 		return "", err
 	}
-	// gh prints nothing useful on success, so the URL is read back rather than
-	// parsed out of its output.
-	url := latestReviewURL(ctx, dir, pr)
+	// The submission answered with the review's own permalink; the pull request's URL
+	// is the fallback for a response that carried none, since a caller that has to
+	// name what was published is better served by a link to the wrong granularity
+	// than by nothing.
+	if url == "" {
+		url = latestReviewURL(ctx, dir, pr)
+	}
 	// Published either way -- the URL is returned even when the check below refuses
 	// to call it a clean approval, because a caller that wants to name what has to be
 	// dismissed needs it.
-	return url, confirmApproval(ctx, dir, pr, head, event, url)
+	return url, confirmApproval(ctx, dir, pr, head, event, id, url)
 }
 
 // confirmApproval re-reads the head AFTER an approval has been submitted, and
@@ -623,7 +630,7 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 // GitLab's unapprove does: neither can clear code nobody read. Alarming on those
 // would spend an operator's attention -- and an exit code -- on a post that cost
 // nothing.
-func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, event Event, url string) error {
+func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, event Event, id, url string) error {
 	if event != EventApprove {
 		return nil
 	}
@@ -642,7 +649,7 @@ func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, e
 		// exists to prevent, arriving through the window between that check and this
 		// submission. Dismissal is the only thing that actually removes it, and it is
 		// ours to dismiss: this run posted it seconds ago.
-		if derr := githubDismissReview(ctx, dir, pr, url, reviewed, cur); derr != nil {
+		if derr := githubDismissReview(ctx, dir, pr, id, url, reviewed, cur); derr != nil {
 			return fmt.Errorf("the approval was PUBLISHED on #%d%s, the head moved while it was in flight (reviewed %s, now %s), AND withdrawing it failed (%w) -- dismiss it by hand before anyone merges",
 				pr, where, shortSHA(reviewed), shortSHA(cur), derr)
 		}
@@ -654,16 +661,19 @@ func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, e
 
 // githubDismissReview withdraws a review this run just submitted.
 //
-// The id comes from the URL the submission returned, which ends in
-// "#pullrequestreview-<id>": asking the API which review is ours would race with
-// anything else posting, and this is the one whose identity we already hold.
+// The id is the one the create response named, which is the only handle that
+// identifies OUR review: asking the API which review is ours would race with
+// anything else posting. A permalink ending in "#pullrequestreview-<id>" carries
+// the same id, so it stands in when the response could not be read but the URL can.
 //
 // A dismissal needs a message and it is shown to everyone reading the pull
 // request, so it says what happened rather than "dismissed".
-func githubDismissReview(ctx context.Context, dir string, pr int, url, reviewed, cur string) error {
-	id := reviewIDFromURL(url)
+func githubDismissReview(ctx context.Context, dir string, pr int, id, url, reviewed, cur string) error {
 	if id == "" {
-		return fmt.Errorf("no review id in %q", url)
+		id = reviewIDFromURL(url)
+	}
+	if id == "" {
+		return fmt.Errorf("the submission named no review id (%q)", url)
 	}
 	_, err := run(ctx, dir, "gh", "api", "--method", "PUT",
 		fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews/%s/dismissals", pr, id),
@@ -702,7 +712,15 @@ func reviewIDFromURL(url string) string {
 // afterwards. requireHead has already established it is the current head; this
 // closes the gap between that read and this submission. It is why an empty inline
 // slice comes through here too rather than through the CLI's own review verb.
-func githubSubmitReview(ctx context.Context, dir string, pr int, head, body string, event Event, inline []InlineComment) error {
+//
+// The response carries the created review's id and permalink, and they are read out
+// of it because there is nowhere else to get them: asking the API afterwards which
+// review is ours races with anything else posting. The id is the handle
+// githubDismissReview needs to withdraw an approval that turns out to have landed on
+// a moved head. A response that does not parse is NOT a failed submission -- the
+// review is on the pull request either way -- so it yields empty strings and the
+// caller reports what it cannot do rather than a post that did not happen.
+func githubSubmitReview(ctx context.Context, dir string, pr int, head, body string, event Event, inline []InlineComment) (id, url string, err error) {
 	type ghComment struct {
 		Path string `json:"path"`
 		Line int    `json:"line"`
@@ -725,10 +743,34 @@ func githubSubmitReview(ctx context.Context, dir string, pr int, head, body stri
 	}
 	doc, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	return runStdin(ctx, dir, string(doc), "gh", "api", "--method", "POST",
+	out, err := runStdin(ctx, dir, string(doc), "gh", "api", "--method", "POST",
 		fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews", pr), "--input", "-")
+	if err != nil {
+		return "", "", err
+	}
+	id, url = createdReview(out)
+	return id, url, nil
+}
+
+// createdReview reads the identity of the review out of a create response. Either
+// half may be missing -- an older gh that prints nothing, a body that does not parse
+// -- and neither absence is a failed submission, so this reports what it found and
+// never an error: the review is on the pull request regardless, and saying otherwise
+// would report a published review as a failed post.
+func createdReview(out string) (id, url string) {
+	var created struct {
+		ID      int64  `json:"id"`
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		return "", ""
+	}
+	if created.ID != 0 {
+		id = strconv.FormatInt(created.ID, 10)
+	}
+	return id, strings.TrimSpace(created.HTMLURL)
 }
 
 // githubHead reads the commit a pull request currently proposes.
@@ -757,10 +799,13 @@ func githubEvent(e Event) string {
 	return "COMMENT"
 }
 
-// latestReviewURL best-effort resolves a link to what was just posted. A missing
-// URL is cosmetic -- the review is already published -- so every failure here
-// yields an empty string rather than an error that would misreport a successful
-// post as a failed one.
+// latestReviewURL best-effort resolves a link to the pull request a review was just
+// posted on. DISPLAY ONLY, and only when the submission's own response carried no
+// permalink: it is `gh pr view --json url`, so it answers with the pull request's
+// URL and no "#pullrequestreview-<id>" fragment -- nothing that can identify which
+// review is ours. A missing URL is cosmetic -- the review is already published -- so
+// every failure here yields an empty string rather than an error that would
+// misreport a successful post as a failed one.
 func latestReviewURL(ctx context.Context, dir string, pr int) string {
 	out, err := run(ctx, dir, "gh", "pr", "view", strconv.Itoa(pr), "--json", "url")
 	if err != nil {
@@ -843,8 +888,9 @@ func gitlabNote(ctx context.Context, dir string, mr int, body string) error {
 	if err != nil {
 		return err
 	}
-	return runStdin(ctx, dir, string(payload), "glab", "api", "--method", "POST",
+	_, err = runStdin(ctx, dir, string(payload), "glab", "api", "--method", "POST",
 		fmt.Sprintf("projects/:id/merge_requests/%d/notes", mr), "--input", "-")
+	return err
 }
 
 // gitlabApprove approves a merge request AND binds the approval to the commit that
@@ -872,8 +918,9 @@ func gitlabApprove(ctx context.Context, dir string, mr int, head string) error {
 	if err != nil {
 		return err
 	}
-	return runStdin(ctx, dir, string(payload), "glab", "api", "--method", "POST",
+	_, err = runStdin(ctx, dir, string(payload), "glab", "api", "--method", "POST",
 		fmt.Sprintf("projects/:id/merge_requests/%d/approve", mr), "--input", "-")
+	return err
 }
 
 // gitlabHead reads the commit a merge request currently proposes. diff_refs is
@@ -1120,8 +1167,9 @@ func (githubProvider) Reply(ctx context.Context, dir string, pr int, threadID, b
 	if err != nil {
 		return err
 	}
-	return runStdin(ctx, dir, string(payload), "gh", "api", "--method", "POST",
+	_, err = runStdin(ctx, dir, string(payload), "gh", "api", "--method", "POST",
 		fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/comments/%d/replies", pr, id), "--input", "-")
+	return err
 }
 
 // githubSlug resolves owner and repo for the API calls that cannot use gh's own

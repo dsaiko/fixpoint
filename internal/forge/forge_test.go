@@ -393,9 +393,10 @@ func stubGHMovingHead(t *testing.T, before, after string) (dir string, payload f
 //
 // Reporting it is not enough -- an approval nobody can see the report of still
 // satisfies branch protection over unreviewed code -- so it is WITHDRAWN. This case
-// is the one where withdrawal is impossible: the stub returns a URL carrying no
-// review id, so there is no handle to dismiss, and the operator has to be told to
-// do it by hand rather than left believing it was handled.
+// is the one where withdrawal is impossible: the stub's submission answers with
+// nothing, so no review id was ever learned and there is no handle to dismiss. The
+// operator has to be told to do it by hand rather than left believing it was
+// handled.
 func TestAnApprovalThatLandedOnAMovedHeadIsNotReportedAsSuccess(t *testing.T) {
 	const reviewed = "0123456789abcdef0123456789abcdef01234567"
 	dir, payload := stubGHMovingHead(t, reviewed, "fedcba9876543210fedcba9876543210fedcba98")
@@ -419,6 +420,76 @@ func TestAnApprovalThatLandedOnAMovedHeadIsNotReportedAsSuccess(t *testing.T) {
 	// A second submission here would put two reviews on somebody's pull request.
 	if AnchorRejection(err) {
 		t.Errorf("a published-then-moved approval must not look like an anchor rejection: %v", err)
+	}
+}
+
+// stubGHDismissingReview moves the head between the two reads like stubGHMovingHead,
+// but its submission answers the way the reviews API really does -- with the created
+// review's id and permalink -- so the dismissal has a handle to work with. It records
+// the argument list of any PUT, which is where the withdrawal goes.
+func stubGHDismissingReview(t *testing.T, before, after string) (dir string, dismissal func() string) {
+	t.Helper()
+	bin := t.TempDir()
+	seen := filepath.Join(bin, "head-read")
+	put := filepath.Join(bin, "put.argv")
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"*'--json headRefOid'*) if [ -f " + seen + " ]; then printf '{\"headRefOid\":\"" + after + "\"}'; " +
+		"else : > " + seen + "; printf '{\"headRefOid\":\"" + before + "\"}'; fi ;;\n" +
+		"*'--json url'*) printf '{\"url\":\"https://example.test/pr/7\"}' ;;\n" +
+		"*'api --method POST'*) cat > /dev/null; " +
+		"printf '{\"id\":2938471,\"html_url\":\"https://example.test/pr/7#pullrequestreview-2938471\"}' ;;\n" +
+		"*'--method PUT'*) printf '%s' \"$*\" > " + put + " ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return t.TempDir(), func() string {
+		raw, err := os.ReadFile(put)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+}
+
+// And when the id IS known -- which is the normal case, since the create response
+// carries it -- the approval is actually taken off the pull request. Nothing else
+// removes it: the report alone leaves a branch-protection approval standing over a
+// commit no reviewer read. The id has to come from the submission's own response;
+// the pull request URL that `gh pr view` returns carries no review id at all, so a
+// dismissal derived from it could never fire.
+func TestAnApprovalOnAMovedHeadIsWithdrawn(t *testing.T) {
+	const reviewed = "0123456789abcdef0123456789abcdef01234567"
+	dir, dismissal := stubGHDismissingReview(t, reviewed, "fedcba9876543210fedcba9876543210fedcba98")
+
+	url, err := (githubProvider{}).PostReview(t.Context(), dir, 7, reviewed, "the review", EventApprove, nil)
+	if err == nil {
+		t.Fatal("PostReview() = nil; an approval on a head nobody reviewed was reported as a clean post")
+	}
+	got := dismissal()
+	if got == "" {
+		t.Fatal("no dismissal was attempted -- the approval is still on the pull request")
+	}
+	if !strings.Contains(got, "pulls/7/reviews/2938471/dismissals") {
+		t.Errorf("the dismissal did not name the review that was just posted: %s", got)
+	}
+	if !strings.Contains(got, "event=DISMISS") {
+		t.Errorf("the dismissal did not ask for a dismissal: %s", got)
+	}
+	// The operator still has to know: the approval was visible for as long as it took.
+	for _, want := range []string{"the head moved", "withdrawn"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the report does not say what happened (%q): %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "by hand") {
+		t.Errorf("the operator was sent to do by hand what was already done: %v", err)
+	}
+	// The permalink the submission answered with, not the pull request's own URL:
+	// it is what names the review that was published.
+	if want := "https://example.test/pr/7#pullrequestreview-2938471"; url != want {
+		t.Errorf("URL = %q, want the review permalink %q", url, want)
 	}
 }
 
