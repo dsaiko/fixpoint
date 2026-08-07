@@ -92,7 +92,7 @@ var (
 // same rule: the break lands on the @ itself, so everything after it is inert.
 func breakMentions(s string) string { return mention.ReplaceAllString(s, "$1@<!---->$2") }
 
-// codeSpan renders one agent-authored string inside a markdown code span.
+// CodeSpan renders one agent-authored string inside a markdown code span.
 //
 // SanitizeText on its own is not enough here, because the DELIMITERS are part of
 // the attack surface: a backtick in the string closes the span early, and
@@ -103,7 +103,10 @@ func breakMentions(s string) string { return mention.ReplaceAllString(s, "$1@<!-
 // breakMentions keeps the name it neutralizes: the string is evidence -- a file
 // path a finding is about -- and a review that silently renames the file it points
 // at misquotes itself.
-func codeSpan(s string) string {
+//
+// Exported because the review body puts a path in a span too (review.mdCode). Two
+// hand-rolled escapes for one rule is how one of them ends up without it.
+func CodeSpan(s string) string {
 	return strings.ReplaceAll(SanitizeText(s), "`", "&#96;")
 }
 

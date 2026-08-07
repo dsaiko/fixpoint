@@ -131,6 +131,39 @@ func TestBodyStripsControlCharactersFromAgentText(t *testing.T) {
 	}
 }
 
+// The location is the one agent-authored string the body renders inside a code
+// span, and the span's delimiter is part of the attack surface: a backtick in a
+// reported path would close it early and turn the rest of the line into live
+// markdown in a review posted under the operator's identity.
+func TestBodyEscapesBackticksInTheReportedPath(t *testing.T) {
+	body := bodyFor(t, Input{
+		Issues: []model.Issue{{
+			ID: "i1", Severity: "high", Line: 7,
+			File:  "pkg/x.go`<img src=x onerror=alert(1)>`",
+			Title: "real finding",
+		}},
+		Quorum: full(2),
+	}, nil)
+	var loc string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "**HIGH**") {
+			loc = line
+		}
+	}
+	if loc == "" {
+		t.Fatalf("the finding lost its location line:\n%s", body)
+	}
+	// Exactly the two delimiters the renderer wrote: any more and the path escaped.
+	if n := strings.Count(loc, "`"); n != 2 {
+		t.Errorf("the path broke out of its code span (%d backticks in %q):\n%s", n, loc, body)
+	}
+	// Escaped, not dropped: the review still quotes the path the finding named, and
+	// the line it named survives on the end of it.
+	if !strings.Contains(loc, "pkg/x.go&#96;") || !strings.HasSuffix(loc, ":7`") {
+		t.Errorf("the reported location was lost from %q:\n%s", loc, body)
+	}
+}
+
 // Corroboration is rare enough -- under 4% of findings across 19 measured runs --
 // that when it happens it is worth saying.
 func TestBodyNotesWhenMoreThanOneReviewerFoundIt(t *testing.T) {

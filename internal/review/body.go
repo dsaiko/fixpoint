@@ -131,7 +131,11 @@ func split(issues []model.Issue, d Decision) (blocking, other []model.Issue) {
 }
 
 func writeIssue(b *strings.Builder, it model.Issue) {
-	loc := mdText(it.File)
+	// mdCode, not mdText: the location is rendered inside a code span two lines down,
+	// and mdText deliberately leaves backticks alone. A reported path carrying one
+	// would close that span early, and everything after it becomes live markdown in a
+	// review posted under the operator's identity.
+	loc := mdCode(it.File)
 	if it.Line > 0 {
 		loc = fmt.Sprintf("%s:%d", loc, it.Line)
 	}
@@ -168,6 +172,11 @@ func writeIssue(b *strings.Builder, it model.Issue) {
 // decide whether posting is safe, so it has to be byte-for-byte what would be
 // posted. Sanitizing on the way out instead would make that inspection worthless.
 func mdText(s string) string { return forge.SanitizeText(s) }
+
+// mdCode is the same funnel for a string that lands inside a code span, where the
+// span's own delimiter is part of the attack surface. It is forge.CodeSpan rather
+// than a local escape so this and the GitLab inline-note path cannot drift.
+func mdCode(s string) string { return forge.CodeSpan(s) }
 
 func mdTexts(in []string) []string {
 	out := make([]string, 0, len(in))
