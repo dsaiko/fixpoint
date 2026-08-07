@@ -133,7 +133,8 @@ review-branch: build
 ## triage still runs and the answers are written into the run directory, but
 ## nothing reaches the pull request. Replies go out under your identity, so
 ## sending them is opt-in here for the same reason -post is a flag and not a
-## config key.
+## config key. POST must be exactly 1 or unset; any other value is refused
+## rather than read as true, so an inherited or mistyped POST cannot post.
 ## The most dangerous target here: it edits a tree holding externally-authored
 ## code, so it asserts -allow-untrusted-fix -- the flag that accepts the PR
 ## author's content, and the one the checkout guards are about. Run review-pr
@@ -143,7 +144,8 @@ review-branch: build
 ## read before the checkout replaced the tree.
 fix-pr: build test vet
 	@test -n "$(PR)" || { echo "usage: make fix-pr PR=<number> [POST=1]"; exit 2; }
-	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-bundle $(if $(POST),-post)
+	@test -z "$(POST)" || test "$(POST)" = 1 || { echo "POST must be 1 or unset, got '$(POST)'; replies are not sent"; exit 2; }
+	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-bundle $(if $(filter 1,$(POST)),-post)
 
 ## review-pr: review a pull request; pass the number as PR=<n>
 ##   make review-pr PR=170
