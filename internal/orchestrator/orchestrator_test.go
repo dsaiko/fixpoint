@@ -7156,7 +7156,23 @@ func TestRefutationRemovesAFindingFromTheVerdict(t *testing.T) {
 	}
 	it := sum.Rounds[0].Issues[0]
 	if it.Status != model.VerdictRejected {
-		t.Errorf("issue status = %q, want rejected", it.Status)
+		t.Fatalf("issue status = %q, want rejected", it.Status)
+	}
+	// The drop has to reach the round's OBSERVATIONS too -- applyRefutations writes
+	// the rejection straight onto the issue, so without the mirror the summary would
+	// render this observation as UNRESOLVED directly above an issues block saying
+	// REJECTED. The refuter's evidence travels with it: it is the only
+	// per-observation record of why the finding vanished.
+	if len(sum.Rounds[0].Findings) != 1 {
+		t.Fatalf("got %d observations, want 1", len(sum.Rounds[0].Findings))
+	}
+	obs := sum.Rounds[0].Findings[0]
+	if obs.Verdict != model.VerdictRejected {
+		t.Errorf("observation verdict = %q, want it mirrored as rejected (it renders as %s in the summary)",
+			obs.Verdict, strings.ToUpper(obs.VerdictOrDefault()))
+	}
+	if !strings.Contains(obs.VerdictDetail, "main.go:1 is a package clause") {
+		t.Errorf("observation detail = %q, want the refuters' evidence mirrored onto it", obs.VerdictDetail)
 	}
 }
 
