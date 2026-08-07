@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -78,39 +79,88 @@ func TestDetectKindMatchesOnTheHost(t *testing.T) {
 	}
 }
 
+// stubGHRollup puts a fake `gh` on PATH that answers the rollup read -- and only
+// that read, matched on the WHOLE argument list, so a change to the command Checks
+// runs fails this test instead of quietly returning an unknown rollup. Any other
+// invocation exits nonzero, which is what Checks sees when gh cannot answer.
+func stubGHRollup(t *testing.T, pr int, stdout string) (dir string) {
+	t.Helper()
+	bin := t.TempDir()
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"'pr view " + strconv.Itoa(pr) + " --json statusCheckRollup') printf '%s' '" + stdout + "' ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return t.TempDir()
+}
+
 // Both shapes come back in one rollup: a modern Actions run is a CheckRun with
 // name/status/conclusion, a classic commit status is a StatusContext with
 // context/state. Parsing only the first would read a repository still on commit
-// statuses as having no checks -- indistinguishable from a green one.
+// statuses as having no checks -- indistinguishable from a green one. Driven
+// through Checks, because everything between the command and Checks.Failing fails
+// in the same silent direction: an unread rollup is Known false, which never
+// blocks, so red CI would stop reaching the verdict gate.
 func TestGitHubChecksReadsBothRollupShapes(t *testing.T) {
-	raw := `[
+	dir := stubGHRollup(t, 7, `{"statusCheckRollup":[
 	  {"__typename":"CheckRun","name":"Build","status":"COMPLETED","conclusion":"SUCCESS"},
 	  {"__typename":"CheckRun","name":"Unit Tests","status":"COMPLETED","conclusion":"FAILURE"},
 	  {"__typename":"CheckRun","name":"Slow","status":"IN_PROGRESS","conclusion":""},
-	  {"__typename":"CheckRun","name":"Redundant","status":"COMPLETED","conclusion":"` + ghCancelled + `"},
+	  {"__typename":"CheckRun","name":"Redundant","status":"COMPLETED","conclusion":"`+ghCancelled+`"},
 	  {"__typename":"CheckRun","name":"Optional","status":"COMPLETED","conclusion":"SKIPPED"},
 	  {"__typename":"StatusContext","context":"ci/legacy","state":"ERROR"},
 	  {"__typename":"StatusContext","context":"ci/queued","state":"PENDING"},
 	  {"__typename":"StatusContext","context":"ci/green","state":"SUCCESS"}
-	]`
-	var rollup []ghCheck
-	if err := json.Unmarshal([]byte(raw), &rollup); err != nil {
-		t.Fatal(err)
+	]}`)
+
+	got, err := (githubProvider{}).Checks(t.Context(), dir, 7)
+	if err != nil {
+		t.Fatalf("Checks() = %v", err)
 	}
-	var failing, pending []string
-	for _, c := range rollup {
-		switch {
-		case failingGitHub(c):
-			failing = append(failing, c.label())
-		case pendingGitHub(c):
-			pending = append(pending, c.label())
-		}
+	if !got.Known {
+		t.Error("Known = false although gh answered -- the verdict would carry no CI evidence")
 	}
-	if want := []string{"Unit Tests", "ci/legacy"}; !reflect.DeepEqual(failing, want) {
-		t.Errorf("failing = %v, want %v", failing, want)
+	if want := []string{"Unit Tests", "ci/legacy"}; !reflect.DeepEqual(got.Failing, want) {
+		t.Errorf("Failing = %v, want %v", got.Failing, want)
 	}
-	if want := []string{"Slow", "ci/queued"}; !reflect.DeepEqual(pending, want) {
-		t.Errorf("pending = %v, want %v", pending, want)
+	if want := []string{"Slow", "ci/queued"}; !reflect.DeepEqual(got.Pending, want) {
+		t.Errorf("Pending = %v, want %v", got.Pending, want)
+	}
+}
+
+// A pull request with no checks at all is an ANSWER: Known stays true, so the
+// verdict says CI reported nothing rather than leaving it unknown. "No checks
+// configured" and "we could not ask" are different facts and only one of them is
+// worth a reason.
+func TestGitHubChecksKnowsAnEmptyRollupIsStillAnAnswer(t *testing.T) {
+	dir := stubGHRollup(t, 7, `{"statusCheckRollup":[]}`)
+
+	got, err := (githubProvider{}).Checks(t.Context(), dir, 7)
+	if err != nil {
+		t.Fatalf("Checks() = %v", err)
+	}
+	if !got.Known {
+		t.Error("Known = false for a rollup with no entries -- indistinguishable from gh being unable to answer")
+	}
+	if len(got.Failing) != 0 || len(got.Pending) != 0 {
+		t.Errorf("Failing/Pending = %v/%v, want empty", got.Failing, got.Pending)
+	}
+}
+
+// And when gh cannot answer, the checks are UNKNOWN rather than empty -- empty
+// reads as green. The stub answers for pull request 7 alone, so this also pins
+// that the number Checks is asked about is the one it puts on the command line.
+func TestGitHubChecksAreUnknownWhenGHCannotAnswer(t *testing.T) {
+	dir := stubGHRollup(t, 7, `{"statusCheckRollup":[]}`)
+
+	got, err := (githubProvider{}).Checks(t.Context(), dir, 9)
+	if err == nil {
+		t.Fatal("Checks() = nil although gh failed")
+	}
+	if got.Known {
+		t.Error("Known = true although the rollup was never read -- an approval would rest on checks nobody saw")
 	}
 }
 
