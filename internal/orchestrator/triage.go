@@ -47,8 +47,24 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 	}
 	o.phase("TRIAGE  %s deciding %d open conversation(s)", t.Agent, len(o.threads))
 
+	// The change under review, collected here rather than read off o.material: that
+	// field is assigned by the review-only path, which never reaches triage (a
+	// review-only run has no coder, so readForgeThreads leaves the list empty), so
+	// the prompt used to advertise a material block and render it empty. Collection
+	// is read-only and the tree is pristine at this point, so this is the same diff
+	// round 1 will put in front of the panel.
+	material, err := o.collector.Collect(ctx)
+	if err != nil {
+		// Not fatal here: the round loop collects again and fails the run properly if
+		// this is a real collection failure. Deciding what a comment commissions
+		// without the diff in front of the agent is the thing worth refusing.
+		o.logf("WARNING: triage: could not collect the change under review (%v); the conversations stay context and are not answered", err)
+		o.endPhase("TRIAGE  did not finish; the conversations stay context and are not answered")
+		return
+	}
+
 	me := o.forgeLogin(ctx)
-	decisions, ok := o.askTriage(ctx, t)
+	decisions, ok := o.askTriage(ctx, t, material)
 	if !ok {
 		o.endPhase("TRIAGE  did not finish; the conversations stay context and are not answered")
 		return
@@ -106,13 +122,13 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 	o.endPhase("TRIAGE  %d accepted, %d declined, %d left undecided", accepted, rejected, undecided)
 }
 
-// askTriage runs the agent and returns its decisions.
-func (o *Orchestrator) askTriage(ctx context.Context, t config.RoleRef) ([]model.TriageDecision, bool) {
+// askTriage runs the agent over the collected material and returns its decisions.
+func (o *Orchestrator) askTriage(ctx context.Context, t config.RoleRef, material string) ([]model.TriageDecision, bool) {
 	d := prompt.TriageData{
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
 		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
-		Target:         o.material,
+		Target:         material,
 		Conversations:  o.conversations(),
 		OutputContract: prompt.TriageContract,
 	}
