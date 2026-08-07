@@ -131,6 +131,20 @@ func unreplayable(dir string, sum *model.RunSummary) string {
 	// read is the reason this is checked at all.
 	case sum.ReviewedHead == "":
 		return dir + " does not record which commit it reviewed, so the review cannot be bound to one. Runs from before that was recorded cannot be replayed; review again to produce one that can."
+	// This run ALREADY published. `review-pr -post` leaves a summary that is
+	// otherwise perfectly replayable -- review-only termination, no error -- so
+	// without this the inspect-then-publish workflow applied to a run that was
+	// already posted puts a second identical review on the pull request under the
+	// operator's identity, and with -post-verdict a second approval. That is the
+	// same duplicate-submission hazard the guarded retry above and forge's anchor
+	// handling both refuse to take; recording the event is what makes it knowable,
+	// so it is refused here rather than only documented.
+	//
+	// Checked before the termination test below so the run whose publish was
+	// accepted and then failed -- ReviewPosted set, Error set -- gets told what is
+	// already on the pull request instead of the generic "review again".
+	case sum.ReviewPosted != "":
+		return fmt.Sprintf("%s was already published as %s; posting it again would put a second review on pull request %d. If that is really what you want, the review is in review-body.md.", dir, sum.ReviewPosted, sum.PR)
 	}
 	// The run must also have FINISHED the review it is being asked to publish.
 	//

@@ -108,6 +108,34 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 			},
 			"body", "ended as max-iterations",
 		},
+		{
+			// The one refusal an otherwise flawless summary earns: a run that posted
+			// with -post is review-only, error-free and fully recorded, so nothing else
+			// here stops -post-run from putting the same review on the pull request a
+			// second time under the operator's identity.
+			"a review the run itself already published",
+			model.RunSummary{
+				Mode: "pr", PR: 3, ReviewedHead: head,
+				Termination:  model.TermReviewOnly,
+				ReviewPosted: "comment",
+				Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
+			},
+			"body", "was already published as comment",
+		},
+		{
+			// Accepted by the forge and then failed on the client -- the case
+			// ReviewPosted is recorded from the URL for. The refusal must name what is
+			// already on the pull request, not send the operator off to review again.
+			"a publish the forge accepted before the call failed",
+			model.RunSummary{
+				Mode: "pr", PR: 3, ReviewedHead: head,
+				Termination: model.TermError, LoopTermination: model.TermReviewOnly,
+				Error:        "confirm approval: head moved",
+				ReviewPosted: "approve",
+				Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
+			},
+			"body", "was already published as approve",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs strings.Builder

@@ -203,9 +203,11 @@ request here produced 34 findings and then 49. `-post-run` takes the run directo
 and posts the body off disk, with the anchors that run computed. That is what makes
 reading the file first mean anything. It refuses a run that has no verdict (a fix
 run), one that did not review a pull request, one from before the PR number was
-recorded, and one that did not finish — the verdict is written before the round
+recorded, one that did not finish — the verdict is written before the round
 checks whether it was interrupted, so a review stopped part-way leaves an approval
-on disk that the run itself refused to post and exited non-zero over.
+on disk that the run itself refused to post and exited non-zero over — and one
+that has *already* been published, so `-post` followed by `-post-run` cannot leave
+two identical reviews on the pull request.
 
 Either way, the review is bound to the **commit it was about**. A run records the
 head it reviewed, and posting reads the pull request's current head first: if the
