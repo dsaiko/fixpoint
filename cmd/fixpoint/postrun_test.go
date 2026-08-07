@@ -9,9 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -342,7 +346,12 @@ type postCall struct {
 // fakePoster records what would have gone to the forge, and fails the calls it is
 // told to: errs[i] is returned from submission i, so an anchor rejection followed
 // by a success is expressible, and so is a failure that must NOT be retried.
+//
+// mu guards calls, because one test drives two -post-run publications at once and
+// a poster that lost a concurrent submission to a data race would report the
+// duplicate it is there to catch as a single call.
 type fakePoster struct {
+	mu    sync.Mutex
 	calls []postCall
 	errs  []error
 	url   string
@@ -355,6 +364,8 @@ func (*fakePoster) Checks(context.Context, string, int, string) (forge.Checks, e
 }
 
 func (f *fakePoster) PostReview(_ context.Context, dir string, pr int, head, body string, event forge.Event, inline []forge.InlineComment) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, postCall{dir, pr, head, body, event, inline})
 	if n := len(f.calls) - 1; n < len(f.errs) && f.errs[n] != nil {
 		return "", f.errs[n]
@@ -561,6 +572,96 @@ func TestPostRunPublishesARunOnlyOnce(t *testing.T) {
 	// request: "already published" alone sends the operator looking for it.
 	if !strings.Contains(second.String(), string(forge.EventApprove)) || !strings.Contains(second.String(), p.url) {
 		t.Errorf("the refusal should say what is already on the pull request:\n%s", second.String())
+	}
+}
+
+// The sequential test above proves the receipt REFUSES a replay; it does not prove
+// the claim is indivisible. An implementation that read the receipt and then created
+// it would pass that test just as well, and lose to two -post-run invocations that
+// overlap -- pressing up and enter in two terminals, or the same command in two panes
+// of a tmux session -- putting two reviews, or two approvals, on one pull request.
+// That is why the claim is a single O_WRONLY|O_CREATE|O_EXCL open and not a check
+// followed by a create.
+//
+// The rendezvous is repoIDFor, the last hook postRun calls before the claim: holding
+// every replay there until all of them arrive puts them at the open together, past
+// the early alreadyPosted check that would otherwise settle the losers before the
+// winner had claimed anything. It SPINS rather than parking on a channel, because the
+// window a non-atomic claim leaves open is two syscalls wide and the latency of
+// waking a parked goroutine is enough to miss it. For the same reason the race is run
+// several times over fresh directories: one round caught a deliberately reverted
+// check-then-create about half the time, and rounds compound.
+//
+// Every wait here is bounded. A replay that refuses ahead of the barrier never
+// reaches it, and a test that hangs reports nothing at all.
+func TestPostRunPublishesARunOnlyOnceUnderSimultaneousReplays(t *testing.T) {
+	const (
+		replays = 3
+		rounds  = 8
+	)
+	for round := range rounds {
+		sum := replayable(t, model.VerdictApprove, nil)
+		dir := writeRun(t, sum, "the review that was actually produced")
+		p := &fakePoster{url: "https://github.com/o/r/pull/3#pullrequestreview-1"}
+		installPoster(t, p)
+
+		var arrived atomic.Int32
+		prevRepoID := repoIDFor
+		repoIDFor = func(context.Context, string) string {
+			arrived.Add(1)
+			for deadline := time.Now().Add(10 * time.Second); arrived.Load() < replays; {
+				if time.Now().After(deadline) {
+					break
+				}
+				runtime.Gosched()
+			}
+			return reviewedRepo
+		}
+
+		codes := make([]int, replays)
+		logs := make([]strings.Builder, replays)
+		var wg sync.WaitGroup
+		for i := range replays {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				codes[i] = postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs[i], f+"\n", a...) })
+			}()
+		}
+		wg.Wait()
+		repoIDFor = prevRepoID
+
+		// Exactly one replay may reach the forge, and every other one must say the run is
+		// already claimed rather than report a success it did not have.
+		var published, refused int
+		var transcript strings.Builder
+		for i, code := range codes {
+			fmt.Fprintf(&transcript, "replay %d exited %d:\n%s\n", i, code, logs[i].String())
+			switch code {
+			case 0:
+				published++
+			case 2:
+				refused++
+				// The loser reads a receipt the winner may not have filled in yet, so the
+				// wording varies; which directory and which pull request do not, and they are
+				// the whole of what the operator can act on.
+				for _, want := range []string{dir, strconv.Itoa(sum.PR)} {
+					if !strings.Contains(logs[i].String(), want) {
+						t.Errorf("round %d: the refusal should name %q:\n%s", round, want, logs[i].String())
+					}
+				}
+			default:
+				t.Errorf("round %d: postRun(t.Context(), ) = %d, want 0 or the refusal 2; logs:\n%s", round, code, logs[i].String())
+			}
+		}
+		if published != 1 || refused != replays-1 {
+			t.Errorf("round %d: %d replays published and %d refused, want 1 and %d:\n%s",
+				round, published, refused, replays-1, transcript.String())
+		}
+		if n := len(p.calls); n != 1 {
+			t.Fatalf("round %d: PostReview called %d times, want 1: the claim let simultaneous replays through:\n%s",
+				round, n, transcript.String())
+		}
 	}
 }
 
