@@ -2032,7 +2032,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		// The verdict is computed either way -- an interrupted review still owes the
 		// operator whatever it managed to conclude, and decideVerdict's own callees
 		// (postReview) decide for themselves what a canceled context permits.
-		o.decideVerdict(ctx, recP, sum, judged)
+		postErr := o.decideVerdict(ctx, recP, sum, judged)
 		// Checked AFTER decideVerdict, not before it, and that ordering is the whole
 		// point: refutation and judging take minutes, and decideVerdict then writes
 		// the body and may spend up to the forge timeout posting it, so an interrupt
@@ -2045,8 +2045,14 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 			sum.Termination = model.TermInterrupted
 			return true, nil //nolint:nilerr // an interruption is a termination, not a round error
 		}
+		// The review itself finished, so that outcome is recorded BEFORE the posting
+		// failure is returned: recordRunError then keeps "review-only" in
+		// LoopTermination and marks the run itself failed, which is the honest pair --
+		// the panel reached a verdict and the publish the operator asked for did not
+		// happen. Nothing is lost by returning here instead of through finishRun: both
+		// of its halves are no-ops for a review-only run, by their own design.
 		sum.Termination = model.TermReviewOnly
-		return true, nil
+		return true, postErr
 	}
 
 	// Termination on clean rounds (advisory findings do not count).
@@ -3982,7 +3988,11 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 // The inputs are all facts the round already carries: which agents were assigned,
 // which of their steps failed, and what survived as issues. Nothing here asks a
 // model anything -- see internal/review for why the verdict must not.
-func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, judged bool) {
+//
+// The verdict itself never fails; the error is the one from publishing it, passed
+// through from postReview so the caller can fail the run over a post the operator
+// asked for and did not get.
+func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, judged bool) error {
 	// Only failures on GATING lenses may deny a quorum. An advisory lens is
 	// reported for a human and QuorumFrom leaves it out of the panel entirely, so
 	// counting its failure here would let a lens that gates nothing for the
@@ -4021,8 +4031,9 @@ func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord
 	for _, r := range d.Reasons {
 		o.logf("%s", r)
 	}
-	o.writeReviewBody(ctx, rec, sum, d)
+	err := o.writeReviewBody(ctx, rec, sum, d)
 	o.endPhase("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	return err
 }
 
 // writeReviewBody renders the review document and puts it in the run directory.
@@ -4032,7 +4043,11 @@ func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord
 // whether the review ran is being asked the wrong question. Failure to write it is
 // a warning, not a run failure -- the verdict is already in the summary, the
 // journal and the exit code.
-func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, d review.Decision) {
+//
+// The returned error is the POSTING one, which is a different matter: see
+// postReview for why a publish the operator asked for and did not get has to reach
+// the exit status.
+func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, d review.Decision) error {
 	panel := map[string]bool{}
 	for _, a := range rec.Assignments {
 		panel[a.Agent] = true
@@ -4080,7 +4095,7 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	path, err := o.logs.ReviewBody(published)
 	if err != nil {
 		o.logf("WARNING: failed to write the review body: %v", err)
-		return
+		return nil
 	}
 	sum.ReviewBody = path
 	o.logf("review body: %s", path)
@@ -4090,7 +4105,7 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	for _, c := range inlineComments(rec, o.material, signature) {
 		sum.ReviewInline = append(sum.ReviewInline, model.ReviewAnchor{Path: c.Path, Line: c.Line, Body: c.Body})
 	}
-	o.postReview(ctx, sum, published)
+	return o.postReview(ctx, sum, published)
 }
 
 // publishedText is the ONE transform between text an agent wrote and text that
@@ -4702,22 +4717,34 @@ var readerFor = forge.ReaderFor
 // because a missing datum only weakens the evidence; a write that the operator
 // asked for and did not get is the opposite -- silence there would tell them the
 // review is on the pull request when it is not.
-func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, body string) {
+//
+// "Reported" means the RUN fails, which is why this returns an error instead of
+// only logging one. A log line is not observable to automation: the caller went on
+// to record a normal review-only termination, so `fixpoint review-pr -post` exited
+// 0 on an expired token, a 5xx or a timeout, and on the head-moved mismatch
+// confirmApproval exists to raise -- the case where an approval IS on the pull
+// request and a human has to dismiss it. Two exceptions stay warnings: a run with
+// no pull request to post to never had anywhere to publish, and an interruption
+// already terminates the run non-zero on its own.
+func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, body string) error {
 	if !o.cfg.Review.Post {
-		return
+		return nil
 	}
 	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
 		o.logf("WARNING: -post was given but this run reviews no pull request; the review is in %s", sum.ReviewBody)
-		return
+		return nil
 	}
 	if ctx.Err() != nil {
 		o.logf("WARNING: interrupted before posting; the review is in %s", sum.ReviewBody)
-		return
+		return nil //nolint:nilerr // the round already records an interruption, which exits non-zero on its own
 	}
 	p := posterFor(ctx, o.cfg.Target.Path)
 	if p == nil {
-		o.logf("WARNING: -post was given but no GitHub or GitLab remote was recognized; the review is in %s", sum.ReviewBody)
-		return
+		// A requested publish that did not happen, so it fails the run like any other
+		// -- cmd/fixpoint/postrun.go answers the same situation with exit 1. In pr mode
+		// this means the forge remote is not the one PosterFor looks at, not that there
+		// is no forge: Prepare already reached the pull request to check it out.
+		return fmt.Errorf("-post was given but no GitHub or GitLab remote was recognized; the review is in %s", sum.ReviewBody)
 	}
 	event := forge.Comment
 	if o.cfg.Review.PostVerdict {
@@ -4750,16 +4777,25 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 		o.logf("WARNING: %s rejected the inline comments (%v); posting the summary without them", p.Kind(), err)
 		url, err = p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead, body, event, nil)
 	}
-	if err != nil {
-		o.logf("ERROR: posting the review to %s failed: %v -- it is written at %s", p.Kind(), err, sum.ReviewBody)
-		return
+	// Recorded from the URL, not from the absence of an error. A poster that returns
+	// a URL has SUBMITTED the review, and one failure arrives after that succeeded:
+	// confirmApproval re-reads the head and reports a mismatch as an error on an
+	// approval that is already on the pull request. Leaving ReviewPosted empty there
+	// would make the summary -- documented as empty when nothing was posted -- deny a
+	// review a human has to go and dismiss, and send a later `-post-run` to publish
+	// it a second time.
+	if err == nil || url != "" {
+		sum.ReviewPosted = string(event)
 	}
-	sum.ReviewPosted = string(event)
+	if err != nil {
+		return fmt.Errorf("posting the review to %s failed: %w -- it is written at %s", p.Kind(), err, sum.ReviewBody)
+	}
 	if url != "" {
 		o.logf("review posted to %s as %s: %s", p.Kind(), event, url)
-		return
+		return nil
 	}
 	o.logf("review posted to %s as %s", p.Kind(), event)
+	return nil
 }
 
 // inlineComments anchors each surviving finding to its line, so a reader meets it

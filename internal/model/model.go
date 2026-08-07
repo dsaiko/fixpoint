@@ -293,9 +293,15 @@ type RunSummary struct {
 	// bytes that were sent.
 	ReviewBody string `json:"review_body,omitempty"`
 	// ReviewPosted names the event a review was published as ("comment",
-	// "approve", "request_changes"), or is empty when nothing was posted. An
+	// "approve", "request_changes"), or is empty when nothing reached the forge. An
 	// operator reading a summary should not have to infer from a log line whether
 	// their -post actually reached the forge.
+	//
+	// "Published" is not the same as "the run succeeded": it is recorded whenever
+	// the forge accepted the submission, including when the call then failed
+	// afterwards -- an approval whose head moved between the check and the submit is
+	// on the pull request, and a summary that denied it would send the operator
+	// looking for a review a human has to dismiss.
 	ReviewPosted string `json:"review_posted,omitempty"`
 	// ReviewInline are the anchors the run computed for its findings, kept so a
 	// later publish sends exactly what this run produced rather than recomputing it

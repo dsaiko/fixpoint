@@ -7538,6 +7538,99 @@ func (p *pickyPoster) PostReview(_ context.Context, _ string, _ int, _, _ string
 	return "", nil
 }
 
+// failingPoster is a forge that refuses the submission. url is non-empty for the
+// failure that arrives AFTER the review was accepted -- confirmApproval re-reading
+// the head and finding the pull request moved.
+type failingPoster struct {
+	url string
+	err error
+}
+
+func (failingPoster) Kind() forge.Kind { return forge.GitHub }
+
+func (failingPoster) Checks(context.Context, string, int) (forge.Checks, error) {
+	return forge.Checks{}, nil
+}
+
+func (p failingPoster) PostReview(context.Context, string, int, string, string, forge.Event, []forge.InlineComment) (string, error) {
+	return p.url, p.err
+}
+
+// A publish the operator asked for and did not get has to reach the EXIT STATUS,
+// not just the log. It used to only be logged: the round then recorded a normal
+// review-only termination, so `review-pr -post-verdict` over an approval exited 0
+// on an expired token, a 5xx or a forge timeout -- telling automation the review
+// was on the pull request when it was not. cmd/fixpoint/postrun.go answers the same
+// situation with exit 1, so the two paths disagreed about the same failure.
+//
+// The head-moved case is the expensive one and it is the reason ReviewPosted is
+// asserted here too: githubSubmitReview has already SUCCEEDED when confirmApproval
+// reports the mismatch, so an approval is sitting on somebody's pull request. The
+// run must fail AND the summary must say what was published, or the operator is
+// sent looking for a review that is there and a later -post-run publishes a second
+// one. The error is asserted on decideVerdict's own return because that is the
+// value runRound propagates.
+func TestAFailedPostFailsTheRun(t *testing.T) {
+	moved := errors.New("pull request 1 moved to another commit; dismiss the review")
+	for _, tc := range []struct {
+		name       string
+		poster     forge.Poster
+		wantPosted string
+		wantLogged string
+	}{
+		{
+			name:       "the submission was refused outright",
+			poster:     failingPoster{err: errors.New("HTTP 401: bad credentials")},
+			wantPosted: "", // nothing reached the pull request
+			wantLogged: "bad credentials",
+		},
+		{
+			name:       "the head moved after the approval was submitted",
+			poster:     failingPoster{url: "https://example.test/pr/1#review", err: moved},
+			wantPosted: string(forge.Comment),
+			wantLogged: "dismiss the review",
+		},
+		{
+			name:       "no remote was recognized",
+			poster:     nil,
+			wantPosted: "",
+			wantLogged: "no GitHub or GitLab remote",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			f.cfg.Review.Post = true
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 1
+
+			prev := posterFor
+			posterFor = func(context.Context, string) forge.Poster { return tc.poster }
+			defer func() { posterFor = prev }()
+
+			o := f.orchestrator()
+			rec := &model.RoundRecord{
+				Round:       1,
+				Assignments: []model.Assignment{{Agent: "mock", Lens: "review"}},
+			}
+			sum := &model.RunSummary{ReviewedHead: strings.Repeat("a", 40)}
+			err := o.decideVerdict(t.Context(), rec, sum, true)
+			if err == nil {
+				t.Fatal("a requested post that did not publish returned no error, so the run exits 0")
+			}
+			if !strings.Contains(err.Error(), tc.wantLogged) {
+				t.Errorf("error = %v, want it to name %q", err, tc.wantLogged)
+			}
+			if !strings.Contains(err.Error(), sum.ReviewBody) {
+				t.Errorf("error = %v, want it to name where the review is (%s)", err, sum.ReviewBody)
+			}
+			if sum.ReviewPosted != tc.wantPosted {
+				t.Errorf("ReviewPosted = %q, want %q", sum.ReviewPosted, tc.wantPosted)
+			}
+		})
+	}
+}
+
 // A reply is posted under a human's comment with the operator's identity on it,
 // so fixpoint only ever answers a conversation it actually showed the coder. An
 // id the coder invented -- or remembered from a resolved thread -- must not become
