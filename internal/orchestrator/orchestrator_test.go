@@ -5517,6 +5517,51 @@ func TestPerFixCommitBodyRecordsTheCodersDetail(t *testing.T) {
 	}
 }
 
+// Two comments merging onto one issue is the ordinary case (see Issue.Also), and
+// the commit is the one artifact that gets pushed: recording only the primary
+// conversation dropped the second requester out of the history entirely, and with
+// them the external label config/README.md promises travels in the commit message.
+func TestPerFixCommitRecordsEveryMergedRequester(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CommitPolicy: config.CommitPerFix})
+	o := f.orchestrator()
+
+	// Something for the commit to carry: verifyAndCommitFix refuses a clean tree.
+	if err := os.WriteFile(filepath.Join(f.repo, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	it := model.Issue{
+		ID: "i1", Title: "missing guard", Category: "bugs", Severity: "high", File: "main.go", Line: 3,
+		Origin: model.Origin{Thread: "100", Author: "human"},
+		Also:   []model.Origin{{Thread: "200", Author: "stranger", External: true}},
+	}
+	rec := &model.RoundRecord{Round: 1, Issues: []model.Issue{
+		{ID: "i1", Verdict: model.VerdictFixed, VerdictDetail: "guarded the dereference"},
+	}}
+	committed, err := o.verifyAndCommitFix(t.Context(), rec, it)
+	if err != nil {
+		t.Fatalf("verifyAndCommitFix() err = %v", err)
+	}
+	if !committed {
+		t.Fatal("the fix did not commit")
+	}
+
+	body := gitRun(t, f.repo, "log", "-1", "--format=%b")
+	for _, want := range []string{
+		"conversation 100 by human",
+		"conversation 200 by stranger, who is not the account this run posts under",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("per-fix commit body is missing %q -- a merged requester is not recorded:\n%s", want, body)
+		}
+	}
+	// Still bullets, and still no trailer: a second requester must not change the
+	// shape that keeps git's parser out of this message.
+	if trailers := strings.TrimSpace(gitRun(t, f.repo, "log", "-1", "--format=%(trailers)")); trailers != "" {
+		t.Errorf("the conversation lines forged a git trailer: %q", trailers)
+	}
+}
+
 // The per-fix subject renders a reviewer-authored title, so it needs the same
 // handling the body gets. A title quoting a credential the reviewer found while
 // exploring must be masked -- the commit is the one artifact meant to be pushed --

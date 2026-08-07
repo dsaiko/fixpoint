@@ -1153,16 +1153,25 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 	// that without reconstructing it from a conversation that may be resolved by then.
 	// Stated as a bullet rather than a `token: value` line for the same reason the
 	// detail below is: a trailing one of those IS a git trailer.
-	if it.Origin.FromConversation() {
-		who := flattenField(it.Origin.Author)
+	//
+	// Every linked conversation, not just the primary one -- two comments merging
+	// onto one issue is the ordinary case (see Issue.Also). Recording only the first
+	// dropped the second requester from the one artifact that gets pushed, and with
+	// them the external label, which is exactly what a later reader of the history
+	// needs to see.
+	for i, c := range it.Conversations() {
+		if i == 0 {
+			body.WriteString("\n")
+		}
+		who := flattenField(c.Author)
 		if who == "" {
 			who = "an unnamed commenter"
 		}
-		if it.Origin.External {
-			fmt.Fprintf(&body, "\n- requested in conversation %s by %s, who is not the account this run posts under\n",
-				flattenField(it.Origin.Thread), who)
+		if c.External {
+			fmt.Fprintf(&body, "- requested in conversation %s by %s, who is not the account this run posts under\n",
+				flattenField(c.Thread), who)
 		} else {
-			fmt.Fprintf(&body, "\n- requested in conversation %s by %s\n", flattenField(it.Origin.Thread), who)
+			fmt.Fprintf(&body, "- requested in conversation %s by %s\n", flattenField(c.Thread), who)
 		}
 	}
 	// The detail is the body's LAST line, and a lone `token: value` line at the end
