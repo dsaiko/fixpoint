@@ -213,6 +213,16 @@ too — including after a submission that failed *after* it was sent, which the 
 may well have accepted; the receipt says so, and only you can decide whether the
 review is there.
 
+It also refuses a run directory that is **tracked by git**. A run directory is only
+files, so a pull request can commit a lookalike `.fixpoint/<run>` next to your own:
+a plausible `review-body.md` to read, and a summary whose fields choose a different
+pull request, an approval, and inline comments of its own — none of which are in the
+file you inspected. fixpoint commits no run artifacts, so a tracked file there means
+the directory came in with the code under review rather than from a run on this
+machine, and nothing is published. Every anchor's file and line is also logged
+before the submission goes out, because the line comments are separate bytes from
+`review-body.md` and reading that file does not show them.
+
 Either way, the review is bound to the **commit it was about**. A run records the
 head it reviewed, and posting reads the pull request's current head first: if the
 author has pushed since — while the panel ran, or in the days between a run and its

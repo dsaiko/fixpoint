@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -53,6 +56,12 @@ var posterFor = forge.PosterFor
 // This makes it exist. The bytes posted are the bytes in the file, read off disk;
 // the anchors are the ones that run computed. Nothing is recalculated, so nothing
 // can differ from what was reviewed.
+//
+// The inspected file covers ONE of the two channels out. The line comments are
+// separate bytes, taken from the summary, so an operator who read review-body.md
+// has not read them -- which is why the directory is checked for having arrived
+// with the code under review (committedRun), and why every anchor is named in the
+// log before anything is submitted.
 func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string, ...any)) int {
 	sum, runDir, err := loadRunSummary(dir)
 	if err != nil {
@@ -67,6 +76,27 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 	// invocation is answered by the receipt rather than by whatever the network says.
 	// The claim below is what actually decides it -- this is the message.
 	if why := alreadyPosted(runDir, sum.PR); why != "" {
+		logf("post-run: %s", why)
+		return 2
+	}
+	// The directory must also be the OPERATOR's own run, not one that arrived with
+	// the code under review.
+	//
+	// Everything from here on is taken from the summary JSON, and only the body is
+	// hardened against it (below): sum.PR and sum.Path choose which pull request in
+	// which checkout the submission lands on, sum.ReviewedHead is what the poster's
+	// head check compares against, sum.Verdict.Outcome is what becomes APPROVE, and
+	// sum.ReviewInline carries the full text of every line comment. So the committed
+	// lookalike the body read already refuses to trust has a second way to act: point
+	// pr at another pull request in the same repository, set reviewed_head to that
+	// request's public head so the head check passes, set the verdict to approve --
+	// and an approval lands, under the operator's identity, on a change no agent read,
+	// which is the exact outcome the head check exists to prevent. The line comments
+	// ride along, arbitrary text in a channel review-body.md does not show.
+	//
+	// It only takes picking the wrong timestamped sibling out of .fixpoint/, which is
+	// one shell glob or one mistaken tab-completion away.
+	if why := committedRun(ctx, runDir); why != "" {
 		logf("post-run: %s", why)
 		return 2
 	}
@@ -112,6 +142,16 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 	inline := make([]forge.InlineComment, 0, len(sum.ReviewInline))
 	for _, a := range sum.ReviewInline {
 		inline = append(inline, forge.InlineComment{Path: a.Path, Line: a.Line, Body: a.Body})
+	}
+	// Said out loud before it goes out, because this half was never inspected.
+	// review-body.md is the summary comment and nothing else -- RenderInline produced
+	// separate bytes for each line comment, and they come off the summary, not the
+	// file the operator was invited to read. Naming the destination and every anchor
+	// is what lets them notice a submission aimed somewhere they did not expect, or
+	// comments on files this review has no business touching.
+	logf("post-run: publishing to %s pull request %d at %s as %s, with %d inline comment(s)", p.Kind(), sum.PR, sum.Path, event, len(inline))
+	for _, a := range inline {
+		logf("post-run: inline comment on %s:%d, from the summary rather than review-body.md", a.Path, a.Line)
 	}
 
 	// Claimed before anything is submitted: after this returns nil nothing else may
@@ -198,6 +238,52 @@ func alreadyPosted(runDir string, pr int) string {
 		what = "an earlier -post-run claimed it and recorded no outcome"
 	}
 	return fmt.Sprintf("%s was %s; posting it again would put a second review on pull request %d. If the forge does not have it, delete %s and try again.", runDir, what, pr, path)
+}
+
+// committedRun says why a run directory must not be trusted to name its own
+// destination, or "" when nothing marks it as content that came in with a
+// checkout.
+//
+// A run directory cannot be authenticated -- it is only files, and every field a
+// real one holds can be typed into a fake one. But the shape that carries the
+// attack has one property fixpoint's own output never has: it arrived through git,
+// so its files are TRACKED. fixpoint writes run artifacts into an ignored
+// directory and commits none of them, so a tracked file here means this directory
+// is part of some repository's content rather than the record of a run on this
+// machine -- and a pull request's content is exactly what must not be allowed to
+// choose a pull request, a verdict, and a set of line comments.
+//
+// Asked of git rather than guessed from the files, because tracked-ness IS the
+// question. Permissions, timestamps and plausible contents are all things a
+// committed directory can have.
+//
+// Best-effort in the permissive direction: no git on PATH, no repository, a
+// worktree the directory falls outside of all leave the answer empty. They mean
+// nothing was learned, and refusing every run whose provenance cannot be
+// established would break the mode wherever git is absent -- while the check still
+// covers the case that produced the hazard, a directory that came in with the code
+// under review, where git is present by construction.
+func committedRun(ctx context.Context, runDir string) string {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// The same config pins every other git command fixpoint runs against a checkout
+	// it does not trust: this one runs INSIDE that checkout, and core.fsmonitor or
+	// core.hooksPath out of its .git/config would otherwise have git execute a program
+	// the repository chose, with this process's environment.
+	cmd := exec.CommandContext(ctx, "git", append(gitenv.SafeConfigArgs(), "ls-files", "-z", "--", ".")...)
+	cmd.Dir = runDir
+	// nil is this process's environment, hardened -- so the pins reach the git
+	// processes git itself starts, which never see the -c flags above.
+	cmd.Env = gitenv.Harden(nil)
+	out, err := cmd.Output()
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+	tracked := string(out)
+	if i := strings.IndexByte(tracked, 0); i >= 0 {
+		tracked = tracked[:i]
+	}
+	return fmt.Sprintf("%s is tracked by git (%s is committed), so it came in with a repository's content rather than from a run on this machine. Its summary -- not review-body.md -- chooses the pull request, the verdict and the inline comments that would be published under your identity, so it is refused. Publish your own run's directory, or move this one outside the work tree if it really is yours.", runDir, tracked)
 }
 
 // unreplayable says why a summary cannot be published, or returns "" if it can.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -18,7 +19,16 @@ import (
 // writeRun lays out a finished run directory the way a real one looks.
 func writeRun(t *testing.T, sum model.RunSummary, body string) string {
 	t.Helper()
-	dir := t.TempDir()
+	return writeRunAt(t, t.TempDir(), sum, body)
+}
+
+// writeRunAt is writeRun in a directory the caller chose, for a test that cares
+// WHERE the run directory sits -- inside a git work tree, say.
+func writeRunAt(t *testing.T, dir string, sum model.RunSummary, body string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if body != "" {
 		path := filepath.Join(dir, "review-body.md")
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -238,6 +248,65 @@ func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
 			t.Errorf("the symlink was followed rather than refused:\n%s", logs.String())
 		}
 	})
+}
+
+// The same committed lookalike has a second way to act, and the body read does
+// not touch it: everything else -post-run does comes out of the summary JSON. A
+// directory that arrived with the code under review can aim the submission at
+// another pull request in the repository, name that request's public head so the
+// head check passes, ask for an approval, and supply its own line comments -- and
+// the operator only has to pick the wrong timestamped sibling out of .fixpoint/.
+//
+// Nothing can authenticate a run directory, but git can say whether this one is a
+// repository's content. fixpoint commits no run artifacts, so a tracked file here
+// means it is not the record of a run on this machine.
+func TestPostRunRefusesARunDirectoryThatCameInWithTheCheckout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	git("init")
+	// Committed by the pull request, so it sits exactly where the operator's own runs
+	// do and its timestamp is one they might mistake for theirs.
+	planted := filepath.Join(repo, ".fixpoint", "20260807-153512")
+	sum := replayable(t, model.VerdictApprove, []model.ReviewAnchor{
+		{Path: "internal/forge/forge.go", Line: 42, Body: "text nobody read in review-body.md"},
+	})
+	sum.PR = 99 // a pull request nothing on this machine reviewed
+	dir := writeRunAt(t, planted, sum, "a plausible review for the operator to read")
+	git("add", "-f", ".fixpoint")
+
+	p := &fakePoster{url: "https://github.com/o/r/pull/99#pullrequestreview-1"}
+	installPoster(t, p)
+	var logs strings.Builder
+	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 2 {
+		t.Errorf("postRun(t.Context(), ) = %d for a tracked run directory, want the refusal 2; logs:\n%s", code, logs.String())
+	}
+	if len(p.calls) != 0 {
+		t.Errorf("PostReview called %d times, want 0: an approval was published from a committed directory", len(p.calls))
+	}
+	if !strings.Contains(logs.String(), "tracked by git") {
+		t.Errorf("the refusal should say why the directory is not trusted:\n%s", logs.String())
+	}
+	// And the operator's own run in the same work tree still publishes: the check is
+	// about tracked-ness, not about living inside a checkout, which is where every
+	// run directory lives.
+	mine := writeRunAt(t, filepath.Join(repo, ".fixpoint", "20260807-160000"), replayable(t, model.VerdictApprove, nil), "the review this machine produced")
+	logs.Reset()
+	if code := postRun(t.Context(), mine, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 0 {
+		t.Fatalf("postRun(t.Context(), ) = %d for an untracked run directory in a work tree, want 0; logs:\n%s", code, logs.String())
+	}
+	if len(p.calls) != 1 {
+		t.Errorf("PostReview called %d times for the operator's own run, want 1", len(p.calls))
+	}
 }
 
 // postCall is one submission a fake poster received.
