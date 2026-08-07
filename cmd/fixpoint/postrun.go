@@ -223,6 +223,12 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 	} else {
 		logf("posted %s to %s as %s", filepath.Base(runDir), p.Kind(), event)
 	}
+	// The same notice Orchestrator.postReview prints, from the same place in the same
+	// order: an approval is not withdrawn by a later push, and this mode publishes
+	// approvals days after the run that decided on one. See forge.ApprovalNotice.
+	if notice := forge.ApprovalNotice(p.Kind(), event, sum.PR, sum.ReviewedHead); notice != "" {
+		logf("post-run: WARNING: %s", notice)
+	}
 	return 0
 }
 

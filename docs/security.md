@@ -114,6 +114,17 @@ Read this before pointing the tool at code you did not write.
   — and two concurrent runs invalidate all three silently, producing commits nobody
   verified. Run concurrent fixpoints against separate checkouts (or worktrees).
   Review-only directory runs neither take the lock nor are blocked by one.
+- **An approval outlives the commit it was given for.** Posting refuses a pull
+  request that moved since it was reviewed, and binds the review to that commit
+  (`commit_id` on GitHub, the `sha` on GitLab), so nothing is published about code
+  nobody read. The *approval* is a statement about the pull request, though, not
+  about a commit: both forges go on counting it toward the merge requirements after
+  a push, unless the repository is configured to clear approvals on one. So an
+  author can wait for `-post-verdict` to exit `0`, push, and merge on it. No client
+  can close that — enable *Dismiss stale pull request approvals when new commits
+  are pushed* (GitHub) or *Remove all approvals when commits are added to the source
+  branch* (GitLab) before letting anything approve. fixpoint prints the same warning
+  on every approval it publishes.
 - **`prompt_via: arg` exposes the prompt on the process argument list**,
   readable by other local users via `ps`/`/proc`. Prefer `stdin` on shared
   hosts; fixpoint warns at run start.

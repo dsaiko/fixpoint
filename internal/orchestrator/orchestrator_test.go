@@ -7905,6 +7905,48 @@ func TestTheVerdictDecidesWhichForgeEventIsPosted(t *testing.T) {
 	}
 }
 
+// A successful post is where an operator stops reading, and for an approval that
+// exit says less than it looks like: the forge goes on counting the approval after
+// the author pushes, unless the repository dismisses stale approvals. The notice is
+// the only place that is said, so it must reach the log on an approval -- and only
+// on one, since a comment grants nothing and a warning printed on every post is a
+// warning nobody reads.
+func TestAPublishedApprovalSaysItIsNotWithdrawnByALaterPush(t *testing.T) {
+	for _, tc := range []struct {
+		outcome string
+		want    bool
+	}{
+		{model.VerdictApprove, true},
+		{model.VerdictChangesRequested, false},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			f.cfg.Review.Post = true
+			f.cfg.Review.PostVerdict = true
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 7
+
+			var posted string
+			restore := postedBodyForTest(&posted, nil)
+			defer restore()
+
+			o, logs := f.capturingOrchestrator()
+			sum := &model.RunSummary{
+				ReviewedHead: strings.Repeat("a", 40),
+				Verdict:      &model.ReviewVerdict{Outcome: tc.outcome},
+			}
+			if err := o.postReview(t.Context(), sum, "the review"); err != nil {
+				t.Fatal(err)
+			}
+			said := strings.Contains(logs(), "not withdrawn by a later push")
+			if said != tc.want {
+				t.Errorf("the approval notice was printed = %v for %s, want %v: %s", said, tc.outcome, tc.want, logs())
+			}
+		})
+	}
+}
+
 // The reviewed commit is recorded in pr mode, where the checked-out HEAD is the
 // pull request's head. A directory run has no pull request to bind to, and
 // recording its HEAD anyway would put a commit in the summary that no posting path

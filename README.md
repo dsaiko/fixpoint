@@ -233,6 +233,16 @@ On GitHub the submission also names that commit (`commit_id`), so the review is
 recorded against it and its comments are marked outdated if the branch moves
 afterwards.
 
+The **approval itself is not**, and no client can make it so. A forge counts an
+approval toward its merge requirements until something clears it, so once fixpoint
+has exited an author can push and merge on an approval given for the commit before
+— exactly what the check above refuses *during* the run. Only the repository can
+close that: on GitHub enable *Dismiss stale pull request approvals when new commits
+are pushed*, on GitLab *Remove all approvals when commits are added to the source
+branch*. Turn it on before you let anything approve with `-post-verdict`, machine
+or human — every approval fixpoint publishes says so in the log, naming the commit
+it was for.
+
 It is bound to the **repository** it was about too. A commit is not a destination:
 the run directory records the path it ran in, and `-post-run` submits through
 whatever checkout is at that path when you run it — which, days later, may have been
@@ -287,7 +297,7 @@ and the review is still on disk.
 | `-allow-untrusted-fix` | Permit fix rounds in `pr` mode (PR content is untrusted; see Security). |
 | `-post` | Publish the review on the pull request as a **comment**: findings become visible, no verdict is acted on. Publishes what the run just produced, so nobody has read it yet — prefer `-post-run`. A publish that was asked for and did not happen fails the run (exit `1`), so an approval can never exit `0` over a review that never reached the pull request; the review is still in `review-body.md`. |
 | `-post-run dir` | Publish the review a **finished** run already produced, from its `.fixpoint/<run>` directory (or its `summary-*.json`). Invokes no agent and reviews nothing: the bytes posted are the bytes in `review-body.md` and the inline anchors are the ones that run computed. Resolves no configuration at all — everything it acts on is in that run's summary — so every flag but `-post-verdict` is ignored. |
-| `-post-verdict` | With `-post` or `-post-run`, let the review carry its verdict — approving, or requesting changes on someone's PR. An inconclusive verdict stays a comment regardless. |
+| `-post-verdict` | With `-post` or `-post-run`, let the review carry its verdict — approving, or requesting changes on someone's PR. An inconclusive verdict stays a comment regardless. An approval is bound to the reviewed commit only until the run ends: unless the repository dismisses stale approvals on push, it keeps counting after one (see above). |
 | `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](docs/concepts.md#choosing-a-base-in-git-diff-mode). |
 | `-check-live` | Validate, ping every agent, and exit. |
 

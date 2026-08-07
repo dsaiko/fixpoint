@@ -473,6 +473,14 @@ func TestPostRunPublishesTheRunItReplays(t *testing.T) {
 			if !strings.Contains(logs.String(), string(tc.want)) || !strings.Contains(logs.String(), p.url) {
 				t.Errorf("the log should name the event and the URL:\n%s", logs.String())
 			}
+			// An approval published here is days older than the commit it was given for,
+			// and the forge keeps counting it after the next push. The operator reads this
+			// log and nothing else, so the notice has to be in it -- and only on the event
+			// that grants something. See forge.ApprovalNotice.
+			said := strings.Contains(logs.String(), "not withdrawn by a later push")
+			if want := tc.want == forge.EventApprove; said != want {
+				t.Errorf("the approval notice was printed = %v for %q, want %v:\n%s", said, tc.want, want, logs.String())
+			}
 		})
 	}
 }

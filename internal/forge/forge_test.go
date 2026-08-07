@@ -1294,6 +1294,41 @@ func TestCanonicalRepoNamesOneRepositoryOneWay(t *testing.T) {
 	}
 }
 
+// Everything else in this file binds a review to one commit while the run lasts.
+// The approval itself is not bound after it: both forges keep counting one toward
+// the merge requirements once the branch moves, unless the repository clears
+// approvals on a push. The notice is the only thing that tells an operator so, so
+// it has to be there on every approval -- and on nothing else, or it becomes the
+// warning every comment prints and nobody reads.
+func TestAnApprovalSaysItOutlivesTheCommitItWasGivenFor(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
+	for name, tc := range map[string]struct {
+		kind  Kind
+		event Event
+		want  []string
+	}{
+		"github approval": {GitHub, EventApprove, []string{"#7", "0123456789ab", "Dismiss stale pull request approvals"}},
+		"gitlab approval": {GitLab, EventApprove, []string{"!7", "0123456789ab", "Remove all approvals"}},
+		"comment":         {GitHub, Comment, nil},
+		"request changes": {GitHub, EventRequestChanges, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := ApprovalNotice(tc.kind, tc.event, 7, head)
+			if len(tc.want) == 0 {
+				if got != "" {
+					t.Errorf("ApprovalNotice(%s) = %q, want nothing -- it grants no approval", tc.event, got)
+				}
+				return
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("the notice does not say %q: %s", want, got)
+				}
+			}
+		})
+	}
+}
+
 // A review permalink is the only handle this run holds on the approval it just
 // posted, and asking the API which review is ours would race anything else
 // posting. Anything that is not a plain numeric id must fail closed: dismissing

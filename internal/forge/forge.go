@@ -818,6 +818,44 @@ func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, e
 	return nil
 }
 
+// ApprovalNotice says what a published approval does NOT cover, and is printed by
+// every caller that publishes one.
+//
+// Everything else about posting binds a review to one commit: requireHead refuses a
+// pull request that moved before the submission, commit_id and gitlabApprove's sha
+// record which commit the review is about, and confirmApproval withdraws an approval
+// that landed on a head which moved while it was in flight. None of it survives the
+// run. An approval is a statement about a PULL REQUEST, not about a commit: both
+// forges keep counting one toward their merge requirements after the branch moves,
+// unless the repository is configured to clear approvals on a push. So an author can
+// wait for a clean exit, push, and merge on an approval given for code nobody read --
+// the window requireHead closes inside the run, reopened the moment it ends.
+//
+// No API call can close it, because the setting belongs to the repository rather
+// than to whoever posts a review; a human reviewer's approval carries the same
+// residue. What is left is to stop an operator inferring from a successful exit that
+// the approval is commit-bound, and to name the one setting that makes it so.
+//
+// Printed on EVERY approval, not only where a check says it matters: the rule that
+// would answer -- classic branch protection, or a ruleset -- is unreadable without
+// admin on the repository, which is exactly what the operators running this on
+// somebody else's pull request do not have. A notice that is silent whenever the
+// answer is unavailable would be quietest in the case it is most needed.
+//
+// Empty for anything else. A comment grants nothing, and a change request that
+// outlives the commit it was about errs in the direction that costs a re-review.
+func ApprovalNotice(kind Kind, event Event, pr int, head string) string {
+	if event != EventApprove {
+		return ""
+	}
+	ref, setting := fmt.Sprintf("#%d", pr), `the branch protection setting "Dismiss stale pull request approvals when new commits are pushed"`
+	if kind == GitLab {
+		ref, setting = fmt.Sprintf("!%d", pr), `the project setting "Remove all approvals when commits are added to the source branch"`
+	}
+	return fmt.Sprintf("the approval published on %s was given for %s, but it is not withdrawn by a later push: unless %s is enabled on this repository, it goes on counting toward the merge requirements over commits nobody reviewed",
+		ref, shortSHA(head), setting)
+}
+
 // githubDismissReview withdraws a review this run just submitted.
 //
 // The id is the one the create response named, which is the only handle that

@@ -5026,9 +5026,16 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 	}
 	if url != "" {
 		o.logf("review posted to %s as %s: %s", p.Kind(), event, url)
-		return nil
+	} else {
+		o.logf("review posted to %s as %s", p.Kind(), event)
 	}
-	o.logf("review posted to %s as %s", p.Kind(), event)
+	// An approval outlives the commit it was given for -- see forge.ApprovalNotice.
+	// Said after the post, and only when one happened, because it is about something
+	// that is now on the pull request; a run that exits 0 here otherwise reads as
+	// "the approval is bound to what was reviewed", which the forge does not promise.
+	if notice := forge.ApprovalNotice(p.Kind(), event, o.cfg.Target.PR, sum.ReviewedHead); notice != "" {
+		o.logf("WARNING: %s", notice)
+	}
 	return nil
 }
 
