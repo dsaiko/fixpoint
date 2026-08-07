@@ -32,26 +32,8 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		logf("post-run: %v", err)
 		return 1
 	}
-	if sum.Verdict == nil {
-		logf("post-run: %s holds no review verdict -- a fix run has nothing to publish", dir)
-		return 2
-	}
-	if sum.Mode != "pr" {
-		logf("post-run: %s reviewed %s, not a pull request; there is nowhere to post it", dir, sum.Mode)
-		return 2
-	}
-	if sum.PR <= 0 {
-		logf("post-run: %s records no pull request number. Runs from before that was recorded cannot be replayed; review again to produce one that can.", dir)
-		return 2
-	}
-	// Which commit the review is ABOUT. Refused here rather than left to the poster
-	// so the operator gets the same "review again" answer as the missing PR number
-	// above: a summary that cannot say what it reviewed cannot be published against
-	// anything. The poster refuses too, and additionally refuses when the pull
-	// request has moved since -- replaying a verdict onto a commit the panel never
-	// read is the reason this is checked at all.
-	if sum.ReviewedHead == "" {
-		logf("post-run: %s does not record which commit it reviewed, so the review cannot be bound to one. Runs from before that was recorded cannot be replayed; review again to produce one that can.", dir)
+	if why := unreplayable(dir, sum); why != "" {
+		logf("post-run: %s", why)
 		return 2
 	}
 	// The body is always the file beside the resolved summary, never the path the
@@ -124,6 +106,59 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		logf("posted %s to %s as %s", filepath.Base(runDir), p.Kind(), event)
 	}
 	return 0
+}
+
+// unreplayable says why a summary cannot be published, or returns "" if it can.
+//
+// Every answer names dir and ends the same way, because they are all the same
+// answer: this run cannot be replayed faithfully, and only reviewing again
+// produces one that can. Nothing here is guessed at or worked around -- a replay
+// that filled in a fact the run did not record would publish something no panel
+// reached, which is the one thing this mode must never do.
+func unreplayable(dir string, sum *model.RunSummary) string {
+	switch {
+	case sum.Verdict == nil:
+		return dir + " holds no review verdict -- a fix run has nothing to publish"
+	case sum.Mode != "pr":
+		return fmt.Sprintf("%s reviewed %s, not a pull request; there is nowhere to post it", dir, sum.Mode)
+	case sum.PR <= 0:
+		return dir + " records no pull request number. Runs from before that was recorded cannot be replayed; review again to produce one that can."
+	// Which commit the review is ABOUT. Refused here rather than left to the poster
+	// so the operator gets the same "review again" answer as the missing PR number
+	// above: a summary that cannot say what it reviewed cannot be published against
+	// anything. The poster refuses too, and additionally refuses when the pull
+	// request has moved since -- replaying a verdict onto a commit the panel never
+	// read is the reason this is checked at all.
+	case sum.ReviewedHead == "":
+		return dir + " does not record which commit it reviewed, so the review cannot be bound to one. Runs from before that was recorded cannot be replayed; review again to produce one that can."
+	}
+	// The run must also have FINISHED the review it is being asked to publish.
+	//
+	// Checked last because it is the only refusal that can be true of an otherwise
+	// complete summary: the verdict and the review body are written by
+	// decideVerdict, which runs BEFORE runRound's post-decideVerdict cancellation
+	// check (internal/orchestrator, the review-only branch). So a Ctrl-C anywhere in
+	// the minutes that refutation, judging and writing take leaves a run directory
+	// holding an APPROVE that the run itself deliberately did not post and exited
+	// non-zero over -- and without this, -post-run would publish it.
+	//
+	// An error termination is refused for a second reason. On a review-only run
+	// Error is only ever set by recordRunError, and the one error that branch can
+	// return is the publish the operator already asked for failing; a publish that
+	// failed on the client may well have been accepted by the forge first, which is
+	// exactly the duplicate-review hazard postRun's guarded retry refuses to take.
+	// Every other termination belongs to a fix run, which has no verdict at all.
+	if sum.Termination != model.TermReviewOnly || sum.Error != "" {
+		how := sum.Termination
+		if how == "" {
+			how = "unrecorded"
+		}
+		if sum.Error != "" {
+			how = fmt.Sprintf("%s (%s)", how, sum.Error)
+		}
+		return fmt.Sprintf("%s ended as %s, not a completed review; a verdict the run itself would not stand behind cannot be published. Review again to produce a run that can be.", dir, how)
+	}
+	return ""
 }
 
 // loadRunSummary reads the summary from a run directory, accepting either the

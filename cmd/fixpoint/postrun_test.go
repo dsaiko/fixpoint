@@ -34,6 +34,9 @@ func writeRun(t *testing.T, sum model.RunSummary, body string) string {
 	return dir
 }
 
+// The commit a replayable summary says it reviewed.
+const head = "0123456789abcdef0123456789abcdef01234567"
+
 // Publishing a finished run must refuse anything it cannot faithfully replay,
 // and say which. The whole point of the mode is that what goes out is what was
 // reviewed, so guessing at a missing fact would defeat it.
@@ -65,6 +68,41 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 			"a run that does not say which commit it reviewed",
 			model.RunSummary{Mode: "pr", PR: 3, Verdict: &model.ReviewVerdict{Outcome: model.VerdictApprove}},
 			"body", "does not record which commit it reviewed",
+		},
+		{
+			// The verdict and the body are written before the round checks whether it
+			// was canceled, so an interrupted review leaves a complete-looking APPROVE
+			// the run itself refused to post and exited non-zero over.
+			"a review the operator stopped part-way",
+			model.RunSummary{
+				Mode: "pr", PR: 3, ReviewedHead: head,
+				Termination: model.TermInterrupted,
+				Verdict:     &model.ReviewVerdict{Outcome: model.VerdictApprove},
+			},
+			"body", "ended as interrupted",
+		},
+		{
+			// On a review-only run the recorded error is the publish that failed --
+			// which the forge may have accepted before the client gave up.
+			"a review whose own publish failed",
+			model.RunSummary{
+				Mode: "pr", PR: 3, ReviewedHead: head,
+				Termination: model.TermError, LoopTermination: model.TermReviewOnly,
+				Error:   "post review: 502 from github",
+				Verdict: &model.ReviewVerdict{Outcome: model.VerdictApprove},
+			},
+			"body", "ended as error (post review: 502 from github)",
+		},
+		{
+			// Nothing but a review-only round computes a verdict, so any fix termination
+			// carrying one is a summary that did not come from a completed review.
+			"a fix termination carrying a verdict",
+			model.RunSummary{
+				Mode: "pr", PR: 3, ReviewedHead: head,
+				Termination: model.TermMaxIterations,
+				Verdict:     &model.ReviewVerdict{Outcome: model.VerdictApprove},
+			},
+			"body", "ended as max-iterations",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,7 +139,8 @@ func TestPostRunReadsTheBodyBesideTheSummary(t *testing.T) {
 		t.Run(shape, func(t *testing.T) {
 			dir := writeRun(t, model.RunSummary{
 				Mode: "pr", PR: 3, Path: t.TempDir(),
-				ReviewedHead: "0123456789abcdef0123456789abcdef01234567",
+				ReviewedHead: head,
+				Termination:  model.TermReviewOnly,
 				ReviewBody:   "/gone/review-body.md",
 				Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
 			}, "the review that was actually produced")
@@ -135,7 +174,8 @@ func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
 	}
 	base := model.RunSummary{
 		Mode: "pr", PR: 3, Path: t.TempDir(),
-		ReviewedHead: "0123456789abcdef0123456789abcdef01234567",
+		ReviewedHead: head,
+		Termination:  model.TermReviewOnly,
 		ReviewBody:   secret,
 		Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
 	}
