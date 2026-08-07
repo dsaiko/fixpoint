@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -206,4 +210,184 @@ func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
 			t.Errorf("the symlink was followed rather than refused:\n%s", logs.String())
 		}
 	})
+}
+
+// postCall is one submission a fake poster received.
+type postCall struct {
+	dir    string
+	pr     int
+	head   string
+	body   string
+	event  forge.Event
+	inline []forge.InlineComment
+}
+
+// fakePoster records what would have gone to the forge, and fails the calls it is
+// told to: errs[i] is returned from submission i, so an anchor rejection followed
+// by a success is expressible, and so is a failure that must NOT be retried.
+type fakePoster struct {
+	calls []postCall
+	errs  []error
+	url   string
+}
+
+func (*fakePoster) Kind() forge.Kind { return forge.GitHub }
+
+func (*fakePoster) Checks(context.Context, string, int) (forge.Checks, error) {
+	return forge.Checks{}, nil
+}
+
+func (f *fakePoster) PostReview(_ context.Context, dir string, pr int, head, body string, event forge.Event, inline []forge.InlineComment) (string, error) {
+	f.calls = append(f.calls, postCall{dir, pr, head, body, event, inline})
+	if n := len(f.calls) - 1; n < len(f.errs) && f.errs[n] != nil {
+		return "", f.errs[n]
+	}
+	return f.url, nil
+}
+
+// installPoster points -post-run's forge lookup at p for one test.
+func installPoster(t *testing.T, p forge.Poster) {
+	t.Helper()
+	prev := posterFor
+	posterFor = func(context.Context, string) forge.Poster { return p }
+	t.Cleanup(func() { posterFor = prev })
+}
+
+// replayable is a summary -post-run will publish, so a test can vary the one
+// field it is about.
+func replayable(t *testing.T, outcome string, anchors []model.ReviewAnchor) model.RunSummary {
+	t.Helper()
+	return model.RunSummary{
+		Mode: "pr", PR: 3, Path: t.TempDir(),
+		ReviewedHead: head,
+		Termination:  model.TermReviewOnly,
+		ReviewInline: anchors,
+		Verdict:      &model.ReviewVerdict{Outcome: outcome},
+	}
+}
+
+// What reaches the forge is what the run produced: the bytes on disk, the commit
+// it reviewed, its own anchors, and the event its outcome maps to. This is the
+// promise the mode is FOR, and it is made in the one call no log line can show.
+//
+// The event mapping is the consequential half. Approving a change the panel did
+// not clear, or blocking one it did, is a social act taken under the operator's
+// identity -- and both are one swapped case away.
+func TestPostRunPublishesTheRunItReplays(t *testing.T) {
+	anchors := []model.ReviewAnchor{
+		{Path: "internal/forge/forge.go", Line: 42, Body: "the anchor the run computed"},
+		{Path: "cmd/fixpoint/main.go", Line: 7, Body: "and the second one"},
+	}
+	for _, tc := range []struct {
+		name        string
+		outcome     string
+		postVerdict bool
+		want        forge.Event
+	}{
+		{"approve alone is only a comment", model.VerdictApprove, false, forge.Comment},
+		{"changes-requested alone is only a comment", model.VerdictChangesRequested, false, forge.Comment},
+		{"approve with -post-verdict approves", model.VerdictApprove, true, forge.EventApprove},
+		{"changes-requested with -post-verdict blocks", model.VerdictChangesRequested, true, forge.EventRequestChanges},
+		{"inconclusive is a comment under every flag", model.VerdictInconclusive, true, forge.Comment},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const body = "the review that was actually produced"
+			sum := replayable(t, tc.outcome, anchors)
+			dir := writeRun(t, sum, body)
+			p := &fakePoster{url: "https://github.com/o/r/pull/3#pullrequestreview-1"}
+			installPoster(t, p)
+
+			var logs strings.Builder
+			code := postRun(dir, tc.postVerdict, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			if code != 0 {
+				t.Fatalf("postRun() = %d, want 0; logs:\n%s", code, logs.String())
+			}
+			if len(p.calls) != 1 {
+				t.Fatalf("PostReview called %d times, want 1", len(p.calls))
+			}
+			got := p.calls[0]
+			if got.event != tc.want {
+				t.Errorf("event = %q, want %q", got.event, tc.want)
+			}
+			if got.body != body {
+				t.Errorf("body = %q, want the bytes on disk %q", got.body, body)
+			}
+			if got.head != head {
+				t.Errorf("head = %q, want the reviewed head %q", got.head, head)
+			}
+			if got.pr != sum.PR || got.dir != sum.Path {
+				t.Errorf("posted to (%s, #%d), want (%s, #%d)", got.dir, got.pr, sum.Path, sum.PR)
+			}
+			want := []forge.InlineComment{
+				{Path: "internal/forge/forge.go", Line: 42, Body: "the anchor the run computed"},
+				{Path: "cmd/fixpoint/main.go", Line: 7, Body: "and the second one"},
+			}
+			if !reflect.DeepEqual(got.inline, want) {
+				t.Errorf("inline comments = %+v, want the run's own anchors %+v", got.inline, want)
+			}
+			if !strings.Contains(logs.String(), string(tc.want)) || !strings.Contains(logs.String(), p.url) {
+				t.Errorf("the log should name the event and the URL:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// A second submission is earned only by an anchor rejection, which created
+// nothing on the forge. Every other failure may have been ACCEPTED before the
+// client saw it, so retrying is how a pull request collects two identical reviews
+// under the operator's identity. Nothing else in the suite protects this copy of
+// the rule: the orchestrator's own test covers the orchestrator's copy.
+func TestPostRunRetriesOnlyWhenTheAnchorsWereRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		calls int
+		code  int
+		want  string
+	}{
+		{
+			"a rejected anchor is retried without the inline comments",
+			forge.RejectedAnchors(errors.New("line 42 is not part of the diff")),
+			2, 0, "rejected the inline comments",
+		},
+		{
+			"an auth failure is reported, not retried",
+			errors.New("gh: HTTP 401 Bad credentials"),
+			1, 1, "publishing to github failed",
+		},
+		{
+			// The case that costs something: the forge may already hold the review.
+			"a timeout is reported, not retried",
+			context.DeadlineExceeded,
+			1, 1, "publishing to github failed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeRun(t, replayable(t, model.VerdictApprove, []model.ReviewAnchor{
+				{Path: "internal/forge/forge.go", Line: 42, Body: "an anchor the forge may not accept"},
+			}), "the review that was actually produced")
+			p := &fakePoster{errs: []error{tc.err}}
+			installPoster(t, p)
+
+			var logs strings.Builder
+			code := postRun(dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			if code != tc.code {
+				t.Errorf("postRun() = %d, want %d; logs:\n%s", code, tc.code, logs.String())
+			}
+			if len(p.calls) != tc.calls {
+				t.Fatalf("PostReview called %d times, want %d", len(p.calls), tc.calls)
+			}
+			if tc.calls == 2 {
+				if p.calls[1].inline != nil {
+					t.Errorf("the retry carried anchors again: %+v", p.calls[1].inline)
+				}
+				if p.calls[1].body != p.calls[0].body || p.calls[1].event != p.calls[0].event {
+					t.Errorf("the retry changed the review: %+v then %+v", p.calls[0], p.calls[1])
+				}
+			}
+			if !strings.Contains(logs.String(), tc.want) {
+				t.Errorf("logs should say %q:\n%s", tc.want, logs.String())
+			}
+		})
+	}
 }

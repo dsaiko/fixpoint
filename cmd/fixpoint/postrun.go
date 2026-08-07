@@ -13,6 +13,12 @@ import (
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
+// posterFor is forge.PosterFor behind a variable so a test can observe what would
+// be published, exactly as internal/orchestrator does it. Publishing is the half of
+// this mode that cannot be checked by reading a log line: the event, the anchors and
+// the body all reach the forge in one call, and only a fake poster can see them.
+var posterFor = forge.PosterFor
+
 // postRun publishes a review a previous run already produced, without invoking a
 // single agent.
 //
@@ -67,7 +73,7 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 	}
 
 	ctx := context.Background()
-	p := forge.PosterFor(ctx, sum.Path)
+	p := posterFor(ctx, sum.Path)
 	if p == nil {
 		logf("post-run: no GitHub or GitLab remote recognized at %s", sum.Path)
 		return 1
