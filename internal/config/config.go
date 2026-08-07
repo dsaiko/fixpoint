@@ -1505,19 +1505,17 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("roles.review: agent %q has can_edit: true -- reviewers run concurrently against the shared working tree and must be read-only; only roles.coder may edit files", name)
 		}
 	}
-	// The judge goes through the SAME check as every other invoked agent, not a
-	// reduced one. Two of check's rules are security controls the judge needs most:
-	// the pr-mode refusal of a command element resolving inside target.path (the
-	// judge would otherwise be a second way to exec PR-authored code as a fixpoint
-	// agent), and the permission-bypass cross-check that keeps a can_edit: false
-	// claim from being contradicted by the argv. The shipped configs pin the judge
-	// to an agent that is also in the reviewer pool and so was checked there; a
-	// judge-only agent has no other place to be validated.
+	// Triage goes through the SAME check as every other invoked agent, not a
+	// reduced one: it is exec'd like any other, so the pr-mode refusal of a
+	// command element resolving inside target.path binds it too -- otherwise
+	// triage would be one more way to run PR-authored code as a fixpoint agent.
+	// A triage agent that is not also in the reviewer pool has no other place to
+	// be validated.
 	if t := c.Roles.Triage; t.Agent != "" {
 		if err := check("roles.triage", t.Agent); err != nil {
 			return err
 		}
-		// Same rule as the judge, and here it is the load-bearing half of the feature:
+		// Same can_edit rule as the judge below, and here it is the load-bearing half of the feature:
 		// triage reads comments written by anyone who can reach the pull request and
 		// decides what work they commission. An agent that could also edit would let
 		// that text reach the tree without passing through the coder, the verify gate
@@ -1527,6 +1525,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("roles.triage.agent: %q declares can_edit; triage decides what untrusted comments commission and must not be able to act on them itself", t.Agent)
 		}
 	}
+	// The judge goes through the SAME check as every other invoked agent, not a
+	// reduced one. Two of check's rules are security controls the judge needs most:
+	// the pr-mode refusal of a command element resolving inside target.path (the
+	// judge would otherwise be a second way to exec PR-authored code as a fixpoint
+	// agent), and the permission-bypass cross-check that keeps a can_edit: false
+	// claim from being contradicted by the argv. The shipped configs pin the judge
+	// to an agent that is also in the reviewer pool and so was checked there; a
+	// judge-only agent has no other place to be validated.
 	if j := c.Roles.Judge; j.Agent != "" {
 		if err := check("roles.judge", j.Agent); err != nil {
 			return err
