@@ -2,10 +2,12 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/forge"
@@ -708,6 +710,121 @@ func TestAFixedCommissionedIssueIsRefusedWhenItsConversationGoesUnanswered(t *te
 				t.Fatalf("unansweredCommission() err = %v, want it to name %s", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// fixReplyResponse is fixResponse plus the conversation answers the coder wrote,
+// which is the shape of a commissioned session's output.
+func fixReplyResponse(t *testing.T, results []model.FixResult, replies []model.FixReply) string {
+	t.Helper()
+	b, err := json.Marshal(model.FixOutput{Results: results, Replies: replies})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "Done.\n<fix>" + string(b) + "</fix>\n"
+}
+
+// The refusal only protects a run if the SESSION performs it, and performs it
+// before it records the verdict. The table above calls the helper directly, so
+// deleting the call from fix -- or moving it after applyVerdicts, where the
+// issue is already marked fixed and dropped from the commissioned queue -- would
+// leave every one of those cases passing while a run went right back to
+// committing an unanswered commissioned fix. So drive whole rounds: the coder
+// reports the commissioned issue fixed and writes no reply, and the round after
+// does both halves of the job.
+func TestARoundRefusesAnUnansweredCommissionedFixAndTheWorkComesBack(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, CleanRoundsToStop: 1})
+	f.triageRole()
+	f.cfg.Review.Post = true
+	// A gate that always passes, so every verification this run performs is
+	// attributable and the test can say WHICH work reached it.
+	script := filepath.Join(t.TempDir(), "check.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.Verify = config.Verify{
+		Policy:   config.VerifyMustPass,
+		Timeout:  config.Duration(time.Minute),
+		Commands: []config.VerifyCommand{{Name: "build", Run: []string{script}}},
+	}
+
+	// The panel reports nothing in either round: the conversation is the only work,
+	// which is exactly the run that used to converge with it unanswered.
+	f.respond(1, reviewResponse(t))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "guarded the dereference"}))
+	f.respond(3, reviewResponse(t))
+	f.editRepoOn(4)
+	f.respond(4, fixReplyResponse(t,
+		[]model.FixResult{{ID: "i1", Verdict: "fixed", Detail: "guarded the dereference"}},
+		[]model.FixReply{{Thread: "100", Message: "guarded the dereference in a.go"}}))
+
+	o, reader, logs := f.withThreads("dsaiko",
+		forge.Thread{ID: "100", Path: "a.go", Line: 3, Author: "stranger", Body: "this dereference is unguarded"})
+	// What triage leaves behind for the loop to pick up.
+	o.commissioned = []model.Finding{{
+		Agent: "triagemock", Lens: "triage", Category: "bug", Severity: "high",
+		File: "a.go", Line: 3, Title: "missing guard", Description: "Guard the dereference at a.go:3.",
+		Origin: model.Origin{Thread: "100", Author: "stranger", External: true},
+	}}
+	o.commissionedThreads = map[string]bool{"100": true}
+
+	sum := &model.RunSummary{}
+	cleanStreak := 0
+	if _, err := o.runRound(t.Context(), 1, sum, &cleanStreak); err != nil {
+		t.Fatalf("runRound(1) err = %v", err)
+	}
+	if len(sum.Rounds) != 1 {
+		t.Fatalf("rounds = %d, want 1", len(sum.Rounds))
+	}
+	r1 := sum.Rounds[0]
+	// The verdict is the thing: applyVerdicts must never have run for this session.
+	// A fixed issue is dropped from the commissioned queue, and that is what strands
+	// the conversation -- no other session may answer it.
+	if r1.Fixed != 0 {
+		t.Errorf("round 1 fixed = %d, want the fix refused for owing an answer", r1.Fixed)
+	}
+	if len(r1.Issues) != 1 || r1.Issues[0].StatusOrDefault() == model.VerdictFixed {
+		t.Errorf("round 1 issues = %+v, want the commissioned one left undecided", r1.Issues)
+	}
+	if !strings.Contains(r1.CoderError, "conversation 100") {
+		t.Errorf("round 1 coder error = %q, want it to name the conversation that went unanswered", r1.CoderError)
+	}
+	// The refusal comes before verifyAndCommitFix, so nothing was verified or
+	// committed AS THIS FIX. The coder had already edited the tree, so those edits
+	// are kept the way any failed coder's are -- verified once as salvage and
+	// committed as partial work naming the issue it left undecided (see
+	// salvagePartialFix) -- which is not the same thing as accepting the fix.
+	for _, v := range r1.Verify {
+		if v.Attempt != model.VerifyAttemptSalvage || v.Issue != "" {
+			t.Errorf("round 1 verified %+v; a refused fix must not reach the gate as a fix", v)
+		}
+	}
+	if msg := gitRun(t, f.repo, "log", "-1", "--format=%B"); !strings.Contains(msg, "partial, coder failed") ||
+		!strings.Contains(msg, "Issues left without a verdict") {
+		t.Errorf("round 1 commit = %q, want the refused session's edits kept as partial work, not as an accepted fix", msg)
+	}
+	// Nothing was answered either: a reply only goes out behind a committed fix.
+	if len(reader.bodies) != 0 {
+		t.Fatalf("posted %q, want the conversation left for the session that finishes the job", reader.bodies)
+	}
+	if !o.threadOpen("100") {
+		t.Error("the conversation was closed by a session that never answered it")
+	}
+
+	if _, err := o.runRound(t.Context(), 2, sum, &cleanStreak); err != nil {
+		t.Fatalf("runRound(2) err = %v", err)
+	}
+	r2 := sum.Rounds[1]
+	// Same issue, same conversation, re-offered with nothing else to report it.
+	if len(r2.Issues) != 1 || r2.Issues[0].ID != "i1" || r2.Issues[0].Origin.Thread != "100" {
+		t.Fatalf("round 2 issues = %+v, want the refused commissioned issue back", r2.Issues)
+	}
+	if r2.Fixed != 1 || r2.CommitSHA == "" {
+		t.Errorf("round 2 fixed = %d, commit = %q, want the answered fix accepted and committed:\n%s", r2.Fixed, r2.CommitSHA, logs())
+	}
+	if len(reader.bodies) != 1 || !strings.Contains(reader.bodies[0], "guarded the dereference in a.go") {
+		t.Fatalf("posted %q, want the person who asked answered once the fix committed", reader.bodies)
 	}
 }
 

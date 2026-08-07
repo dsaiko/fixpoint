@@ -155,7 +155,7 @@ func TestFixPRPostsOnlyWhenAskedTo(t *testing.T) {
 	// -post, or a POST=0 run publishes replies into somebody's pull request under
 	// the operator's identity; and the guard must stop the run before the binary
 	// is reached, so the operator learns the value was ignored rather than
-	// silently getting the non-posting behaviour of a flag they thought they set.
+	// silently getting the non-posting behavior of a flag they thought they set.
 	for _, post := range []string{"0", "false", "true", "yes"} {
 		t.Run("POST="+post, func(t *testing.T) {
 			recipe := makeDryRun(t, "fix-pr", "PR=170", "POST="+post)
