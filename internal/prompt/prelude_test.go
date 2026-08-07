@@ -89,6 +89,25 @@ func TestConversationsAreQuotedAsUntrustedText(t *testing.T) {
 	}
 }
 
+// The same rendered block is the last thing both the coder and conversation
+// triage read before their output contracts, and they owe the threads opposite
+// things: the coder answers only what it touched, triage must decide every one.
+// So the block itself says nothing about which to answer -- that belongs to
+// FixContract, which is the only place it may appear.
+func TestConversationsCarryNoAnswerOnlyWhatYouTouchedInstruction(t *testing.T) {
+	got := FormatConversations([]Conversation{{
+		ID: "12345", Path: "internal/auth/token.go", Line: 91, Author: "someone", Body: "this looks wrong",
+	}})
+	for _, phrase := range []string{"Leave the rest alone", "your work in this session"} {
+		if strings.Contains(got, phrase) {
+			t.Errorf("the rendered threads carry the coder-only instruction %q, which tells triage to skip conversations it must decide:\n%s", phrase, got)
+		}
+		if !strings.Contains(FixContract, phrase) {
+			t.Errorf("FixContract lost %q, so the coder is no longer told which conversations to answer", phrase)
+		}
+	}
+}
+
 // No conversations renders nothing at all, so a directory run's coder prompt is
 // byte-identical to what it was before conversations existed.
 func TestNoConversationsRendersEmpty(t *testing.T) {

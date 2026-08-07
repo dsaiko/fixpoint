@@ -366,9 +366,10 @@ When you were shown open conversations, you may also answer them:
 </fix>
 
 Include a reply only for a conversation your work in this session actually
-addresses. Replies are posted under a human's comment with the operator's name on
-them, so an answer that restates the question, or claims a change you did not
-make, costs them more than silence would.`
+addresses. Say what you changed and where; if you decided not to act on it, say
+that and why. Leave the rest alone: replies are posted under a human's comment
+with the operator's name on them, so an answer that restates the question, or
+claims a change you did not make, costs them more than silence would.`
 
 // Every free-text field a reviewer or coder writes is quoted into the NEXT
 // agent's prompt: a finding's description reaches the coder, and a verdict detail
@@ -797,8 +798,14 @@ afterwards and disagree with.
 The <review> block must be the LAST thing you print. The JSON must be valid: no
 comments, no trailing commas, no markdown fences inside the block.`
 
-// FormatConversations renders the pull request's open review threads for the
-// coder.
+// FormatConversations renders the pull request's open review threads.
+//
+// It renders the threads and nothing else: the same block goes to the coder,
+// which answers only what its work addressed, and to conversation triage, which
+// must decide every one of them. What to DO with a thread belongs to the output
+// contract of whichever pass is reading -- FixContract or TriageContract -- and
+// putting the coder's "leave the rest alone" here told triage to skip the ones it
+// exists to answer.
 //
 // Quoted, like every other block of text fixpoint did not write. These are human
 // comments, which sounds trustworthy until you remember that anyone can open a
@@ -843,9 +850,6 @@ func FormatConversations(threads []Conversation) string {
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString("Answer a conversation only when your work in this session addresses it. " +
-		"Say what you changed and where; if you decided not to act on it, say that and why. " +
-		"Leave the rest alone -- an answer that restates the question is worse than silence.\n\n")
 	return sb.String()
 }
 
