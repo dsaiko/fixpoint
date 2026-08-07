@@ -913,6 +913,27 @@ func gitRepoWithRemotes(t *testing.T, remotes [][2]string) string {
 	return dir
 }
 
+// stubGHRepoView puts a fake `gh` on PATH that answers the base-repository read
+// with url, or -- when url is empty -- fails the way gh does when it cannot
+// resolve one (not authenticated, no remote it recognizes). Every other
+// invocation fails too, so a test row that expects gh NOT to be consulted fails
+// loudly if it is.
+func stubGHRepoView(t *testing.T, url string) {
+	t.Helper()
+	bin := t.TempDir()
+	answer := "echo 'none of the git remotes point to a known GitHub host' >&2; exit 1"
+	if url != "" {
+		answer = "printf '%s' '{\"url\":\"" + url + "\"}'"
+	}
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"'repo view --json url') " + answer + " ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func gitIn(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -932,35 +953,62 @@ func TestTheForgeRemoteIsFoundWhateverItIsNamed(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		remotes [][2]string
-		want    Kind
+		// ghBase is what the stub `gh` answers the base-repository read with; ""
+		// makes it fail the way gh does when it cannot resolve one.
+		ghBase string
+		want   Kind
 	}{
-		{"origin is the forge", [][2]string{{"origin", "git@github.com:o/r.git"}}, GitHub},
-		{"cloned with -o upstream", [][2]string{{"upstream", "https://github.com/o/r.git"}}, GitHub},
+		{"origin is the forge", [][2]string{{"origin", "git@github.com:o/r.git"}}, "", GitHub},
+		{"cloned with -o upstream", [][2]string{{"upstream", "https://github.com/o/r.git"}}, "", GitHub},
 		{
 			"origin is an internal mirror, the forge is a second remote",
 			[][2]string{{"origin", "git@git.internal.example:o/r.git"}, {"github", "https://github.com/o/r.git"}},
+			"",
 			GitHub,
 		},
 		{
-			// origin keeps its precedence when it is itself a forge remote, so the
-			// ordinary checkout gets exactly the answer it always got.
-			"origin is preferred over a later forge remote",
-			[][2]string{{"origin", "git@gitlab.com:g/p.git"}, {"github", "https://github.com/o/r.git"}},
-			GitLab,
+			// Two remotes on the SAME forge are not a disagreement: gh is never asked,
+			// and the stub above would fail if it were.
+			"a fork and its upstream are both on GitHub",
+			[][2]string{{"origin", "https://github.com/me/r.git"}, {"upstream", "https://github.com/o/r.git"}},
+			"",
+			GitHub,
 		},
-		{"no remote is on a forge", [][2]string{{"origin", "git@git.internal.example:o/r.git"}}, Unknown},
-		{"no remotes at all", nil, Unknown},
+		{
+			// The finding this test row exists for: the pull request was checked out
+			// from the GitHub remote, so driving `glab` against merge request N of the
+			// GitLab mirror on origin would read, and with -post-verdict act on,
+			// something nobody reviewed. gh names the repository it resolved, and that
+			// is the one the review is about -- whatever origin points at.
+			"origin is a GitLab mirror and the PR came from GitHub",
+			[][2]string{{"origin", "git@gitlab.com:g/p.git"}, {"github", "https://github.com/o/r.git"}},
+			"https://github.com/o/r",
+			GitHub,
+		},
+		{
+			// Same checkout, but nothing can say which forge the pull request came
+			// from. No provider at all rather than a guess: the reads lose their
+			// evidence and a requested post fails loudly.
+			"remotes disagree and gh cannot name the base repository",
+			[][2]string{{"origin", "git@gitlab.com:g/p.git"}, {"github", "https://github.com/o/r.git"}},
+			"",
+			Unknown,
+		},
+		{"no remote is on a forge", [][2]string{{"origin", "git@git.internal.example:o/r.git"}}, "", Unknown},
+		{"no remotes at all", nil, "", Unknown},
 		{
 			// A remote NAME is repo-controlled config that would become a positional
 			// argument to git. One shaped like an option is skipped, not handed over.
 			"an option-like remote name is refused rather than resolved",
 			[][2]string{{"-x", "https://github.com/o/r.git"}},
+			"",
 			Unknown,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := gitRepoWithRemotes(t, tc.remotes)
-			if got := DetectKind(remoteURL(t.Context(), dir)); got != tc.want {
+			stubGHRepoView(t, tc.ghBase)
+			if got := providerKind(t.Context(), dir); got != tc.want {
 				t.Errorf("resolved forge = %q, want %q", got, tc.want)
 			}
 			p := For(t.Context(), dir)

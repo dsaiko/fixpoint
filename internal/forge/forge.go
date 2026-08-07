@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -66,12 +67,13 @@ type Provider interface {
 	Checks(ctx context.Context, dir string, pr int) (Checks, error)
 }
 
-// For returns the provider for whichever of a repository's remotes points at a
-// forge, or nil when none of them points somewhere either CLI understands. A nil
-// provider is not an error: plenty of targets are plain directories or
-// self-hosted git, and the run simply proceeds without forge evidence.
+// For returns the provider for the forge this checkout's pull request lives on,
+// or nil when no remote points somewhere either CLI understands and nothing else
+// names one. A nil provider is not an error: plenty of targets are plain
+// directories or self-hosted git, and the run simply proceeds without forge
+// evidence.
 func For(ctx context.Context, dir string) Provider {
-	switch DetectKind(remoteURL(ctx, dir)) {
+	switch providerKind(ctx, dir) {
 	case GitHub:
 		return githubProvider{}
 	case GitLab:
@@ -133,12 +135,39 @@ func remoteHost(remote string) string {
 	return strings.ToLower(host)
 }
 
-// remoteOrigin is git's conventional default remote name, preferred here when it
-// is itself a forge remote so the ordinary checkout keeps the answer it had.
-const remoteOrigin = "origin"
+// providerKind decides WHICH forge the pull request under review lives on.
+//
+// One forge among the remotes is the answer, and it is the ordinary case: the
+// mirror setups remoteForges exists for keep origin on a plain internal git host,
+// which is not a forge and so does not make the choice ambiguous.
+//
+// Remotes that DISAGREE cannot be resolved by preferring one of them. Every caller
+// here is in pr mode, where target.Prepare has already run `gh pr checkout`, so the
+// reviewed code came from one specific repository on one specific host -- and a
+// checkout whose origin is a GitLab mirror while the pull request came from a
+// second, GitHub remote would otherwise send the checks read, the notes and the
+// verdict itself to `glab`, against merge request N of an unrelated project that
+// merely shares a number with the reviewed pull request. requireHead refuses most
+// of what follows, but a mirror whose merge request proposes the same commit
+// passes it, and -post-verdict then approves something nobody reviewed under the
+// operator's identity.
+//
+// So a disagreement is settled by asking gh which repository IT resolved for this
+// checkout -- the same answer `gh pr checkout` acted on, which is the identity the
+// review is actually about. When gh cannot say, nothing binds a forge to the
+// reviewed pull request and there is none: the reads then lose their evidence and
+// a requested post fails loudly, which is the harmless direction to be wrong in.
+func providerKind(ctx context.Context, dir string) Kind {
+	switch kinds := remoteForges(ctx, dir); len(kinds) {
+	case 0:
+		return Unknown
+	case 1:
+		return kinds[0]
+	}
+	return DetectKind(ghBaseRepoURL(ctx, dir))
+}
 
-// remoteURL returns the URL of the remote this checkout's forge lives on, or ""
-// when no remote points at one.
+// remoteForges returns the DISTINCT forges this checkout's remotes point at.
 //
 // It is deliberately NOT `git remote get-url origin`. A clone made with
 // `git clone -o upstream`, and a mirror setup where origin is an internal git
@@ -149,42 +178,61 @@ const remoteOrigin = "origin"
 // the conversations, the replies and the requested post all quietly go missing,
 // each behind its own warning or none at all.
 //
-// origin is tried first so the common case is unchanged; otherwise git's own
-// order decides. Matching by identity the way ghRemote does would be more precise
-// but buys nothing here: the URL is used only to choose WHICH CLI to drive, and
-// both CLIs resolve the repository from the checkout themselves.
+// Kinds rather than a URL, and every remote rather than the first match, because
+// the caller has to be able to tell "this checkout is on GitHub" from "this
+// checkout has remotes on two different forges and the order they are listed in
+// decides which one is driven". Remote order deliberately does not appear in the
+// answer: a disagreement is settled by identity in providerKind, not by
+// precedence.
 //
 // A remote NAME is repo-controlled config that ends up as a positional argument
 // to git. --end-of-options is passed for it, and a name starting with "-" is
 // skipped outright rather than handed over -- no legitimate remote is named that,
 // and target.ghRemote refuses them for the same reason.
-func remoteURL(ctx context.Context, dir string) string {
+func remoteForges(ctx context.Context, dir string) []Kind {
 	out, err := run(ctx, dir, "git", "remote")
 	if err != nil {
-		return ""
+		return nil
 	}
 	names := strings.Fields(out)
-	ordered := make([]string, 0, len(names))
-	for _, n := range names {
-		if n == remoteOrigin {
-			ordered = append(ordered, n)
+	kinds := make([]Kind, 0, len(names))
+	for _, name := range names {
+		if strings.HasPrefix(name, "-") {
+			continue
 		}
-	}
-	for _, n := range names {
-		if n != remoteOrigin && !strings.HasPrefix(n, "-") {
-			ordered = append(ordered, n)
-		}
-	}
-	for _, name := range ordered {
 		url, err := run(ctx, dir, "git", "remote", "get-url", "--end-of-options", name)
 		if err != nil {
 			continue
 		}
-		if url = strings.TrimSpace(url); DetectKind(url) != Unknown {
-			return url
+		k := DetectKind(strings.TrimSpace(url))
+		if k == Unknown || slices.Contains(kinds, k) {
+			continue
 		}
+		kinds = append(kinds, k)
 	}
-	return ""
+	return kinds
+}
+
+// ghBaseRepoURL is the canonical URL of the repository gh treats as this
+// checkout's base -- the same resolution `gh pr checkout` used to fetch the pull
+// request, so it names the host the reviewed code actually came from.
+//
+// "" when gh cannot name one: not installed, unauthenticated, or no remote it
+// recognizes. That is not an error here, it is the absence of the one thing that
+// could bind a forge to the reviewed pull request, and the caller answers it by
+// choosing none.
+func ghBaseRepoURL(ctx context.Context, dir string) string {
+	out, err := run(ctx, dir, "gh", "repo", "view", "--json", "url")
+	if err != nil {
+		return ""
+	}
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.URL)
 }
 
 // run executes a CLI in the target directory with a bounded timeout, returning
