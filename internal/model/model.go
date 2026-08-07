@@ -640,12 +640,20 @@ const (
 
 // ValidTriageVerdict reports whether v is one triage may return.
 func ValidTriageVerdict(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
+	switch NormalizeTriageVerdict(v) {
 	case TriageAccept, TriageReject:
 		return true
 	}
 	return false
 }
+
+// NormalizeTriageVerdict is the canonical spelling of a triage verdict: what
+// ValidTriageVerdict actually checked, and therefore the only form worth STORING.
+// The same trim-in-the-validator gap NormalizeSeverity documents applies here, and
+// costs more: a stored "accept\n" validates as an acceptance and then fails the
+// dispatch comparison, so the work is never commissioned and the acceptance's
+// reason is posted to a human as the decline that explains it.
+func NormalizeTriageVerdict(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
 
 // ValidJudgeVerdict reports whether v is one the judge may return.
 func ValidJudgeVerdict(v string) bool {

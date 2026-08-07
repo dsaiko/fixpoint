@@ -166,6 +166,34 @@ func TestTriageIgnoresInventedIdsAndReasonlessDecisions(t *testing.T) {
 	}
 }
 
+// The verdict a decision is validated as must be the verdict it is dispatched as.
+// The validator trims and folds case, so " Accept\n" passes the gate; if the raw
+// spelling then reached the dispatch it would miss the accept branch and fall
+// through to the decline -- the commissioned work silently never happens and the
+// acceptance's reason ('why this is real') is posted to the human as the answer
+// explaining why their comment was refused.
+func TestAPaddedVerdictIsDispatchedAsTheVerdictItValidatedAs(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.triageRole()
+	f.cfg.Review.Post = true
+
+	o, reader, _ := f.withThreads("dsaiko", forge.Thread{ID: "100", Path: "a.go", Line: 3, Author: "dsaiko", Body: "missing guard"})
+	f.respond(1, `<review>{"decisions":[{"thread":"100","verdict":" Accept\n","reason":"a.go:3 dereferences before the guard",
+		"title":"missing nil check","severity":"high","category":"bug","file":"a.go","line":3,"description":"Guard it."}]}</review>`)
+
+	o.triageConversations(t.Context())
+
+	if len(o.commissioned) != 1 {
+		t.Fatalf("commissioned %d finding(s), want 1: the padded verdict validated as an acceptance", len(o.commissioned))
+	}
+	if len(reader.bodies) != 0 {
+		t.Errorf("posted %q; an acceptance is answered by the fix that lands, never declined on the spot", reader.bodies)
+	}
+	if len(o.threads) != 1 {
+		t.Errorf("threads = %+v, want the accepted conversation kept for its fix to answer", o.threads)
+	}
+}
+
 // Severity orders the round and, in a review run, decides what blocks a merge.
 // Triage reads text an attacker can write, so a severity it returns is validated
 // like any other agent-supplied one rather than trusted into the queue.

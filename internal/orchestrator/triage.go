@@ -91,6 +91,10 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 		case byThread[d.Thread].Thread != "":
 			o.logf("WARNING: triage decided conversation %s more than once; the first decision stands", d.Thread)
 		default:
+			// Store the spelling the validator checked, not the one the agent typed: the
+			// dispatch below compares against the constants, so a padded "accept\n" would
+			// validate as an acceptance and be dispatched as a rejection.
+			d.Verdict = model.NormalizeTriageVerdict(d.Verdict)
 			byThread[d.Thread] = d
 		}
 	}
@@ -107,7 +111,7 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 			remaining = append(remaining, th)
 			continue
 		}
-		if strings.EqualFold(d.Verdict, model.TriageAccept) {
+		if d.Verdict == model.TriageAccept {
 			accepted++
 			o.commissioned = append(o.commissioned, o.commissionedFinding(d, th, me))
 			// Kept: the coder that fixes the issue answers this thread once its work is
