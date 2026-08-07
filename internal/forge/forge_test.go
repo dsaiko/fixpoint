@@ -753,6 +753,70 @@ func TestThreadsAreTheUnresolvedConversationsThatStillHaveARoot(t *testing.T) {
 	}
 }
 
+// A conversation longer than one page of comments, whose last word is this tool's.
+// The first page stops at hasNextPage, and the reply carrying the marker is only on
+// the second -- which is the shape that made AnsweredByMachine read the wrong
+// comment and answer the same thread on every run.
+const longThreadFirstPage = `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+  {"id":"PRRT_kwDOAbCdEf","isResolved":false,"comments":{
+    "pageInfo":{"hasNextPage":true,"endCursor":"c100"},
+    "nodes":[{"path":"internal/forge/forge.go","line":42,"databaseId":2147483648,"body":"why origin only?","author":{"login":"dsaiko"}}]}}
+]}}}}}`
+
+const longThreadTail = `{"data":{"node":{"comments":{
+  "pageInfo":{"hasNextPage":false,"endCursor":"c200"},
+  "nodes":[{"path":"internal/forge/forge.go","line":42,"databaseId":2147483649,"body":"answered <!-- ai-panel run 20260807 -->","author":{"login":"dsaiko"}}]}}}}`
+
+// The comments of one thread page separately from the thread list, so a long
+// conversation came back cut at its hundredth message. AnsweredByMachine reads the
+// LAST comment: with the tail missing it never saw this tool's own reply, called the
+// thread live, and answered it again every run -- exactly what the marker exists to
+// stop. So the tail is followed, and the test asserts both halves arrive in order.
+func TestAConversationIsReadPastItsFirstPageOfComments(t *testing.T) {
+	bin := t.TempDir()
+	first, tail := filepath.Join(bin, "first.json"), filepath.Join(bin, "tail.json")
+	for path, body := range map[string]string{first: longThreadFirstPage, tail: longThreadTail} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The tail query is the one that names the thread type, so the stub answers on
+	// that rather than on call order: a Threads that never asks for the rest fails
+	// here by returning a truncated conversation, not by running out of responses.
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"'repo view --json owner,name') printf '%s' '{\"owner\":{\"login\":\"dsaiko\"},\"name\":\"fixpoint\"}' ;;\n" +
+		"*PullRequestReviewThread*) cat " + tail + " ;;\n" +
+		"'api graphql'*) cat " + first + " ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got, err := (githubProvider{}).Threads(t.Context(), t.TempDir(), 7)
+	if err != nil {
+		t.Fatalf("Threads() = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Threads() = %+v, want one conversation", got)
+	}
+	want := []ThreadComment{
+		{Author: "dsaiko", Body: "why origin only?"},
+		{Author: "dsaiko", Body: "answered <!-- ai-panel run 20260807 -->"},
+	}
+	if !reflect.DeepEqual(got[0].Comments, want) {
+		t.Errorf("Comments = %+v, want %+v -- the second page was dropped", got[0].Comments, want)
+	}
+	// The root is still the comment that opened the thread: it is what a reply is
+	// addressed to, and the tail must not displace it.
+	if got[0].ID != "2147483648" || got[0].Body != "why origin only?" {
+		t.Errorf("root = %q/%q, want the first comment of the first page", got[0].ID, got[0].Body)
+	}
+	if !got[0].AnsweredByMachine() {
+		t.Error("a thread whose last comment is this tool's reply reads as unanswered, so it is answered again every run")
+	}
+}
+
 // An unreadable answer and an empty one are different facts. readForgeThreads warns
 // on an error and proceeds with no conversations, so the two only stay distinguishable
 // if the parse refuses to call a malformed response an empty list.

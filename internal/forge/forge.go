@@ -1046,19 +1046,106 @@ func ReaderFor(ctx context.Context, dir string) Reader {
 // request with more conversations than that dropped the rest, and dropping them
 // looks identical to a pull request that has none: nothing was shown to triage or
 // to the coder, and nothing said so.
+//
+// The comments of each thread are paged too, for the same reason one level down --
+// see threadCommentsQuery.
 const threadQuery = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$pr){
       reviewThreads(first:100,after:$after){
         pageInfo{hasNextPage endCursor}
         nodes{
+          id
           isResolved
-          comments(first:100){nodes{path line databaseId body author{login}}}
+          comments(first:100){
+            pageInfo{hasNextPage endCursor}
+            nodes{path line databaseId body author{login}}
+          }
         }
       }
     }
   }
 }`
+
+// threadCommentsQuery reads what is left of ONE conversation, past its first page.
+//
+// A thread's comments page independently of the thread list, so comments(first:100)
+// cut every long conversation off at its hundredth message -- and the cut falls
+// exactly where it does damage. AnsweredByMachine asks whether the LAST comment is
+// ours; on a truncated thread it inspected the hundredth instead, missed our reply,
+// read the thread as live and answered it again on every run. That is the loop the
+// marker exists to prevent. The coder and triage were handed the same partial
+// exchange, with any later correction cut off it.
+//
+// Addressed by the thread's node id rather than by walking the pull request again,
+// so the extra call happens only for the rare thread that has a second page.
+const threadCommentsQuery = `query($id:ID!,$after:String!){
+  node(id:$id){
+    ... on PullRequestReviewThread {
+      comments(first:100,after:$after){
+        pageInfo{hasNextPage endCursor}
+        nodes{path line databaseId body author{login}}
+      }
+    }
+  }
+}`
+
+// threadCommentNode is one comment as either query returns it.
+type threadCommentNode struct {
+	Path       string `json:"path"`
+	Line       int    `json:"line"`
+	DatabaseID int64  `json:"databaseId"`
+	Body       string `json:"body"`
+	Author     struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+// threadCommentPage is one page of a conversation: its comments and where the next
+// page starts.
+type threadCommentPage struct {
+	PageInfo struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+	Nodes []threadCommentNode `json:"nodes"`
+}
+
+// githubThreadTail returns the comments of thread nodeID that follow the page
+// ending at cursor, in order.
+//
+// An unreadable tail is an error rather than a short conversation: a thread read
+// half-way is the state that makes a machine reply invisible, so the caller must not
+// be able to mistake it for the whole exchange.
+func githubThreadTail(ctx context.Context, dir, nodeID, cursor string) ([]threadCommentNode, error) {
+	var rest []threadCommentNode
+	// Bounded like the thread loop, and for the same reason: 100 pages is 10,000
+	// comments on one conversation, past anything a person will write.
+	for range 100 {
+		out, err := run(ctx, dir, "gh", "api", "graphql", "-f", "query="+threadCommentsQuery,
+			"-f", "id="+nodeID, "-f", "after="+cursor)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			Data struct {
+				Node struct {
+					Comments threadCommentPage `json:"comments"`
+				} `json:"node"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(out), &payload); err != nil {
+			return nil, fmt.Errorf("parse thread comments: %w", err)
+		}
+		page := payload.Data.Node.Comments
+		rest = append(rest, page.Nodes...)
+		if !page.PageInfo.HasNextPage || page.PageInfo.EndCursor == "" {
+			return rest, nil
+		}
+		cursor = page.PageInfo.EndCursor
+	}
+	return rest, nil
+}
 
 func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread, error) {
 	owner, repo, err := githubSlug(ctx, dir)
@@ -1090,18 +1177,9 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 								EndCursor   string `json:"endCursor"`
 							} `json:"pageInfo"`
 							Nodes []struct {
-								IsResolved bool `json:"isResolved"`
-								Comments   struct {
-									Nodes []struct {
-										Path       string `json:"path"`
-										Line       int    `json:"line"`
-										DatabaseID int64  `json:"databaseId"`
-										Body       string `json:"body"`
-										Author     struct {
-											Login string `json:"login"`
-										} `json:"author"`
-									} `json:"nodes"`
-								} `json:"comments"`
+								ID         string            `json:"id"`
+								IsResolved bool              `json:"isResolved"`
+								Comments   threadCommentPage `json:"comments"`
 							} `json:"nodes"`
 						} `json:"reviewThreads"`
 					} `json:"pullRequest"`
@@ -1116,7 +1194,15 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 			if n.IsResolved || len(n.Comments.Nodes) == 0 {
 				continue
 			}
-			root := n.Comments.Nodes[0]
+			comments := n.Comments.Nodes
+			if n.Comments.PageInfo.HasNextPage && n.Comments.PageInfo.EndCursor != "" {
+				tail, err := githubThreadTail(ctx, dir, n.ID, n.Comments.PageInfo.EndCursor)
+				if err != nil {
+					return nil, fmt.Errorf("read conversation %s: %w", n.ID, err)
+				}
+				comments = append(comments, tail...)
+			}
+			root := comments[0]
 			t := Thread{
 				// The ROOT comment's id: a forge threads replies under the comment that
 				// started the conversation.
@@ -1126,7 +1212,7 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 				Author: root.Author.Login,
 				Body:   root.Body,
 			}
-			for _, c := range n.Comments.Nodes {
+			for _, c := range comments {
 				t.Comments = append(t.Comments, ThreadComment{Author: c.Author.Login, Body: c.Body})
 			}
 			threads = append(threads, t)
