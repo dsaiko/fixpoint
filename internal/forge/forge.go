@@ -66,10 +66,10 @@ type Provider interface {
 	Checks(ctx context.Context, dir string, pr int) (Checks, error)
 }
 
-// For returns the provider for a repository's origin remote, or nil when the
-// remote points somewhere neither CLI understands. A nil provider is not an
-// error: plenty of targets are plain directories or self-hosted git, and the run
-// simply proceeds without forge evidence.
+// For returns the provider for whichever of a repository's remotes points at a
+// forge, or nil when none of them points somewhere either CLI understands. A nil
+// provider is not an error: plenty of targets are plain directories or
+// self-hosted git, and the run simply proceeds without forge evidence.
 func For(ctx context.Context, dir string) Provider {
 	switch DetectKind(remoteURL(ctx, dir)) {
 	case GitHub:
@@ -133,12 +133,58 @@ func remoteHost(remote string) string {
 	return strings.ToLower(host)
 }
 
+// remoteOrigin is git's conventional default remote name, preferred here when it
+// is itself a forge remote so the ordinary checkout keeps the answer it had.
+const remoteOrigin = "origin"
+
+// remoteURL returns the URL of the remote this checkout's forge lives on, or ""
+// when no remote points at one.
+//
+// It is deliberately NOT `git remote get-url origin`. A clone made with
+// `git clone -o upstream`, and a mirror setup where origin is an internal git
+// host and the forge is a second remote, are checkouts pr mode already supports:
+// target.ghRemote resolves the base remote by identity rather than by name for
+// exactly that reason. Reading origin alone made every one of those runs fail
+// SOFT and late -- the whole panel runs and is paid for, and then the CI evidence,
+// the conversations, the replies and the requested post all quietly go missing,
+// each behind its own warning or none at all.
+//
+// origin is tried first so the common case is unchanged; otherwise git's own
+// order decides. Matching by identity the way ghRemote does would be more precise
+// but buys nothing here: the URL is used only to choose WHICH CLI to drive, and
+// both CLIs resolve the repository from the checkout themselves.
+//
+// A remote NAME is repo-controlled config that ends up as a positional argument
+// to git. --end-of-options is passed for it, and a name starting with "-" is
+// skipped outright rather than handed over -- no legitimate remote is named that,
+// and target.ghRemote refuses them for the same reason.
 func remoteURL(ctx context.Context, dir string) string {
-	out, err := run(ctx, dir, "git", "remote", "get-url", "origin")
+	out, err := run(ctx, dir, "git", "remote")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(out)
+	names := strings.Fields(out)
+	ordered := make([]string, 0, len(names))
+	for _, n := range names {
+		if n == remoteOrigin {
+			ordered = append(ordered, n)
+		}
+	}
+	for _, n := range names {
+		if n != remoteOrigin && !strings.HasPrefix(n, "-") {
+			ordered = append(ordered, n)
+		}
+	}
+	for _, name := range ordered {
+		url, err := run(ctx, dir, "git", "remote", "get-url", "--end-of-options", name)
+		if err != nil {
+			continue
+		}
+		if url = strings.TrimSpace(url); DetectKind(url) != Unknown {
+			return url
+		}
+	}
+	return ""
 }
 
 // run executes a CLI in the target directory with a bounded timeout, returning

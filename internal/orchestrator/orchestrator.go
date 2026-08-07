@@ -5054,6 +5054,10 @@ func (o *Orchestrator) postReplies(ctx context.Context, own string, replies []mo
 	}
 	r := readerFor(ctx, o.cfg.Target.Path)
 	if r == nil {
+		// Said out loud, like answerConversations says its own skip: this was the one
+		// path here that discarded a coder's answers with no line at all, so an
+		// operator who asked for -post saw nothing happen and nothing explaining it.
+		o.logf("WARNING: %d conversation repl(y|ies) were not posted: no GitHub or GitLab remote recognized", len(replies))
 		return
 	}
 	// Signed with the CODER, because that is who is answering. A reply lands in a

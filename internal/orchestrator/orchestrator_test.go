@@ -8011,6 +8011,38 @@ func TestRepliesAreNotPostedWithoutTheFlag(t *testing.T) {
 	}
 }
 
+// A checkout with no recognized forge remote loses the replies -- there is
+// nowhere to post them -- but it must not lose them QUIETLY. This was the one
+// drop here with no log line at all: an operator who passed -post saw the
+// conversations rendered into the prompts, the coder answer them, and then
+// nothing happen, with no output naming the reason.
+func TestRepliesWithNoForgeRemoteAreReportedNotSwallowed(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.threads = []forge.Thread{{ID: "100"}}
+
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader { return nil }
+	defer func() { readerFor = prev }()
+
+	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "hello"}})
+	if !strings.Contains(logs(), "not posted") || !strings.Contains(logs(), "remote") {
+		t.Errorf("the replies vanished with nothing said about the missing forge remote:\n%s", logs())
+	}
+	// Nothing was posted, so the conversation is still somebody else's to answer.
+	if !o.threadOpen("100") {
+		t.Error("a reply that never reached a forge must leave the conversation unanswered")
+	}
+}
+
 // A reply claims work landed, so it waits for the commit that landed it.
 //
 // Everything up to verifyAndCommitFix can still take the fix away: the gate can

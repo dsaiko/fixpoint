@@ -3,6 +3,7 @@ package forge
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -752,5 +753,86 @@ func TestAReplyToSomethingThatIsNotACommentIDPostsNothing(t *testing.T) {
 	}
 	if argv() != "" || body() != "" {
 		t.Errorf("something was posted anyway: %s / %s", argv(), body())
+	}
+}
+
+// gitRepoWithRemotes creates a repository whose remotes are exactly the given
+// name/URL pairs, in the given order. A name is written straight into the config
+// rather than through `git remote add` so a test can create one git itself would
+// refuse to name.
+func gitRepoWithRemotes(t *testing.T, remotes [][2]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q")
+	for _, r := range remotes {
+		gitIn(t, dir, "config", "remote."+r[0]+".url", r[1])
+	}
+	return dir
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+}
+
+// The forge is not always on the remote named origin. `git clone -o upstream`, and
+// a mirror setup where origin is an internal git host and the forge is a second
+// remote, are checkouts pr mode supports -- target.ghRemote resolves the base
+// remote by identity, not by name. Reading origin alone left those runs with a
+// nil provider AFTER the whole panel had run: no CI evidence, no conversations,
+// no replies, and the requested post silently skipped, every one of them fail-soft.
+func TestTheForgeRemoteIsFoundWhateverItIsNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		remotes [][2]string
+		want    Kind
+	}{
+		{"origin is the forge", [][2]string{{"origin", "git@github.com:o/r.git"}}, GitHub},
+		{"cloned with -o upstream", [][2]string{{"upstream", "https://github.com/o/r.git"}}, GitHub},
+		{
+			"origin is an internal mirror, the forge is a second remote",
+			[][2]string{{"origin", "git@git.internal.example:o/r.git"}, {"github", "https://github.com/o/r.git"}},
+			GitHub,
+		},
+		{
+			// origin keeps its precedence when it is itself a forge remote, so the
+			// ordinary checkout gets exactly the answer it always got.
+			"origin is preferred over a later forge remote",
+			[][2]string{{"origin", "git@gitlab.com:g/p.git"}, {"github", "https://github.com/o/r.git"}},
+			GitLab,
+		},
+		{"no remote is on a forge", [][2]string{{"origin", "git@git.internal.example:o/r.git"}}, Unknown},
+		{"no remotes at all", nil, Unknown},
+		{
+			// A remote NAME is repo-controlled config that would become a positional
+			// argument to git. One shaped like an option is skipped, not handed over.
+			"an option-like remote name is refused rather than resolved",
+			[][2]string{{"-x", "https://github.com/o/r.git"}},
+			Unknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := gitRepoWithRemotes(t, tc.remotes)
+			if got := DetectKind(remoteURL(t.Context(), dir)); got != tc.want {
+				t.Errorf("resolved forge = %q, want %q", got, tc.want)
+			}
+			p := For(t.Context(), dir)
+			if tc.want == Unknown {
+				if p != nil {
+					t.Errorf("For() = %T, want nil", p)
+				}
+				return
+			}
+			if p == nil {
+				t.Fatalf("For() = nil, want a %s provider", tc.want)
+			}
+			if p.Kind() != tc.want {
+				t.Errorf("For().Kind() = %q, want %q", p.Kind(), tc.want)
+			}
+		})
 	}
 }
