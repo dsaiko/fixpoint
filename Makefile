@@ -157,10 +157,16 @@ review-pr: build
 	./$(BINARY) review-pr -pr $(PR) --trusted-bundle
 
 ## run: removed -- name the config you mean (make fix-code, make review-pr PR=n)
+# Exits 2, the usage-error code the PR= guards above use. `run` was the
+# documented entry point for the whole review -> fix -> verify -> commit cycle,
+# so a wrapper or CI step still calling it must not read this explanation as a
+# completed run -- that is the same confusion the review exit codes exist to
+# prevent.
 run:
 	@echo "There is no 'make run': it hid which config was about to spend money."
 	@echo
 	@$(MAKE) --no-print-directory help
+	@exit 2
 
 ## clean: remove the built binary and coverage artifacts
 clean:
