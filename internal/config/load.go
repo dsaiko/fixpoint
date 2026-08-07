@@ -286,26 +286,40 @@ func loadWithExtends(r *Resolver, path string) (*Config, string, map[string]bool
 	return merged, basePath, own, nil
 }
 
-// trustKeys are the authorization keys a task config may not set. They are
-// deliberately absent from the Loop struct (see Loop.TrustedTarget for why), so
-// the decoder would already reject them as unknown fields -- but as "field
+// The two reasons a key is refused here, spelled out for the operator reading the
+// error: both start from the same fact -- the first bundle on the search path is
+// the target's own -- and differ in what the key would buy the repository that
+// shipped it.
+const (
+	whyNotTrust = "Configs are searched in the target's own directory first, so a config that could grant trust would let reviewed code authorize fixpoint to execute its agent definitions and run the coder against it -- the very thing that assertion is meant to gate"
+	whyNotPost  = "Configs are searched in the target's own directory first, so a config that could turn publishing on would let reviewed code arrange for a review -- or, with post_verdict, an approval -- to be published on its own pull request under the operator's identity"
+)
+
+// trustKeys are the authorization keys a task config may not set: the trust
+// assertions and the publishing switches. They are deliberately absent from the
+// Loop and Review structs (see Loop.TrustedTarget and Review.Post for why), so the
+// decoder would already reject them as unknown fields -- but as "field
 // trusted_target not found in type config.Loop", which reads like a schema
 // mismatch to fix rather than a boundary being enforced. Naming them here is what
 // turns the refusal into an explanation.
 var trustKeys = []struct {
-	key, flag string
+	section, key, flag, why string
 }{
-	{"trusted_target", "-trusted-target"},
-	{"trusted_bundle", "-trusted-bundle"},
-	{"allow_untrusted_fix", "-allow-untrusted-fix"},
+	{"loop", "trusted_target", "-trusted-target", whyNotTrust},
+	{"loop", "trusted_bundle", "-trusted-bundle", whyNotTrust},
+	{"loop", "allow_untrusted_fix", "-allow-untrusted-fix", whyNotTrust},
+	{"review", "post", "-post", whyNotPost},
+	{"review", "post_verdict", "-post-verdict", whyNotPost},
 }
 
-// rejectTrustKeys fails when a task config tries to assert its own trust.
+// rejectTrustKeys fails when a task config tries to assert its own trust or turn
+// on publishing.
 //
 // Configs are resolved from <project>/config first, so this file may well have
 // come from the repository being reviewed: a config that could grant trust would
 // let the code under review authorize executing its own agent definitions and
-// running the write-capable coder against itself.
+// running the write-capable coder against itself, and one that could set
+// review.post would let it publish on its own pull request as the operator.
 func rejectTrustKeys(path string) error {
 	data, err := readBundleFile(path)
 	if err != nil {
@@ -314,7 +328,8 @@ func rejectTrustKeys(path string) error {
 	// A permissive probe: this runs BEFORE the strict decode, so it must not fail
 	// on unrelated keys and steal the better error message the real decode gives.
 	var probe struct {
-		Loop map[string]yaml.Node `yaml:"loop"`
+		Loop   map[string]yaml.Node `yaml:"loop"`
+		Review map[string]yaml.Node `yaml:"review"`
 	}
 	if err := yaml.Unmarshal(data, &probe); err != nil {
 		// Not this function's error to report: it runs BEFORE the strict decode, so
@@ -325,11 +340,11 @@ func rejectTrustKeys(path string) error {
 		// few lines later and never reaches a run.
 		return nil //nolint:nilerr // deliberate: the strict decode reports this file's syntax properly
 	}
+	sections := map[string]map[string]yaml.Node{"loop": probe.Loop, "review": probe.Review}
 	for _, tk := range trustKeys {
-		if _, ok := probe.Loop[tk.key]; ok {
-			return fmt.Errorf("%s: loop.%s cannot be set in a configuration file; pass %s on the command line instead. "+
-				"Configs are searched in the target's own directory first, so a config that could grant trust would let reviewed code authorize fixpoint to execute its agent definitions and run the coder against it -- the very thing that assertion is meant to gate",
-				path, tk.key, tk.flag)
+		if _, ok := sections[tk.section][tk.key]; ok {
+			return fmt.Errorf("%s: %s.%s cannot be set in a configuration file; pass %s on the command line instead. %s",
+				path, tk.section, tk.key, tk.flag, tk.why)
 		}
 	}
 	return nil

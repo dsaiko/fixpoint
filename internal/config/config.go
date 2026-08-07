@@ -1983,7 +1983,8 @@ type ReviewPolicy struct {
 	// the target's own -- so a YAML-readable key would let reviewed code arrange to
 	// have a review posted under the operator's identity. Same argument as
 	// Loop.TrustedTarget, and the decoder's KnownFields(true) makes an attempt to
-	// set them a load error rather than a silent no-op.
+	// set them a load error rather than a silent no-op -- rejectTrustKeys names both
+	// keys so that error reads as the boundary it is rather than as a typo.
 	Post        bool `yaml:"-"`
 	PostVerdict bool `yaml:"-"`
 }
