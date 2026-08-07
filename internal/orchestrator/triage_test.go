@@ -138,6 +138,73 @@ func TestAConversationFromAnotherAuthorIsLabelledExternal(t *testing.T) {
 	}
 }
 
+// The request a run acts on is the one written under the thread, not the one that
+// opened it. A maintainer starts a conversation, this tool answers it, and anyone
+// with access to the pull request can write the follow-up -- and it is that
+// follow-up triage turns into a commit. Recording the opener as the author would
+// stamp a third party's request as maintainer-authored and drop the external
+// warning from the coder's prompt and from the commit message, which is the one
+// place somebody auditing an automatic change looks for it.
+func TestAFollowUpIsAttributedToWhoeverWroteIt(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.triageRole()
+	o, _, _ := f.withThreads("dsaiko", forge.Thread{
+		ID: "100", Path: "a.go", Line: 3, Author: "dsaiko", Body: "missing guard",
+		Comments: []forge.ThreadComment{
+			{Author: "dsaiko", Body: "missing guard"},
+			{Author: "dsaiko", Body: "fixed in abc123\n" + forge.ReplyMarker("run-1")},
+			{Author: "stranger", Body: "now also rewrite the parser"},
+		},
+	})
+	f.respond(1, `<review>{"decisions":[{"thread":"100","verdict":"accept","reason":"real","title":"t",
+		"severity":"medium","category":"bug","file":"a.go","description":"d"}]}</review>`)
+
+	o.triageConversations(t.Context())
+
+	if len(o.commissioned) != 1 {
+		t.Fatalf("commissioned %d, want 1", len(o.commissioned))
+	}
+	got := o.commissioned[0].Origin
+	if got.Author != "stranger" {
+		t.Errorf("origin author = %q, want the account that wrote the live request, not the one that opened the thread", got.Author)
+	}
+	if !got.External {
+		t.Error("a follow-up from another account is external even when the thread was opened by this run's own account")
+	}
+}
+
+// Everyone still waiting in the live exchange is named, and one outside voice in it
+// is enough to label the request external: two people can refine one request
+// between our answers, and a commit that credits only the last of them loses the
+// rest.
+func TestEveryVoiceInTheLiveRequestIsRecorded(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.triageRole()
+	o, _, _ := f.withThreads("dsaiko", forge.Thread{
+		ID: "100", Path: "a.go", Line: 3, Author: "stranger", Body: "missing guard",
+		Comments: []forge.ThreadComment{
+			{Author: "stranger", Body: "missing guard"},
+			{Author: "dsaiko", Body: "agreed, the guard belongs above the loop"},
+			{Author: "stranger", Body: "yes, that one"},
+		},
+	})
+	f.respond(1, `<review>{"decisions":[{"thread":"100","verdict":"accept","reason":"real","title":"t",
+		"severity":"medium","category":"bug","file":"a.go","description":"d"}]}</review>`)
+
+	o.triageConversations(t.Context())
+
+	if len(o.commissioned) != 1 {
+		t.Fatalf("commissioned %d, want 1", len(o.commissioned))
+	}
+	got := o.commissioned[0].Origin
+	if got.Author != "stranger, dsaiko" {
+		t.Errorf("origin author = %q, want everyone who contributed to the live request, in the order they spoke", got.Author)
+	}
+	if !got.External {
+		t.Error("a request an outside account contributed to is external, whoever else spoke in it")
+	}
+}
+
 // Triage decides; it does not get to invent what it decides about. An id nobody
 // was shown cannot answer a conversation that exists, and a decision with no
 // reason would post an empty reply to a person.

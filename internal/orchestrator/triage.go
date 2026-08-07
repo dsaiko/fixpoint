@@ -299,7 +299,33 @@ func (o *Orchestrator) commissionedFinding(d model.TriageDecision, th forge.Thre
 		// location was in front of the agent all along.
 		file = th.Path
 	}
-	external := me == "" || !strings.EqualFold(me, th.Author)
+	// Whoever asked for THIS, which is not always whoever opened the conversation:
+	// a thread a maintainer started can be followed up in by anybody, and it is the
+	// follow-up triage just turned into a change. Taking the author off the root
+	// comment labeled such a request as the opener's and, when the opener was the
+	// operator, dropped the external warning from the coder's prompt and from the
+	// commit -- hiding the provenance of the untrusted text that commissioned it.
+	// See Thread.Requesters for what counts as the live request.
+	//
+	// Every contributor to it is named, and ONE of them not being this run's account
+	// is enough to make the request external: the label says third-party text reached
+	// the work order, which a maintainer speaking in the same breath does not undo.
+	who := th.Requesters()
+	if len(who) == 0 {
+		// A thread carrying no messages -- nothing built from the forge reaches here
+		// that way, but the root author is the honest answer if one does.
+		who = []string{th.Author}
+	}
+	external := me == ""
+	named := make([]string, 0, len(who))
+	for _, a := range who {
+		if !strings.EqualFold(me, a) {
+			external = true
+		}
+		if strings.TrimSpace(a) != "" {
+			named = append(named, a)
+		}
+	}
 	return model.Finding{
 		Agent:       o.cfg.Roles.Triage.Agent,
 		Lens:        o.cfg.Roles.Triage.Prompt,
@@ -309,7 +335,7 @@ func (o *Orchestrator) commissionedFinding(d model.TriageDecision, th forge.Thre
 		Line:        d.Line,
 		Title:       strings.TrimSpace(d.Title),
 		Description: strings.TrimSpace(d.Description),
-		Origin:      model.Origin{Thread: th.ID, Author: th.Author, External: external},
+		Origin:      model.Origin{Thread: th.ID, Author: strings.Join(named, ", "), External: external},
 	}
 }
 

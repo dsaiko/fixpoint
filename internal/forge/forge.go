@@ -1162,6 +1162,43 @@ func (t Thread) AnsweredByMachine() bool {
 	return HasReplyMarker(t.Comments[len(t.Comments)-1].Body)
 }
 
+// Requesters names everyone whose message makes up the conversation's LIVE
+// request, in the order they spoke.
+//
+// Not the root author, which is who OPENED the thread and not necessarily who is
+// asking now. A maintainer can start a conversation, this tool can answer it, and
+// anybody with access to the pull request can then write under it -- and it is
+// that follow-up a later run reads and acts on. Attributing it to the opener
+// records the wrong provenance for the untrusted text that commissioned a change,
+// which is precisely the fact somebody reviewing an automatically produced commit
+// is looking for.
+//
+// So the window is everything said after this tool's last reply (see ReplyMarker),
+// or the whole conversation when we have never answered it. Machine replies are
+// never requesters. Repeat speakers are listed once; an author the forge could not
+// name is kept as the empty string rather than dropped, because "we do not know who
+// asked" is a fact the caller must be able to act on -- it is what makes a request
+// external.
+func (t Thread) Requesters() []string {
+	start := 0
+	for i, c := range t.Comments {
+		if HasReplyMarker(c.Body) {
+			start = i + 1
+		}
+	}
+	out := make([]string, 0, len(t.Comments)-start)
+	seen := make(map[string]bool, len(t.Comments)-start)
+	for _, c := range t.Comments[start:] {
+		key := strings.ToLower(c.Author)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, c.Author)
+	}
+	return out
+}
+
 // Reader is a provider that can also read a pull request's conversations. It is
 // separate from Provider so a forge that cannot do it simply does not implement
 // it, rather than returning an error every run has to interpret.
