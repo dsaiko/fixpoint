@@ -7783,6 +7783,75 @@ func TestAFailedPostFailsTheRun(t *testing.T) {
 	}
 }
 
+// Conversations are read for a fix run on a pull request, and for nothing else.
+//
+// The review-only half of that guard is the one worth pinning: a review-only run
+// has no coder to answer anybody, so fetching the threads would only put a human's
+// words into a prompt with no way to reply to them. Dropping the condition would
+// otherwise be invisible -- the run would simply start reading conversations it
+// cannot use.
+//
+// The error path matters for the same reason the read is best-effort everywhere
+// else: no gh, no permission, a forge without the concept must leave o.threads
+// empty and say so, not stop the run.
+func TestConversationsAreReadOnlyForAFixRunOnAPullRequest(t *testing.T) {
+	thread := forge.Thread{ID: "100", Path: "a.go", Line: 1, Author: "human", Body: "why?"}
+
+	cases := []struct {
+		name       string
+		mode       string
+		pr         int
+		reviewOnly bool
+		threadsErr error
+		wantRead   bool
+		wantThread bool
+		wantLog    string
+	}{
+		{name: "directory mode never asks", mode: "directory", pr: 0},
+		{name: "review-only pr run never asks", mode: string(config.ModePR), pr: 7, reviewOnly: true},
+		{name: "pr mode without a number never asks", mode: string(config.ModePR), pr: 0},
+		{name: "fix pr run reads them", mode: string(config.ModePR), pr: 7, wantRead: true, wantThread: true},
+		{
+			name:       "a failed read leaves none and warns",
+			mode:       string(config.ModePR),
+			pr:         7,
+			threadsErr: errors.New("gh exploded"),
+			wantLog:    "could not read the pull request's conversations",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1, ReviewOnly: tc.reviewOnly})
+			f.cfg.Target.Mode = config.Mode(tc.mode)
+			f.cfg.Target.PR = tc.pr
+
+			logf, logs := captureLog()
+			o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			reader := &fakeReader{threads: []forge.Thread{thread}, threadsErr: tc.threadsErr}
+			prev := readerFor
+			readerFor = func(context.Context, string) forge.Reader { return reader }
+			defer func() { readerFor = prev }()
+
+			o.readForgeThreads(t.Context())
+
+			if got := reader.threadsRead > 0; got != tc.wantRead {
+				t.Errorf("conversations read = %v, want %v", got, tc.wantRead)
+			}
+			if got := len(o.threads) > 0; got != tc.wantThread {
+				t.Errorf("o.threads populated = %v, want %v (threads: %v)", got, tc.wantThread, o.threads)
+			}
+			if tc.wantLog != "" && !strings.Contains(logs(), tc.wantLog) {
+				t.Errorf("want %q in the log:\n%s", tc.wantLog, logs())
+			}
+		})
+	}
+}
+
 // A reply is posted under a human's comment with the operator's identity on it,
 // so fixpoint only ever answers a conversation it actually showed the coder. An
 // id the coder invented -- or remembered from a resolved thread -- must not become
@@ -8106,6 +8175,12 @@ type fakeReader struct {
 	// replyErr makes the next Reply fail, for the tests that assert what a failed
 	// post leaves behind.
 	replyErr error
+	// threadsErr makes Threads fail, for the tests that assert a run whose
+	// conversations could not be read carries on with none.
+	threadsErr error
+	// threadsRead counts the successful reads, so a test can tell "no
+	// conversations on this PR" apart from "never asked".
+	threadsRead int
 }
 
 func (*fakeReader) Kind() forge.Kind { return forge.GitHub }
@@ -8117,6 +8192,10 @@ func (*fakeReader) Checks(context.Context, string, int) (forge.Checks, error) {
 }
 
 func (r *fakeReader) Threads(context.Context, string, int) ([]forge.Thread, error) {
+	if r.threadsErr != nil {
+		return nil, r.threadsErr
+	}
+	r.threadsRead++
 	return r.threads, nil
 }
 

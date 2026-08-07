@@ -4999,7 +4999,7 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 || o.cfg.Loop.ReviewOnly {
 		return
 	}
-	r := forge.ReaderFor(ctx, o.cfg.Target.Path)
+	r := readerFor(ctx, o.cfg.Target.Path)
 	if r == nil {
 		return
 	}
