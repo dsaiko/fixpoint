@@ -7476,6 +7476,65 @@ func TestThePostedReviewIsExactlyWhatWasWrittenToDisk(t *testing.T) {
 	}
 }
 
+// A review body that cannot be written must not turn a requested publish into
+// silence. The write failure was a warning followed by an early return, so with
+// -post the run posted nothing, recorded no error, and exited 0 -- an operator who
+// asked for an approval to be published was told it had been.
+//
+// Without -post the same failure stays a warning: nothing was asked for that did
+// not happen, and the verdict is in the summary, the journal and the exit code.
+//
+// The write is broken by pointing the log directory beneath a regular file, which
+// is the one way to make MkdirAll fail that does not depend on running as a
+// non-root user.
+func TestAFailedReviewBodyWriteFailsTheRunWhenPostingWasAsked(t *testing.T) {
+	for _, post := range []bool{true, false} {
+		name := "without -post"
+		if post {
+			name = "with -post"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			f.cfg.Review.Post = post
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 7
+
+			blocker := filepath.Join(t.TempDir(), "not-a-directory")
+			if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f.cfg.Logs.Dir = filepath.Join(blocker, "logs", "{timestamp}", "round-{round}")
+
+			var posted string
+			restore := postedBodyForTest(&posted, nil)
+			defer restore()
+
+			rec := &model.RoundRecord{
+				Round:       1,
+				Assignments: []model.Assignment{{Agent: "mock", Lens: "review"}},
+			}
+			sum := &model.RunSummary{ReviewedHead: strings.Repeat("a", 40)}
+			err := f.orchestrator().writeReviewBody(t.Context(), rec, sum, review.Decide(review.Input{
+				Quorum: review.QuorumFrom(rec.Assignments, nil),
+			}))
+
+			if sum.ReviewBody != "" {
+				t.Fatalf("the body was written to %s; this test proves nothing unless the write fails", sum.ReviewBody)
+			}
+			if posted != "" {
+				t.Errorf("a review with no local record was published: %s", posted)
+			}
+			if post && err == nil {
+				t.Error("-post was given and nothing was posted, but the run reports success")
+			}
+			if !post && err != nil {
+				t.Errorf("a write failure with no publish requested must stay a warning, got %v", err)
+			}
+		})
+	}
+}
+
 // A review is a statement about ONE commit, so the commit it was made from must
 // reach the poster: that is what lets the poster refuse a pull request the author
 // pushed to while the panel ran, and what binds an approval to the code that was

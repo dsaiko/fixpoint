@@ -4115,7 +4115,8 @@ func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord
 // is the run's answer, and an operator who has to work out from its ABSENCE
 // whether the review ran is being asked the wrong question. Failure to write it is
 // a warning, not a run failure -- the verdict is already in the summary, the
-// journal and the exit code.
+// journal and the exit code. WITH -post it is a run failure, because then the file
+// is not the only thing lost: see the write path below.
 //
 // The returned error is the POSTING one, which is a different matter: see
 // postReview for why a publish the operator asked for and did not get has to reach
@@ -4167,6 +4168,17 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	published := publishedText(body)
 	path, err := o.logs.ReviewBody(published)
 	if err != nil {
+		// A warning here used to swallow the publish as well: the early return skipped
+		// postReview, so a run given -post exited 0 having posted nothing, and an
+		// approval was reported as delivered when it never left the machine.
+		//
+		// It fails rather than posting the bytes it still holds, because the file is
+		// half of what posting means here -- it is what the operator inspects, what
+		// `-post-run` replays, and the only local record of what went out. Publishing
+		// under the operator's identity with no such record is the wrong half to keep.
+		if o.cfg.Review.Post {
+			return fmt.Errorf("-post was given but the review body could not be written: %w -- nothing was posted", err)
+		}
 		o.logf("WARNING: failed to write the review body: %v", err)
 		return nil
 	}
