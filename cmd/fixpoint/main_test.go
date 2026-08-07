@@ -1447,8 +1447,9 @@ func TestRunAllowUntrustedFixFlag(t *testing.T) {
 type gateWriter struct {
 	mark    string
 	hold    time.Duration
-	started chan struct{} // closed as the marked Write begins
+	started chan struct{} // closed as the FIRST marked Write begins
 
+	once   sync.Once
 	mu     sync.Mutex
 	writes []string
 }
@@ -1456,7 +1457,12 @@ type gateWriter struct {
 func (w *gateWriter) Write(p []byte) (int, error) {
 	s := string(p)
 	if strings.Contains(s, w.mark) {
-		close(w.started)
+		// Only the first marked write opens the window. A regression that sends the
+		// table through logf instead of Raw arrives one line per Write (runlog.emit
+		// splits on "\n"), and the table's two horizontal rules both carry the mark:
+		// closing unguarded would panic in run()'s goroutine and take the whole
+		// package down instead of failing with the count below.
+		w.once.Do(func() { close(w.started) })
 		time.Sleep(w.hold)
 	}
 	w.mu.Lock()
