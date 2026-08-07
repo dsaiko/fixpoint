@@ -55,15 +55,27 @@ Read this before pointing the tool at code you did not write.
 - **In `pr` mode an agent command may not resolve into the target.** An agent's
   `command` is argv fixpoint execs with that agent's declared credentials, and it
   runs with its working directory inside `target.path` — so a relative element
-  (`./reviewer.sh`, or the script in `[node, ./reviewer.cjs]`) names a file the
-  branch `gh pr checkout` writes, *after* validation confirmed the one that was
-  there before. That is target-controlled code execution rather than the prompt
+  (`./reviewer.sh`, the script in `[node, ./reviewer.cjs]`, or a path packed into
+  an option as in `--require=./hook.js`) names a file the branch `gh pr checkout`
+  writes, *after* validation confirmed the one that was there before. That is
+  target-controlled code execution rather than the prompt
   injection the `pr` path is built to contain, and it needs no model's
   cooperation, so fixpoint refuses the combination at startup unless you assert
   `-trusted-target`/`-allow-untrusted-fix` (with the assertion it warns instead).
-  Point such a command at a bare name on `PATH` or a path outside the target.
+  Point such a command at a path outside the target.
   Every other mode keeps the target-relative form: nothing replaces the file
   between validation and the run.
+- **In `pr` mode a bare command name may not be resolvable from inside the
+  target.** A bare `command` names no path, so which file it runs is decided by
+  `PATH` — re-read at every invocation, after the checkout. If any absolute `PATH`
+  entry lies inside `target.path` (a repo-local `bin/` shim), the pull request can
+  ship that executable, or shadow one found further down `PATH` by adding a file of
+  the same name, and it runs as the agent process with the agent's credentials.
+  Same gate as above: refused in `pr` mode, downgraded to a warning by
+  `-trusted-target`/`-allow-untrusted-fix`. Drop the entry from `PATH`, or give the
+  command an absolute path outside the target. Relative `PATH` entries (including
+  the trailing-colon empty one) do not count — Go refuses to run a command resolved
+  through one.
 - **Reviewers can read anything, even in review-only mode.** Read-only agent
   flags block edits but do not confine reads: a reviewer fed untrusted content
   can be prompt-injected into reading a host secret (`~/.ssh`,

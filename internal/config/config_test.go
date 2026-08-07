@@ -741,6 +741,123 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 		}
 	})
 
+	// A packed option carries its value inside the token, so testing the token as a
+	// whole measures the nonexistent filename "--require=./reviewer-hook.js" and
+	// reports nothing -- while node loads that hook out of the post-checkout
+	// worktree and runs it as part of the agent process.
+	t.Run("rejects a packed option value inside the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "reviewer-hook.js")
+		if err := prConfig(t, dir, "echo", "--require=./reviewer-hook.js").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "--require=./reviewer-hook.js") {
+			t.Fatalf("Validate() = %v, want rejection of a PR-supplied packed option value", err)
+		}
+	})
+
+	// And a packed value naming a file only the PR creates, which is the case the
+	// existence rule cannot lean on.
+	t.Run("rejects a packed option value only the PR supplies in mode pr", func(t *testing.T) {
+		if err := prConfig(t, t.TempDir(), "echo", "--config=./only-the-pr-has-it.json").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "--config=./only-the-pr-has-it.json") {
+			t.Fatalf("Validate() = %v, want rejection of a packed path only the PR supplies", err)
+		}
+	})
+
+	// The value read out of a packed option is measured by the same rules as any
+	// other element: a model id is not a path, and the data-scope exemption belongs
+	// to the flag in whichever spelling it is written.
+	t.Run("accepts a packed model id in mode pr", func(t *testing.T) {
+		if err := prConfig(t, t.TempDir(), "echo", "--model=moonshotai/kimi-k2").Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for a packed model id", err)
+		}
+	})
+
+	t.Run("accepts a packed --add-dir into the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := prConfig(t, dir, "echo", "--add-dir=./sub").Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for a packed data-scope directory", err)
+		}
+	})
+
+	// A BARE command name names no path at all, so nothing in argv shows where it
+	// comes from -- PATH does, and PATH is re-read at every invocation, after
+	// `gh pr checkout`. An entry inside the target hands the PR the same direct
+	// execution the argv gate refuses: it ships that executable, or shadows one
+	// resolved further down PATH with a file of the same name. "echo" resolves from
+	// the real PATH here, so this is the shadowing case exactly.
+	t.Run("rejects a bare command with a PATH entry inside the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		binDir := filepath.Join(dir, "bin")
+		if err := os.MkdirAll(binDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if err := prConfig(t, dir, "echo").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "lies inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a bare command shadowable from inside the target", err)
+		}
+	})
+
+	// The entry need not exist yet: bin/ is a directory the PR can add, and the
+	// lexical test is what catches that.
+	t.Run("rejects a bare command with an absent PATH entry inside the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("PATH", filepath.Join(dir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if err := prConfig(t, dir, "echo").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "lies inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a PATH entry the PR can create", err)
+		}
+	})
+
+	// An entry outside the target that SYMLINKS into it is the same directory by
+	// another name.
+	t.Run("rejects a bare command with a PATH entry linked into the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		binDir := filepath.Join(dir, "bin")
+		if err := os.MkdirAll(binDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(t.TempDir(), "shim")
+		if err := os.Symlink(binDir, link); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", link+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if err := prConfig(t, dir, "echo").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "lies inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a PATH entry symlinked into the target", err)
+		}
+	})
+
+	// A RELATIVE PATH entry decides nothing: exec.LookPath reports ErrDot for a name
+	// resolved through one, so such a command never starts. Counting it would refuse
+	// every pr run launched from inside the target with the very common
+	// trailing-colon PATH.
+	t.Run("accepts a bare command with a relative PATH entry in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+		t.Setenv("PATH", os.Getenv("PATH")+string(os.PathListSeparator))
+		if err := prConfig(t, dir, "echo").Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for a relative PATH entry that cannot resolve anything", err)
+		}
+	})
+
+	t.Run("accepts a bare command with a PATH entry inside the target once trust is asserted", func(t *testing.T) {
+		dir := t.TempDir()
+		binDir := filepath.Join(dir, "bin")
+		if err := os.MkdirAll(binDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		cfg := prConfig(t, dir, "echo")
+		cfg.Loop.TrustedTarget = true
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil once the operator asserts trust", err)
+		}
+	})
+
 	t.Run("accepts a target-relative binary in mode pr with trust asserted", func(t *testing.T) {
 		dir := t.TempDir()
 		writeExec(t, dir, "agent.sh")

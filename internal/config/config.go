@@ -667,8 +667,13 @@ func permissionBypassFlag(argv []string) string {
 // Exported for the orchestrator's warning on the trust-asserted path; the
 // refusal itself lives in Validate.
 //
+// A bare command name is measured by TargetSuppliedPATHDir instead: it names no
+// path, so PATH -- not argv -- decides which file it runs.
+//
 // An element counts as a path when it is absolute or explicitly relative
 // ("./x", "../x"), or when it contains a separator and something sits there now.
+// Both the whole element and, for a packed option ("--require=./hook.js"), the
+// value after the "=" are measured -- see argPathSpellings.
 // The one exemption is an existing DIRECTORY named as the value of a data-scope
 // flag (see dataScopeFlags), in any spelling. The existence requirement is what
 // keeps the separator-bearing strings that are not paths at all out of the answer
@@ -690,26 +695,115 @@ func TargetSuppliedArg(argv []string, root string) string {
 		if i > 0 {
 			_, dataScope = dataScopeFlags[argv[i-1]]
 		}
-		if !pathLikeArg(tok, root, dataScope) {
+		for _, cand := range argPathSpellings(tok, dataScope) {
+			if !pathLikeArg(cand.tok, root, cand.dataScope) {
+				continue
+			}
+			// Only a relative element resolves against the working directory; joining
+			// root onto an absolute one would fabricate a path under the target and
+			// report every absolute command as target-supplied.
+			p := cand.tok
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(root, p)
+			}
+			if within(p, root) {
+				return tok
+			}
+			// A path that is outside the target lexically can still LAND inside it
+			// through a symlink, which withinTree resolves -- but withinTree answers
+			// "inside" for a path it cannot canonicalize at all, so ask it only about
+			// one that exists. Otherwise an absolute argument naming no file
+			// (--config /etc/absent.toml) would be reported as PR-supplied.
+			if _, err := os.Lstat(p); err == nil && withinTree(p, root) {
+				return tok
+			}
+		}
+	}
+	return ""
+}
+
+// argSpelling is one substring of an argv element that may name a filesystem
+// path, with the data-scope verdict that applies to THAT substring.
+type argSpelling struct {
+	tok       string
+	dataScope bool
+}
+
+// argPathSpellings returns the substrings of tok to measure against the target:
+// the whole token, plus -- when tok is an option that PACKS its value with "=" --
+// the value after the first "=".
+//
+// The packed form is the hole the whole-token test cannot see. `--require=./hook.js`
+// contains a separator but names no file, so pathLikeArg's existence rule drops it
+// and the ./hook.js inside it is never measured -- yet node loads that hook out of
+// the post-checkout worktree and runs it as part of the agent process. Reading the
+// value out is the same reasoning permissionBypassFlag already applies to packed
+// flag spellings: a check worth anything cannot be evaded by writing the same
+// argument one character differently.
+//
+// The data-scope exemption is re-derived from the packed KEY rather than inherited
+// from the token's predecessor: `--add-dir=./sub` says the same thing about ./sub
+// that `--add-dir ./sub` does, while the element after it is still unexempt (that
+// is why the caller matches dataScopeFlags on the whole previous token).
+func argPathSpellings(tok string, dataScope bool) []argSpelling {
+	out := []argSpelling{{tok: tok, dataScope: dataScope}}
+	// Only an OPTION packs a value this way. Without this the "key=value" split
+	// would also fire on a bare argument that merely contains "=", measuring a
+	// suffix no CLI reads as a path of its own.
+	if !strings.HasPrefix(tok, "-") {
+		return out
+	}
+	key, val, ok := strings.Cut(tok, "=")
+	if !ok || val == "" {
+		return out
+	}
+	_, scope := dataScopeFlags[key]
+	return append(out, argSpelling{tok: val, dataScope: scope})
+}
+
+// TargetSuppliedPATHDir returns the PATH entry that lies inside root, or "" when
+// bin is not resolved through PATH or no entry does. It answers the question
+// TargetSuppliedArg cannot: a BARE command name (no separator) names no path at
+// all, so nothing in argv reveals that the file behind it is the target's.
+//
+// exec.LookPath proves a bare name resolves to SOME file now, but it is re-resolved
+// against the same PATH at every invocation, and in mode pr `gh pr checkout` has
+// rewritten the target by then. An operator PATH carrying a directory inside the
+// target -- /repo/bin, a repo-local toolchain shim -- therefore lets the PR supply
+// that executable outright, or shadow one resolved further down PATH by adding a
+// file of the same name. Either way fixpoint execs PR-authored code as the agent
+// process itself, which is exactly what the argv gate refuses.
+//
+// The whole PATH is measured rather than only where the name resolves today,
+// because the shadowing case is the one where today's resolution is outside the
+// target and tomorrow's is not.
+//
+// Exported alongside TargetSuppliedArg for the orchestrator's trust-asserted
+// warning; the refusal itself lives in Validate.
+func TargetSuppliedPATHDir(bin, root string) string {
+	if bin == "" || filepath.IsAbs(bin) || strings.ContainsRune(bin, '/') || strings.ContainsRune(bin, filepath.Separator) {
+		// Not a PATH lookup: an absolute or separator-bearing command names its file
+		// directly, and TargetSuppliedArg already measures that spelling.
+		return ""
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		// A relative entry -- including the empty one, which means the working
+		// directory -- can never decide what runs: exec.LookPath reports ErrDot for a
+		// name resolved through one, so the LookPath check in Validate has already
+		// rejected the command and exec.Cmd would refuse to start it. Skipping them
+		// also keeps the very common trailing-colon PATH from reading as "the target
+		// is on PATH" whenever fixpoint is launched from inside the target.
+		if !filepath.IsAbs(dir) {
 			continue
 		}
-		// Only a relative element resolves against the working directory; joining
-		// root onto an absolute one would fabricate a path under the target and
-		// report every absolute command as target-supplied.
-		p := tok
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(root, p)
+		// Lexically first, so an entry the PR has yet to CREATE (/repo/bin in a tree
+		// that has no bin/ yet) counts; then resolved, for an entry that is a symlink
+		// into the target. Same order and same reason as TargetSuppliedArg.
+		if within(dir, root) {
+			return dir
 		}
-		if within(p, root) {
-			return tok
-		}
-		// A path that is outside the target lexically can still LAND inside it
-		// through a symlink, which withinTree resolves -- but withinTree answers
-		// "inside" for a path it cannot canonicalize at all, so ask it only about
-		// one that exists. Otherwise an absolute argument naming no file
-		// (--config /etc/absent.toml) would be reported as PR-supplied.
-		if _, err := os.Lstat(p); err == nil && withinTree(p, root) {
-			return tok
+		if _, err := os.Lstat(dir); err == nil && withinTree(dir, root) {
+			return dir
 		}
 	}
 	return ""
@@ -1426,6 +1520,15 @@ func (c *Config) Validate() error {
 		if c.Target.Mode == ModePR && !c.Loop.TrustedTarget && !c.Loop.AllowUntrustedFix {
 			if tok := TargetSuppliedArg(argv, c.Target.Path); tok != "" {
 				return fmt.Errorf("agents.%s: command element %q resolves inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Point the command at a binary outside the target (a bare name on PATH, or an absolute path), or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, tok, c.Target.Path)
+			}
+			// And the same refusal for the spelling argv cannot show: a BARE name is
+			// resolved through PATH at every invocation, so a PATH entry inside the
+			// target hands the PR the same direct execution -- by shipping that
+			// executable, or by shadowing one further down PATH with a file of the same
+			// name. The LookPath check above proves only that SOMETHING answers to the
+			// name on the PRE-checkout tree.
+			if dir := TargetSuppliedPATHDir(argv[0], c.Target.Path); dir != "" {
+				return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, argv[0], dir, c.Target.Path)
 			}
 		}
 		// A read-only claim contradicted by the command's own argv. Reviewers are

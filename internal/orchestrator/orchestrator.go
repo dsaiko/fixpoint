@@ -2742,7 +2742,9 @@ func (o *Orchestrator) warnArgModePrompts() {
 }
 
 // warnTargetSuppliedCommand reports an agent command element that resolves inside
-// target.path while the target is a pull request. config.Validate REFUSES that
+// target.path -- or a PATH entry that does, for a bare command name, which is the
+// same file substitution one lookup removed -- while the target is a pull request.
+// config.Validate REFUSES that
 // combination absent a trust assertion (the PR's `gh pr checkout` decides what
 // fixpoint execs as the agent process); with -trusted-target/-allow-untrusted-fix
 // the run proceeds, and this is where the operator learns that the assertion also
@@ -2756,11 +2758,19 @@ func (o *Orchestrator) warnTargetSuppliedCommand() {
 		return
 	}
 	for _, n := range o.activeAgentNames() {
-		tok := config.TargetSuppliedArg(o.cfg.Agents[n].Argv(), o.cfg.Target.Path)
-		if tok == "" {
+		argv := o.cfg.Agents[n].Argv()
+		if len(argv) == 0 {
 			continue
 		}
-		o.logf("WARNING: agent %q has command element %q inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so PR-authored code runs as the agent process itself, with the credentials this agent declares and before any reviewer sandbox; -trusted-target/-allow-untrusted-fix accepts that on top of coder prompt-injection. Point the command at a binary outside the target, or review under an external sandbox (container/VM)", n, tok, o.cfg.Target.Path)
+		if tok := config.TargetSuppliedArg(argv, o.cfg.Target.Path); tok != "" {
+			o.logf("WARNING: agent %q has command element %q inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so PR-authored code runs as the agent process itself, with the credentials this agent declares and before any reviewer sandbox; -trusted-target/-allow-untrusted-fix accepts that on top of coder prompt-injection. Point the command at a binary outside the target, or review under an external sandbox (container/VM)", n, tok, o.cfg.Target.Path)
+		}
+		// The same acceptance, for the spelling argv cannot show: a bare command name
+		// is re-resolved through PATH after the checkout, so a PATH entry inside the
+		// target lets the PR supply or shadow the executable itself.
+		if dir := config.TargetSuppliedPATHDir(argv[0], o.cfg.Target.Path); dir != "" {
+			o.logf("WARNING: agent %q runs the bare command %q, and PATH entry %s is inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and its code runs as the agent process itself, with the credentials this agent declares and before any reviewer sandbox; -trusted-target/-allow-untrusted-fix accepts that on top of coder prompt-injection. Give the command an absolute path outside the target, drop that PATH entry, or review under an external sandbox (container/VM)", n, argv[0], dir, o.cfg.Target.Path)
+		}
 	}
 }
 

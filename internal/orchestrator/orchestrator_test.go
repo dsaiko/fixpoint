@@ -3098,6 +3098,32 @@ func TestWarnTargetSuppliedCommand(t *testing.T) {
 		}
 	})
 
+	// The bare-command spelling reaches the same acceptance by a route argv cannot
+	// show: PATH decides which file "echo" is, it is re-read after `gh pr checkout`,
+	// and an entry inside the target lets the PR supply or shadow that file.
+	t.Run("pr mode warns for a bare command with a PATH entry inside the target", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Target.Mode = config.ModePR
+		f.cfg.Target.PR = 7
+		binDir := filepath.Join(f.repo, "bin")
+		if err := os.MkdirAll(binDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		a := f.cfg.Agents["mock"]
+		a.Command = []string{"echo"}
+		f.cfg.Agents["mock"] = a
+		warnings := collect(t, f)
+		if len(warnings) != 1 {
+			t.Fatalf("warnings = %v, want exactly one", warnings)
+		}
+		for _, want := range []string{`"mock"`, "PATH entry", binDir, "gh pr checkout", "-trusted-target"} {
+			if !strings.Contains(warnings[0], want) {
+				t.Errorf("warning missing %q: %q", want, warnings[0])
+			}
+		}
+	})
+
 	t.Run("directory mode does not warn", func(t *testing.T) {
 		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
 		targetLocal(t, f)
