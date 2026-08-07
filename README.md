@@ -296,7 +296,7 @@ command line.
 | [review-code](config/review-code.yaml) | Review a whole project once, no edits. Needs `-trusted-bundle` (or `-trusted-target`) if the project ships its own bundle. |
 | [review-branch](config/review-branch.yaml) | Review only what this branch changed, no edits. The review-only twin of `fix-branch`. |
 | [review-pr](config/review-pr.yaml) | Review a GitHub pull request; review-only by default. |
-| [fix-pr](config/fix-pr.yaml) | Fix a pull request's changes and answer its open conversations. Needs `-allow-untrusted-fix`, and `-trusted-bundle` as well when the target ships the bundle being used. |
+| [fix-pr](config/fix-pr.yaml) | Fix a pull request's changes and triage its open conversations; the replies are posted only with `-post`. Needs `-allow-untrusted-fix`, and `-trusted-bundle` as well when the target ships the bundle being used. |
 | [fix-code](config/fix-code.yaml) | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
 | [fix-branch](config/fix-branch.yaml) | The same loop over only what this branch changed — git-diff against the merge base with `@{upstream}`. Needs `-trusted-target`. |
 | [defaults](config/defaults.yaml) | Shared base the others extend; not runnable on its own. |

@@ -10,7 +10,7 @@
 #
 # Use it on a branch you are prepared to inspect commit by commit before pushing.
 # The natural workflow is: review-pr first, read what it says, then fix-pr.
-description: Fix a pull request's changes and answer its open conversations. Needs -allow-untrusted-fix.
+description: Fix a pull request's changes and triage its open conversations; the replies are posted only with -post. Needs -allow-untrusted-fix.
 
 extends: defaults
 

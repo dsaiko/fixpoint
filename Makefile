@@ -125,9 +125,15 @@ review-code: build
 review-branch: build
 	./$(BINARY) review-branch --trusted-target
 
-## fix-pr: review -> fix -> verify -> commit over a pull request, answering its
-## open conversations. Pass the number as PR=<n>.
+## fix-pr: review -> fix -> verify -> commit over a pull request; POST=1 also answers its conversations
+## Pass the number as PR=<n>.
 ##   make fix-pr PR=170
+##   make fix-pr PR=170 POST=1
+## POST=1 appends -post, the flag every reply path is gated on: without it the
+## triage still runs and the answers are written into the run directory, but
+## nothing reaches the pull request. Replies go out under your identity, so
+## sending them is opt-in here for the same reason -post is a flag and not a
+## config key.
 ## The most dangerous target here: it edits a tree holding externally-authored
 ## code, so it asserts -allow-untrusted-fix -- the flag that accepts the PR
 ## author's content, and the one the checkout guards are about. Run review-pr
@@ -136,8 +142,8 @@ review-branch: build
 ## project-supplied policy and the run is refused without it. Those are OUR files,
 ## read before the checkout replaced the tree.
 fix-pr: build test vet
-	@test -n "$(PR)" || { echo "usage: make fix-pr PR=<number>"; exit 2; }
-	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-bundle
+	@test -n "$(PR)" || { echo "usage: make fix-pr PR=<number> [POST=1]"; exit 2; }
+	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-bundle $(if $(POST),-post)
 
 ## review-pr: review a pull request; pass the number as PR=<n>
 ##   make review-pr PR=170
