@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -609,6 +610,42 @@ func TestAnApprovalOnAMovedHeadIsWithdrawn(t *testing.T) {
 	// it is what names the review that was published.
 	if want := "https://example.test/pr/7#pullrequestreview-2938471"; url != want {
 		t.Errorf("URL = %q, want the review permalink %q", url, want)
+	}
+}
+
+// The withdrawal is the compensating control for an approval that already landed,
+// so it cannot be disabled by the run being interrupted. A Ctrl-C arriving in the
+// window between the submission returning and the confirmation that follows it
+// cancels the run's context, and on that context the head read and the dismissal
+// would both fail instantly -- leaving the approval standing over unread code
+// exactly when nobody is watching for the report. So the confirmation runs
+// detached: cancellation stops the submission, never the repair of one that landed.
+func TestAnApprovalOnAMovedHeadIsWithdrawnEvenWhenTheRunWasInterrupted(t *testing.T) {
+	const reviewed = "0123456789abcdef0123456789abcdef01234567"
+	const moved = "fedcba9876543210fedcba9876543210fedcba98"
+	// Both reads answer the moved head: the submission has already happened here.
+	dir, dismissal := stubGHDismissingReview(t, moved, moved)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := confirmApproval(ctx, dir, 7, reviewed, EventApprove, "2938471",
+		"https://example.test/pr/7#pullrequestreview-2938471")
+	if err == nil {
+		t.Fatal("confirmApproval() = nil; an approval on a head nobody reviewed was reported as a clean post")
+	}
+	got := dismissal()
+	if got == "" {
+		t.Fatal("no dismissal was attempted after an interrupt -- the approval is still on the pull request")
+	}
+	if !strings.Contains(got, "pulls/7/reviews/2938471/dismissals") {
+		t.Errorf("the dismissal did not name the review that was just posted: %s", got)
+	}
+	if !strings.Contains(err.Error(), "withdrawn") {
+		t.Errorf("the report does not say the approval was taken off: %v", err)
+	}
+	if strings.Contains(err.Error(), "by hand") {
+		t.Errorf("the operator was sent to do by hand what was already done: %v", err)
 	}
 }
 

@@ -789,10 +789,21 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 // GitLab's unapprove does: neither can clear code nobody read. Alarming on those
 // would spend an operator's attention -- and an exit code -- on a post that cost
 // nothing.
+//
+// Everything below runs DETACHED from cancellation. An interrupt can land in the
+// window between the submission returning and this read, and on the run's own
+// context both the read and the dismissal would then fail instantly with
+// context.Canceled -- leaving standing precisely the approval over unread code this
+// exists to withdraw, exactly when the operator asked the run to stop. Cancellation
+// must be able to abort the submission; it must not abort the repair of one that
+// already landed. Each CLI call is still bounded by cliTimeout inside run, so
+// nothing here outlives the interrupt for long. Same reasoning as the
+// orchestrator's stashForReconcile.
 func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, event Event, id, url string) error {
 	if event != EventApprove {
 		return nil
 	}
+	ctx = context.WithoutCancel(ctx)
 	where := ""
 	if url != "" {
 		where = " (" + url + ")"
