@@ -950,6 +950,85 @@ func TestAReplyToSomethingThatIsNotACommentIDPostsNothing(t *testing.T) {
 	}
 }
 
+// Requesters decides Origin.Author and Origin.External, which is the provenance a
+// coder prompt and a commit message carry to say that untrusted third-party text
+// commissioned a change. Each row below is one of the facts its doc commits to, and
+// the shapes that matter are the ones a real conversation takes: answered twice with
+// somebody writing between the answers, one person speaking again under a different
+// capitalisation, and an author GitHub would not name.
+func TestRequestersNamesTheLiveRequest(t *testing.T) {
+	const marker = "answered <!-- ai-panel run 20260807 -->"
+	for _, tc := range []struct {
+		name     string
+		comments []ThreadComment
+		want     []string
+	}{
+		{
+			// Never answered: the whole conversation is the live request.
+			name: "no reply of ours",
+			comments: []ThreadComment{
+				{Author: "dsaiko", Body: "missing guard"},
+				{Author: "stranger", Body: "above the loop"},
+			},
+			want: []string{"dsaiko", "stranger"},
+		},
+		{
+			// What was said before our answer is settled; only the follow-up is asking.
+			name: "one reply of ours",
+			comments: []ThreadComment{
+				{Author: "dsaiko", Body: "missing guard"},
+				{Author: "dsaiko", Body: marker},
+				{Author: "stranger", Body: "now rewrite the parser"},
+			},
+			want: []string{"stranger"},
+		},
+		{
+			// Anchored on the LAST marker: the person who wrote between the two answers
+			// has already been answered, so naming them would credit the wrong request.
+			name: "answered twice with a person in between",
+			comments: []ThreadComment{
+				{Author: "dsaiko", Body: "missing guard"},
+				{Author: "dsaiko", Body: marker},
+				{Author: "middle", Body: "also the second call site"},
+				{Author: "dsaiko", Body: marker},
+				{Author: "stranger", Body: "and the parser"},
+			},
+			want: []string{"stranger"},
+		},
+		{
+			// One account is one requester however they capitalise their login, and the
+			// spelling recorded is the one they first used.
+			name: "a repeat speaker in mixed case",
+			comments: []ThreadComment{
+				{Author: "Stranger", Body: "missing guard"},
+				{Author: "dsaiko", Body: "which loop?"},
+				{Author: "sTrAnGeR", Body: "the outer one"},
+			},
+			want: []string{"Stranger", "dsaiko"},
+		},
+		{
+			// A deleted account comes back with author.login absent, so the live request
+			// has a speaker the forge cannot name. Dropping it would leave the sole
+			// requester equal to this run's own account and label the request internal --
+			// "we do not know who asked" is exactly what makes it external.
+			name: "an author the forge could not name",
+			comments: []ThreadComment{
+				{Author: "dsaiko", Body: "missing guard"},
+				{Author: "dsaiko", Body: marker},
+				{Author: "", Body: "now rewrite the parser"},
+			},
+			want: []string{""},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Thread{Author: "dsaiko", Comments: tc.comments}.Requesters()
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("Requesters() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // gitRepoWithRemotes creates a repository whose remotes are exactly the given
 // name/URL pairs, in the given order. A name is written straight into the config
 // rather than through `git remote add` so a test can create one git itself would

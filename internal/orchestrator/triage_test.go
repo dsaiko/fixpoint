@@ -205,6 +205,41 @@ func TestEveryVoiceInTheLiveRequestIsRecorded(t *testing.T) {
 	}
 }
 
+// A requester the forge could not name is not this run's account, so the request is
+// external. GitHub returns a null author for a deleted account, which arrives as the
+// empty string: treating that as "nobody outside spoke" would drop the warning from
+// the coder's prompt and from the commit for the one request whose provenance cannot
+// be checked afterwards.
+func TestAnUnnamedRequesterIsExternal(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.triageRole()
+	o, _, _ := f.withThreads("dsaiko", forge.Thread{
+		ID: "100", Path: "a.go", Line: 3, Author: "dsaiko", Body: "missing guard",
+		Comments: []forge.ThreadComment{
+			{Author: "dsaiko", Body: "missing guard"},
+			{Author: "dsaiko", Body: "fixed in abc123\n" + forge.ReplyMarker("run-1")},
+			{Author: "", Body: "now also rewrite the parser"},
+		},
+	})
+	f.respond(1, `<review>{"decisions":[{"thread":"100","verdict":"accept","reason":"real","title":"t",
+		"severity":"medium","category":"bug","file":"a.go","description":"d"}]}</review>`)
+
+	o.triageConversations(t.Context())
+
+	if len(o.commissioned) != 1 {
+		t.Fatalf("commissioned %d, want 1", len(o.commissioned))
+	}
+	got := o.commissioned[0].Origin
+	if !got.External {
+		t.Error("a request whose only live author the forge could not name reads as internal, so the commit loses its provenance warning")
+	}
+	// Nothing is invented to fill the gap -- least of all the opener, who is not who
+	// asked. An empty author is the honest record of an account that no longer exists.
+	if got.Author != "" {
+		t.Errorf("origin author = %q, want empty for a requester the forge could not name", got.Author)
+	}
+}
+
 // Triage decides; it does not get to invent what it decides about. An id nobody
 // was shown cannot answer a conversation that exists, and a decision with no
 // reason would post an empty reply to a person.
