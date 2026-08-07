@@ -1026,6 +1026,76 @@ func TestAConversationIsReadPastItsFirstPageOfComments(t *testing.T) {
 	}
 }
 
+// A thread list page that never clears hasNextPage: a malformed cursor or a server
+// that keeps saying "more" walks the loop into its bound.
+const endlessThreadListPage = `{"data":{"repository":{"pullRequest":{"reviewThreads":{
+  "pageInfo":{"hasNextPage":true,"endCursor":"c100"},
+  "nodes":[
+  {"id":"PRRT_kwDOAbCdEf","isResolved":false,"comments":{
+    "pageInfo":{"hasNextPage":false,"endCursor":""},
+    "nodes":[{"path":"internal/forge/forge.go","line":42,"databaseId":2147483648,"body":"why origin only?","author":{"login":"dsaiko"}}]}}
+]}}}}}`
+
+// One whole thread, whose comments never stop paging: the same non-termination one
+// level down, where githubThreadTail rather than Threads has to refuse.
+const endlessThreadTail = `{"data":{"node":{"comments":{
+  "pageInfo":{"hasNextPage":true,"endCursor":"c200"},
+  "nodes":[{"path":"internal/forge/forge.go","line":42,"databaseId":2147483649,"body":"still talking","author":{"login":"dsaiko"}}]}}}}`
+
+// Both pagination loops stop at maxPages, and stopping is an ERROR rather than the
+// pages read so far. Handing back what was accumulated would be the defect the
+// pagination was added for, wearing a nil error: triage and the coder get half an
+// exchange as if it were the whole one, and AnsweredByMachine -- which reads the LAST
+// comment -- calls an answered thread live and answers it again under the operator's
+// name. So what is asserted is that nothing comes back with the error.
+func TestAConversationThatNeverStopsPagingIsAnErrorNotAPartialRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// tail is the response to the query that reads one thread's later comments;
+		// list is the response to the thread-list query.
+		list, tail string
+		wantErr    string
+	}{
+		{"thread list never ends", endlessThreadListPage, longThreadTail, "pages of review threads"},
+		{"one conversation never ends", longThreadFirstPage, endlessThreadTail, "read conversation PRRT_kwDOAbCdEf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			list, tail := filepath.Join(bin, "list.json"), filepath.Join(bin, "tail.json")
+			for path, body := range map[string]string{list: tc.list, tail: tc.tail} {
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Dispatch on the query text, as the paging test above does: the stub is
+			// endless by construction, so a loop without a bound hangs here instead of
+			// running out of canned responses.
+			script := "#!/bin/sh\ncase \"$*\" in\n" +
+				"'repo view --json owner,name') printf '%s' '{\"owner\":{\"login\":\"dsaiko\"},\"name\":\"fixpoint\"}' ;;\n" +
+				"*PullRequestReviewThread*) cat " + tail + " ;;\n" +
+				"'api graphql'*) cat " + list + " ;;\n" +
+				"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+			if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			got, err := (githubProvider{}).Threads(t.Context(), t.TempDir(), 7)
+			if err == nil {
+				t.Fatalf("Threads() = %d conversations, nil; a read that never reached the end must not read as the whole exchange", len(got))
+			}
+			if got != nil {
+				t.Errorf("Threads() = %d conversations alongside the error; the pages read so far are a partial exchange, not an answer", len(got))
+			}
+			// The message has to say what stopped the read -- a bound hit, not a forge
+			// that lost the thread -- and name the bound so the operator can tell.
+			if !strings.Contains(err.Error(), tc.wantErr) || !strings.Contains(err.Error(), "100") {
+				t.Errorf("Threads() = %v, want an error naming %q and the %d-page bound", err, tc.wantErr, maxPages)
+			}
+		})
+	}
+}
+
 // An unreadable answer and an empty one are different facts. readForgeThreads warns
 // on an error and proceeds with no conversations, so the two only stay distinguishable
 // if the parse refuses to call a malformed response an empty list.
