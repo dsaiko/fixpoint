@@ -996,7 +996,14 @@ func (o *Orchestrator) answerConversations(ctx context.Context, it model.Issue, 
 		o.logf("%d conversation repl(y|ies) for %s were not posted: the fix did not commit", len(replies), it.ID)
 		return
 	}
-	o.postReplies(ctx, it.Origin.Thread, replies)
+	// Every conversation linked to this issue, not just the primary one: merging
+	// records a second commissioning comment on Issue.Also and the coder is told to
+	// answer all of them, so an issue's session legitimately owes replies to each.
+	own := make(map[string]bool, len(it.Also)+1)
+	for _, c := range it.Conversations() {
+		own[c.Thread] = true
+	}
+	o.postReplies(ctx, own, replies)
 }
 
 // staleFiles reports which of the issue's files have been committed to since
@@ -5070,8 +5077,9 @@ func (o *Orchestrator) conversations() string {
 
 // postReplies answers the conversations the coder said its work addressed.
 //
-// own is the thread this session was commissioned by, or "" for an ordinary
-// panel finding.
+// own is the set of threads that commissioned this session's issue -- more than
+// one when two comments about the same defect were merged onto it -- and is empty
+// for an ordinary panel finding.
 //
 // Gated on -post, like every other write to a forge: an answer appears under a
 // human's comment with the operator's identity on it. Gated on the thread being
@@ -5086,7 +5094,7 @@ func (o *Orchestrator) conversations() string {
 //
 // Failures are reported per reply and never abort the round: the fix is already
 // committed and verified, and losing that over a comment would be the wrong trade.
-func (o *Orchestrator) postReplies(ctx context.Context, own string, replies []model.FixReply) {
+func (o *Orchestrator) postReplies(ctx context.Context, own map[string]bool, replies []model.FixReply) {
 	if len(replies) == 0 || len(o.threads) == 0 {
 		return
 	}
@@ -5116,7 +5124,7 @@ func (o *Orchestrator) postReplies(ctx context.Context, own string, replies []mo
 			o.logf("WARNING: the coder answered thread %q, which it was not shown as an open conversation; not posted", reply.Thread)
 			continue
 		}
-		if o.commissionedThreads[reply.Thread] && reply.Thread != own {
+		if o.commissionedThreads[reply.Thread] && !own[reply.Thread] {
 			o.logf("WARNING: conversation %s commissioned a different issue and is answered by that issue's session; this reply is not posted", reply.Thread)
 			continue
 		}

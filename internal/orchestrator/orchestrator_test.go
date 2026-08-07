@@ -7942,7 +7942,7 @@ func TestRepliesGoOnlyToConversationsTheCoderWasShown(t *testing.T) {
 	}
 	defer func() { readerFor = prev }()
 
-	o.postReplies(t.Context(), "", []model.FixReply{
+	o.postReplies(t.Context(), nil, []model.FixReply{
 		{Thread: "100", Message: "changed a.go:1 to use the guard"},
 		{Thread: "999", Message: "answering a conversation nobody showed me"},
 	})
@@ -7984,9 +7984,9 @@ func TestAnAnsweredConversationIsNotOfferedOrPostedToAgain(t *testing.T) {
 	readerFor = func(context.Context, string) forge.Reader { return reader }
 	defer func() { readerFor = prev }()
 
-	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "fixed in a.go"}})
+	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "100", Message: "fixed in a.go"}})
 	// The next session's turn: same list rendered to it, same thread named again.
-	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "I also touched a.go"}})
+	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "100", Message: "I also touched a.go"}})
 
 	if len(replied) != 1 || replied[0] != "100" {
 		t.Errorf("replied to %v, want the conversation answered exactly once", replied)
@@ -8005,7 +8005,7 @@ func TestAnAnsweredConversationIsNotOfferedOrPostedToAgain(t *testing.T) {
 	}
 	// A failed post answers nobody, so that thread stays open for a later session.
 	reader.replyErr = errors.New("forge said no")
-	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "200", Message: "fixed in b.go"}})
+	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "200", Message: "fixed in b.go"}})
 	if !o.threadOpen("200") {
 		t.Error("a reply that never reached the forge must leave the conversation unanswered")
 	}
@@ -8035,7 +8035,7 @@ func TestACommissionedConversationIsAnsweredOnlyByItsOwnFix(t *testing.T) {
 	defer func() { readerFor = prev }()
 
 	// A panel finding's session, which this conversation did not commission.
-	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "I fixed something nearby"}})
+	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "100", Message: "I fixed something nearby"}})
 	if len(replied) != 0 {
 		t.Fatalf("replied to %v; another issue's session must not answer a commissioned thread", replied)
 	}
@@ -8044,9 +8044,54 @@ func TestACommissionedConversationIsAnsweredOnlyByItsOwnFix(t *testing.T) {
 	}
 
 	// The session fixing the issue this thread commissioned.
-	o.postReplies(t.Context(), "100", []model.FixReply{{Thread: "100", Message: "guarded the dereference"}})
+	o.postReplies(t.Context(), map[string]bool{"100": true},
+		[]model.FixReply{{Thread: "100", Message: "guarded the dereference"}})
 	if len(replied) != 1 || replied[0] != "100" {
 		t.Errorf("replied to %v, want the commissioned thread answered by its own fix", replied)
+	}
+}
+
+// Two comments about one defect merge onto a single issue: the second lands on
+// Issue.Also, the coder is told to answer both, and one session owes replies to
+// both. Gating on the primary thread alone refused every answer to the second --
+// and since the thread stays open and commissioned, no later session could answer
+// it either, leaving a comment marked as commissioned that nothing ever answers.
+func TestASessionAnswersEveryConversationMergedOntoItsIssue(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.threads = []forge.Thread{
+		{ID: "100", Path: "a.go", Line: 1, Author: "human", Body: "why?"},
+		{ID: "200", Path: "a.go", Line: 1, Author: "other", Body: "same here"},
+	}
+	o.commissionedThreads = map[string]bool{"100": true, "200": true}
+
+	var replied []string
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader {
+		return &fakeReader{threads: o.threads, replied: &replied}
+	}
+	defer func() { readerFor = prev }()
+
+	it := model.Issue{
+		ID:     "i1",
+		Origin: model.Origin{Thread: "100", Author: "human"},
+		Also:   []model.Origin{{Thread: "200", Author: "other"}},
+	}
+	o.answerConversations(t.Context(), it, true, []model.FixReply{
+		{Thread: "100", Message: "guarded the dereference"},
+		{Thread: "200", Message: "guarded the dereference"},
+	})
+
+	if len(replied) != 2 || replied[0] != "100" || replied[1] != "200" {
+		t.Errorf("replied to %v, want both conversations merged onto the issue answered:\n%s", replied, logs())
 	}
 }
 
@@ -8068,7 +8113,7 @@ func TestRepliesAreNotPostedWithoutTheFlag(t *testing.T) {
 	readerFor = func(context.Context, string) forge.Reader { return &fakeReader{replied: &replied} }
 	defer func() { readerFor = prev }()
 
-	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "hello"}})
+	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "100", Message: "hello"}})
 	if len(replied) != 0 {
 		t.Errorf("posted %d repl(y|ies) without -post", len(replied))
 	}
@@ -8099,7 +8144,7 @@ func TestRepliesWithNoForgeRemoteAreReportedNotSwallowed(t *testing.T) {
 	readerFor = func(context.Context, string) forge.Reader { return nil }
 	defer func() { readerFor = prev }()
 
-	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "hello"}})
+	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "100", Message: "hello"}})
 	if !strings.Contains(logs(), "not posted") || !strings.Contains(logs(), "remote") {
 		t.Errorf("the replies vanished with nothing said about the missing forge remote:\n%s", logs())
 	}
@@ -8191,7 +8236,7 @@ func TestAConversationReplyIsSignedAndSanitized(t *testing.T) {
 	readerFor = func(context.Context, string) forge.Reader { return reader }
 	defer func() { readerFor = prev }()
 
-	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100",
+	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "100",
 		Message: "Fixed. Thanks @reviewer — Closes #42 <!-- and the rest of the document"}})
 
 	if len(reader.bodies) != 1 {
@@ -8250,7 +8295,7 @@ func TestReplySignatureTemplateIsConfigurable(t *testing.T) {
 			readerFor = func(context.Context, string) forge.Reader { return reader }
 			defer func() { readerFor = prev }()
 
-			o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "done"}})
+			o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "100", Message: "done"}})
 
 			want := "Answered by AI panel"
 			if tmpl != "" {
