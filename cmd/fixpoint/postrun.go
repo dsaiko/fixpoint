@@ -174,7 +174,15 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 	receipt, err := os.OpenFile(filepath.Join(runDir, postReceipt), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, os.ErrExist) {
 		// Lost the race, or the early check above could not read the receipt.
-		logf("post-run: %s", alreadyPosted(runDir, sum.PR))
+		why := alreadyPosted(runDir, sum.PR)
+		if why == "" {
+			// The receipt demonstrably exists -- the claim just collided with it -- so ""
+			// here means unreadable, not absent, and the operator still has to be told
+			// that this pull request may already carry the review and where to look.
+			why = fmt.Sprintf("%s already holds a %s receipt that could not be read; pull request %d may already carry this review. Check it, then delete %s to try again.",
+				runDir, postReceipt, sum.PR, filepath.Join(runDir, postReceipt))
+		}
+		logf("post-run: %s", why)
 		return 2
 	}
 	if err != nil {
