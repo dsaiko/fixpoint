@@ -444,6 +444,73 @@ func TestACommissionedFixNamesItsConversationInThePromptAndTheCommit(t *testing.
 	}
 }
 
+// A commissioned issue the per-round cap defers has to come back by itself.
+//
+// Nothing re-reports a comment: triage runs once, before the first round, so the
+// panel is the only thing that revives a deferred PANEL finding and there is no
+// equivalent for a commissioned one. Handing the commissioned set to round 1 and
+// clearing it therefore dropped a deferred issue out of every later round's list
+// -- the next clean review converged the run, and the conversation, reserved for
+// that issue's session by commissionedThreads, was never answered by anybody.
+func TestADeferredCommissionedIssueReturnsInTheNextRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 2, MaxFindingsPerRound: 1, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "bugs", Severity: "critical", File: "main.go", Line: 1, Title: "panel found this first"}))
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "rejected", Detail: "not a defect"}))
+	f.respond(3, reviewResponse(t)) // round 2: the panel reports nothing at all
+	f.respond(4, fixResponse(t, model.FixResult{ID: "i2", Verdict: "rejected", Detail: "checked; nothing to change"}))
+
+	o := f.orchestrator()
+	// What triage would have left behind: one accepted conversation, at a severity
+	// the panel's critical outranks, so the cap defers it in round 1.
+	o.commissioned = []model.Finding{{
+		Agent: "triagemock", Lens: "triage", Category: "bug", Severity: "low",
+		File: "a.go", Line: 3, Title: "missing guard", Description: "Guard the dereference at a.go:3.",
+		Origin: model.Origin{Thread: "100", Author: "stranger", External: true},
+	}}
+
+	sum := &model.RunSummary{}
+	cleanStreak := 0
+	for round := 1; round <= 2; round++ {
+		if _, err := o.runRound(t.Context(), round, sum, &cleanStreak); err != nil {
+			t.Fatalf("runRound(%d) err = %v", round, err)
+		}
+	}
+	if len(sum.Rounds) != 2 {
+		t.Fatalf("rounds = %d, want 2", len(sum.Rounds))
+	}
+	var deferred bool
+	for _, it := range sum.Rounds[0].Issues {
+		if it.Origin.Thread == "100" && it.Verdict == model.VerdictDeferred {
+			deferred = true
+		}
+	}
+	if !deferred {
+		t.Fatalf("round 1 issues = %+v, want the commissioned one deferred by the cap", sum.Rounds[0].Issues)
+	}
+
+	r2 := sum.Rounds[1]
+	if len(r2.Findings) != 1 || r2.Findings[0].Origin.Thread != "100" {
+		t.Fatalf("round 2 findings = %+v, want the commissioned one re-offered with no reviewer to re-report it", r2.Findings)
+	}
+	// Re-offered as the SAME issue: a fresh id would carry no deferral history, so
+	// the aging that bounds the wait would restart every round.
+	if len(r2.Issues) != 1 || r2.Issues[0].ID != "i2" || r2.Issues[0].Deferrals != 1 {
+		t.Fatalf("round 2 issues = %+v, want i2 with its deferral history intact", r2.Issues)
+	}
+	if r2.Rejected != 1 {
+		t.Errorf("round 2 rejected = %d, want the commissioned issue finally handed to the coder", r2.Rejected)
+	}
+
+	// Decided is decided. The ledger never hands a rejected issue back, so an
+	// endlessly re-offered one would only stop every later round from reading clean.
+	rec := model.RoundRecord{Round: 3}
+	o.mergeCommissioned(&rec)
+	if len(rec.Findings) != 0 || len(o.commissioned) != 0 {
+		t.Errorf("round 3 was offered %+v; a decided conversation must stop coming back", rec.Findings)
+	}
+}
+
 // A conversation this tool already answered is not waiting on anything, and a
 // reply does not resolve a thread -- so without this every later run reads it as
 // unresolved and answers it again. The PR that drove this had 39 open

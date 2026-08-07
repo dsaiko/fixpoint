@@ -142,6 +142,69 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 	o.endPhase("TRIAGE  %d accepted, %d declined, %d left undecided", accepted, rejected, undecided)
 }
 
+// mergeCommissioned adds what the pull request's comments commissioned to one
+// round's observations, and keeps them queued for the rounds after it.
+//
+// Held until the coder decides them, unlike a panel finding, because triage is the
+// only source there is. A deferred panel finding comes back because the next
+// round's reviewers still see the defect and report it again; nothing re-reports a
+// comment. Handing the commissioned set over once meant that an issue the cap
+// deferred simply left the round lists -- a later clean round then converged the
+// run, and the conversation it commissioned was never answered by anybody, since
+// commissionedThreads reserves that thread for the session fixing THAT issue.
+//
+// Dropped once the ledger has the issue fixed (its conversations were answered
+// when that fix committed) or rejected (a decision the ledger will not hand back
+// to a coder however often it is re-reported, so re-offering it would only stop
+// the loop from ever reading a round as clean).
+//
+// Each survivor declares its issue, so a re-offer joins the issue it opened rather
+// than minting a fresh one: identity would otherwise rest on the canonical title,
+// which a reviewer's own report of the same defect is free to have replaced -- and
+// a new id has no deferral history, which is the aging restart that starves an
+// issue forever.
+func (o *Orchestrator) mergeCommissioned(rec *model.RoundRecord) {
+	kept := o.commissioned[:0]
+	for _, f := range o.commissioned {
+		it, ok := o.commissionedIssue(f.Origin.Thread)
+		if ok {
+			if st := it.StatusOrDefault(); st == model.VerdictFixed || st == model.VerdictRejected {
+				continue
+			}
+			f.IssueID = it.ID
+		}
+		kept = append(kept, f)
+	}
+	o.commissioned = kept
+	if len(kept) == 0 {
+		return
+	}
+	rec.Findings = append(rec.Findings, kept...)
+	o.logf("round %d: %d finding(s) from the pull request's conversations join the panel's %d",
+		rec.Round, len(kept), len(rec.Findings)-len(kept))
+}
+
+// commissionedIssue finds the issue a conversation's request became, if a round
+// has absorbed it yet.
+//
+// Looked up by thread rather than by a remembered id, because the ledger may have
+// merged the commissioned observation into an issue a reviewer opened first --
+// attach keeps the conversation on whichever issue that is, and that is the issue
+// whose verdict answers the comment.
+func (o *Orchestrator) commissionedIssue(thread string) (model.Issue, bool) {
+	if thread == "" {
+		return model.Issue{}, false
+	}
+	for _, it := range o.ledger.Issues() {
+		for _, c := range it.Conversations() {
+			if c.Thread == thread {
+				return it, true
+			}
+		}
+	}
+	return model.Issue{}, false
+}
+
 // missingAcceptFields names the required fields an acceptance left empty, or ""
 // when it carries them all.
 //

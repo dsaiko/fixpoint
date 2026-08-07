@@ -2033,11 +2033,6 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	})
 	o.phase("REVIEW  %d reviewer(s), %d lens(es)", len(panelAgents(rec.Assignments)), len(rec.Assignments))
 	o.review(ctx, &rec, material, sum.Rounds)
-	// What the pull request's comments asked for joins the panel's own reports, once,
-	// in the first round. From here they are ordinary findings: the ledger groups
-	// them (so a comment and a reviewer describing the same defect become one issue,
-	// still carrying the conversation to answer), the cap orders them by severity,
-	// and each is fixed in its own session behind the verify gate.
 	// Billed for having RUN, not for what it decided. A pass that declined every
 	// conversation, or that failed to parse, spent the same tokens as one that
 	// commissioned work -- and the failed one is precisely the pass whose Failed
@@ -2047,12 +2042,13 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		rec.Steps = append(rec.Steps, o.triageStep)
 		o.triageStep = model.StepStat{}
 	}
-	if len(o.commissioned) > 0 {
-		rec.Findings = append(rec.Findings, o.commissioned...)
-		o.logf("round %d: %d finding(s) from the pull request's conversations join the panel's %d",
-			round, len(o.commissioned), len(rec.Findings)-len(o.commissioned))
-		o.commissioned = nil
-	}
+	// What the pull request's comments asked for joins the panel's own reports. From
+	// here they are ordinary findings: the ledger groups them (so a comment and a
+	// reviewer describing the same defect become one issue, still carrying the
+	// conversation to answer), the cap orders them by severity, and each is fixed in
+	// its own session behind the verify gate. Offered again every round until the
+	// coder decides them -- see mergeCommissioned.
+	o.mergeCommissioned(&rec)
 	sum.Rounds = append(sum.Rounds, rec)
 	recP := &sum.Rounds[len(sum.Rounds)-1]
 	o.journal(model.EvReviewFinished, round, model.JournalReviewFinished{
