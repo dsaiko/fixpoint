@@ -91,6 +91,12 @@ func TestTriageTurnsAnAcceptedConversationIntoWorkAndAnswersTheRest(t *testing.T
 	if !strings.Contains(reader.bodies[0], "Answered by AI panel") {
 		t.Errorf("a machine answer must be signed:\n%s", reader.bodies[0])
 	}
+	// Signed by whoever wrote it. Triage declined this one and the coder never ran
+	// for it, so naming the coder would tell the reader they were answered by an
+	// agent that produced none of these words.
+	if !strings.Contains(reader.bodies[0], "triagemock") || strings.Contains(reader.bodies[0], "· mock ") {
+		t.Errorf("a decline must be signed by the triage agent, not the coder:\n%s", reader.bodies[0])
+	}
 	// Answered means finished: leaving it in the list is how the same conversation
 	// gets replied to again by every later session.
 	for _, th := range o.threads {

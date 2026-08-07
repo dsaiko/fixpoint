@@ -5153,7 +5153,7 @@ func (o *Orchestrator) postReplies(ctx context.Context, own map[string]bool, rep
 	// carried nothing at all to say otherwise -- the one place in this tool where a
 	// reader could be misled about who they were talking to. Built once: it is the
 	// same run, the same agent, for every thread.
-	signature := o.replySignature()
+	signature := o.replySignature(o.cfg.Roles.Coder.Agent)
 	for _, reply := range replies {
 		if !o.threadOpen(reply.Thread) {
 			// Covers an invented id, a thread from some other pull request, and one this

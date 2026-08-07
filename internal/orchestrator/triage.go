@@ -329,7 +329,10 @@ func (o *Orchestrator) declineConversation(ctx context.Context, th forge.Thread,
 	if r == nil {
 		return
 	}
-	body := publishedText(forge.SanitizeText(reason) + "\n\n" + o.replySignature())
+	// Signed with TRIAGE: this reason is what the triage agent wrote, and the coder
+	// is never invoked for a conversation triage declined. Naming the coder here
+	// would attribute a human-visible answer to an agent that did not write it.
+	body := publishedText(forge.SanitizeText(reason) + "\n\n" + o.replySignature(o.cfg.Roles.Triage.Agent))
 	if err := r.Reply(ctx, o.cfg.Target.Path, o.cfg.Target.PR, th.ID, body); err != nil {
 		o.logf("ERROR: answering conversation %s failed: %v", th.ID, err)
 		return
@@ -345,9 +348,13 @@ func (o *Orchestrator) declineConversation(ctx context.Context, th forge.Thread,
 // can be posted without the marker. A reply that lost it would be indistinguishable
 // from a person's, and the next run would read it as a live question and answer it
 // again.
-func (o *Orchestrator) replySignature() string {
+//
+// Only the named agent varies, because that is the one fact that differs between
+// the two callers: a fix report is the coder's answer, a triage decline is
+// triage's, and {agents} must name whichever of them actually wrote the text.
+func (o *Orchestrator) replySignature(agent string) string {
 	sig := review.ReplySignature(o.cfg.Review.ReplySignature, review.SignatureFacts{
-		Agents:  []string{o.cfg.Roles.Coder.Agent},
+		Agents:  []string{agent},
 		Run:     o.logs.RunID(),
 		Version: review.Version(),
 		Config:  configBaseName(o.source.Config),
