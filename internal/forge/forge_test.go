@@ -216,6 +216,74 @@ func TestChecksRefuseWhenTheReviewedCommitWasNotRecorded(t *testing.T) {
 	}
 }
 
+// stubGlabPipelines puts a fake `glab` on PATH that answers the merge request's
+// pipeline list -- matched on the WHOLE argument list, so a change to the command
+// Checks runs fails this test instead of quietly reporting no pipeline. Any other
+// invocation exits nonzero, which is what Checks sees when glab cannot answer.
+func stubGlabPipelines(t *testing.T, pipelines string) (dir string) {
+	t.Helper()
+	bin := t.TempDir()
+	// The list goes through a file rather than into the script: it is quote-heavy
+	// JSON, and embedding it would test the shell escaping, not the parse.
+	body := filepath.Join(bin, "pipelines.json")
+	if err := os.WriteFile(body, []byte(pipelines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"'api projects/:id/merge_requests/" + strconv.Itoa(stubbedPR) + "/pipelines') cat " + body + " ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "glab"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return t.TempDir()
+}
+
+// GitLab returns the pipeline list newest first, and the newest entry belongs to
+// the newest PUSH. Taking it would be the GitHub hole in another shape: a later
+// commit's green pipeline standing in for the reviewed commit's failing one. The
+// reviewed commit's own pipeline is the evidence, however old it is in the list.
+func TestGitLabChecksReadThePipelineOfTheReviewedCommit(t *testing.T) {
+	const pushed = "fedcba9876543210fedcba9876543210fedcba98"
+	dir := stubGlabPipelines(t, `[
+	  {"id":22,"sha":"`+pushed+`","status":"success"},
+	  {"id":11,"sha":"`+reviewedSHA+`","status":"failed"}
+	]`)
+
+	got, err := (gitlabProvider{}).Checks(t.Context(), dir, stubbedPR, reviewedSHA)
+	if err != nil {
+		t.Fatalf("Checks() = %v", err)
+	}
+	if !got.Known {
+		t.Error("Known = false although glab answered -- the verdict would carry no CI evidence")
+	}
+	if want := []string{"pipeline 11"}; !reflect.DeepEqual(got.Failing, want) {
+		t.Errorf("Failing = %v, want %v -- pipeline 22 ran on a later push, so reporting it credits the reviewed commit with another commit's green CI", got.Failing, want)
+	}
+	if len(got.Pending) != 0 {
+		t.Errorf("Pending = %v, want empty", got.Pending)
+	}
+}
+
+// And when every pipeline is about some other commit there is no evidence to
+// report. An empty pipeline list means "no checks" (Known stays true); this means
+// "we cannot say", which is a refusal, so a verdict never rests on it.
+func TestGitLabChecksRefusePipelinesThatBelongToOtherCommits(t *testing.T) {
+	const pushed = "fedcba9876543210fedcba9876543210fedcba98"
+	dir := stubGlabPipelines(t, `[{"id":22,"sha":"`+pushed+`","status":"success"}]`)
+
+	got, err := (gitlabProvider{}).Checks(t.Context(), dir, stubbedPR, reviewedSHA)
+	if err == nil {
+		t.Fatal("Checks() = nil although no pipeline ran on the reviewed commit -- the verdict would credit it with a pushed commit's green CI")
+	}
+	if got.Known {
+		t.Error("Known = true although no pipeline was seen for the reviewed commit")
+	}
+	if !strings.Contains(err.Error(), shortSHA(reviewedSHA)) {
+		t.Errorf("the refusal does not name the commit it wanted a pipeline for: %v", err)
+	}
+}
+
 // A stopped or skipped check is not a pass, but it is not evidence of a defect
 // either: blocking on one would block on a maintainer stopping a run they did not
 // need.
