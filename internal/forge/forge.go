@@ -1399,6 +1399,13 @@ type threadCommentPage struct {
 	Nodes []threadCommentNode `json:"nodes"`
 }
 
+// maxPages bounds both pagination loops below, so a malformed cursor or a server
+// that never clears hasNextPage cannot spin forever. 100 pages is 10,000 comments
+// on one conversation or 10,000 conversations on one pull request -- past anything
+// real. Exhausting it is an error, never a short answer: partial data returned as
+// complete is exactly the failure the pagination exists to prevent.
+const maxPages = 100
+
 // githubThreadTail returns the comments of thread nodeID that follow the page
 // ending at cursor, in order.
 //
@@ -1407,9 +1414,7 @@ type threadCommentPage struct {
 // be able to mistake it for the whole exchange.
 func githubThreadTail(ctx context.Context, dir, nodeID, cursor string) ([]threadCommentNode, error) {
 	var rest []threadCommentNode
-	// Bounded like the thread loop, and for the same reason: 100 pages is 10,000
-	// comments on one conversation, past anything a person will write.
-	for range 100 {
+	for range maxPages {
 		out, err := run(ctx, dir, "gh", "api", "graphql", "-f", "query="+threadCommentsQuery,
 			"-f", "id="+nodeID, "-f", "after="+cursor)
 		if err != nil {
@@ -1432,7 +1437,7 @@ func githubThreadTail(ctx context.Context, dir, nodeID, cursor string) ([]thread
 		}
 		cursor = page.PageInfo.EndCursor
 	}
-	return rest, nil
+	return nil, fmt.Errorf("conversation %s is longer than %d pages of comments", nodeID, maxPages)
 }
 
 func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread, error) {
@@ -1442,10 +1447,7 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 	}
 	var threads []Thread
 	cursor := ""
-	// Bounded, so a malformed cursor or a server that never clears hasNextPage
-	// cannot spin forever. 100 pages is 10,000 conversations -- far past any real
-	// pull request, and the cap is reported rather than silently applied.
-	for range 100 {
+	for range maxPages {
 		// owner and repo go through -f, not -F: gh's typed flag would turn a repo
 		// named 2048 into a JSON number and null into JSON null, and the query
 		// declares both as String!, so the server would reject the whole page.
@@ -1514,7 +1516,7 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 		}
 		cursor = rt.PageInfo.EndCursor
 	}
-	return threads, nil
+	return nil, fmt.Errorf("pull request %d has more than %d pages of review threads", pr, maxPages)
 }
 
 // Login asks gh who it is authenticated as.
