@@ -516,6 +516,12 @@ type Issue struct {
 	// kept -- one reviewer still standing behind a defect is enough -- but a reader
 	// deciding what to do about it should know the panel split.
 	Contested bool `json:"contested,omitempty"`
+	// ContestedBy names the refuters whose position produced that doubt, sorted. The
+	// boolean alone cannot say WHO doubted the finding, and the judge gate needs
+	// exactly that: the same agent is routinely both a panel refuter and the judge,
+	// so a drop corroborated only by that agent's own refutation is one agent's word
+	// twice, not two agents agreeing. See applyJudgment.
+	ContestedBy []string `json:"contested_by,omitempty"`
 }
 
 // Agents returns the distinct agents that reported this issue, sorted. Two

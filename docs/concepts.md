@@ -151,6 +151,13 @@ honoured only where the refutation round already doubted it, so removing what wo
 block a merge takes two independent agents rather than the one that could be talked
 around by the code it is reading.
 
+*Independent* is enforced by name, not by count. A panel commonly includes the
+agent that judges — the shipped pr configuration does — and doubt recorded by that
+same agent is one model reached twice by the same injected text, not two agents
+agreeing. So the refutation round records **which** reviewers doubted each finding,
+and the judge's drop of a blocker is honoured only when at least one of them is
+somebody else.
+
 **Verdict.** Computed in code, never asked of a model. See
 [config/README.md](../config/README.md#what-a-review-run-concludes) for the rules,
 the quorum, and why the floor is `high`.

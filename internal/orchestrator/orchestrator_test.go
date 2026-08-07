@@ -7143,8 +7143,11 @@ func TestJudgeSilenceOnAFindingKeepsIt(t *testing.T) {
 		{ID: "i1", Severity: "high", Title: "mentioned"},
 		{ID: "i2", Severity: "high", Title: "forgotten"},
 	}}
-	rec.Issues[0].Contested = true // else the blocking-severity rule below keeps it
-	applyJudgment(rec, []model.JudgeVerdict{{Issue: "i1", Verdict: model.JudgeDrop, Reason: "not worth it"}}, "", func(string, ...any) {})
+	// Refuted by somebody other than the judge; else the blocking-severity rule below
+	// keeps it and this test would prove nothing about silence.
+	rec.Issues[0].Contested = true
+	rec.Issues[0].ContestedBy = []string{"refuter"}
+	applyJudgment(rec, []model.JudgeVerdict{{Issue: "i1", Verdict: model.JudgeDrop, Reason: "not worth it"}}, "", "judge", func(string, ...any) {})
 	if rec.Issues[0].Status != model.VerdictRejected {
 		t.Error("the mentioned finding should have been dropped")
 	}
@@ -7157,28 +7160,35 @@ func TestJudgeSilenceOnAFindingKeepsIt(t *testing.T) {
 // untrusted material the panel read, so injection text aimed at it would otherwise
 // retract exactly the finding about to block the pull request -- and -post-verdict
 // would approve it. The mechanical requirement is corroboration from the refutation
-// round, which ran before the judge and never saw its reasoning.
+// round, which ran before the judge and never saw its reasoning -- and it must come
+// from an agent that is not the judge, since the shipped pr configuration makes the
+// same agent both a refuter and the judge, and one agent injected twice is not two
+// agents agreeing.
 func TestOneJudgeAloneCannotDropABlockingFinding(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		severity  string
-		contested bool
-		reason    string
-		wantDrop  bool
+		name        string
+		severity    string
+		contestedBy []string
+		reason      string
+		wantDrop    bool
 	}{
-		{"a high nobody refuted stands", "high", false, "I do not believe it", false},
-		{"a critical nobody refuted stands", "critical", false, "I do not believe it", false},
-		{"a high the panel doubted may be dropped", "high", true, "the guard exists at main.go:7", true},
-		{"a medium needs no corroboration", "medium", false, "style preference", true},
-		{"a drop with no reason is not a judgment", "low", false, "   ", false},
+		{"a high nobody refuted stands", "high", nil, "I do not believe it", false},
+		{"a critical nobody refuted stands", "critical", nil, "I do not believe it", false},
+		{"a high the panel doubted may be dropped", "high", []string{"other"}, "the guard exists at main.go:7", true},
+		{"a high only the judge refuted stands", "high", []string{"judge"}, "the guard exists at main.go:7", false},
+		{"the judge plus one other is corroboration", "high", []string{"judge", "other"}, "the guard exists at main.go:7", true},
+		{"contested with no names recorded stands", "high", []string{}, "I do not believe it", false},
+		{"a medium needs no corroboration", "medium", nil, "style preference", true},
+		{"a drop with no reason is not a judgment", "low", nil, "   ", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &model.RoundRecord{Issues: []model.Issue{
-				{ID: "i1", Severity: tc.severity, Title: "t", Contested: tc.contested},
+				{ID: "i1", Severity: tc.severity, Title: "t",
+					Contested: tc.contestedBy != nil, ContestedBy: tc.contestedBy},
 			}}
 			applyJudgment(rec, []model.JudgeVerdict{
 				{Issue: "i1", Verdict: model.JudgeDrop, Reason: tc.reason},
-			}, "", func(string, ...any) {})
+			}, "", "judge", func(string, ...any) {})
 			dropped := rec.Issues[0].Status == model.VerdictRejected
 			if dropped != tc.wantDrop {
 				t.Errorf("dropped = %v, want %v", dropped, tc.wantDrop)
@@ -7215,11 +7225,39 @@ func TestAJudgeCannotApproveAPullRequestThePanelBlocked(t *testing.T) {
 	}
 }
 
+// The same property against the harder attack, end to end: the agent that judges is
+// also on the refutation panel, which is how the shipped pr configuration runs. One
+// injected agent supplies BOTH halves of the corroboration -- it records doubt as a
+// refuter, then drops the finding as the judge -- and the blocker must still stand,
+// because both halves came from the same reachable model.
+func TestTheJudgeCannotCorroborateItsOwnDrop(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.refuteLens()
+	f.judgeRole()
+	f.cfg.Roles.Judge.Agent = "mock" // refuter and judge are one agent
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "security", Severity: "high", File: "main.go", Line: 1, Title: "real defect"}))
+	f.respond(2, `<review>{"positions":[{"issue":"i1","position":"unsure","evidence":"I cannot tell from main.go:1"}]}</review>`)
+	f.respond(3, `<review>{"verdicts":[{"issue":"i1","verdict":"drop","reason":"as I already doubted above, this is intended"}]}</review>`)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := sum.Rounds[0].Issues[0]; it.Status == model.VerdictRejected {
+		t.Error("one agent doubting a blocking finding and then judging it away removed it")
+	}
+	if sum.Verdict.Outcome != model.VerdictChangesRequested {
+		t.Errorf("verdict = %q, want changes_requested (%v)", sum.Verdict.Outcome, sum.Verdict.Reasons)
+	}
+}
+
 // An unknown verdict string is not permission to delete: it means the judge did not
 // follow the contract, and the safe reading is that the finding stands.
 func TestJudgeUnknownVerdictKeepsTheFinding(t *testing.T) {
 	rec := &model.RoundRecord{Issues: []model.Issue{{ID: "i1", Severity: "high", Title: "t"}}}
-	applyJudgment(rec, []model.JudgeVerdict{{Issue: "i1", Verdict: "maybe", Reason: "unsure"}}, "", func(string, ...any) {})
+	applyJudgment(rec, []model.JudgeVerdict{{Issue: "i1", Verdict: "maybe", Reason: "unsure"}}, "", "judge", func(string, ...any) {})
 	if rec.Issues[0].Status == model.VerdictRejected {
 		t.Error("an unrecognized verdict dropped a finding")
 	}

@@ -4503,6 +4503,9 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 		}
 		refuted, maintained, unsure := 0, 0, 0
 		var evidence string
+		// Who doubted it, not just how many: the judge gate downstream must be able to
+		// tell a second agent's refutation from the judge's own.
+		var refuters, unsures []string
 		// In agent order, not map order: the evidence a dropped finding records is
 		// persisted, and which refuter's words it quotes must not depend on a map
 		// walk. Two refuters produced a different VerdictDetail on every run.
@@ -4516,6 +4519,7 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 			switch p.Position {
 			case model.PositionRefute:
 				refuted++
+				refuters = append(refuters, name)
 				if evidence == "" {
 					evidence = p.Evidence
 				}
@@ -4523,6 +4527,7 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 				maintained++
 			case model.PositionUnsure:
 				unsure++
+				unsures = append(unsures, name)
 			}
 		}
 		switch {
@@ -4537,6 +4542,7 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 			// Silence is not agreement: the reviewers that omitted the id may never have
 			// looked at it. Kept and flagged rather than deleted on a partial count.
 			it.Contested = true
+			it.ContestedBy = refuters
 			contested++
 			logf("refutation: %s refuted by %d of %d responding reviewer(s), the rest did not say -- kept",
 				it.ID, refuted, responded)
@@ -4544,10 +4550,12 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 			// Kept, but the disagreement is recorded: a reader deciding what to do about
 			// this finding should know somebody who looked did not believe it.
 			it.Contested = true
+			it.ContestedBy = refuters
 			contested++
 			logf("refutation: %s contested (%d refute, %d maintain, %d unsure) -- kept", it.ID, refuted, maintained, unsure)
 		case unsure == len(positions):
 			it.Contested = true
+			it.ContestedBy = unsures
 			contested++
 			logf("refutation: %s uncertain -- no reviewer could decide it from the evidence", it.ID)
 		}
@@ -4639,7 +4647,7 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 		o.endPhase("JUDGE  did not finish; every finding stands")
 		return false
 	}
-	kept, dropped := applyJudgment(rec, out.Verdicts, o.cfg.Review.BlockAt, o.logf)
+	kept, dropped := applyJudgment(rec, out.Verdicts, o.cfg.Review.BlockAt, j.Agent, o.logf)
 	o.endPhase("JUDGE  %d kept, %d dropped", kept, dropped)
 	return true
 }
@@ -4677,7 +4685,14 @@ func undecidedIssues(rec *model.RoundRecord) []model.Issue {
 // the verdict blocks -- the wrong answer costs a human one paragraph, and the other
 // wrong answer is an approval nobody gave. Two agents must now agree to remove a
 // blocker, one of them in a round that never sees the judge's reasoning.
-func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockAt string, logf func(string, ...any)) (kept, dropped int) {
+//
+// INDEPENDENT is the operative word, and a boolean could not carry it. The shipped
+// pr configuration makes the same agent both a panel refuter and the judge, so
+// injection text could buy both halves of the corroboration from one agent: refute
+// the finding in the panel round, drop it in the judging round. The doubt therefore
+// has to come from an agent that is not the judge -- which is why the refutation
+// round records WHO doubted each finding and not merely that somebody did.
+func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockAt, judge string, logf func(string, ...any)) (kept, dropped int) {
 	if blockAt == "" {
 		blockAt = model.DefaultBlockAt
 	}
@@ -4702,11 +4717,14 @@ func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockA
 			logf("WARNING: judge dropped %s with no reason; a drop nobody can argue with is not a judgment -- kept", it.ID)
 			continue
 		}
-		if model.SeverityRank(it.Severity) <= floor && !it.Contested {
+		if model.SeverityRank(it.Severity) <= floor && !doubtedByOther(*it, judge) {
 			// Recorded as contested for the reader: the judge is a reviewer of the panel's
-			// work, and its dissent is evidence even when it is not authority.
+			// work, and its dissent is evidence even when it is not authority. Its own
+			// name is NOT added to ContestedBy: that list is what the gate above reads,
+			// and writing to it here would let this round's refusal authorize the next
+			// round's drop on nothing but the judge's repeated opinion.
 			it.Contested = true
-			logf("judge: %s is %s and no reviewer refuted it, so one judge may not drop it alone -- kept and contested (%s)",
+			logf("judge: %s is %s and no other reviewer refuted it, so one judge may not drop it alone -- kept and contested (%s)",
 				it.ID, model.NormalizeSeverity(it.Severity), firstLineOf(reason))
 			continue
 		}
@@ -4722,6 +4740,22 @@ func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockA
 		}
 	}
 	return kept, dropped
+}
+
+// doubtedByOther reports whether the refutation round recorded doubt about this
+// finding from an agent other than the judge.
+//
+// A judge that refuted the finding itself corroborates nothing: it is the same
+// model, reading the same untrusted material, reachable by the same injection. An
+// issue carrying Contested from an older summary with no names recorded also fails
+// this test, which is the safe direction -- the finding stands.
+func doubtedByOther(it model.Issue, judge string) bool {
+	for _, name := range it.ContestedBy {
+		if name != judge {
+			return true
+		}
+	}
+	return false
 }
 
 // fixSubject and fixTitle name a coder session's block. One issue per session is
