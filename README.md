@@ -153,7 +153,10 @@ Or directly:
 `fix-pr` also **triages the pull request's open comments**: a read-only agent
 decides each one before any fixing starts, accepted ones become ordinary issues
 with their own session, gate and commit, and declined ones are answered with the
-reason. Every conversation ends with a reply either way. That lets PR comments
+reason. Every conversation gets a decision: a declined one is answered straight
+away, an accepted one once its fix commits — and if the coder then rejects that
+issue or its gate fails, nothing is claimed and the thread is left for a later
+run to decide again. That lets PR comments
 direct work, which is a real widening of what untrusted text can ask for — see
 [config/README.md](config/README.md#letting-the-comments-commission-work) for what
 bounds it.
