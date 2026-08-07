@@ -360,6 +360,90 @@ func TestPostRunPublishesTheRunItReplays(t *testing.T) {
 	}
 }
 
+// -post-run is the mode an operator runs by hand, from a shell, over a directory
+// that stays on disk for as long as the logs do. Nothing in the summary changes
+// when it publishes -- the summary was written when the run ended -- so without a
+// receipt of its own, running it twice is a second identical review on somebody's
+// pull request, or a second approval, under the operator's identity. That is the
+// same duplicate submission the guarded retry and the ReviewPosted refusal already
+// exist to prevent, arrived at by the most ordinary route there is: pressing up
+// and enter.
+func TestPostRunPublishesARunOnlyOnce(t *testing.T) {
+	dir := writeRun(t, replayable(t, model.VerdictApprove, nil), "the review that was actually produced")
+	p := &fakePoster{url: "https://github.com/o/r/pull/3#pullrequestreview-1"}
+	installPoster(t, p)
+
+	var first strings.Builder
+	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&first, f+"\n", a...) }); code != 0 {
+		t.Fatalf("first postRun(t.Context(), ) = %d, want 0; logs:\n%s", code, first.String())
+	}
+
+	var second strings.Builder
+	code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&second, f+"\n", a...) })
+	if code == 0 {
+		t.Errorf("second postRun(t.Context(), ) = 0, want a refusal; logs:\n%s", second.String())
+	}
+	if len(p.calls) != 1 {
+		t.Errorf("PostReview called %d times, want 1: the review reached the forge twice", len(p.calls))
+	}
+	// The refusal has to name the event and the URL that are already on the pull
+	// request: "already published" alone sends the operator looking for it.
+	if !strings.Contains(second.String(), string(forge.EventApprove)) || !strings.Contains(second.String(), p.url) {
+		t.Errorf("the refusal should say what is already on the pull request:\n%s", second.String())
+	}
+}
+
+// A submission that failed on the client may have been ACCEPTED by the forge
+// first -- the timeout case the guarded retry refuses to retry within one run. The
+// receipt has to survive that, or the very next -post-run becomes exactly the
+// retry that was just refused, only with a human's finger on it.
+func TestPostRunDoesNotReplayAFailedSubmission(t *testing.T) {
+	dir := writeRun(t, replayable(t, model.VerdictApprove, nil), "the review that was actually produced")
+	p := &fakePoster{errs: []error{context.DeadlineExceeded}}
+	installPoster(t, p)
+
+	var first strings.Builder
+	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&first, f+"\n", a...) }); code != 1 {
+		t.Fatalf("first postRun(t.Context(), ) = %d, want 1; logs:\n%s", code, first.String())
+	}
+
+	var second strings.Builder
+	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&second, f+"\n", a...) }); code == 0 {
+		t.Errorf("second postRun(t.Context(), ) = 0 after a submission that may have been accepted; logs:\n%s", second.String())
+	}
+	if len(p.calls) != 1 {
+		t.Errorf("PostReview called %d times, want 1", len(p.calls))
+	}
+	// Not "published": the operator has to be told the outcome is unknown, since
+	// what they do about it -- go and look -- is different from doing nothing.
+	if !strings.Contains(second.String(), "may or may not have been accepted") {
+		t.Errorf("the refusal should say the outcome is unknown:\n%s", second.String())
+	}
+}
+
+// Nothing that refuses before the forge is reached may leave the run unpublishable:
+// a missing body or an unrecognized remote created nothing anywhere, and a
+// directory blocked by one of them would have to be re-reviewed to be posted at all.
+func TestPostRunClaimsNothingWhenItNeverSubmits(t *testing.T) {
+	sum := replayable(t, model.VerdictApprove, nil)
+	dir := writeRun(t, sum, "the review that was actually produced")
+	installPoster(t, nil)
+	var logs strings.Builder
+	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+		t.Fatalf("postRun(t.Context(), ) = 0 with no forge; logs:\n%s", logs.String())
+	}
+
+	p := &fakePoster{url: "https://github.com/o/r/pull/3#pullrequestreview-1"}
+	installPoster(t, p)
+	logs.Reset()
+	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 0 {
+		t.Fatalf("postRun(t.Context(), ) = %d after a refusal that published nothing, want 0; logs:\n%s", code, logs.String())
+	}
+	if len(p.calls) != 1 {
+		t.Errorf("PostReview called %d times, want 1", len(p.calls))
+	}
+}
+
 // A second submission is earned only by an anchor rejection, which created
 // nothing on the forge. Every other failure may have been ACCEPTED before the
 // client saw it, so retrying is how a pull request collects two identical reviews

@@ -207,7 +207,11 @@ recorded, one that did not finish — the verdict is written before the round
 checks whether it was interrupted, so a review stopped part-way leaves an approval
 on disk that the run itself refused to post and exited non-zero over — and one
 that has *already* been published, so `-post` followed by `-post-run` cannot leave
-two identical reviews on the pull request.
+two identical reviews on the pull request. Publishing also leaves a `review-posted`
+receipt in the run directory, so a second `-post-run` over the same run refuses
+too — including after a submission that failed *after* it was sent, which the forge
+may well have accepted; the receipt says so, and only you can decide whether the
+review is there.
 
 Either way, the review is bound to the **commit it was about**. A run records the
 head it reviewed, and posting reads the pull request's current head first: if the

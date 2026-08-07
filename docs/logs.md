@@ -21,6 +21,7 @@ What a run writes to disk, the end-of-run table, and the run journal.
   round-2/...
   journal.jsonl                                       # append-only state transitions, flushed as they happen
   review-body.md                                      # review-only: the document, and the bytes -post-run publishes
+  review-posted                                       # written by -post-run: what it published, or that a submission may have gone out
   summary-<timestamp>.{md,json}                       # assignments, issues, verdicts, verification, termination
 ```
 

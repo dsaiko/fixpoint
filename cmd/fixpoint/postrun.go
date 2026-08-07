@@ -8,10 +8,31 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
+
+// postReceipt is the file a -post-run publication leaves in the run directory.
+//
+// It exists because sum.ReviewPosted only records what the RUN published: a
+// summary is written once, when the run ends, and -post-run comes after that and
+// never rewrites it. Without a receipt of its own, `-post-run` twice over the same
+// directory puts two identical reviews on the pull request -- or two approvals --
+// which is exactly the duplicate submission the guarded retry, forge's anchor
+// handling and the ReviewPosted refusal all already spend code to avoid.
+//
+// A separate file rather than a rewrite of the summary because it has to be both
+// the record AND the lock. Loading the summary, seeing an empty ReviewPosted and
+// writing it back is a read-modify-write: two -post-run processes over one
+// directory both read "not posted" and both publish. Creating this file with
+// O_EXCL is one syscall that either claims the run or reports that somebody else
+// already has, so the claim cannot interleave. It is taken BEFORE the submission,
+// not after, for the same reason the retry above is guarded -- a call that failed
+// on the client may have been accepted by the forge first, so the outcome is
+// written into the receipt afterwards but the claim is never given back.
+const postReceipt = "review-posted"
 
 // posterFor is forge.PosterFor behind a variable so a test can observe what would
 // be published, exactly as internal/orchestrator does it. Publishing is the half of
@@ -39,6 +60,13 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 		return 1
 	}
 	if why := unreplayable(dir, sum); why != "" {
+		logf("post-run: %s", why)
+		return 2
+	}
+	// Reported here, before the body is read and the forge is resolved, so a repeat
+	// invocation is answered by the receipt rather than by whatever the network says.
+	// The claim below is what actually decides it -- this is the message.
+	if why := alreadyPosted(runDir, sum.PR); why != "" {
 		logf("post-run: %s", why)
 		return 2
 	}
@@ -86,6 +114,26 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 		inline = append(inline, forge.InlineComment{Path: a.Path, Line: a.Line, Body: a.Body})
 	}
 
+	// Claimed before anything is submitted: after this returns nil nothing else may
+	// publish this run, and the claim is not released by a failure. Everything that
+	// can refuse locally -- the summary, the body, the forge lookup -- has already
+	// run, so a directory only ever gets a receipt for a publish that was really
+	// attempted.
+	receipt, err := os.OpenFile(filepath.Join(runDir, postReceipt), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		// Lost the race, or the early check above could not read the receipt.
+		logf("post-run: %s", alreadyPosted(runDir, sum.PR))
+		return 2
+	}
+	if err != nil {
+		// Refused rather than published-and-not-recorded: an unrecordable publish is a
+		// publish that can be replayed again tomorrow, which is what this whole file is
+		// trying to prevent.
+		logf("post-run: cannot record the publication in %s (%v); refusing to publish what could then be published again", runDir, err)
+		return 1
+	}
+	defer func() { _ = receipt.Close() }()
+
 	url, err := p.PostReview(ctx, sum.Path, sum.PR, sum.ReviewedHead, string(body), event, inline)
 	if forge.AnchorRejection(err) {
 		// Only an anchor rejection earns a second submission, exactly as in
@@ -97,15 +145,59 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 		url, err = p.PostReview(ctx, sum.Path, sum.PR, sum.ReviewedHead, string(body), event, nil)
 	}
 	if err != nil {
+		// The receipt stays, and says what is not known: a submission that failed on the
+		// client may have been accepted by the forge first -- the case the unretried
+		// timeout above exists for -- so the operator, not a second automatic attempt,
+		// decides whether the pull request already holds this review.
+		recordPublication(receipt, fmt.Sprintf("attempted as %s; the submission to %s failed and may or may not have been accepted: %v", event, p.Kind(), err))
 		logf("post-run: publishing to %s failed: %v", p.Kind(), err)
 		return 1
 	}
+	published := fmt.Sprintf("published as %s to %s", event, p.Kind())
+	if url != "" {
+		published += ": " + url
+	}
+	recordPublication(receipt, published)
 	if url != "" {
 		logf("posted %s to %s as %s: %s", filepath.Base(runDir), p.Kind(), event, url)
 	} else {
 		logf("posted %s to %s as %s", filepath.Base(runDir), p.Kind(), event)
 	}
 	return 0
+}
+
+// recordPublication writes what became of the submission into the receipt already
+// claimed for it.
+//
+// A write failure is deliberately not reported anywhere. The claim -- the file's
+// existence -- is what stops the next -post-run, and it is already on disk; the
+// text only tells the operator which event went out and whether it was confirmed.
+// Failing the run over it would say the publish did not happen, which by this
+// point is the one thing that is certainly false.
+func recordPublication(receipt *os.File, what string) {
+	_, _ = fmt.Fprintln(receipt, what)
+}
+
+// alreadyPosted says why a run directory must not be published again, or returns
+// "" if -post-run has never claimed it.
+//
+// The receipt's own text is quoted back, because the two things it can say need
+// different actions from a human: a confirmed publication is on the pull request
+// and there is nothing to do, while a submission that failed after it was sent may
+// or may not be, and only looking can settle it.
+func alreadyPosted(runDir string, pr int) string {
+	path := filepath.Join(runDir, postReceipt)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		// Including a permission error: this is only the message, and the O_EXCL claim
+		// refuses just as well without being able to read what it collided with.
+		return ""
+	}
+	what := strings.TrimSpace(string(raw))
+	if what == "" {
+		what = "an earlier -post-run claimed it and recorded no outcome"
+	}
+	return fmt.Sprintf("%s was %s; posting it again would put a second review on pull request %d. If the forge does not have it, delete %s and try again.", runDir, what, pr, path)
 }
 
 // unreplayable says why a summary cannot be published, or returns "" if it can.
