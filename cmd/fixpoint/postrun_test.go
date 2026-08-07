@@ -591,6 +591,46 @@ func TestPostRunDoesNotReplayAFailedSubmission(t *testing.T) {
 	}
 }
 
+// The receipt is both the record and the lock, and the two roles can disagree: the
+// O_EXCL claim collides with a receipt whose TEXT cannot be read. alreadyPosted
+// answers "" there -- it only ever produces the message, and it treats unreadable
+// as nothing-to-quote -- so without the fallback the collision is reported as a
+// bare "post-run: " and the operator is told nothing at all, about a pull request
+// that may already carry the review.
+//
+// A directory at the receipt's name is that state exactly, and it needs no chmod
+// (which root would defeat): os.ReadFile fails on it while open with
+// O_CREATE|O_EXCL still reports ErrExist.
+func TestPostRunExplainsAnUnreadableReceipt(t *testing.T) {
+	sum := replayable(t, model.VerdictApprove, nil)
+	dir := writeRun(t, sum, "the review that was actually produced")
+	receipt := filepath.Join(dir, postReceipt)
+	if err := os.Mkdir(receipt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := &fakePoster{url: "https://github.com/o/r/pull/3#pullrequestreview-1"}
+	installPoster(t, p)
+
+	var logs strings.Builder
+	code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+	if code != 2 {
+		t.Errorf("postRun(t.Context(), ) = %d, want the refusal 2; logs:\n%s", code, logs.String())
+	}
+	if len(p.calls) != 0 {
+		t.Errorf("PostReview called %d times over a run that may already have been published: %+v", len(p.calls), p.calls)
+	}
+	if strings.Contains(logs.String(), "post-run: \n") {
+		t.Errorf("the collision was reported with no explanation at all:\n%s", logs.String())
+	}
+	// Which directory, which file to delete, and which pull request to go and look
+	// at: those three are the whole of what the operator can act on.
+	for _, want := range []string{dir, receipt, fmt.Sprintf("%d", sum.PR)} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("the refusal should name %q:\n%s", want, logs.String())
+		}
+	}
+}
+
 // Nothing that refuses before the forge is reached may leave the run unpublishable:
 // a missing body or an unrecognized remote created nothing anywhere, and a
 // directory blocked by one of them would have to be re-reviewed to be posted at all.
