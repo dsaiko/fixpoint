@@ -349,7 +349,7 @@ type fakePoster struct {
 
 func (*fakePoster) Kind() forge.Kind { return forge.GitHub }
 
-func (*fakePoster) Checks(context.Context, string, int) (forge.Checks, error) {
+func (*fakePoster) Checks(context.Context, string, int, string) (forge.Checks, error) {
 	return forge.Checks{}, nil
 }
 

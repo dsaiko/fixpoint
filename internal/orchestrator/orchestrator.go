@@ -685,7 +685,7 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 
 	// What the forge already knows about this head, read once before the panel
 	// runs so the reviewers' own context and the verdict see the same answer.
-	o.readForgeChecks(ctx)
+	o.readForgeChecks(ctx, sum.ReviewedHead)
 	o.readForgeThreads(ctx)
 	// Decide what those conversations commission, before any of them has been read
 	// three times by three coder sessions and answered by none. Optional: without
@@ -4267,10 +4267,15 @@ func configBaseName(path string) string {
 //
 // pr mode only, because that is where a pull request exists to ask about. It is
 // also entirely best-effort: no gh/glab installed, no remote, a private repo the
-// token cannot see -- every one of those leaves CI unknown, which never blocks a
-// verdict but is stated in its reasons, so an approval never silently rests on a
-// check nobody ran.
-func (o *Orchestrator) readForgeChecks(ctx context.Context) {
+// token cannot see, a head that moved out from under the read -- every one of those
+// leaves CI unknown, which never blocks a verdict but is stated in its reasons, so
+// an approval never silently rests on a check nobody ran, nor on one that ran on a
+// commit nobody read.
+//
+// head is what the answer must be about: recordReviewedHead pinned it just above,
+// and the provider refuses rather than reporting the checks of whatever the pull
+// request proposes now.
+func (o *Orchestrator) readForgeChecks(ctx context.Context, head string) {
 	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
 		return
 	}
@@ -4279,7 +4284,7 @@ func (o *Orchestrator) readForgeChecks(ctx context.Context) {
 		o.logf("no GitHub or GitLab remote recognized; the verdict will carry no CI evidence")
 		return
 	}
-	checks, err := p.Checks(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	checks, err := p.Checks(ctx, o.cfg.Target.Path, o.cfg.Target.PR, head)
 	if err != nil {
 		o.logf("WARNING: could not read %s checks (%v); the verdict will carry no CI evidence", p.Kind(), err)
 		return

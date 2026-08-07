@@ -7416,7 +7416,7 @@ type fakePoster struct {
 
 func (fakePoster) Kind() forge.Kind { return forge.GitHub }
 
-func (fakePoster) Checks(context.Context, string, int) (forge.Checks, error) {
+func (fakePoster) Checks(context.Context, string, int, string) (forge.Checks, error) {
 	return forge.Checks{}, nil
 }
 
@@ -7822,7 +7822,7 @@ type pickyPoster struct {
 
 func (*pickyPoster) Kind() forge.Kind { return forge.GitHub }
 
-func (*pickyPoster) Checks(context.Context, string, int) (forge.Checks, error) {
+func (*pickyPoster) Checks(context.Context, string, int, string) (forge.Checks, error) {
 	return forge.Checks{}, nil
 }
 
@@ -7845,7 +7845,7 @@ type failingPoster struct {
 
 func (failingPoster) Kind() forge.Kind { return forge.GitHub }
 
-func (failingPoster) Checks(context.Context, string, int) (forge.Checks, error) {
+func (failingPoster) Checks(context.Context, string, int, string) (forge.Checks, error) {
 	return forge.Checks{}, nil
 }
 
@@ -8409,7 +8409,7 @@ func (*fakeReader) Kind() forge.Kind { return forge.GitHub }
 
 func (r *fakeReader) Login(context.Context, string) string { return r.login }
 
-func (*fakeReader) Checks(context.Context, string, int) (forge.Checks, error) {
+func (*fakeReader) Checks(context.Context, string, int, string) (forge.Checks, error) {
 	return forge.Checks{}, nil
 }
 

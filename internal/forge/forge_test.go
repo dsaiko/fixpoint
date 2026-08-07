@@ -80,15 +80,28 @@ func TestDetectKindMatchesOnTheHost(t *testing.T) {
 	}
 }
 
+// reviewedSHA is the commit the Checks tests pretend the run reviewed, and
+// stubbedPR the pull request the stub below answers about. A test that asks about
+// any other number is asking a gh that cannot answer, which is the point of one.
+const (
+	reviewedSHA = "0123456789abcdef0123456789abcdef01234567"
+	stubbedPR   = 7
+)
+
 // stubGHRollup puts a fake `gh` on PATH that answers the rollup read -- and only
 // that read, matched on the WHOLE argument list, so a change to the command Checks
 // runs fails this test instead of quietly returning an unknown rollup. Any other
 // invocation exits nonzero, which is what Checks sees when gh cannot answer.
-func stubGHRollup(t *testing.T, pr int, stdout string) (dir string) {
+//
+// It answers with head and rollup TOGETHER because Checks asks for them together:
+// the binding is only sound if one call returns both, so a split back into two
+// reads shows up here as an unexpected invocation.
+func stubGHRollup(t *testing.T, head, rollup string) (dir string) {
 	t.Helper()
 	bin := t.TempDir()
+	stdout := `{"headRefOid":"` + head + `","statusCheckRollup":` + rollup + `}`
 	script := "#!/bin/sh\ncase \"$*\" in\n" +
-		"'pr view " + strconv.Itoa(pr) + " --json statusCheckRollup') printf '%s' '" + stdout + "' ;;\n" +
+		"'pr view " + strconv.Itoa(stubbedPR) + " --json headRefOid,statusCheckRollup') printf '%s' '" + stdout + "' ;;\n" +
 		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -105,7 +118,7 @@ func stubGHRollup(t *testing.T, pr int, stdout string) (dir string) {
 // in the same silent direction: an unread rollup is Known false, which never
 // blocks, so red CI would stop reaching the verdict gate.
 func TestGitHubChecksReadsBothRollupShapes(t *testing.T) {
-	dir := stubGHRollup(t, 7, `{"statusCheckRollup":[
+	dir := stubGHRollup(t, reviewedSHA, `[
 	  {"__typename":"CheckRun","name":"Build","status":"COMPLETED","conclusion":"SUCCESS"},
 	  {"__typename":"CheckRun","name":"Unit Tests","status":"COMPLETED","conclusion":"FAILURE"},
 	  {"__typename":"CheckRun","name":"Slow","status":"IN_PROGRESS","conclusion":""},
@@ -114,9 +127,9 @@ func TestGitHubChecksReadsBothRollupShapes(t *testing.T) {
 	  {"__typename":"StatusContext","context":"ci/legacy","state":"ERROR"},
 	  {"__typename":"StatusContext","context":"ci/queued","state":"PENDING"},
 	  {"__typename":"StatusContext","context":"ci/green","state":"SUCCESS"}
-	]}`)
+	]`)
 
-	got, err := (githubProvider{}).Checks(t.Context(), dir, 7)
+	got, err := (githubProvider{}).Checks(t.Context(), dir, stubbedPR, reviewedSHA)
 	if err != nil {
 		t.Fatalf("Checks() = %v", err)
 	}
@@ -136,9 +149,9 @@ func TestGitHubChecksReadsBothRollupShapes(t *testing.T) {
 // configured" and "we could not ask" are different facts and only one of them is
 // worth a reason.
 func TestGitHubChecksKnowsAnEmptyRollupIsStillAnAnswer(t *testing.T) {
-	dir := stubGHRollup(t, 7, `{"statusCheckRollup":[]}`)
+	dir := stubGHRollup(t, reviewedSHA, `[]`)
 
-	got, err := (githubProvider{}).Checks(t.Context(), dir, 7)
+	got, err := (githubProvider{}).Checks(t.Context(), dir, stubbedPR, reviewedSHA)
 	if err != nil {
 		t.Fatalf("Checks() = %v", err)
 	}
@@ -154,14 +167,52 @@ func TestGitHubChecksKnowsAnEmptyRollupIsStillAnAnswer(t *testing.T) {
 // reads as green. The stub answers for pull request 7 alone, so this also pins
 // that the number Checks is asked about is the one it puts on the command line.
 func TestGitHubChecksAreUnknownWhenGHCannotAnswer(t *testing.T) {
-	dir := stubGHRollup(t, 7, `{"statusCheckRollup":[]}`)
+	dir := stubGHRollup(t, reviewedSHA, `[]`)
 
-	got, err := (githubProvider{}).Checks(t.Context(), dir, 9)
+	got, err := (githubProvider{}).Checks(t.Context(), dir, 9, reviewedSHA)
 	if err == nil {
 		t.Fatal("Checks() = nil although gh failed")
 	}
 	if got.Known {
 		t.Error("Known = true although the rollup was never read -- an approval would rest on checks nobody saw")
+	}
+}
+
+// The rollup belongs to the pull request, so it describes whatever the request
+// proposes when it is read. An author can force-push a green commit, let this read
+// see it and push the reviewed one back: the panel and every human still read the
+// commit with the failing CI, while the verdict would rest on the green one's
+// checks. Evidence about another commit is worth less than none, so the read
+// refuses and CI stays unknown.
+func TestGitHubChecksRefuseAHeadThatIsNotTheReviewedCommit(t *testing.T) {
+	const pushed = "fedcba9876543210fedcba9876543210fedcba98"
+	dir := stubGHRollup(t, pushed, `[
+	  {"__typename":"CheckRun","name":"Build","status":"COMPLETED","conclusion":"SUCCESS"}
+	]`)
+
+	got, err := (githubProvider{}).Checks(t.Context(), dir, stubbedPR, reviewedSHA)
+	if err == nil {
+		t.Fatal("Checks() = nil for a rollup belonging to another commit -- the verdict would credit the reviewed commit with a pushed commit's green CI")
+	}
+	if got.Known {
+		t.Error("Known = true although no check was seen for the reviewed commit")
+	}
+	if !strings.Contains(err.Error(), "another commit") {
+		t.Errorf("refusal does not say whose checks these were: %v", err)
+	}
+}
+
+// And a run that never recorded its head has nothing to bind to. Reading the rollup
+// anyway would mean accepting whatever the pull request proposes at that moment,
+// which is the same hole with no evidence that it has been exploited.
+func TestChecksRefuseWhenTheReviewedCommitWasNotRecorded(t *testing.T) {
+	dir := stubGHRollup(t, reviewedSHA, `[]`)
+
+	if _, err := (githubProvider{}).Checks(t.Context(), dir, stubbedPR, ""); err == nil {
+		t.Error("Checks() = nil with no reviewed commit to bind to")
+	}
+	if _, err := (gitlabProvider{}).Checks(t.Context(), dir, stubbedPR, ""); err == nil {
+		t.Error("gitlab Checks() = nil with no reviewed commit to bind to")
 	}
 }
 

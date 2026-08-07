@@ -64,7 +64,11 @@ type Provider interface {
 	// Kind names the forge, for logs and for the review signature.
 	Kind() Kind
 	// Checks reports the status of the checks on a pull request's head.
-	Checks(ctx context.Context, dir string, pr int) (Checks, error)
+	//
+	// head is the commit the run reviewed. An implementation must BIND the answer
+	// to it and report an error rather than checks that describe another commit --
+	// see requireCheckHead.
+	Checks(ctx context.Context, dir string, pr int, head string) (Checks, error)
 }
 
 // For returns the provider for the forge this checkout's pull request lives on,
@@ -381,16 +385,30 @@ func (c ghCheck) label() string {
 	return "(unnamed check)"
 }
 
-func (githubProvider) Checks(ctx context.Context, dir string, pr int) (Checks, error) {
-	out, err := run(ctx, dir, "gh", "pr", "view", strconv.Itoa(pr), "--json", "statusCheckRollup")
+// Checks reads what GitHub's checks say -- about the reviewed commit and no other.
+//
+// The rollup hangs off the PULL REQUEST, not off a commit, so it describes whatever
+// the request proposes at the moment of the read. That need not be the commit this
+// run checked out: an author who force-pushes a green commit, waits for this read,
+// and force-pushes the reviewed one back leaves the panel and every human reading
+// the failing commit while the verdict rests on another one's passing CI. So the
+// head is read IN THE SAME CALL as the rollup -- two calls could straddle the push,
+// which is the hole this closes -- and a mismatch yields an error, which the caller
+// turns into a verdict carrying no CI evidence rather than the wrong evidence.
+func (githubProvider) Checks(ctx context.Context, dir string, pr int, head string) (Checks, error) {
+	out, err := run(ctx, dir, "gh", "pr", "view", strconv.Itoa(pr), "--json", "headRefOid,statusCheckRollup")
 	if err != nil {
 		return Checks{}, err
 	}
 	var payload struct {
-		Rollup []ghCheck `json:"statusCheckRollup"`
+		HeadRefOid string    `json:"headRefOid"`
+		Rollup     []ghCheck `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal([]byte(out), &payload); err != nil {
 		return Checks{}, fmt.Errorf("parse gh statusCheckRollup: %w", err)
+	}
+	if err := requireCheckHead(pr, head, strings.TrimSpace(payload.HeadRefOid)); err != nil {
+		return Checks{}, err
 	}
 	res := Checks{Known: true}
 	for _, c := range payload.Rollup {
@@ -456,16 +474,24 @@ func (gitlabProvider) Kind() Kind { return GitLab }
 // command shape comes from its documented API rather than from a run. It fails
 // soft like every other read here, so the cost of being wrong is a verdict with
 // no CI evidence and a warning saying so -- not a broken review.
-func (gitlabProvider) Checks(ctx context.Context, dir string, mr int) (Checks, error) {
+// glPipeline is one entry of a merge request's pipeline list. sha is what ties a
+// pipeline to the commit it ran on, which is what Checks has to bind to.
+type glPipeline struct {
+	ID     int    `json:"id"`
+	SHA    string `json:"sha"`
+	Status string `json:"status"`
+}
+
+func (gitlabProvider) Checks(ctx context.Context, dir string, mr int, head string) (Checks, error) {
+	if head == "" {
+		return Checks{}, fmt.Errorf("the run did not record which commit it reviewed, so !%d's pipelines cannot be bound to one", mr)
+	}
 	out, err := run(ctx, dir, "glab", "api",
 		fmt.Sprintf("projects/:id/merge_requests/%d/pipelines", mr))
 	if err != nil {
 		return Checks{}, err
 	}
-	var pipelines []struct {
-		ID     int    `json:"id"`
-		Status string `json:"status"`
-	}
+	var pipelines []glPipeline
 	if err := json.Unmarshal([]byte(out), &pipelines); err != nil {
 		return Checks{}, fmt.Errorf("parse glab pipelines: %w", err)
 	}
@@ -474,8 +500,19 @@ func (gitlabProvider) Checks(ctx context.Context, dir string, mr int) (Checks, e
 		// is "no checks", which is different from not being able to ask.
 		return Checks{Known: true}, nil
 	}
-	// The API returns newest first; only the latest pipeline describes this head.
-	latest := pipelines[0]
+	// The list covers every commit the merge request has proposed and returns newest
+	// first, so the newest pipeline is the newest PUSH's -- not necessarily the
+	// reviewed commit's. Taking it blindly would let a force-push move the evidence
+	// off the commit under review; see requireCheckHead for why that matters. So the
+	// newest pipeline that ran on the reviewed commit is the one, and a merge request
+	// whose pipelines are all about other commits reports no evidence at all.
+	i := slices.IndexFunc(pipelines, func(p glPipeline) bool {
+		return strings.EqualFold(strings.TrimSpace(p.SHA), head)
+	})
+	if i < 0 {
+		return Checks{}, fmt.Errorf("no pipeline on !%d ran on the reviewed commit %s, so its pipelines describe other commits", mr, shortSHA(head))
+	}
+	latest := pipelines[i]
 	res := Checks{Known: true}
 	label := fmt.Sprintf("pipeline %d", latest.ID)
 	switch strings.ToLower(latest.Status) {
@@ -590,6 +627,26 @@ func requireHead(pr int, reviewed, current string) error {
 	if !strings.EqualFold(reviewed, current) {
 		return fmt.Errorf("refusing to post on #%d: it has moved since it was reviewed (reviewed %s, now %s) -- publishing would attach the review, and any verdict in it, to a commit nobody read; review the new head instead",
 			pr, shortSHA(reviewed), shortSHA(current))
+	}
+	return nil
+}
+
+// requireCheckHead binds CI evidence to the commit the run reviewed.
+//
+// It is requireHead's read-side counterpart, and it fails SOFT where that one fails
+// closed: the caller answers an error here by leaving CI unknown, which states in
+// the verdict's reasons that no check was seen. Unknown is the harmless direction --
+// it never blocks and never approves on evidence about a commit nobody read, which
+// is exactly what an unbound rollup can be after a force-push.
+func requireCheckHead(pr int, reviewed, current string) error {
+	switch {
+	case reviewed == "":
+		return fmt.Errorf("the run did not record which commit it reviewed, so #%d's checks cannot be bound to one", pr)
+	case current == "":
+		return fmt.Errorf("#%d names no head commit, so whether its checks describe the reviewed commit cannot be established", pr)
+	case !strings.EqualFold(reviewed, current):
+		return fmt.Errorf("#%d now proposes %s but this run reviewed %s, so its checks describe another commit",
+			pr, shortSHA(current), shortSHA(reviewed))
 	}
 	return nil
 }
