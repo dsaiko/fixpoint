@@ -595,3 +595,162 @@ func TestGitLabApprovalIsBoundToTheReviewedCommit(t *testing.T) {
 		t.Errorf("the approval did not carry the reviewed commit, so it lands on whatever the head is when it arrives: %s", got)
 	}
 }
+
+// stubGHThreads puts a fake `gh` on PATH that answers the repository-identity read
+// and the reviewThreads GraphQL query with response, recording the argv of the query
+// and the argv and stdin of a reply POST. Anything else exits nonzero, so a change to
+// the commands Threads or Reply run surfaces as an error rather than as a pull
+// request that appears to have no conversations.
+func stubGHThreads(t *testing.T, response string) (dir string, query, replyArgv, replyBody func() string) {
+	t.Helper()
+	bin := t.TempDir()
+	// The response goes through a file rather than into the script: a GraphQL payload
+	// is full of quotes, and embedding it would test the escaping, not the parse.
+	body := filepath.Join(bin, "response.json")
+	if err := os.WriteFile(body, []byte(response), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	queryFile, argvFile, stdinFile := filepath.Join(bin, "query.txt"), filepath.Join(bin, "argv.txt"), filepath.Join(bin, "stdin.json")
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"'repo view --json owner,name') printf '%s' '{\"owner\":{\"login\":\"dsaiko\"},\"name\":\"fixpoint\"}' ;;\n" +
+		"'api graphql'*) printf '%s' \"$*\" > " + queryFile + "; cat " + body + " ;;\n" +
+		"'api --method POST'*) printf '%s' \"$*\" > " + argvFile + "; cat > " + stdinFile + " ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	read := func(path string) func() string {
+		return func() string {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return ""
+			}
+			return string(raw)
+		}
+	}
+	return t.TempDir(), read(queryFile), read(argvFile), read(stdinFile)
+}
+
+// One resolved thread -- a question a human already settled, and reopening it is
+// worse than never answering. One open thread with the comment that started it. One
+// open thread whose comments came back empty, which has no root comment to address a
+// reply to. databaseId is deliberately past int32 so the id keeps its width.
+const reviewThreadsPayload = `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+  {"isResolved":true,"comments":{"nodes":[{"path":"settled.go","line":3,"databaseId":11,"body":"already handled","author":{"login":"dsaiko"}}]}},
+  {"isResolved":false,"comments":{"nodes":[{"path":"internal/forge/forge.go","line":42,"databaseId":2147483648,"body":"why origin only?","author":{"login":"dsaiko"}}]}},
+  {"isResolved":false,"comments":{"nodes":[]}}
+]}}}}}`
+
+// The whole answer-the-humans feature rests on this parse, and it fails in the
+// quietest possible direction: a renamed GraphQL field still unmarshals, yields no
+// threads, and a fix run then proceeds exactly as if nobody had commented. So the
+// shape is pinned end to end -- through Threads, against a payload in the API's own
+// form, not against a hand-unmarshalled struct.
+func TestThreadsAreTheUnresolvedConversationsThatStillHaveARoot(t *testing.T) {
+	dir, query, _, _ := stubGHThreads(t, reviewThreadsPayload)
+
+	got, err := (githubProvider{}).Threads(t.Context(), dir, 7)
+	if err != nil {
+		t.Fatalf("Threads() = %v", err)
+	}
+	want := []Thread{{
+		ID:     "2147483648",
+		Path:   "internal/forge/forge.go",
+		Line:   42,
+		Author: "dsaiko",
+		Body:   "why origin only?",
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Threads() = %+v, want %+v -- resolved threads and threads with no root comment are not conversations to answer", got, want)
+	}
+	// And the query still asks for what the parse reads, addressed at this pull
+	// request: a drift on either side reads as a quiet pull request.
+	for _, field := range []string{"owner=dsaiko", "repo=fixpoint", "pr=7", "reviewThreads", "isResolved", "databaseId"} {
+		if !strings.Contains(query(), field) {
+			t.Errorf("the graphql call does not carry %q: %s", field, query())
+		}
+	}
+}
+
+// An unreadable answer and an empty one are different facts. readForgeThreads warns
+// on an error and proceeds with no conversations, so the two only stay distinguishable
+// if the parse refuses to call a malformed response an empty list.
+func TestAThreadListThatDoesNotParseIsNotAQuietPullRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response string
+		wantErr  bool
+	}{
+		{"no threads", `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}`, false},
+		{"malformed", "<html>proxy error</html>", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _, _, _ := stubGHThreads(t, tc.response)
+
+			got, err := (githubProvider{}).Threads(t.Context(), dir, 7)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Threads() = %+v, nil; a response that does not parse must not read as a pull request nobody commented on", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Threads() = %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("Threads() = %+v, want none", got)
+			}
+		})
+	}
+}
+
+// Threads renders databaseId as a decimal string and Reply parses it back with
+// ParseInt: the two ends are one contract, so the round trip is what is tested rather
+// than either half. The body travels on stdin for the reason a review body does --
+// argv is world-readable for the life of the process.
+func TestAReplyGoesToTheCommentThreadsNamed(t *testing.T) {
+	dir, _, argv, body := stubGHThreads(t, reviewThreadsPayload)
+
+	threads, err := (githubProvider{}).Threads(t.Context(), dir, 7)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("Threads() = %+v, %v", threads, err)
+	}
+	const answer = "fixed by pinning the parse"
+	if err := (githubProvider{}).Reply(t.Context(), dir, 7, threads[0].ID, answer); err != nil {
+		t.Fatalf("Reply() = %v", err)
+	}
+	if want := "pulls/7/comments/2147483648/replies"; !strings.Contains(argv(), want) {
+		t.Errorf("the reply was addressed to %q, want the root comment %q", argv(), want)
+	}
+	if strings.Contains(argv(), answer) {
+		t.Errorf("the reply body was placed on the command line: %s", argv())
+	}
+	var got struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(body()), &got); err != nil {
+		t.Fatalf("the reply payload does not parse (%v): %s", err, body())
+	}
+	if got.Body != answer {
+		t.Errorf("body = %q, want %q", got.Body, answer)
+	}
+}
+
+// A thread id that is not a comment id is refused before anything is posted. GitHub's
+// GraphQL node id for a review thread (PRRT_...) is the plausible wrong value here,
+// and appending it to the replies path would POST to an endpoint that means nothing.
+func TestAReplyToSomethingThatIsNotACommentIDPostsNothing(t *testing.T) {
+	dir, _, argv, body := stubGHThreads(t, reviewThreadsPayload)
+
+	err := (githubProvider{}).Reply(t.Context(), dir, 7, "PRRT_kwDOAbCdEf", "the answer")
+	if err == nil {
+		t.Fatal("Reply() = nil for a thread id that is not a comment id")
+	}
+	if !strings.Contains(err.Error(), "not a comment id") {
+		t.Errorf("refusal does not explain itself: %v", err)
+	}
+	if argv() != "" || body() != "" {
+		t.Errorf("something was posted anyway: %s / %s", argv(), body())
+	}
+}
