@@ -5169,10 +5169,15 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 	// after that -- since a reply does not resolve a thread and every later run reads
 	// it as unresolved. The moment a person writes under it, the thread is live again
 	// and is read afresh, with the whole exchange including what we said last time.
+	//
+	// "Ours" needs the login as well as the marker: the marker is copyable, so
+	// without the author check anybody who can comment could append one to their own
+	// message and drop that conversation out of every run from then on.
+	me := r.Login(ctx, o.cfg.Target.Path)
 	live := make([]forge.Thread, 0, len(threads))
 	answered := 0
 	for _, t := range threads {
-		if t.AnsweredByMachine() {
+		if t.AnsweredByMachine(me) {
 			answered++
 			continue
 		}

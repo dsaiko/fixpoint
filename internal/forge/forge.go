@@ -1233,25 +1233,51 @@ type ThreadComment struct {
 	Body   string
 }
 
+// ours reports whether this comment is one of this tool's own replies.
+//
+// Two halves, and both are needed. The marker (see ReplyMarker) is what
+// distinguishes a machine answer from the operator typing a new request an hour
+// later, since both are posted under the same account -- but it lives in a comment
+// body, so anybody who can write on the pull request can copy it into theirs. The
+// author is the half they cannot forge: replies go out under the account the forge
+// CLI is authenticated as, so a comment is ours only when it carries the marker AND
+// was written by that account.
+//
+// me is the login of that account, or "" when it could not be determined, and then
+// nothing can be proven ours. Each caller below says what it does with that.
+func (c ThreadComment) ours(me string) bool {
+	return me != "" && HasReplyMarker(c.Body) && strings.EqualFold(c.Author, me)
+}
+
 // AnsweredByMachine reports whether the LAST thing said in this conversation was
-// one of this tool's own replies.
+// one of this tool's own replies, where me is the account this run posts under.
 //
 // That is the question "is anybody waiting on us?" in the only form that can be
-// answered from the forge alone. Author identity cannot answer it: replies are
-// posted under the operator's account, so "the last comment is mine" is equally
-// true of a machine answer and of the operator typing a new request -- and
-// skipping the second would swallow the very thing the run should act on.
+// answered from the forge alone. Author identity alone cannot answer it: replies
+// are posted under the operator's account, so "the last comment is mine" is equally
+// true of a machine answer and of the operator typing a new request -- and skipping
+// the second would swallow the very thing the run should act on. The marker alone
+// cannot answer it either, because a third party can copy one into their own
+// comment and drop their conversation out of every later run. So both are required
+// -- see ours.
 //
-// So the marker is a property of the MESSAGE. Every machine reply carries an
-// invisible one (see ReplyMarker); a human writing in the same thread does not.
 // A thread whose last word is ours is skipped as already answered; the moment a
 // person replies under it, it is live again and gets read afresh -- with the whole
 // exchange, including what we said last time.
-func (t Thread) AnsweredByMachine() bool {
+//
+// When me is "" the marker alone decides, because the alternative is re-answering
+// every conversation this tool has already answered, on every run -- the loop the
+// marker exists to prevent. That fallback costs a forger nothing but silence on
+// their own conversation, which is what the marker's own documentation describes.
+func (t Thread) AnsweredByMachine(me string) bool {
 	if len(t.Comments) == 0 {
 		return false
 	}
-	return HasReplyMarker(t.Comments[len(t.Comments)-1].Body)
+	last := t.Comments[len(t.Comments)-1]
+	if me == "" {
+		return HasReplyMarker(last.Body)
+	}
+	return last.ours(me)
 }
 
 // Requesters names everyone whose message makes up the conversation's LIVE
@@ -1265,16 +1291,24 @@ func (t Thread) AnsweredByMachine() bool {
 // which is precisely the fact somebody reviewing an automatically produced commit
 // is looking for.
 //
-// So the window is everything said after this tool's last reply (see ReplyMarker),
-// or the whole conversation when we have never answered it. Machine replies are
-// never requesters. Repeat speakers are listed once; an author the forge could not
-// name is kept as the empty string rather than dropped, because "we do not know who
+// So the window is everything said after this tool's last reply, or the whole
+// conversation when we have never answered it. Machine replies are never
+// requesters. Repeat speakers are listed once; an author the forge could not name
+// is kept as the empty string rather than dropped, because "we do not know who
 // asked" is a fact the caller must be able to act on -- it is what makes a request
 // external.
-func (t Thread) Requesters() []string {
+//
+// me is the account this run posts under, and a comment only closes the window
+// when it is ours by BOTH marker and author (see ours). A marker is copyable, and
+// this window decides who is recorded as having commissioned the change: a third
+// party who could move it past their own comment would have their text reach the
+// work order attributed to whoever spoke after them, with the external label gone.
+// When me is "" nothing is ours, so the window is the whole conversation -- which
+// names everyone and makes the request external, the direction that says more.
+func (t Thread) Requesters(me string) []string {
 	start := 0
 	for i, c := range t.Comments {
-		if HasReplyMarker(c.Body) {
+		if c.ours(me) {
 			start = i + 1
 		}
 	}

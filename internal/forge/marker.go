@@ -23,10 +23,14 @@ import (
 // produced it.
 //
 // Being invisible is not the same as being hidden: it is in the comment's source
-// for anyone who looks, which is the point. Nothing about it is a security
-// control. A person can copy the marker into their own comment and their message
-// will be skipped; the cost of that is a conversation this tool does not answer,
-// which is a self-inflicted silence rather than an exploit.
+// for anyone who looks, which is the point. On its own it is not a security
+// control, because anybody who can comment can copy it: what decides whether a
+// comment is this tool's is the marker AND its author being the account this run
+// posts under (see Thread.ours). A copied marker in somebody else's comment
+// therefore changes nothing about who is recorded as having asked for a change.
+// The one thing it can still do is silence the forger's own conversation when the
+// account's login could not be read at all, and that is a self-inflicted silence
+// rather than an exploit.
 func ReplyMarker(runID string) string {
 	// The id is the run directory's name, so in practice it is a timestamp -- but it
 	// is interpolated into a comment, and a comment that a value can break out of is

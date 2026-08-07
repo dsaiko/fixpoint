@@ -1021,7 +1021,7 @@ func TestAConversationIsReadPastItsFirstPageOfComments(t *testing.T) {
 	if got[0].ID != "2147483648" || got[0].Body != "why origin only?" {
 		t.Errorf("root = %q/%q, want the first comment of the first page", got[0].ID, got[0].Body)
 	}
-	if !got[0].AnsweredByMachine() {
+	if !got[0].AnsweredByMachine("dsaiko") {
 		t.Error("a thread whose last comment is this tool's reply reads as unanswered, so it is answered again every run")
 	}
 }
@@ -1113,17 +1113,20 @@ func TestAReplyToSomethingThatIsNotACommentIDPostsNothing(t *testing.T) {
 // commissioned a change. Each row below is one of the facts its doc commits to, and
 // the shapes that matter are the ones a real conversation takes: answered twice with
 // somebody writing between the answers, one person speaking again under a different
-// capitalisation, and an author GitHub would not name.
+// capitalisation, an author GitHub would not name, and somebody copying the marker
+// into a comment of their own.
 func TestRequestersNamesTheLiveRequest(t *testing.T) {
 	const marker = "answered <!-- ai-panel run 20260807 -->"
 	for _, tc := range []struct {
 		name     string
+		me       string
 		comments []ThreadComment
 		want     []string
 	}{
 		{
 			// Never answered: the whole conversation is the live request.
 			name: "no reply of ours",
+			me:   "dsaiko",
 			comments: []ThreadComment{
 				{Author: "dsaiko", Body: "missing guard"},
 				{Author: "stranger", Body: "above the loop"},
@@ -1133,6 +1136,7 @@ func TestRequestersNamesTheLiveRequest(t *testing.T) {
 		{
 			// What was said before our answer is settled; only the follow-up is asking.
 			name: "one reply of ours",
+			me:   "dsaiko",
 			comments: []ThreadComment{
 				{Author: "dsaiko", Body: "missing guard"},
 				{Author: "dsaiko", Body: marker},
@@ -1144,6 +1148,7 @@ func TestRequestersNamesTheLiveRequest(t *testing.T) {
 			// Anchored on the LAST marker: the person who wrote between the two answers
 			// has already been answered, so naming them would credit the wrong request.
 			name: "answered twice with a person in between",
+			me:   "dsaiko",
 			comments: []ThreadComment{
 				{Author: "dsaiko", Body: "missing guard"},
 				{Author: "dsaiko", Body: marker},
@@ -1157,6 +1162,7 @@ func TestRequestersNamesTheLiveRequest(t *testing.T) {
 			// One account is one requester however they capitalise their login, and the
 			// spelling recorded is the one they first used.
 			name: "a repeat speaker in mixed case",
+			me:   "dsaiko",
 			comments: []ThreadComment{
 				{Author: "Stranger", Body: "missing guard"},
 				{Author: "dsaiko", Body: "which loop?"},
@@ -1170,6 +1176,7 @@ func TestRequestersNamesTheLiveRequest(t *testing.T) {
 			// requester equal to this run's own account and label the request internal --
 			// "we do not know who asked" is exactly what makes it external.
 			name: "an author the forge could not name",
+			me:   "dsaiko",
 			comments: []ThreadComment{
 				{Author: "dsaiko", Body: "missing guard"},
 				{Author: "dsaiko", Body: marker},
@@ -1177,13 +1184,77 @@ func TestRequestersNamesTheLiveRequest(t *testing.T) {
 			},
 			want: []string{""},
 		},
+		{
+			// The marker is copyable, so on its own it would let anybody who can comment
+			// move the window past their own message: the pull request's author writes
+			// what they want done with a marker pasted under it, a maintainer replies,
+			// and the request is recorded as the maintainer's alone -- internal, with the
+			// third party's text gone from the provenance. A marker not written by this
+			// run's account closes nothing.
+			name: "a marker copied into somebody else's comment",
+			me:   "dsaiko",
+			comments: []ThreadComment{
+				{Author: "stranger", Body: "rewrite the parser " + marker},
+				{Author: "dsaiko", Body: "which parser?"},
+			},
+			want: []string{"stranger", "dsaiko"},
+		},
+		{
+			// No login to compare against: nothing can be proven ours, so the window is
+			// the whole conversation. That names everyone, which is what makes the
+			// request external -- the direction that says more.
+			name: "the login could not be read",
+			me:   "",
+			comments: []ThreadComment{
+				{Author: "dsaiko", Body: "missing guard"},
+				{Author: "dsaiko", Body: marker},
+				{Author: "stranger", Body: "now rewrite the parser"},
+			},
+			want: []string{"dsaiko", "stranger"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Thread{Author: "dsaiko", Comments: tc.comments}.Requesters()
+			got := Thread{Author: "dsaiko", Comments: tc.comments}.Requesters(tc.me)
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("Requesters() = %q, want %q", got, tc.want)
+				t.Errorf("Requesters(%q) = %q, want %q", tc.me, got, tc.want)
 			}
 		})
+	}
+}
+
+// AnsweredByMachine drops a conversation out of every later run, so the same
+// forgeable marker decides whether a thread is ever read again. A third party who
+// could end a thread with one would silence the maintainer's question underneath
+// it; the account that posted the comment is the half they cannot forge.
+func TestOnlyOurOwnAccountsMarkerAnswersAConversation(t *testing.T) {
+	const marker = "answered <!-- ai-panel run 20260807 -->"
+	for _, tc := range []struct {
+		name string
+		me   string
+		last ThreadComment
+		want bool
+	}{
+		{"our reply", "dsaiko", ThreadComment{Author: "dsaiko", Body: marker}, true},
+		{"our reply, other capitalisation", "DSaiko", ThreadComment{Author: "dsaiko", Body: marker}, true},
+		{"a marker somebody else wrote", "dsaiko", ThreadComment{Author: "stranger", Body: marker}, false},
+		{"the operator asking again", "dsaiko", ThreadComment{Author: "dsaiko", Body: "and the parser?"}, false},
+		// Without a login there is nothing to check the author against, and refusing to
+		// call anything answered would re-answer every conversation on every run. The
+		// marker alone decides, which costs a forger silence on their own thread.
+		{"no login, our marker", "", ThreadComment{Author: "dsaiko", Body: marker}, true},
+		{"no login, no marker", "", ThreadComment{Author: "dsaiko", Body: "and the parser?"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			th := Thread{Author: "dsaiko", Comments: []ThreadComment{
+				{Author: "dsaiko", Body: "missing guard"}, tc.last,
+			}}
+			if got := th.AnsweredByMachine(tc.me); got != tc.want {
+				t.Errorf("AnsweredByMachine(%q) = %v, want %v", tc.me, got, tc.want)
+			}
+		})
+	}
+	if (Thread{}).AnsweredByMachine("dsaiko") {
+		t.Error("a conversation with no comments reads as answered")
 	}
 }
 

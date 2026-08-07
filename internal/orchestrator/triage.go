@@ -310,7 +310,7 @@ func (o *Orchestrator) commissionedFinding(d model.TriageDecision, th forge.Thre
 	// Every contributor to it is named, and ONE of them not being this run's account
 	// is enough to make the request external: the label says third-party text reached
 	// the work order, which a maintainer speaking in the same breath does not undo.
-	who := th.Requesters()
+	who := th.Requesters(me)
 	if len(who) == 0 {
 		// A thread carrying no messages -- nothing built from the forge reaches here
 		// that way, but the root author is the honest answer if one does.

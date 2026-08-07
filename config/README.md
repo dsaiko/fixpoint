@@ -296,9 +296,18 @@ carries an invisible marker, an HTML comment both forges render as nothing:
 It does not name fixpoint, for the same reason the visible signature does not, and
 it carries the run id so a reply is traceable to the artifacts that produced it.
 Invisible is not hidden — it is in the comment's source for anyone who looks, which
-is the point. It is not a security control: a person can paste it into their own
-comment and be skipped, which costs them an answer rather than gaining them
-anything.
+is the point.
+
+Which is why the marker is only half of it: anybody who can comment on the pull
+request can paste one into a comment of their own. A comment counts as ours only
+when it carries the marker **and** was written by the account the forge CLI is
+authenticated as. Both questions the marker answers turn on that — whether anybody
+is still waiting, and whose words commissioned a change — and a forged marker must
+not be able to bury a colleague's question or strip the external label off a
+request a third party wrote. When the login cannot be read at all, the marker alone
+decides whether a conversation is already answered, because the alternative is
+answering every one of them again on every run; the most a forger gets from that is
+silence on their own conversation.
 
 Conversations answered before this existed carry no marker, so the first run after
 upgrading answers them once more.
