@@ -91,12 +91,12 @@ func TestPostRunRejectsANonRunDirectory(t *testing.T) {
 	}
 }
 
-// The summary path is absolute, but a run directory can be copied or the project
-// moved; the body beside the summary is then the right file. Both documented input
-// shapes must find it -- the summary file names no directory to join under, so the
-// fallback has to be resolved against the summary that was loaded, not the
-// argument.
-func TestPostRunFallsBackToTheBodyBesideTheSummary(t *testing.T) {
+// The body published is the one beside the summary, whatever the summary's own
+// review_body says: the recorded path is absolute, so a copied run directory or a
+// moved project makes it wrong. Both documented input shapes must find it -- the
+// summary file names no directory to join under, so the body has to be resolved
+// against the summary that was loaded, not the argument.
+func TestPostRunReadsTheBodyBesideTheSummary(t *testing.T) {
 	for _, shape := range []string{"the run directory", "the summary file"} {
 		t.Run(shape, func(t *testing.T) {
 			dir := writeRun(t, model.RunSummary{
@@ -122,4 +122,48 @@ func TestPostRunFallsBackToTheBodyBesideTheSummary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A run directory is only files, so a pull request can commit one: a summary whose
+// review_body names a local secret, with a plausible review-body.md beside it for
+// the operator to read before publishing. Neither the recorded path nor a symlink
+// standing in for the canonical name may decide what goes to the pull request.
+func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
+	secret := filepath.Join(t.TempDir(), "credentials")
+	if err := os.WriteFile(secret, []byte("aws_secret_access_key = hunter2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := model.RunSummary{
+		Mode: "pr", PR: 3, Path: t.TempDir(),
+		ReviewedHead: "0123456789abcdef0123456789abcdef01234567",
+		ReviewBody:   secret,
+		Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
+	}
+
+	t.Run("the path in the summary is not read", func(t *testing.T) {
+		// No review-body.md beside the summary, and a readable file named by the
+		// summary: reading it would be the only way to get past this point.
+		dir := writeRun(t, base, "")
+		var logs strings.Builder
+		if code := postRun(dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+			t.Errorf("postRun() = 0 with no review body beside the summary; logs:\n%s", logs.String())
+		}
+		if !strings.Contains(logs.String(), "cannot read the review body") {
+			t.Errorf("the recorded path was read instead of refusing:\n%s", logs.String())
+		}
+	})
+
+	t.Run("a symlink at the canonical name is refused", func(t *testing.T) {
+		dir := writeRun(t, base, "")
+		if err := os.Symlink(secret, filepath.Join(dir, "review-body.md")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		var logs strings.Builder
+		if code := postRun(dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+			t.Errorf("postRun() = 0 for a symlinked review body; logs:\n%s", logs.String())
+		}
+		if !strings.Contains(logs.String(), "not a regular file") {
+			t.Errorf("the symlink was followed rather than refused:\n%s", logs.String())
+		}
+	})
 }

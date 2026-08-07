@@ -54,18 +54,34 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		logf("post-run: %s does not record which commit it reviewed, so the review cannot be bound to one. Runs from before that was recorded cannot be replayed; review again to produce one that can.", dir)
 		return 2
 	}
-	body, err := os.ReadFile(sum.ReviewBody)
+	// The body is always the file beside the resolved summary, never the path the
+	// summary JSON records. Beside the SUMMARY, not beside the argument: the argument
+	// may name the summary file itself, and joining under a file path can only fail.
+	//
+	// The recorded path is unusable for two separate reasons. It is absolute, so a
+	// copied run directory or a moved project makes it wrong. And it is not the
+	// operator's: a run directory is only files, so a pull request can commit a
+	// lookalike .fixpoint/<run> whose summary points review_body at ~/.aws/credentials
+	// while a plausible review-body.md sits beside it for the operator to inspect --
+	// and -post-run would publish the credentials to the pull request under their
+	// identity. Reading only the canonical name means the bytes published are the
+	// bytes in the file the operator was invited to read, which is the entire promise
+	// of this mode. Lstat for the same reason: a committed symlink at that name would
+	// redirect the read just as well as a path in the JSON.
+	bodyPath := filepath.Join(runDir, "review-body.md")
+	info, err := os.Lstat(bodyPath)
 	if err != nil {
-		// The path is recorded as absolute, but a run directory can be copied or the
-		// project moved, so fall back to the file beside the summary. Beside the
-		// SUMMARY, not beside the argument: the argument may name the summary file
-		// itself, and joining under a file path can only fail.
-		alt := filepath.Join(runDir, "review-body.md")
-		body, err = os.ReadFile(alt)
-		if err != nil {
-			logf("post-run: cannot read the review body (%s or %s): %v", sum.ReviewBody, alt, err)
-			return 1
-		}
+		logf("post-run: cannot read the review body at %s: %v", bodyPath, err)
+		return 1
+	}
+	if !info.Mode().IsRegular() {
+		logf("post-run: %s is not a regular file; refusing to publish whatever it resolves to", bodyPath)
+		return 1
+	}
+	body, err := os.ReadFile(bodyPath)
+	if err != nil {
+		logf("post-run: cannot read the review body at %s: %v", bodyPath, err)
+		return 1
 	}
 
 	ctx := context.Background()
