@@ -143,6 +143,94 @@ func (f *fixture) capturingOrchestrator() (*Orchestrator, func() string) {
 	}
 }
 
+// phaseRecorder is a Phaser that records the run's STRUCTURE instead of drawing
+// it: which blocks opened, and what closed them.
+//
+// runlog.Log indents every detail line under the block Phase opened until
+// EndPhase closes it, so a step that opens a block and returns without closing it
+// buries the rest of the run under a phase that already ended. Without a Phaser
+// installed every structural call degrades to a plain log line (see phase), and
+// that asymmetry is invisible -- so a test that wants to assert a block was closed
+// has to install one.
+type phaseRecorder struct {
+	mu     sync.Mutex
+	events []phaseEvent
+	// onPhase runs after a block opens, so a test can interrupt a run at exactly
+	// the moment a named block is open. Set before Run and not changed after.
+	onPhase func(title string)
+}
+
+type phaseEvent struct {
+	kind  string // "rule", "phase" or "end"
+	title string
+}
+
+func (p *phaseRecorder) record(kind, title string) {
+	p.mu.Lock()
+	p.events = append(p.events, phaseEvent{kind: kind, title: title})
+	p.mu.Unlock()
+	if kind == "phase" && p.onPhase != nil {
+		p.onPhase(title)
+	}
+}
+
+func (p *phaseRecorder) Rule(format string, args ...any) {
+	p.record("rule", fmt.Sprintf(format, args...))
+}
+func (p *phaseRecorder) Phase(format string, args ...any) {
+	p.record("phase", fmt.Sprintf(format, args...))
+}
+func (p *phaseRecorder) EndPhase(format string, args ...any) {
+	p.record("end", fmt.Sprintf(format, args...))
+}
+func (p *phaseRecorder) Progress(string, ...any) {}
+
+// titles reports the recorded titles of one kind of event, in order.
+func (p *phaseRecorder) titles(kind string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []string
+	for _, e := range p.events {
+		if e.kind == kind {
+			out = append(out, e.title)
+		}
+	}
+	return out
+}
+
+// unclosed reports every block that was opened and never closed by its own
+// EndPhase. Rule also resets the indent, but only as a backstop against exactly
+// this bug, so a block left open until the next round's rule still counts here.
+func (p *phaseRecorder) unclosed() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var open []string
+	for _, e := range p.events {
+		switch e.kind {
+		case "phase":
+			open = append(open, e.title)
+		case "end":
+			if len(open) > 0 {
+				open = open[:len(open)-1]
+			}
+		}
+	}
+	return open
+}
+
+// recordingOrchestrator builds f's orchestrator with a phaseRecorder installed, so
+// a test can assert on the block structure the run declared.
+func (f *fixture) recordingOrchestrator() (*Orchestrator, *phaseRecorder) {
+	f.t.Helper()
+	rec := &phaseRecorder{}
+	return f.orchestrator().WithProgress(rec), rec
+}
+
+// hasPrefix reports whether any of ss starts with prefix.
+func hasPrefix(ss []string, prefix string) bool {
+	return slices.ContainsFunc(ss, func(s string) bool { return strings.HasPrefix(s, prefix) })
+}
+
 // respond registers the mock agent's n-th response.
 func (f *fixture) respond(n int, content string) { testfixture.Respond(f.t, f.respDir, n, content) }
 
@@ -7043,6 +7131,103 @@ func TestRefutationWithNoUsableRepliesKeepsEveryFinding(t *testing.T) {
 	}
 	if sum.Verdict.Outcome != model.VerdictChangesRequested {
 		t.Errorf("verdict = %q, want changes_requested", sum.Verdict.Outcome)
+	}
+}
+
+// Every block a refutation round opens must be closed on every path it can leave
+// by, including the two that return early.
+//
+// The block is what indents the run's output: runRefutation opens REFUTE before
+// the fan-out, and a return that skips EndPhase leaves the log indented under a
+// phase that ended, for the whole rest of the run. Both early returns are
+// exercised here -- an interrupt during the fan-out, and a panel whose replies
+// carry no usable position -- because both were once written without their
+// closer.
+func TestRefutationClosesItsBlockOnEveryPath(t *testing.T) {
+	high := model.ReviewFinding{
+		Category: "security", Severity: "high", File: "auth.go", Line: 7, Title: "token compared with =="}
+	refutation := `<review>{"positions":[{"issue":"i1","position":"refute","evidence":"auth.go:7 uses subtle.ConstantTimeCompare"}]}</review>`
+
+	t.Run("interrupted during the fan-out", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1})
+		f.reviewOnly("mock", "mock2")
+		f.refuteLens()
+		f.respond(1, reviewResponse(t, high))
+		f.respond(2, reviewResponse(t))
+		f.respond(3, refutation)
+		f.respond(4, refutation)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		o, rec := f.recordingOrchestrator()
+		// Cancel the moment the REFUTE block opens: the fan-out below it is then
+		// running under a canceled context, which is the interrupt the early return
+		// reads.
+		rec.onPhase = func(title string) {
+			if strings.HasPrefix(title, "REFUTE") {
+				cancel()
+			}
+		}
+
+		if _, err := o.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+		if !hasPrefix(rec.titles("phase"), "REFUTE") {
+			t.Fatalf("no REFUTE block opened; phases = %q", rec.titles("phase"))
+		}
+		if got := rec.titles("end"); !hasPrefix(got, "REFUTE  interrupted") {
+			t.Errorf("closing lines = %q, want the interrupted REFUTE close", got)
+		}
+		if got := rec.unclosed(); len(got) != 0 {
+			t.Errorf("blocks left open: %q", got)
+		}
+	})
+
+	t.Run("no responder returned a usable position", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1})
+		f.reviewOnly("mock")
+		f.refuteLens()
+		f.respond(1, reviewResponse(t, high))
+		f.respond(2, "the refuter produced prose instead of a block")
+
+		o, rec := f.recordingOrchestrator()
+		if _, err := o.Run(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if !hasPrefix(rec.titles("phase"), "REFUTE") {
+			t.Fatalf("no REFUTE block opened; phases = %q", rec.titles("phase"))
+		}
+		if got := rec.titles("end"); !hasPrefix(got, "REFUTE  no usable position") {
+			t.Errorf("closing lines = %q, want the no-position REFUTE close", got)
+		}
+		if got := rec.unclosed(); len(got) != 0 {
+			t.Errorf("blocks left open: %q", got)
+		}
+	})
+}
+
+// The same balance holds for the other blocks a run opens. A converging fix run
+// walks BASELINE, REVIEW and FIX, and none of them may end the run still
+// indented. (The review-only runs above cover VERDICT the same way.)
+func TestAConvergingRunClosesEveryBlockItOpens(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
+	f.verifyGate(config.VerifyNoRegressions, "never-created")
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "patched"}))
+	f.respond(3, reviewResponse(t)) // round 2: clean
+
+	o, rec := f.recordingOrchestrator()
+	if _, err := o.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"BASELINE", "REVIEW", "FIX"} {
+		if !hasPrefix(rec.titles("phase"), want) {
+			t.Errorf("no %s block opened; phases = %q", want, rec.titles("phase"))
+		}
+	}
+	if got := rec.unclosed(); len(got) != 0 {
+		t.Errorf("blocks left open: %q", got)
 	}
 }
 

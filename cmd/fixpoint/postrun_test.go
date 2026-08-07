@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -624,7 +625,7 @@ func TestPostRunExplainsAnUnreadableReceipt(t *testing.T) {
 	}
 	// Which directory, which file to delete, and which pull request to go and look
 	// at: those three are the whole of what the operator can act on.
-	for _, want := range []string{dir, receipt, fmt.Sprintf("%d", sum.PR)} {
+	for _, want := range []string{dir, receipt, strconv.Itoa(sum.PR)} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("the refusal should name %q:\n%s", want, logs.String())
 		}
