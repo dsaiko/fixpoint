@@ -198,8 +198,10 @@ review:
 After the panel reports, `refute` shows every reviewer the findings at
 `refute_at` or above and asks for an evidenced position on each: maintain, refute,
 or unsure. What all of them refute is dropped; one holdout keeps a finding, marked
-contested. Nobody answering drops nothing — reading silence as unanimous refutation
-is the one catastrophic misreading available here.
+contested. Unanimity is counted over the whole panel, so a reviewer that fails or
+never answers keeps the finding too — reading silence as unanimous refutation is
+the one catastrophic misreading available here, and the panel reads the code under
+review, so silence is something that code can arrange.
 
 `refute_at` defaults to `high`, the same floor as `block_at`, and may be looser but
 never stricter — a stricter one is refused at load, because a blocking finding the

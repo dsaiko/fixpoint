@@ -4363,8 +4363,8 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		o.logf("refutation: no reviewer returned a usable position; every finding stands")
 		return
 	}
-	dropped, contested := applyRefutations(rec, byIssue, responded, o.logf)
-	o.endPhase("REFUTE  %d responder(s), %d dropped, %d contested", responded, dropped, contested)
+	dropped, contested := applyRefutations(rec, byIssue, responded, len(panel), o.logf)
+	o.endPhase("REFUTE  %d of %d responder(s), %d dropped, %d contested", responded, len(panel), dropped, contested)
 }
 
 // issuesAtOrAbove selects the findings a refutation round is asked about: those
@@ -4407,8 +4407,9 @@ func panelAgents(assignments []model.Assignment) []string {
 // refuteWith runs one reviewer's refutation pass. The second return says whether
 // this reviewer ANSWERED -- which is not the same as whether it took any position,
 // and the caller needs both separately to count unanimity safely. A failed refuter
-// is not a round failure: it simply does not get a vote, and unanimity is measured
-// over those who answered.
+// is not a round failure: it simply does not get a vote. Nor does its silence help
+// anyone delete a finding -- unanimity is measured over the whole assigned panel,
+// so a reviewer that never answered counts as one that did not refute.
 func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, round int, subject []model.Issue, material string) ([]model.RefutePosition, bool, *model.StepStat) {
 	label := "refute: " + agentName
 	d := prompt.RefuteData{
@@ -4484,17 +4485,29 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, round i
 // human one paragraph. With that asymmetry the bar for deletion belongs at the top:
 // one reviewer still standing behind a defect is enough to keep it.
 //
-// Unanimity is measured over the reviewers that RESPONDED, not over the positions
-// that happen to have arrived for one finding -- and the difference is the whole
-// safety property. Counting `refuted == len(positions)` made a single refuter
-// enough whenever the others simply omitted that id, which is the likely failure:
-// the contract asks for a position on every finding and nothing enforces coverage,
-// so a refuter working through thirty of them truncates. One reviewer could then
-// delete a finding on its own word, contradicting what the README, the config
-// documentation and the refutation prompt all promise.
+// Unanimity is measured over the whole ASSIGNED PANEL -- not over the positions
+// that happen to have arrived for one finding, and not over the reviewers that
+// merely responded. Both narrower readings let one reviewer delete a finding on its
+// own word, and the difference is the whole safety property.
 //
-// Issues nobody took a position on are untouched, for the same reason.
-func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]model.RefutePosition, responded int, logf func(string, ...any)) (dropped, contested int) {
+// Counting `refuted == len(positions)` made a single refuter enough whenever the
+// others simply omitted that id, which is the likely failure: the contract asks for
+// a position on every finding and nothing enforces coverage, so a refuter working
+// through thirty of them truncates.
+//
+// Counting against the RESPONDERS left the same hole one step out, because a
+// refuter that fails its contract is not counted as a responder at all. Three of a
+// four-agent panel timing out or returning unparseable output alongside one that
+// refutes made responded == 1, and unanimity trivial again -- and a pull request is
+// input the panel reads, so an injection that breaks one model's output format
+// while another refutes a security finding is a way to arrange exactly that. The
+// finding is then rejected, the judge skips it, and the run can approve. An
+// electorate an attacker can shrink is not an electorate: a reviewer that never
+// answered is a reviewer that did not refute, and it keeps the finding.
+//
+// Issues nobody took a position on are untouched, for the same reason. panel is the
+// number of reviewers the round asked, from panelAgents.
+func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]model.RefutePosition, responded, panel int, logf func(string, ...any)) (dropped, contested int) {
 	for i := range rec.Issues {
 		it := &rec.Issues[i]
 		positions := byIssue[it.ID]
@@ -4531,12 +4544,22 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 			}
 		}
 		switch {
-		case refuted == responded && len(positions) == responded:
+		case refuted == responded && len(positions) == responded && responded == panel:
 			it.Status = model.VerdictRejected
 			it.Verdict = model.VerdictRejected
-			it.VerdictDetail = "refuted by every reviewer that judged it: " + evidence
+			it.VerdictDetail = "refuted by every reviewer on the panel: " + evidence
 			dropped++
-			logf("refutation: %s dropped -- all %d responding reviewer(s) refuted it", it.ID, responded)
+			logf("refutation: %s dropped -- all %d reviewer(s) on the panel refuted it", it.ID, panel)
+		case refuted == len(positions) && len(positions) == responded && responded < panel:
+			// Every reviewer that answered refuted it, but some never answered. Their
+			// silence is not a refutation, and treating it as one would hand a single
+			// refuter the deletion whenever the rest of the panel fails -- which is
+			// something the code under review can influence. Kept and flagged.
+			it.Contested = true
+			it.ContestedBy = refuters
+			contested++
+			logf("refutation: %s refuted by all %d reviewer(s) that answered, but %d of %d never answered -- kept",
+				it.ID, refuted, panel-responded, panel)
 		case refuted == len(positions) && len(positions) < responded:
 			// Everyone who spoke about this finding refuted it, but not everyone spoke.
 			// Silence is not agreement: the reviewers that omitted the id may never have

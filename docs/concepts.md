@@ -122,7 +122,10 @@ is judged on its own evidence instead.
 
 Unanimous refutation, not majority, because the errors are not symmetric: a wrong
 refutation deletes a real defect and nothing downstream looks for it again, while
-a wrongly-kept finding costs a human a paragraph.
+a wrongly-kept finding costs a human a paragraph. Unanimity is measured over every
+reviewer the round asked, not over the ones that answered: a refuter that fails its
+contract casts no vote, and cannot thereby leave the one that did answer alone with
+a deletion.
 
 Only findings at or above `review.refute_at` (default `high`, the same floor as
 `review.block_at`) are put to the round. It costs a full extra pass per reviewer
