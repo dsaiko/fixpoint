@@ -147,6 +147,15 @@ func (o Overrides) Applied() []string {
 	if o.AllowUntrustedFix {
 		out = append(out, "allow_untrusted_fix=true")
 	}
+	// Recorded for the same reason the trust gates are: publishing acts on somebody
+	// else's pull request, so the authorization to do it belongs in the run log even
+	// when the run ends in a comment rather than a verdict.
+	if o.Post {
+		out = append(out, "post=true")
+	}
+	if o.PostVerdict {
+		out = append(out, "post_verdict=true")
+	}
 	if o.TrustedTarget {
 		out = append(out, "trusted_target=true")
 	}

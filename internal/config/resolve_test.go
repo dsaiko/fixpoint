@@ -930,9 +930,11 @@ func TestOverridesApplied(t *testing.T) {
 		MaxIterations:     -1,
 		PR:                1234,
 		AllowUntrustedFix: true,
+		Post:              true,
+		PostVerdict:       true,
 		TrustedTarget:     true,
 	}.Applied(), ", ")
-	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "trusted_target=true", "max_iterations=-1", "pr=1234"} {
+	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "post=true", "post_verdict=true", "trusted_target=true", "max_iterations=-1", "pr=1234"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Applied() = %q, missing %q", got, want)
 		}
