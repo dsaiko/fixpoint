@@ -7725,7 +7725,7 @@ func TestRepliesGoOnlyToConversationsTheCoderWasShown(t *testing.T) {
 	}
 	defer func() { readerFor = prev }()
 
-	o.postReplies(t.Context(), []model.FixReply{
+	o.postReplies(t.Context(), "", []model.FixReply{
 		{Thread: "100", Message: "changed a.go:1 to use the guard"},
 		{Thread: "999", Message: "answering a conversation nobody showed me"},
 	})
@@ -7735,6 +7735,101 @@ func TestRepliesGoOnlyToConversationsTheCoderWasShown(t *testing.T) {
 	}
 	if !strings.Contains(logs(), "not shown") {
 		t.Errorf("the unknown thread must be reported:\n%s", logs())
+	}
+}
+
+// A conversation is answered at most ONCE per run.
+//
+// Every fix session is a fresh agent shown the same conversation list, with no
+// memory of the sessions before it, so nothing at the agent end can stop a second
+// one from answering a thread the first already answered. Without this rule a run
+// fixing three issues that touch a commented file posts that human three replies,
+// all under the operator's identity.
+func TestAnAnsweredConversationIsNotOfferedOrPostedToAgain(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.threads = []forge.Thread{
+		{ID: "100", Path: "a.go", Line: 1, Author: "human", Body: "why?"},
+		{ID: "200", Path: "b.go", Line: 2, Author: "human", Body: "and this?"},
+	}
+
+	var replied []string
+	reader := &fakeReader{threads: o.threads, replied: &replied}
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader { return reader }
+	defer func() { readerFor = prev }()
+
+	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "fixed in a.go"}})
+	// The next session's turn: same list rendered to it, same thread named again.
+	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "I also touched a.go"}})
+
+	if len(replied) != 1 || replied[0] != "100" {
+		t.Errorf("replied to %v, want the conversation answered exactly once", replied)
+	}
+	if !strings.Contains(logs(), "not shown") {
+		t.Errorf("the dropped second reply must be reported, not silently swallowed:\n%s", logs())
+	}
+	// An answered thread also stops being rendered into later prompts, so a session
+	// is never invited to answer it in the first place.
+	convs := o.conversations()
+	if strings.Contains(convs, "100") {
+		t.Errorf("an answered conversation is still offered to the next session:\n%s", convs)
+	}
+	if !strings.Contains(convs, "200") {
+		t.Errorf("an unanswered conversation must still be offered:\n%s", convs)
+	}
+	// A failed post answers nobody, so that thread stays open for a later session.
+	reader.replyErr = errors.New("forge said no")
+	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "200", Message: "fixed in b.go"}})
+	if !o.threadOpen("200") {
+		t.Error("a reply that never reached the forge must leave the conversation unanswered")
+	}
+}
+
+// A conversation triage turned into work is answered by the session that does
+// that work, and by no other. Every session sees the thread -- it is context for
+// all of them -- but only one of them has a commit behind the claim.
+func TestACommissionedConversationIsAnsweredOnlyByItsOwnFix(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Review.Post = true
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.threads = []forge.Thread{{ID: "100", Path: "a.go", Line: 1, Author: "human", Body: "why?"}}
+	o.commissionedThreads = map[string]bool{"100": true}
+
+	var replied []string
+	reader := &fakeReader{threads: o.threads, replied: &replied}
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader { return reader }
+	defer func() { readerFor = prev }()
+
+	// A panel finding's session, which this conversation did not commission.
+	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "I fixed something nearby"}})
+	if len(replied) != 0 {
+		t.Fatalf("replied to %v; another issue's session must not answer a commissioned thread", replied)
+	}
+	if !strings.Contains(logs(), "commissioned a different issue") {
+		t.Errorf("the drop must be reported:\n%s", logs())
+	}
+
+	// The session fixing the issue this thread commissioned.
+	o.postReplies(t.Context(), "100", []model.FixReply{{Thread: "100", Message: "guarded the dereference"}})
+	if len(replied) != 1 || replied[0] != "100" {
+		t.Errorf("replied to %v, want the commissioned thread answered by its own fix", replied)
 	}
 }
 
@@ -7756,7 +7851,7 @@ func TestRepliesAreNotPostedWithoutTheFlag(t *testing.T) {
 	readerFor = func(context.Context, string) forge.Reader { return &fakeReader{replied: &replied} }
 	defer func() { readerFor = prev }()
 
-	o.postReplies(t.Context(), []model.FixReply{{Thread: "100", Message: "hello"}})
+	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "hello"}})
 	if len(replied) != 0 {
 		t.Errorf("posted %d repl(y|ies) without -post", len(replied))
 	}
@@ -7789,7 +7884,7 @@ func TestAConversationReplyIsSignedAndSanitized(t *testing.T) {
 	readerFor = func(context.Context, string) forge.Reader { return reader }
 	defer func() { readerFor = prev }()
 
-	o.postReplies(t.Context(), []model.FixReply{{Thread: "100",
+	o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100",
 		Message: "Fixed. Thanks @reviewer — Closes #42 <!-- and the rest of the document"}})
 
 	if len(reader.bodies) != 1 {
@@ -7848,7 +7943,7 @@ func TestReplySignatureTemplateIsConfigurable(t *testing.T) {
 			readerFor = func(context.Context, string) forge.Reader { return reader }
 			defer func() { readerFor = prev }()
 
-			o.postReplies(t.Context(), []model.FixReply{{Thread: "100", Message: "done"}})
+			o.postReplies(t.Context(), "", []model.FixReply{{Thread: "100", Message: "done"}})
 
 			want := "Answered by AI panel"
 			if tmpl != "" {
@@ -7868,6 +7963,9 @@ type fakeReader struct {
 	// bodies records what was actually sent, for the tests that assert on the
 	// posted bytes rather than only on which thread was answered.
 	bodies []string
+	// replyErr makes the next Reply fail, for the tests that assert what a failed
+	// post leaves behind.
+	replyErr error
 }
 
 func (*fakeReader) Kind() forge.Kind { return forge.GitHub }
@@ -7883,6 +7981,9 @@ func (r *fakeReader) Threads(context.Context, string, int) ([]forge.Thread, erro
 }
 
 func (r *fakeReader) Reply(_ context.Context, _ string, _ int, threadID, body string) error {
+	if r.replyErr != nil {
+		return r.replyErr
+	}
 	*r.replied = append(*r.replied, threadID)
 	r.bodies = append(r.bodies, body)
 	return nil

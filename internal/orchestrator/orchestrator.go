@@ -60,10 +60,21 @@ type Orchestrator struct {
 	// to. Triage runs before round 1 and still costs tokens; a step that vanished
 	// from the summary would make the run's reported cost wrong.
 	triageStep model.StepStat
-	// threads are the pull request's OPEN review conversations, read once at start.
-	// Empty for every target that is not a pull request, and for a forge that
-	// cannot be asked.
+	// threads are the pull request's OPEN UNANSWERED review conversations, read
+	// once at start. Empty for every target that is not a pull request, and for a
+	// forge that cannot be asked.
+	//
+	// A thread leaves this list the moment it has been answered -- declined by
+	// triage, or replied to by the session that fixed it. That is what makes a
+	// conversation answerable at most once per run: conversations() renders this
+	// list into every coder prompt and postReplies refuses an id that is not in it,
+	// so a thread still here after N sessions is one no session has answered.
 	threads []forge.Thread
+	// commissionedThreads are the threads triage turned into issues, so a reply can
+	// be matched against the session that owes it. Each such thread is answered by
+	// the ONE session fixing its issue; another session naming it is answering a
+	// question that was not asked of it.
+	commissionedThreads map[string]bool
 	// gitExclude holds the logs dir as a repo-relative path when it lives
 	// inside target.path, so round commits and clean checks never touch the
 	// run's own logs.
@@ -927,7 +938,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 			// The replies go through the same gate as a committed session's, which
 			// drops them and logs the skip: this is the case the gate was written for,
 			// and it is recorded before the stash so an abort there does not swallow it.
-			o.answerConversations(ctx, it.ID, false, replies)
+			o.answerConversations(ctx, it, false, replies)
 			if !clean {
 				if err := o.reconcileRejectedSession(ctx, rec, it); err != nil {
 					return false, committed, err
@@ -948,7 +959,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		if did {
 			committed++
 		}
-		o.answerConversations(ctx, it.ID, did, replies)
+		o.answerConversations(ctx, it, did, replies)
 		o.closeFix(it.ID, did)
 	}
 	return false, committed, nil
@@ -977,15 +988,15 @@ func (o *Orchestrator) closeFix(issueID string, committed bool) {
 // why nothing was changed would often be welcome, but it cannot be told apart here
 // from one claiming work that did not land, and over-posting is the failure being
 // fixed. The skip is logged so it is a decision rather than a disappearance.
-func (o *Orchestrator) answerConversations(ctx context.Context, issueID string, committed bool, replies []model.FixReply) {
+func (o *Orchestrator) answerConversations(ctx context.Context, it model.Issue, committed bool, replies []model.FixReply) {
 	if len(replies) == 0 {
 		return
 	}
 	if !committed {
-		o.logf("%d conversation repl(y|ies) for %s were not posted: the fix did not commit", len(replies), issueID)
+		o.logf("%d conversation repl(y|ies) for %s were not posted: the fix did not commit", len(replies), it.ID)
 		return
 	}
-	o.postReplies(ctx, replies)
+	o.postReplies(ctx, it.Origin.Thread, replies)
 }
 
 // staleFiles reports which of the issue's files have been committed to since
@@ -5001,25 +5012,29 @@ func (o *Orchestrator) conversations() string {
 
 // postReplies answers the conversations the coder said its work addressed.
 //
+// own is the thread this session was commissioned by, or "" for an ordinary
+// panel finding.
+//
 // Gated on -post, like every other write to a forge: an answer appears under a
 // human's comment with the operator's identity on it. Gated on the thread being
 // one we actually SHOWED the coder, too -- a reply addressed to an id it invented,
 // or to a resolved thread it remembered from somewhere, would post into a
 // conversation nobody asked it to touch.
 //
+// Gated, finally, on the thread still being unanswered, and on a commissioned
+// thread being answered by the session that owes it. Every session is a fresh
+// agent shown the same list, so without those two rules one human comment
+// collects a reply from each of them, all under the operator's name.
+//
 // Failures are reported per reply and never abort the round: the fix is already
 // committed and verified, and losing that over a comment would be the wrong trade.
-func (o *Orchestrator) postReplies(ctx context.Context, replies []model.FixReply) {
+func (o *Orchestrator) postReplies(ctx context.Context, own string, replies []model.FixReply) {
 	if len(replies) == 0 || len(o.threads) == 0 {
 		return
 	}
 	if !o.cfg.Review.Post {
 		o.logf("%d conversation repl(y|ies) were written but not posted (-post was not given)", len(replies))
 		return
-	}
-	known := make(map[string]bool, len(o.threads))
-	for _, t := range o.threads {
-		known[t.ID] = true
 	}
 	r := readerFor(ctx, o.cfg.Target.Path)
 	if r == nil {
@@ -5032,8 +5047,15 @@ func (o *Orchestrator) postReplies(ctx context.Context, replies []model.FixReply
 	// same run, the same agent, for every thread.
 	signature := o.replySignature()
 	for _, reply := range replies {
-		if !known[reply.Thread] {
-			o.logf("WARNING: the coder answered thread %q, which it was not shown; not posted", reply.Thread)
+		if !o.threadOpen(reply.Thread) {
+			// Covers an invented id, a thread from some other pull request, and one this
+			// run has already answered -- a session is shown only the conversations still
+			// open, so all three are "not something you were asked about".
+			o.logf("WARNING: the coder answered thread %q, which it was not shown as an open conversation; not posted", reply.Thread)
+			continue
+		}
+		if o.commissionedThreads[reply.Thread] && reply.Thread != own {
+			o.logf("WARNING: conversation %s commissioned a different issue and is answered by that issue's session; this reply is not posted", reply.Thread)
 			continue
 		}
 		// The signature goes AFTER the sanitized agent text and is sanitized
@@ -5042,9 +5064,33 @@ func (o *Orchestrator) postReplies(ctx context.Context, replies []model.FixReply
 		// an unclosed HTML comment swallow its own attribution.
 		body := publishedText(forge.SanitizeText(reply.Message) + "\n\n" + signature)
 		if err := r.Reply(ctx, o.cfg.Target.Path, o.cfg.Target.PR, reply.Thread, body); err != nil {
+			// Left open deliberately: nothing was posted, so the conversation is still
+			// unanswered and a later session may still answer it.
 			o.logf("ERROR: replying to conversation %s failed: %v", reply.Thread, err)
 			continue
 		}
+		o.closeThread(reply.Thread)
 		o.logf("replied to conversation %s", reply.Thread)
+	}
+}
+
+// threadOpen reports whether a conversation is still one this run may answer.
+func (o *Orchestrator) threadOpen(id string) bool {
+	for _, t := range o.threads {
+		if t.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// closeThread takes an answered conversation out of the open list, so no later
+// session is shown it and none can post to it a second time.
+func (o *Orchestrator) closeThread(id string) {
+	for i, t := range o.threads {
+		if t.ID == id {
+			o.threads = append(o.threads[:i:i], o.threads[i+1:]...)
+			return
+		}
 	}
 }

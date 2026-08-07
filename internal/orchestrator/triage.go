@@ -116,6 +116,13 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 			o.commissioned = append(o.commissioned, o.commissionedFinding(d, th, me))
 			// Kept: the coder that fixes the issue answers this thread once its work is
 			// committed, and postReplies refuses an id that is not in this list.
+			// Recorded as commissioned, too, so that it is that ONE session's to answer:
+			// every other session is shown the thread as context and would otherwise be
+			// free to reply to it as well.
+			if o.commissionedThreads == nil {
+				o.commissionedThreads = make(map[string]bool)
+			}
+			o.commissionedThreads[th.ID] = true
 			remaining = append(remaining, th)
 			continue
 		}
