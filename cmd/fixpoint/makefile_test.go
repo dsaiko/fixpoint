@@ -1,22 +1,23 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 )
 
-// makeDryRun expands one target's recipe without running any of it, so the test
-// reads the argv the operator would get. The environment is filtered rather than
-// inherited: make imports environment variables as make variables, so an ambient
-// POST or PR would otherwise decide what the "default" invocation expands to.
-func makeDryRun(t *testing.T, args ...string) string {
+// makeCommand builds a `make` invocation against the project root. The
+// environment is filtered rather than inherited: make imports environment
+// variables as make variables, so an ambient POST or PR would otherwise decide
+// what the "default" invocation expands to.
+func makeCommand(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
 	if _, err := exec.LookPath("make"); err != nil {
-		t.Skip("make is not installed; the Makefile targets cannot be expanded here")
+		t.Skip("make is not installed; the Makefile targets cannot be run here")
 	}
-	cmd := exec.Command("make", append([]string{"-n", "--no-print-directory"}, args...)...)
+	cmd := exec.Command("make", append([]string{"--no-print-directory"}, args...)...)
 	cmd.Dir = "../.."
 	cmd.Env = nil
 	for _, kv := range os.Environ() {
@@ -26,6 +27,14 @@ func makeDryRun(t *testing.T, args ...string) string {
 		}
 		cmd.Env = append(cmd.Env, kv)
 	}
+	return cmd
+}
+
+// makeDryRun expands one target's recipe without running any of it, so the test
+// reads the argv the operator would get.
+func makeDryRun(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := makeCommand(t, append([]string{"-n"}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("make -n %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -48,6 +57,30 @@ func fixpointCommand(t *testing.T, recipe string) []string {
 		t.Fatalf("want exactly one ./fixpoint invocation, got %d:\n%s", len(found), recipe)
 	}
 	return strings.Fields(found[0])
+}
+
+// `run` was the documented entry point for the whole review -> fix -> verify ->
+// commit cycle. What replaced it only prints an explanation, so the recipe has to
+// end non-zero: a wrapper, alias or CI step still calling it must see a failure
+// rather than read a no-op as a completed run. This is the one target run for
+// real rather than expanded, because the exit status is the whole point of it --
+// and it is safe to run, since it touches nothing but stdout.
+func TestRunTargetExitsNonZero(t *testing.T) {
+	out, err := makeCommand(t, "run").CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("make run succeeded (err=%v); a no-op must not report a completed run:\n%s", err, out)
+	}
+	if code := exit.ExitCode(); code != 2 {
+		t.Errorf("make run exited %d, want 2 -- the usage-error code the PR= guards use:\n%s", code, out)
+	}
+	// The exit status is only half of it: the operator still has to be told what
+	// to run instead, so the explanation and the target listing must survive too.
+	for _, want := range []string{"There is no 'make run'", "fix-code:", "review-pr:"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("make run no longer prints %q:\n%s", want, out)
+		}
+	}
 }
 
 func hasArg(argv []string, want string) bool {
