@@ -2092,6 +2092,25 @@ func TestRunRefusesActivatableFiltersInPRMode(t *testing.T) {
 		}
 	})
 
+	// The narrow assertion must NOT reach this guard. -trusted-bundle speaks for the
+	// bundle files, all read before Prepare; the .gitattributes that selects the
+	// filter arrives with `gh pr checkout`, afterwards. This is the shape
+	// `make review-pr` runs, so a downgrade here would put the guard back to
+	// disarmed on a fork's pull request.
+	t.Run("bundle trust alone does not downgrade the PR refusal", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.cfg.Loop.TrustedTarget = false
+		f.cfg.Loop.TrustedBundle = true
+		f.cfg.Target.Mode = "pr"
+		f.cfg.Target.PR = 7
+		installGlobalFilter(t)
+
+		log, err := guardLog(t, f)
+		if err == nil || !strings.Contains(err.Error(), "filter.lfs.clean") {
+			t.Fatalf("PreflightGuards() err = %v, want the refusal to stand under -trusted-bundle alone; log:\n%s", err, log)
+		}
+	})
+
 	t.Run("--check on an untrusted PR proceeds", func(t *testing.T) {
 		// --check never reaches the checkout the refusal is about: it runs Scope,
 		// which reports pr mode as "known only after `gh pr checkout`" without

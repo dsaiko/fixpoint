@@ -249,6 +249,7 @@ and the review is still on disk.
 | `-base-ref ref` | Override `target.base_ref` in git-diff mode; a trailing `...` means the merge base with HEAD. For `fix-branch` on a branch with no upstream: `-base-ref 'origin/main...'`. |
 | `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. |
 | `-trusted-target` | Assert a directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without it). |
+| `-trusted-bundle` | Assert **only** that the bundle files resolved from inside the target may be executed and sent to agents. Permits no fix round and trusts no other target content — this is the flag to use when the config is yours but the code is not, as `review-pr` on a fork's branch is. |
 | `-allow-untrusted-fix` | Permit fix rounds in `pr` mode (PR content is untrusted; see Security). |
 | `-post` | Publish the review on the pull request as a **comment**: findings become visible, no verdict is acted on. Publishes what the run just produced, so nobody has read it yet — prefer `-post-run`. A publish that was asked for and did not happen fails the run (exit `1`), so an approval can never exit `0` over a review that never reached the pull request; the review is still in `review-body.md`. |
 | `-post-run dir` | Publish the review a **finished** run already produced, from its `.fixpoint/<run>` directory (or its `summary-*.json`). Invokes no agent and reviews nothing: the bytes posted are the bytes in `review-body.md` and the inline anchors are the ones that run computed. Resolves no configuration at all — everything it acts on is in that run's summary — so every flag but `-post-verdict` is ignored. |
@@ -282,10 +283,10 @@ command line.
 
 | Config | What it does |
 |---|---|
-| [review-code](config/review-code.yaml) | Review a whole project once, no edits. Needs `-trusted-target` if the project ships its own bundle. |
+| [review-code](config/review-code.yaml) | Review a whole project once, no edits. Needs `-trusted-bundle` (or `-trusted-target`) if the project ships its own bundle. |
 | [review-branch](config/review-branch.yaml) | Review only what this branch changed, no edits. The review-only twin of `fix-branch`. |
 | [review-pr](config/review-pr.yaml) | Review a GitHub pull request; review-only by default. |
-| [fix-pr](config/fix-pr.yaml) | Fix a pull request's changes and answer its open conversations. Needs `-allow-untrusted-fix`, and `-trusted-target` as well when the target ships the bundle being used. |
+| [fix-pr](config/fix-pr.yaml) | Fix a pull request's changes and answer its open conversations. Needs `-allow-untrusted-fix`, and `-trusted-bundle` as well when the target ships the bundle being used. |
 | [fix-code](config/fix-code.yaml) | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
 | [fix-branch](config/fix-branch.yaml) | The same loop over only what this branch changed — git-diff against the merge base with `@{upstream}`. Needs `-trusted-target`. |
 | [defaults](config/defaults.yaml) | Shared base the others extend; not runnable on its own. |

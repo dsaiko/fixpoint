@@ -61,7 +61,7 @@ and in shell completion. The scope says what is examined.
 
 | Config | What it does |
 |---|---|
-| `review-code` | Review a whole project once, no edits. Needs `-trusted-target` if the project ships its own bundle. |
+| `review-code` | Review a whole project once, no edits. Needs `-trusted-bundle` (or `-trusted-target`) if the project ships its own bundle. |
 | `review-pr` | Review a GitHub pull request; review-only by default. |
 | `fix-code` | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
 | `fix-branch` | The same loop over only what this branch changed (git-diff against the merge base with `@{upstream}`). Needs `-trusted-target`. |
@@ -444,7 +444,17 @@ reviewed file could steer it. Fixes therefore require `-trusted-target` (or
 `-allow-untrusted-fix` in `pr` mode) *per invocation* — never an inherited
 default. Review each round's commit before pushing.
 
-**A config cannot grant trust.** Setting `loop.trusted_target` or
+**This bundle needs `-trusted-bundle` when it lives inside the target.**
+`<project>/config` is searched first, so the files a run is built from can be the
+reviewed repository's own — and they are argv fixpoint execs and prompts it sends,
+not data. `-trusted-bundle` asserts exactly that and nothing else; it permits no
+fix round. `-trusted-target` clears the same gate but claims more (the target's
+content is trusted too), so in `pr` mode, where the worktree is the pull request
+author's, use the narrow flag: the wider one turns the checkout guards into
+warnings.
+
+**A config cannot grant trust.** Setting `loop.trusted_target`,
+`loop.trusted_bundle` or
 `loop.allow_untrusted_fix` in any config file is a hard load error, in the task
 config and in a base it `extends`. This directory is searched *before* the
 operator's own bundles, so it may be shipped by the repository under review: a

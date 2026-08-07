@@ -751,6 +751,23 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 		}
 	})
 
+	// -trusted-bundle is NOT the other half: it says only that the bundle files
+	// resolved from inside the target may be run, and those were read before
+	// `gh pr checkout` replaced the tree. This command is re-resolved against the
+	// post-checkout worktree at every invocation, so the narrow assertion must
+	// leave the refusal standing -- otherwise `make review-pr`, which passes exactly
+	// that flag, is back to executing PR-authored code as the agent process.
+	t.Run("rejects a target-relative binary in mode pr with only bundle trust", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "agent.sh")
+		cfg := prConfig(t, dir, "./agent.sh")
+		cfg.Loop.TrustedBundle = true
+		if err := cfg.Validate(); err == nil ||
+			!strings.Contains(err.Error(), "resolves inside target") {
+			t.Fatalf("Validate() = %v, want the refusal to stand: -trusted-bundle says nothing about post-checkout content", err)
+		}
+	})
+
 	// -allow-untrusted-fix is the other half of the same gate, and the half a fix
 	// run in pr mode actually passes -- so pin it on the shape the flag exists for
 	// (ReviewOnly false), not on the review-only default every subtest above uses.

@@ -84,10 +84,23 @@ check-live: build
 # One target per shipped config, so `make help` lists what can actually be run
 # instead of one generic `run` whose behavior depends on a variable.
 #
-# --trusted-target is asserted here because every one of these targets reviews
-# THIS repository, which we wrote. It is a per-invocation flag and never a config
-# default -- see the security notes in config/README.md -- so a target pointed at
-# somebody else's code would have to say so itself.
+# Two DIFFERENT trust assertions appear below, and the difference is the whole
+# point of having both. Every target here is built from the bundle under config/,
+# which lives inside target.path (this project root), so every one of them needs
+# bundle trust: those files are the argv fixpoint execs and the prompts it sends.
+#
+#   --trusted-bundle says only that. Nothing else consults it.
+#   --trusted-target says that AND that the target's content is trusted when the
+#   run reaches it -- which additionally permits fix rounds and, in mode pr,
+#   downgrades to warnings the refusals that cover what `gh pr checkout` writes
+#   (a target-relative agent command, and repository-selected content filters or
+#   diff drivers). That claim is true for the -code and -branch targets, whose
+#   target is this repository, and FALSE for the -pr targets, whose worktree is
+#   filled with the pull request author's files -- so those pass the narrow flag.
+#
+# Both are per-invocation flags and never config defaults -- see the security
+# notes in config/README.md -- so a target pointed at somebody else's code would
+# have to say so itself.
 #
 # The fix- targets run the test suite and vet first: they let an agent edit the
 # working tree, and starting that from a tree whose tests already fail makes the
@@ -116,20 +129,26 @@ review-branch: build
 ## open conversations. Pass the number as PR=<n>.
 ##   make fix-pr PR=170
 ## The most dangerous target here: it edits a tree holding externally-authored
-## code, so it asserts -allow-untrusted-fix. Run review-pr first and read it.
-## It also asserts -trusted-target, which is a different claim: the target path
-## defaults to this project root, so the bundle under config/ is project-supplied
-## policy and the run is refused without it. That assertion is about OUR files,
-## not about the pull request's diff, which -allow-untrusted-fix covers.
+## code, so it asserts -allow-untrusted-fix -- the flag that accepts the PR
+## author's content, and the one the checkout guards are about. Run review-pr
+## first and read it. -trusted-bundle is the separate, narrower claim: the target
+## path defaults to this project root, so the bundle under config/ is
+## project-supplied policy and the run is refused without it. Those are OUR files,
+## read before the checkout replaced the tree.
 fix-pr: build test vet
 	@test -n "$(PR)" || { echo "usage: make fix-pr PR=<number>"; exit 2; }
-	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-target
+	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-bundle
 
 ## review-pr: review a pull request; pass the number as PR=<n>
 ##   make review-pr PR=170
+## -trusted-bundle and NOT -trusted-target: the only thing this run needs to trust
+## is fixpoint's own config/ bundle, resolved before `gh pr checkout` ran. The
+## branch itself is externally authored, so the pr-mode refusals over what the
+## checkout writes stay armed -- which is what makes this the target to run first
+## on a fork's pull request.
 review-pr: build
 	@test -n "$(PR)" || { echo "usage: make review-pr PR=<number>"; exit 2; }
-	./$(BINARY) review-pr -pr $(PR) --trusted-target
+	./$(BINARY) review-pr -pr $(PR) --trusted-bundle
 
 ## run: removed -- name the config you mean (make fix-code, make review-pr PR=n)
 run:

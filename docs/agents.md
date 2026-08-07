@@ -225,7 +225,8 @@ needs it. The win is everything else — your GitHub token is no longer inside t
 code reviewer. `env.inherit_all: true` opts back out entirely for a CLI whose
 requirements you don't know; fixpoint warns at run start when an agent does — and
 **refuses to run** when the agent was declared inside the target, whatever you
-asserted on the command line. `-trusted-target` says the target's policy may be
+asserted on the command line. `-trusted-bundle`/`-trusted-target` say the target's
+policy may be
 executed, not that it may help itself to secrets it cannot even name; declare
 those under `env.pass`, or keep the agent in a bundle outside the target.
 

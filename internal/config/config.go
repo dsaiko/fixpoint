@@ -912,6 +912,33 @@ type Loop struct {
 	// apply to every project the operator ever runs it in, including the next
 	// untrusted repository they clone.
 	TrustedTarget bool `yaml:"-"`
+
+	// TrustedBundle asserts ONLY that the bundle files this run was built from may
+	// be executed and sent to agents, even though they were resolved from inside
+	// the target -- see Loaded.ProjectSuppliedPolicy. It is the narrow half of
+	// TrustedTarget, and it exists because the two claims are separable and, for a
+	// pull request, have different answers.
+	//
+	// The bundle is resolved and read ENTIRELY before Prepare: LoadBundle resolves
+	// every agent and prompt path eagerly, and Orchestrator.New parses each prompt
+	// template at construction. So in pr mode the files this assertion covers are
+	// the ones on the pre-checkout tree -- the operator's own commit -- while
+	// `gh pr checkout` replaces the worktree afterwards. A run that reviews its own
+	// repository's pull requests therefore needs to trust its bundle without
+	// trusting the branch, which is exactly what asserting TrustedTarget for it
+	// would get wrong: that flag also downgrades the pr-mode refusals of a
+	// target-relative agent command (validateAgents) and of externally-defined
+	// content filters and diff drivers (orchestrator.guardActivatableConfig), both
+	// of which are about content that lands only AFTER the checkout.
+	//
+	// TrustedTarget implies this: trusting the whole target trusts its bundle.
+	// Nothing else consults it, and it never permits a fix round.
+	//
+	// Set ONLY by the -trusted-bundle flag, `yaml:"-"` for exactly the reason given
+	// on TrustedTarget: the first bundle search location is the target's own
+	// directory, so a YAML-readable form would let a bundle authorize its own
+	// execution.
+	TrustedBundle bool `yaml:"-"`
 }
 
 // Logs configures where run artifacts are written and in which renderings.

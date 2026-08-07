@@ -87,6 +87,9 @@ type Overrides struct {
 	Post          bool
 	PostVerdict   bool
 	TrustedTarget bool
+	// TrustedBundle asserts trust in the bundle alone, not in the target's content;
+	// see Loop.TrustedBundle for why the two are separate assertions.
+	TrustedBundle bool
 }
 
 // apply folds the overrides into the configuration being compiled.
@@ -107,6 +110,9 @@ func (o Overrides) apply(c *Config) {
 	}
 	if o.TrustedTarget {
 		c.Loop.TrustedTarget = true
+	}
+	if o.TrustedBundle {
+		c.Loop.TrustedBundle = true
 	}
 	// Any nonzero value applies, including a negative one: an explicit
 	// -max-iterations -1 must reach Validate so its must-not-be-negative rule
@@ -143,6 +149,9 @@ func (o Overrides) Applied() []string {
 	}
 	if o.TrustedTarget {
 		out = append(out, "trusted_target=true")
+	}
+	if o.TrustedBundle {
+		out = append(out, "trusted_bundle=true")
 	}
 	if o.MaxIterations != 0 {
 		out = append(out, "max_iterations="+strconv.Itoa(o.MaxIterations))
@@ -287,6 +296,7 @@ var trustKeys = []struct {
 	key, flag string
 }{
 	{"trusted_target", "-trusted-target"},
+	{"trusted_bundle", "-trusted-bundle"},
 	{"allow_untrusted_fix", "-allow-untrusted-fix"},
 }
 
@@ -507,11 +517,16 @@ func (c *Config) anchor(projectRoot string) {
 // target" and straight past the gate.
 //
 // The consequence is deliberate: pointing fixpoint at a project that carries its
-// own bundle requires -trusted-target even for a review-only run. The alternative
-// is deciding, per key, which of the reviewed repository's own policy is harmless.
+// own bundle requires an explicit trust assertion even for a review-only run. The
+// alternative is deciding, per key, which of the reviewed repository's own policy
+// is harmless.
 //
-// The caller gates on this: acting on a target's own bundle requires the same
-// explicit trust assertion as letting the coder edit it.
+// The caller gates on this, and either -trusted-bundle or -trusted-target
+// satisfies it. -trusted-bundle is the assertion that says only what this list is
+// about; -trusted-target says the same and more (see Loop.TrustedBundle), so a
+// caller that needs no more than bundle trust must not reach for it -- in pr mode
+// the wider flag also disarms guards over content `gh pr checkout` has not written
+// yet.
 func (l *Loaded) ProjectSuppliedPolicy() []string {
 	if l.ProjectRoot == "" {
 		return nil
@@ -555,7 +570,7 @@ func (l *Loaded) ProjectSuppliedPolicy() []string {
 // reader can audit and in the run's own provenance log.
 //
 // The refusal is unconditional, which is what separates this from
-// ProjectSuppliedPolicy's -trusted-target gate: that assertion says the target's
+// ProjectSuppliedPolicy's -trusted-bundle gate: that assertion says the target's
 // policy may be EXECUTED, not that the target may help itself to secrets it
 // cannot even name. It is the same boundary as the one that keeps
 // FIXPOINT_KEEP_ENV out of YAML (see internal/agent/env.go) -- the environment

@@ -59,6 +59,7 @@ Flags:
 	pr := fs.Int("pr", 0, "override target.pr in pr mode; which PR to review is per-invocation, so review-pr ships without a number (0 = use config)")
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
+	trustedBundle := fs.Bool("trusted-bundle", false, "assert only that the bundle files resolved from inside the target may be run; trusts no other target content and permits no fix round")
 	post := fs.Bool("post", false, "publish the review on the pull request as a COMMENT: findings become visible, no verdict is acted on")
 	postRunDir := fs.String("post-run", "", "publish the review a FINISHED run already produced, from its .fixpoint/<run> directory; invokes no agent")
 	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
@@ -127,6 +128,7 @@ Flags:
 		PR:                *pr,
 		AllowUntrustedFix: *allowUntrustedFix,
 		TrustedTarget:     *trustedTarget,
+		TrustedBundle:     *trustedBundle,
 		Post:              *post,
 		PostVerdict:       *postVerdict,
 	})
@@ -641,18 +643,25 @@ func escapeTerminal(s string) string { return agent.EscapeTerminal(s) }
 // file or inline in the task config) and a verify command are argv fixpoint runs,
 // and a prompt is the instruction stream it hands an agent that can read anything
 // the invoking user can. None of that needs a model's cooperation or a prompt
-// injection to exploit, so it requires the same explicit trust assertion as letting
-// the coder edit that repository.
+// injection to exploit, so it requires an explicit trust assertion.
+//
+// Either -trusted-bundle or -trusted-target clears it. They are separate flags
+// because this gate is about files that were read BEFORE anything replaced the
+// tree, while -trusted-target additionally speaks for the target's content as it
+// will be when the run touches it -- which in pr mode is the PR author's. A caller
+// that only needs its own bundle (`make review-pr` reviews someone else's branch
+// with fixpoint's own config/ bundle) must pass the narrow flag, or it silently
+// downgrades the pr-mode checkout guards as well. See config.Loop.TrustedBundle.
 func allowProjectSuppliedPolicy(l *config.Loaded, logf func(string, ...any)) bool {
 	supplied := l.ProjectSuppliedPolicy()
-	if len(supplied) == 0 || l.Config.Loop.TrustedTarget {
+	if len(supplied) == 0 || l.Config.Loop.TrustedBundle || l.Config.Loop.TrustedTarget {
 		return true
 	}
 	logf("refusing to run: the run is built from files inside the target, which supply the commands fixpoint executes and the instructions it sends to agents:")
 	for _, s := range supplied {
 		logf("  %s", s)
 	}
-	logf("Read those files, then pass -trusted-target to assert the target is trusted -- or point -config at a bundle outside it.")
+	logf("Read those files, then pass -trusted-bundle to assert those files are trusted -- or point -config at a bundle outside the target. (-trusted-target also clears this, but it asserts more: that the target's own content is trusted, which in mode pr means the pull request's.)")
 	return false
 }
 

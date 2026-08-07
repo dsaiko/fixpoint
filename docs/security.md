@@ -27,16 +27,16 @@ Read this before pointing the tool at code you did not write.
   `CLAUDE.md` out of the session. Agent commands you write yourself get no such
   treatment automatically.
 - **Trust is asserted on the command line only, never in a config file.**
-  fixpoint refuses to load a config that sets `loop.trusted_target` or
-  `loop.allow_untrusted_fix`. Bundles are shadowable and `<project>/config` is
+  fixpoint refuses to load a config that sets `loop.trusted_target`,
+  `loop.trusted_bundle` or `loop.allow_untrusted_fix`. Bundles are shadowable and `<project>/config` is
   searched *first*, so a config key would let the repository under review declare
   itself trustworthy — one line in a hostile repo's own config, authorizing both
   the execution of the agent definitions it ships and the write-capable coder,
   with no involvement from you. Keeping the assertion in the invocation is also
   what stops it becoming an inherited default that silently applies to the next
   untrusted repository you clone.
-- **A bundle resolved from inside the target needs `-trusted-target` too, even
-  for a review-only run.** `<project>/config` is searched first, so a repository
+- **A bundle resolved from inside the target needs `-trusted-bundle`, even for a
+  review-only run.** `<project>/config` is searched first, so a repository
   can ship the very files a run is built from: agent commands and verify commands
   are argv fixpoint executes, and a prompt is the instruction stream handed
   verbatim to a reviewer that can read anything you can. None of that needs a
@@ -44,6 +44,14 @@ Read this before pointing the tool at code you did not write.
   came from inside the target and refuses until you assert trust — or point
   `-config` at a bundle outside it. The check is per *file*, not per key, so it
   cannot go stale as configuration grows new surface.
+- **`-trusted-bundle` is deliberately narrower than `-trusted-target`.** Bundle
+  files are resolved, and every prompt parsed, before anything replaces the
+  worktree — in `pr` mode that means before `gh pr checkout`, so they are *your*
+  commit's files. `-trusted-target` also clears that gate, but it says more: it
+  permits fix rounds and, in `pr` mode, downgrades to warnings the two refusals
+  below that cover content the checkout brings. So when the configuration is yours
+  and the code is not — reviewing a fork's pull request with your own bundle, which
+  is what `make review-pr` does — assert `-trusted-bundle` and nothing wider.
 - **In `pr` mode an agent command may not resolve into the target.** An agent's
   `command` is argv fixpoint execs with that agent's declared credentials, and it
   runs with its working directory inside `target.path` — so a relative element

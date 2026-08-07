@@ -624,7 +624,7 @@ func TestLoadBundleExtends(t *testing.T) {
 // Every field is checked in both positions (the task config and the base it
 // extends), because inheritance would otherwise be the way around the rule.
 func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
-	for _, key := range []string{"trusted_target", "allow_untrusted_fix"} {
+	for _, key := range []string{"trusted_target", "trusted_bundle", "allow_untrusted_fix"} {
 		t.Run(key+"/direct", func(t *testing.T) {
 			root := t.TempDir()
 			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
@@ -669,10 +669,10 @@ func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
 // ever bypassed or removed.
 func TestTrustFieldsAreNotYAMLDecodable(t *testing.T) {
 	var cfg Config
-	if err := yaml.Unmarshal([]byte("loop:\n  trusted_target: true\n  allow_untrusted_fix: true\n"), &cfg); err != nil {
+	if err := yaml.Unmarshal([]byte("loop:\n  trusted_target: true\n  trusted_bundle: true\n  allow_untrusted_fix: true\n"), &cfg); err != nil {
 		t.Fatalf("permissive decode should not error here: %v", err)
 	}
-	if cfg.Loop.TrustedTarget || cfg.Loop.AllowUntrustedFix {
+	if cfg.Loop.TrustedTarget || cfg.Loop.TrustedBundle || cfg.Loop.AllowUntrustedFix {
 		t.Error("YAML set a trust field; these must be settable only by the CLI flags")
 	}
 }

@@ -1037,6 +1037,23 @@ func TestRunTrustedTargetFlag(t *testing.T) {
 			t.Errorf("-trusted-target did not suppress the refusal:\n%s", buf.String())
 		}
 	})
+	// -trusted-bundle is not a shortcut to it. That flag says the bundle files may
+	// be run, nothing about the target's content -- so the fix-round gate, which is
+	// entirely about content a prompt injection could hide in, stays closed.
+	t.Run("-trusted-bundle does not clear the fix-round gate", func(t *testing.T) {
+		f := newFixture(t)
+		var buf bytes.Buffer
+		p := f.configFile("directory", "", "")
+		if got := run([]string{"-config", p, "-trusted-bundle"}, &buf, &buf); got != 1 {
+			t.Fatalf("run(-trusted-bundle) = %d, want 1: bundle trust must not authorize edits; stderr:\n%s", got, buf.String())
+		}
+		if !strings.Contains(buf.String(), "-trusted-target") {
+			t.Errorf("the refusal must still name the flag that does clear it:\n%s", buf.String())
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (refusal comes first)", got)
+		}
+	})
 	// The attack this closes, end to end at the CLI: a config asserting its own
 	// trust must not run. Bundles resolve from <project>/config first, so this file
 	// is one a hostile repository can ship -- and honoring it would authorize both
@@ -1312,7 +1329,7 @@ func (f *fixture) planted(rel, body string) string {
 // hands agents. Bundles resolve from <project>/config FIRST, so a hostile clone can
 // ship any of those files, and no flag, prompt injection, or model cooperation is
 // needed to exploit them. Every shape must therefore fail closed, and only
-// -trusted-target may clear it.
+// -trusted-bundle (or the wider -trusted-target) may clear it.
 //
 // Driven through run() rather than the config package alone: the refusal has to
 // happen before any agent process starts, which is a property of the ORDER of
@@ -1365,11 +1382,29 @@ func TestRunRefusesTargetSuppliedBundle(t *testing.T) {
 				if !strings.Contains(buf.String(), named) {
 					t.Errorf("the refusal must name the target-supplied file %s:\n%s", named, buf.String())
 				}
-				if !strings.Contains(buf.String(), "-trusted-target") {
+				if !strings.Contains(buf.String(), "-trusted-bundle") {
 					t.Errorf("the refusal must name the opt-in flag:\n%s", buf.String())
 				}
 				if got := f.invocations(); got != 0 {
 					t.Errorf("agent invocations = %d, want 0: the refusal must precede every process launch", got)
+				}
+			})
+			// The narrow flag is the one this gate is about, and the only one
+			// `make review-pr` passes: it must be sufficient here, so nobody has to
+			// reach for -trusted-target and take its other claims with it.
+			t.Run("proceeds with -trusted-bundle", func(t *testing.T) {
+				f := newFixture(t)
+				f.respond(1, reviewResponse(t))
+				args, _ := tc.plant(t, f)
+				var buf bytes.Buffer
+				if got := run(append(args, "-trusted-bundle"), &buf, &buf); got != 0 {
+					t.Fatalf("run(-trusted-bundle) = %d, want 0; stderr:\n%s", got, buf.String())
+				}
+				if strings.Contains(buf.String(), "refusing to run") {
+					t.Errorf("-trusted-bundle did not clear the gate:\n%s", buf.String())
+				}
+				if got := f.invocations(); got != 1 {
+					t.Errorf("agent invocations = %d, want 1 (the review round ran)", got)
 				}
 			})
 			t.Run("proceeds with -trusted-target", func(t *testing.T) {
