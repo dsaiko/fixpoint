@@ -895,9 +895,14 @@ func commissionNote(it model.Issue) string {
 	// Every linked conversation, not just the first: two people can report one
 	// defect in two comments, and both are waiting for an answer even though there
 	// is only one fix to make.
+	// The reply is REQUIRED here, unlike the contract's general "you may also answer
+	// them": nobody else is allowed to answer a commissioned conversation, so a fixed
+	// verdict without it is refused rather than leaving the person who asked waiting.
 	if len(parts) == 1 {
-		return "Commissioned by conversation " + parts[0] + ". Answer that conversation once your fix is committed."
+		return "Commissioned by conversation " + parts[0] +
+			". Answer that conversation once your fix is committed: a fixed verdict on this issue is not accepted without a reply to it."
 	}
 	return "Commissioned by conversations " + strings.Join(parts, ", ") +
-		" — all about the same defect. Answer every one of them once your fix is committed."
+		" — all about the same defect. Answer every one of them once your fix is committed:" +
+		" a fixed verdict on this issue is not accepted without a reply to each."
 }

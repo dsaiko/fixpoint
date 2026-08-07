@@ -3448,6 +3448,13 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	// The coder contract requires every finding exactly once with a valid
 	// verdict; anything else fails the round rather than being silently
 	// miscounted (an empty result set must not read as "all rejected").
+	//
+	// Checked BEFORE applyVerdicts, which is what writes the verdicts onto rec: a
+	// session refused for owing an answer must leave its issue exactly as it found
+	// it, not recorded as fixed by a round that then failed.
+	if runErr == nil {
+		runErr = o.unansweredCommission(active, out.Results, out.Replies)
+	}
 	if runErr == nil {
 		runErr = o.applyVerdicts(rec, out.Results, active)
 	}
@@ -3716,6 +3723,60 @@ func shortSHA(sha string) string {
 		return sha[:12]
 	}
 	return sha
+}
+
+// unansweredCommission refuses a session that claims to have FIXED a commissioned
+// issue without writing the answer its conversation is owed.
+//
+// A reply is optional in the contract because a panel finding has nobody waiting
+// on it. A commissioned issue does: a person asked for the change, the prompt tells
+// this session to answer them once its fix is committed, and triage reserved that
+// conversation for THIS session alone -- postReplies turns away every other
+// session's reply to it (commissionedThreads). Taking the fix anyway marked the
+// issue fixed, which is what drops it from the commissioned queue
+// (mergeCommissioned), so the run went on to converge with the comment that
+// commissioned all of it never answered by anybody.
+//
+// Refusing is the only remedy available here, and it is the fail-closed one:
+// nothing is committed yet, so the issue stays open, its conversation stays
+// reserved and unanswered, and a later round can do both halves of the job. The
+// alternative -- posting an answer fixpoint wrote itself -- is ruled out by
+// model.FixReply: a reply lands under a person's comment with the operator's
+// identity on it, so the words have to come from the agent that did the work.
+//
+// Only conversations the session was actually SHOWN are required (threadOpen). A
+// thread this run cannot see is one the coder was never given and cannot answer,
+// and demanding a reply for it would fail every session forever.
+func (o *Orchestrator) unansweredCommission(batch []model.Issue, results []model.FixResult, replies []model.FixReply) error {
+	fixed := make(map[string]bool, len(results))
+	for _, r := range results {
+		// The exact spelling applyVerdicts accepts: anything else is its error to
+		// report, not a missing answer.
+		if r.Verdict == model.VerdictFixed {
+			fixed[r.ID] = true
+		}
+	}
+	answered := make(map[string]bool, len(replies))
+	for _, r := range replies {
+		// Blank is not an answer: postReplies would put the signature under a person's
+		// comment with nothing above it.
+		if strings.TrimSpace(r.Message) != "" {
+			answered[r.Thread] = true
+		}
+	}
+	for _, it := range batch {
+		if !fixed[it.ID] {
+			continue
+		}
+		for _, c := range it.Conversations() {
+			if answered[c.Thread] || !o.threadOpen(c.Thread) {
+				continue
+			}
+			return fmt.Errorf("coder reported %s fixed but wrote no reply to conversation %s, which commissioned it; "+
+				"no other session may answer that conversation, so the fix is not accepted without it", it.ID, c.Thread)
+		}
+	}
+	return nil
 }
 
 // applyVerdicts validates the coder's result set against the round's ISSUES --

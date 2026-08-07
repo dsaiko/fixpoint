@@ -619,6 +619,63 @@ func TestADeferredCommissionedIssueReturnsInTheNextRound(t *testing.T) {
 	}
 }
 
+// Exactly one session may answer a commissioned conversation -- the one fixing
+// the issue it commissioned. So a session that fixes and commits it while writing
+// no reply strands the person who asked: the fixed verdict drops the issue from
+// the commissioned queue, and every other session's reply to that thread is turned
+// away, so the run converges having ignored the comment it was working for. The
+// fix is refused instead, leaving both halves of the job for a later round.
+func TestAFixedCommissionedIssueIsRefusedWhenItsConversationGoesUnanswered(t *testing.T) {
+	batch := []model.Issue{{
+		ID: "i1", Title: "missing guard",
+		Origin: model.Origin{Thread: "100", Author: "stranger"},
+		Also:   []model.Origin{{Thread: "200", Author: "colleague"}},
+	}}
+	fixedIt := []model.FixResult{{ID: "i1", Verdict: model.VerdictFixed, Detail: "guarded the dereference"}}
+
+	for name, tc := range map[string]struct {
+		batch   []model.Issue
+		results []model.FixResult
+		replies []model.FixReply
+		wantErr string
+	}{
+		"no reply at all": {batch, fixedIt, nil, "conversation 100"},
+		"only the primary conversation answered": {batch, fixedIt,
+			[]model.FixReply{{Thread: "100", Message: "guarded it in a.go"}}, "conversation 200"},
+		"a blank message is not an answer": {batch, fixedIt,
+			[]model.FixReply{{Thread: "100", Message: "guarded it in a.go"}, {Thread: "200", Message: "  "}}, "conversation 200"},
+		"every conversation answered": {batch, fixedIt, []model.FixReply{
+			{Thread: "100", Message: "guarded it in a.go"}, {Thread: "200", Message: "guarded it in a.go"}}, ""},
+		// A rejection is answered by nobody by design (see answerConversations), and
+		// the issue stays open, so its conversation stays reserved and reofferable.
+		"rejected": {batch, []model.FixResult{{ID: "i1", Verdict: model.VerdictRejected, Detail: "not a defect"}}, nil, ""},
+		// Nothing commissioned it, so nobody is waiting.
+		"a panel finding owes nothing": {[]model.Issue{{ID: "i1", Title: "missing guard"}}, fixedIt, nil, ""},
+		// A thread this run cannot see was never shown to the coder; demanding an
+		// answer for it would fail every session forever.
+		"a conversation the session was never shown": {[]model.Issue{{
+			ID: "i1", Origin: model.Origin{Thread: "900"}}}, fixedIt, nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.triageRole()
+			o, _, _ := f.withThreads("dsaiko",
+				forge.Thread{ID: "100", Author: "stranger", Body: "missing guard"},
+				forge.Thread{ID: "200", Author: "colleague", Body: "same missing guard"})
+
+			err := o.unansweredCommission(tc.batch, tc.results, tc.replies)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("unansweredCommission() err = %v, want the fix accepted", err)
+			case tc.wantErr != "" && err == nil:
+				t.Fatalf("unansweredCommission() err = nil, want the fix refused over %s", tc.wantErr)
+			case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
+				t.Fatalf("unansweredCommission() err = %v, want it to name %s", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // A conversation this tool already answered is not waiting on anything, and a
 // reply does not resolve a thread -- so without this every later run reads it as
 // unresolved and answers it again. The PR that drove this had 39 open
