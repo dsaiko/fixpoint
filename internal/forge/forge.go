@@ -636,10 +636,57 @@ func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, e
 		return fmt.Errorf("the approval was PUBLISHED on #%d%s, but whether it is still the head could not be established afterwards (%w) -- confirm it before merging", pr, where, err)
 	}
 	if !strings.EqualFold(reviewed, cur) {
-		return fmt.Errorf("the approval was PUBLISHED on #%d%s, but the head moved while it was in flight (reviewed %s, now %s) -- it approves a commit nobody read and has to be dismissed before merging",
-			pr, where, shortSHA(reviewed), shortSHA(cur))
+		// Withdraw it rather than merely reporting it. Detecting the race left an
+		// approval standing on the pull request that satisfies a branch-protection
+		// requirement over code no reviewer read -- the exact outcome requireHead
+		// exists to prevent, arriving through the window between that check and this
+		// submission. Dismissal is the only thing that actually removes it, and it is
+		// ours to dismiss: this run posted it seconds ago.
+		if derr := githubDismissReview(ctx, dir, pr, url, reviewed, cur); derr != nil {
+			return fmt.Errorf("the approval was PUBLISHED on #%d%s, the head moved while it was in flight (reviewed %s, now %s), AND withdrawing it failed (%w) -- dismiss it by hand before anyone merges",
+				pr, where, shortSHA(reviewed), shortSHA(cur), derr)
+		}
+		return fmt.Errorf("the head moved while the approval was in flight (reviewed %s, now %s) on #%d%s, so the approval was withdrawn -- review the new head",
+			shortSHA(reviewed), shortSHA(cur), pr, where)
 	}
 	return nil
+}
+
+// githubDismissReview withdraws a review this run just submitted.
+//
+// The id comes from the URL the submission returned, which ends in
+// "#pullrequestreview-<id>": asking the API which review is ours would race with
+// anything else posting, and this is the one whose identity we already hold.
+//
+// A dismissal needs a message and it is shown to everyone reading the pull
+// request, so it says what happened rather than "dismissed".
+func githubDismissReview(ctx context.Context, dir string, pr int, url, reviewed, cur string) error {
+	id := reviewIDFromURL(url)
+	if id == "" {
+		return fmt.Errorf("no review id in %q", url)
+	}
+	_, err := run(ctx, dir, "gh", "api", "--method", "PUT",
+		fmt.Sprintf("repos/{owner}/{repo}/pulls/%d/reviews/%s/dismissals", pr, id),
+		"-f", fmt.Sprintf("message=Withdrawn automatically: the head moved from %s to %s while this review was being submitted, so it approved a commit that was not reviewed.",
+			shortSHA(reviewed), shortSHA(cur)),
+		"-f", "event=DISMISS")
+	return err
+}
+
+// reviewIDFromURL pulls the numeric review id out of a review permalink.
+func reviewIDFromURL(url string) string {
+	const marker = "#pullrequestreview-"
+	i := strings.Index(url, marker)
+	if i < 0 {
+		return ""
+	}
+	id := url[i+len(marker):]
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return id
 }
 
 // githubSubmitReview submits one review carrying the summary and whatever per-line
@@ -863,11 +910,50 @@ func gitlabHead(ctx context.Context, dir string, mr int) (string, error) {
 type Thread struct {
 	// ID is what a reply is addressed to. It is the ROOT comment's id, because a
 	// forge threads replies under the comment that started the conversation.
-	ID     string
-	Path   string
-	Line   int
+	ID   string
+	Path string
+	Line int
+	// Author and Body are the ROOT comment's -- who opened the conversation and
+	// what they asked. Kept alongside Comments because that is the question the
+	// thread is about; the rest is what has been said since.
 	Author string
 	Body   string
+	// Comments is the whole conversation in order, root first.
+	//
+	// Reading only the root made a conversation that had already been answered look
+	// exactly like one nobody had touched, which is how the same comment ended up
+	// answered twice. It also hid every clarification: a reviewer who explained what
+	// they meant in a reply was invisible to the agent deciding what they meant.
+	Comments []ThreadComment
+}
+
+// ThreadComment is one message in a conversation. Named for the thread rather
+// than just "Comment", which is already the review event that posts without a
+// verdict.
+type ThreadComment struct {
+	Author string
+	Body   string
+}
+
+// AnsweredByMachine reports whether the LAST thing said in this conversation was
+// one of this tool's own replies.
+//
+// That is the question "is anybody waiting on us?" in the only form that can be
+// answered from the forge alone. Author identity cannot answer it: replies are
+// posted under the operator's account, so "the last comment is mine" is equally
+// true of a machine answer and of the operator typing a new request -- and
+// skipping the second would swallow the very thing the run should act on.
+//
+// So the marker is a property of the MESSAGE. Every machine reply carries an
+// invisible one (see ReplyMarker); a human writing in the same thread does not.
+// A thread whose last word is ours is skipped as already answered; the moment a
+// person replies under it, it is live again and gets read afresh -- with the whole
+// exchange, including what we said last time.
+func (t Thread) AnsweredByMachine() bool {
+	if len(t.Comments) == 0 {
+		return false
+	}
+	return HasReplyMarker(t.Comments[len(t.Comments)-1].Body)
 }
 
 // Reader is a provider that can also read a pull request's conversations. It is
@@ -901,13 +987,26 @@ func ReaderFor(ctx context.Context, dir string) Reader {
 // open?" exists only in the GraphQL schema: REST returns every comment with no
 // resolution state, so a coder would be handed questions a human had already
 // settled -- and answering those is worse than not answering at all.
-const threadQuery = `query($owner:String!,$repo:String!,$pr:Int!){
+// threadQuery reads a page of review conversations WITH THEIR REPLIES.
+//
+// Every comment, not just the first. The root comment is the question, but what
+// happened since is what decides whether anything is still being asked: a
+// clarification, somebody else disagreeing, or this tool's own previous answer.
+// Reading only the root made all three invisible -- a conversation that had been
+// answered looked exactly like one that had not.
+//
+// Paginated because reviewThreads(first:100) silently stopped there. A pull
+// request with more conversations than that dropped the rest, and dropping them
+// looks identical to a pull request that has none: nothing was shown to triage or
+// to the coder, and nothing said so.
+const threadQuery = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$pr){
-      reviewThreads(first:100){
+      reviewThreads(first:100,after:$after){
+        pageInfo{hasNextPage endCursor}
         nodes{
           isResolved
-          comments(first:1){nodes{path line databaseId body author{login}}}
+          comments(first:100){nodes{path line databaseId body author{login}}}
         }
       }
     }
@@ -919,53 +1018,76 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 	if err != nil {
 		return nil, err
 	}
-	out, err := run(ctx, dir, "gh", "api", "graphql",
-		"-f", "query="+threadQuery,
-		"-F", "owner="+owner, "-F", "repo="+repo, "-F", fmt.Sprintf("pr=%d", pr))
-	if err != nil {
-		return nil, err
-	}
-	var payload struct {
-		Data struct {
-			Repository struct {
-				PullRequest struct {
-					ReviewThreads struct {
-						Nodes []struct {
-							IsResolved bool `json:"isResolved"`
-							Comments   struct {
-								Nodes []struct {
-									Path       string `json:"path"`
-									Line       int    `json:"line"`
-									DatabaseID int64  `json:"databaseId"`
-									Body       string `json:"body"`
-									Author     struct {
-										Login string `json:"login"`
-									} `json:"author"`
-								} `json:"nodes"`
-							} `json:"comments"`
-						} `json:"nodes"`
-					} `json:"reviewThreads"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		return nil, fmt.Errorf("parse review threads: %w", err)
-	}
-	nodes := payload.Data.Repository.PullRequest.ReviewThreads.Nodes
-	threads := make([]Thread, 0, len(nodes))
-	for _, n := range nodes {
-		if n.IsResolved || len(n.Comments.Nodes) == 0 {
-			continue
+	var threads []Thread
+	cursor := ""
+	// Bounded, so a malformed cursor or a server that never clears hasNextPage
+	// cannot spin forever. 100 pages is 10,000 conversations -- far past any real
+	// pull request, and the cap is reported rather than silently applied.
+	for range 100 {
+		args := []string{"api", "graphql", "-f", "query=" + threadQuery,
+			"-F", "owner=" + owner, "-F", "repo=" + repo, fmt.Sprintf("-Fpr=%d", pr)}
+		if cursor != "" {
+			args = append(args, "-f", "after="+cursor)
 		}
-		c := n.Comments.Nodes[0]
-		threads = append(threads, Thread{
-			ID:     strconv.FormatInt(c.DatabaseID, 10),
-			Path:   c.Path,
-			Line:   c.Line,
-			Author: c.Author.Login,
-			Body:   c.Body,
-		})
+		out, err := run(ctx, dir, "gh", args...)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			Data struct {
+				Repository struct {
+					PullRequest struct {
+						ReviewThreads struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []struct {
+								IsResolved bool `json:"isResolved"`
+								Comments   struct {
+									Nodes []struct {
+										Path       string `json:"path"`
+										Line       int    `json:"line"`
+										DatabaseID int64  `json:"databaseId"`
+										Body       string `json:"body"`
+										Author     struct {
+											Login string `json:"login"`
+										} `json:"author"`
+									} `json:"nodes"`
+								} `json:"comments"`
+							} `json:"nodes"`
+						} `json:"reviewThreads"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(out), &payload); err != nil {
+			return nil, fmt.Errorf("parse review threads: %w", err)
+		}
+		rt := payload.Data.Repository.PullRequest.ReviewThreads
+		for _, n := range rt.Nodes {
+			if n.IsResolved || len(n.Comments.Nodes) == 0 {
+				continue
+			}
+			root := n.Comments.Nodes[0]
+			t := Thread{
+				// The ROOT comment's id: a forge threads replies under the comment that
+				// started the conversation.
+				ID:     strconv.FormatInt(root.DatabaseID, 10),
+				Path:   root.Path,
+				Line:   root.Line,
+				Author: root.Author.Login,
+				Body:   root.Body,
+			}
+			for _, c := range n.Comments.Nodes {
+				t.Comments = append(t.Comments, ThreadComment{Author: c.Author.Login, Body: c.Body})
+			}
+			threads = append(threads, t)
+		}
+		if !rt.PageInfo.HasNextPage || rt.PageInfo.EndCursor == "" {
+			return threads, nil
+		}
+		cursor = rt.PageInfo.EndCursor
 	}
 	return threads, nil
 }

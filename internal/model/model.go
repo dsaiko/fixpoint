@@ -508,9 +508,16 @@ type Issue struct {
 
 	Verdict       string `json:"verdict,omitempty"`
 	VerdictDetail string `json:"verdict_detail,omitempty"`
-	// Origin is where this issue came from, when it was not the panel. See
-	// Finding.Origin.
-	Origin Origin `json:"origin,omitempty"`
+	// Origin is where this issue came from, when it was not the panel, and Also
+	// holds the OTHER conversations that turned out to be about the same defect.
+	//
+	// Two people reporting one problem in two comments is the ordinary case, and the
+	// ledger merges them into one issue -- correctly, since it is one fix. But each
+	// of those conversations is a person waiting for an answer, so keeping only the
+	// first left the second reported as commissioned and never replied to. Every
+	// linked conversation is answered when the fix commits. See Finding.Origin.
+	Origin Origin   `json:"origin,omitempty"`
+	Also   []Origin `json:"also,omitempty"`
 	// Contested records that the refutation round disagreed about this finding:
 	// somebody who looked at it did not believe it, or nobody could decide. It is
 	// kept -- one reviewer still standing behind a defect is enough -- but a reader
@@ -708,3 +715,11 @@ type Origin struct {
 
 // FromConversation reports whether the finding was commissioned by a comment.
 func (o Origin) FromConversation() bool { return o.Thread != "" }
+
+// Conversations lists every thread waiting on this issue, primary first.
+func (i Issue) Conversations() []Origin {
+	if !i.Origin.FromConversation() {
+		return nil
+	}
+	return append([]Origin{i.Origin}, i.Also...)
+}

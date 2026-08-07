@@ -389,8 +389,13 @@ func stubGHMovingHead(t *testing.T, before, after string) (dir string, payload f
 // landing in between passes the check on a stale snapshot. commit_id keeps the review
 // itself about the reviewed commit, but GitHub accepts an approval for a commit that
 // is no longer the head, and that approval counts toward the pull request unless the
-// repository dismisses stale reviews. It cannot be un-posted -- it must not be
-// reported as a clean approval either.
+// repository dismisses stale reviews.
+//
+// Reporting it is not enough -- an approval nobody can see the report of still
+// satisfies branch protection over unreviewed code -- so it is WITHDRAWN. This case
+// is the one where withdrawal is impossible: the stub returns a URL carrying no
+// review id, so there is no handle to dismiss, and the operator has to be told to
+// do it by hand rather than left believing it was handled.
 func TestAnApprovalThatLandedOnAMovedHeadIsNotReportedAsSuccess(t *testing.T) {
 	const reviewed = "0123456789abcdef0123456789abcdef01234567"
 	dir, payload := stubGHMovingHead(t, reviewed, "fedcba9876543210fedcba9876543210fedcba98")
@@ -402,7 +407,7 @@ func TestAnApprovalThatLandedOnAMovedHeadIsNotReportedAsSuccess(t *testing.T) {
 	if payload() == "" {
 		t.Fatal("nothing was submitted -- this must exercise the post-submission check, not requireHead")
 	}
-	for _, want := range []string{"PUBLISHED", "dismissed"} {
+	for _, want := range []string{"PUBLISHED", "withdrawing it failed", "by hand"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the report does not tell the operator what happened (%q): %v", want, err)
 		}
@@ -661,6 +666,9 @@ func TestThreadsAreTheUnresolvedConversationsThatStillHaveARoot(t *testing.T) {
 		Line:   42,
 		Author: "dsaiko",
 		Body:   "why origin only?",
+		// The whole exchange, root included: reading only the root made an answered
+		// conversation look exactly like an untouched one.
+		Comments: []ThreadComment{{Author: "dsaiko", Body: "why origin only?"}},
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Threads() = %+v, want %+v -- resolved threads and threads with no root comment are not conversations to answer", got, want)
@@ -832,6 +840,26 @@ func TestTheForgeRemoteIsFoundWhateverItIsNamed(t *testing.T) {
 			}
 			if p.Kind() != tc.want {
 				t.Errorf("For().Kind() = %q, want %q", p.Kind(), tc.want)
+			}
+		})
+	}
+}
+
+// A review permalink is the only handle this run holds on the approval it just
+// posted, and asking the API which review is ours would race anything else
+// posting. Anything that is not a plain numeric id must fail closed: dismissing
+// the wrong review is worse than reporting that we could not dismiss ours.
+func TestReviewIDFromURL(t *testing.T) {
+	for name, tc := range map[string]struct{ url, want string }{
+		"a real permalink": {"https://github.com/o/r/pull/3#pullrequestreview-2938471", "2938471"},
+		"no marker":        {"https://github.com/o/r/pull/3", ""},
+		"empty":            {"", ""},
+		"not numeric":      {"https://github.com/o/r/pull/3#pullrequestreview-2938471/../../9", ""},
+		"nothing after":    {"https://github.com/o/r/pull/3#pullrequestreview-", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := reviewIDFromURL(tc.url); got != tc.want {
+				t.Errorf("reviewIDFromURL(%q) = %q, want %q", tc.url, got, tc.want)
 			}
 		})
 	}

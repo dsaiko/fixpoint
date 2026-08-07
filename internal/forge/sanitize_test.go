@@ -359,3 +359,26 @@ func TestAddressableLinesIgnoresMalformedInput(t *testing.T) {
 		}
 	}
 }
+
+// An added line whose own content begins "++ " renders as "+++ ..." in a unified
+// diff, which is byte-for-byte a file header. Content must win inside a hunk, or
+// every later line of the real file is recorded under a path taken from that
+// line -- so the review anchors comments onto files the change never touched and
+// loses the ones it did. Any pull request adding a .patch or .diff fixture
+// contains such lines.
+func TestAnAddedLineThatLooksLikeAFileHeaderStaysContent(t *testing.T) {
+	diff := "--- a/testdata/sample.patch\n" +
+		"+++ b/testdata/sample.patch\n" +
+		"@@ -1,0 +1,3 @@\n" +
+		"+--- a/victim.go\n" +
+		"+++ b/victim.go\n" + // an ADDED line whose content is "++ b/victim.go"
+		"+@@ -1 +1 @@\n"
+	got := AddressableLines(diff)
+	if _, forged := got["victim.go"]; forged {
+		t.Errorf("a line inside a hunk was parsed as a file header: %v", got)
+	}
+	lines := got["testdata/sample.patch"]
+	if len(lines) != 3 || !lines[1] || !lines[2] || !lines[3] {
+		t.Errorf("addressable lines = %v, want 1-3 of the file actually being changed", lines)
+	}
+}

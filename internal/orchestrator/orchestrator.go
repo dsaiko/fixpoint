@@ -4557,7 +4557,7 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 		var evidence string
 		// Who doubted it, not just how many: the judge gate downstream must be able to
 		// tell a second agent's refutation from the judge's own.
-		var refuters, unsures []string
+		var refuters []string
 		// In agent order, not map order: the evidence a dropped finding records is
 		// persisted, and which refuter's words it quotes must not depend on a map
 		// walk. Two refuters produced a different VerdictDetail on every run.
@@ -4579,7 +4579,7 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 				maintained++
 			case model.PositionUnsure:
 				unsure++
-				unsures = append(unsures, name)
+				// Deliberately not collected: see the all-unsure branch below.
 			}
 		}
 		switch {
@@ -4616,10 +4616,18 @@ func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]mode
 			contested++
 			logf("refutation: %s contested (%d refute, %d maintain, %d unsure) -- kept", it.ID, refuted, maintained, unsure)
 		case unsure == len(positions):
+			// Marked for the reader, but NOT recorded as doubt the judge may build on.
+			//
+			// ContestedBy is what authorizes a judge to drop a merge-blocking finding, and
+			// the documented rule is that removing a blocker takes a second agent's
+			// EVIDENCE -- refuteWith requires it for a refutation and deliberately does not
+			// for an unsure, whose whole meaning is "I could not decide". Letting that
+			// satisfy the gate would make the strongest control here reachable by the
+			// weakest possible statement: an agent with nothing to say could unlock the
+			// deletion of the finding that blocks the merge.
 			it.Contested = true
-			it.ContestedBy = unsures
 			contested++
-			logf("refutation: %s uncertain -- no reviewer could decide it from the evidence", it.ID)
+			logf("refutation: %s uncertain -- no reviewer could decide it from the evidence; recorded for the reader, not as grounds to drop it", it.ID)
 		}
 	}
 	return dropped, contested
@@ -5020,9 +5028,27 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 		o.logf("WARNING: could not read the pull request's conversations (%v); the coder will not see them", err)
 		return
 	}
-	o.threads = threads
-	if len(threads) > 0 {
-		o.logf("%d open conversation(s) on this pull request will be shown to the coder", len(threads))
+	// A conversation whose last word is ours is not waiting on anything. Skipping it
+	// is what stops a run from answering the same comment again -- and again the run
+	// after that -- since a reply does not resolve a thread and every later run reads
+	// it as unresolved. The moment a person writes under it, the thread is live again
+	// and is read afresh, with the whole exchange including what we said last time.
+	live := make([]forge.Thread, 0, len(threads))
+	answered := 0
+	for _, t := range threads {
+		if t.AnsweredByMachine() {
+			answered++
+			continue
+		}
+		live = append(live, t)
+	}
+	o.threads = live
+	switch {
+	case answered > 0:
+		o.logf("%d open conversation(s) on this pull request; %d already carry this tool's answer as the last word and are left alone",
+			len(live), answered)
+	case len(live) > 0:
+		o.logf("%d open conversation(s) on this pull request will be shown to the coder", len(live))
 	}
 }
 
@@ -5033,7 +5059,11 @@ func (o *Orchestrator) conversations() string {
 	}
 	out := make([]prompt.Conversation, 0, len(o.threads))
 	for _, t := range o.threads {
-		out = append(out, prompt.Conversation{ID: t.ID, Path: t.Path, Line: t.Line, Author: t.Author, Body: t.Body})
+		c := prompt.Conversation{ID: t.ID, Path: t.Path, Line: t.Line, Author: t.Author, Body: t.Body}
+		for _, m := range t.Comments {
+			c.Comments = append(c.Comments, prompt.Comment{Author: m.Author, Body: m.Body})
+		}
+		out = append(out, c)
 	}
 	return prompt.FormatConversations(out)
 }

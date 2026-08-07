@@ -437,9 +437,61 @@ func TestACommissionedFixNamesItsConversationInThePromptAndTheCommit(t *testing.
 		Origin:      model.Origin{Thread: "100", Author: "stranger", External: true},
 	}
 	rendered := prompt.FormatIssues([]model.Issue{it})
-	for _, want := range []string{"Commissioned by conversation 100", "opened by stranger", "not the account this run posts under"} {
+	for _, want := range []string{"Commissioned by conversation 100", "stranger", "not the account this run posts under"} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("the coder prompt should carry %q:\n%s", want, rendered)
 		}
+	}
+}
+
+// A conversation this tool already answered is not waiting on anything, and a
+// reply does not resolve a thread -- so without this every later run reads it as
+// unresolved and answers it again. The PR that drove this had 39 open
+// conversations, every one of them already answered.
+//
+// The moment a person writes under it, the thread is live again: that is the
+// message the run exists to act on, and it arrives under the same account this
+// tool posts as, which is why the marker is on the MESSAGE rather than the author.
+func TestAConversationAlreadyAnsweredIsLeftAlone(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	answered := forge.Thread{ID: "100", Author: "dsaiko", Body: "why?", Comments: []forge.ThreadComment{
+		{Author: "dsaiko", Body: "why?"},
+		{Author: "dsaiko", Body: "Because of the guard.\n\n🤖 Answered by AI panel · run 1\n" + forge.ReplyMarker("20260807-153512")},
+	}}
+	// The same conversation, with a person having come back to it.
+	live := forge.Thread{ID: "200", Author: "dsaiko", Body: "why?", Comments: []forge.ThreadComment{
+		{Author: "dsaiko", Body: "why?"},
+		{Author: "dsaiko", Body: "Because of the guard.\n\n" + forge.ReplyMarker("20260807-153512")},
+		{Author: "colleague", Body: "That guard runs after the dereference."},
+	}}
+	untouched := forge.Thread{ID: "300", Author: "colleague", Body: "this looks wrong",
+		Comments: []forge.ThreadComment{{Author: "colleague", Body: "this looks wrong"}}}
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replied []string
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader {
+		return &fakeReader{threads: []forge.Thread{answered, live, untouched}, replied: &replied, login: "dsaiko"}
+	}
+	defer func() { readerFor = prev }()
+
+	o.readForgeThreads(t.Context())
+
+	ids := make([]string, 0, len(o.threads))
+	for _, th := range o.threads {
+		ids = append(ids, th.ID)
+	}
+	if len(ids) != 2 || ids[0] != "200" || ids[1] != "300" {
+		t.Errorf("threads = %v, want the one a person answered back on and the untouched one", ids)
+	}
+	if !strings.Contains(logs(), "already carry this tool's answer as the last word") {
+		t.Errorf("the skip must be reported, or a quiet pull request and a fully answered one look alike:\n%s", logs())
 	}
 }

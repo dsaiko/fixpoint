@@ -274,16 +274,22 @@ func (o *Orchestrator) declineConversation(ctx context.Context, th forge.Thread,
 	o.logf("answered conversation %s", th.ID)
 }
 
-// replySignature is the attribution on any machine-authored reply. Built here
-// rather than at each call site so a decline and a fix report are signed
-// identically -- both are fixpoint answering a person.
+// replySignature is the attribution on any machine-authored reply, plus the
+// invisible marker that lets a later run recognize it.
+//
+// Built here rather than at each call site so a decline and a fix report are
+// signed identically -- both are this tool answering a person -- and so neither
+// can be posted without the marker. A reply that lost it would be indistinguishable
+// from a person's, and the next run would read it as a live question and answer it
+// again.
 func (o *Orchestrator) replySignature() string {
-	return review.ReplySignature(o.cfg.Review.ReplySignature, review.SignatureFacts{
+	sig := review.ReplySignature(o.cfg.Review.ReplySignature, review.SignatureFacts{
 		Agents:  []string{o.cfg.Roles.Coder.Agent},
 		Run:     o.logs.RunID(),
 		Version: review.Version(),
 		Config:  configBaseName(o.source.Config),
 	})
+	return sig + "\n" + forge.ReplyMarker(o.logs.RunID())
 }
 
 // forgeLogin is the account the forge CLI is authenticated as, or "".

@@ -268,6 +268,41 @@ Deciding once also fixes a bug the tool found in itself: a thread used to stay i
 the list for the whole run, so several sessions could each reply to the same
 comment.
 
+**A conversation is read whole.** Not just the comment that opened it — every
+reply under it, in order. What was said after the question is what decides whether
+anything is still being asked: a clarification, somebody disagreeing, or this
+tool's own earlier answer. Reading only the root made an answered conversation look
+exactly like an untouched one, and hid every correction a reviewer wrote into a
+follow-up.
+
+**A conversation whose last word is ours is left alone.** A reply does not resolve
+a thread, so without this every later run would read the same answered comment as
+unresolved and answer it again — 39 open conversations on this project's own pull
+request, every one of them already answered. The moment a person writes under it,
+the thread is live again and is read afresh, with the whole exchange including what
+was said last time; the triage prompt tells the agent it may hold its ground or
+change its mind, but not reply as though the earlier exchange never happened.
+
+"Ours" is a property of the MESSAGE, not of the author. Replies go out under the
+operator's account, so "the last comment is mine" is equally true of a machine
+answer and of the operator typing a new request an hour later — and skipping the
+second would swallow exactly what the run should act on. So every machine reply
+carries an invisible marker, an HTML comment both forges render as nothing:
+
+```html
+<!-- ai-panel run 20260807-153512 -->
+```
+
+It does not name fixpoint, for the same reason the visible signature does not, and
+it carries the run id so a reply is traceable to the artifacts that produced it.
+Invisible is not hidden — it is in the comment's source for anyone who looks, which
+is the point. It is not a security control: a person can paste it into their own
+comment and be skipped, which costs them an answer rather than gaining them
+anything.
+
+Conversations answered before this existed carry no marker, so the first run after
+upgrading answers them once more.
+
 ## Answering a pull request's conversations
 
 A fix run over a pull request is shown its **unresolved** review threads, and may

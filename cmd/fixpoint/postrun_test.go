@@ -112,8 +112,8 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs strings.Builder
 			dir := writeRun(t, tc.sum, tc.body)
-			if code := postRun(dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
-				t.Errorf("postRun() = 0, want a refusal; logs:\n%s", logs.String())
+			if code := postRun(t.Context(), dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+				t.Errorf("postRun(t.Context(), ) = 0, want a refusal; logs:\n%s", logs.String())
 			}
 			if !strings.Contains(logs.String(), tc.want) {
 				t.Errorf("logs should explain the refusal (%q):\n%s", tc.want, logs.String())
@@ -125,8 +125,8 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 // A directory that is not a run at all must say so rather than fail obscurely.
 func TestPostRunRejectsANonRunDirectory(t *testing.T) {
 	var logs strings.Builder
-	if code := postRun(t.TempDir(), false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
-		t.Error("postRun() = 0 for a directory holding no summary")
+	if code := postRun(t.Context(), t.TempDir(), false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+		t.Error("postRun(t.Context(), ) = 0 for a directory holding no summary")
 	}
 	if !strings.Contains(logs.String(), "is it a run directory") {
 		t.Errorf("unhelpful message:\n%s", logs.String())
@@ -156,7 +156,7 @@ func TestPostRunReadsTheBodyBesideTheSummary(t *testing.T) {
 			var logs strings.Builder
 			// No GitHub remote in that temp path, so this stops at the poster -- which is
 			// past the body read, which is what this test is about.
-			postRun(arg, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			postRun(t.Context(), arg, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
 			if strings.Contains(logs.String(), "cannot read the review body") {
 				t.Errorf("the fallback to the body beside the summary did not happen:\n%s", logs.String())
 			}
@@ -189,8 +189,8 @@ func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
 		// summary: reading it would be the only way to get past this point.
 		dir := writeRun(t, base, "")
 		var logs strings.Builder
-		if code := postRun(dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
-			t.Errorf("postRun() = 0 with no review body beside the summary; logs:\n%s", logs.String())
+		if code := postRun(t.Context(), dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+			t.Errorf("postRun(t.Context(), ) = 0 with no review body beside the summary; logs:\n%s", logs.String())
 		}
 		if !strings.Contains(logs.String(), "cannot read the review body") {
 			t.Errorf("the recorded path was read instead of refusing:\n%s", logs.String())
@@ -203,8 +203,8 @@ func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 		var logs strings.Builder
-		if code := postRun(dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
-			t.Errorf("postRun() = 0 for a symlinked review body; logs:\n%s", logs.String())
+		if code := postRun(t.Context(), dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+			t.Errorf("postRun(t.Context(), ) = 0 for a symlinked review body; logs:\n%s", logs.String())
 		}
 		if !strings.Contains(logs.String(), "not a regular file") {
 			t.Errorf("the symlink was followed rather than refused:\n%s", logs.String())
@@ -298,9 +298,9 @@ func TestPostRunPublishesTheRunItReplays(t *testing.T) {
 			installPoster(t, p)
 
 			var logs strings.Builder
-			code := postRun(dir, tc.postVerdict, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			code := postRun(t.Context(), dir, tc.postVerdict, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
 			if code != 0 {
-				t.Fatalf("postRun() = %d, want 0; logs:\n%s", code, logs.String())
+				t.Fatalf("postRun(t.Context(), ) = %d, want 0; logs:\n%s", code, logs.String())
 			}
 			if len(p.calls) != 1 {
 				t.Fatalf("PostReview called %d times, want 1", len(p.calls))
@@ -370,9 +370,9 @@ func TestPostRunRetriesOnlyWhenTheAnchorsWereRejected(t *testing.T) {
 			installPoster(t, p)
 
 			var logs strings.Builder
-			code := postRun(dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
 			if code != tc.code {
-				t.Errorf("postRun() = %d, want %d; logs:\n%s", code, tc.code, logs.String())
+				t.Errorf("postRun(t.Context(), ) = %d, want %d; logs:\n%s", code, tc.code, logs.String())
 			}
 			if len(p.calls) != tc.calls {
 				t.Fatalf("PostReview called %d times, want %d", len(p.calls), tc.calls)

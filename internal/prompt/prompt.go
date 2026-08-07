@@ -817,11 +817,31 @@ func FormatConversations(threads []Conversation) string {
 	sb.WriteString(UntrustedNote("a human reviewer's comment on this pull request",
 		"a question or request about the code"))
 	for _, t := range threads {
-		loc := t.Path
+		// Flattened, like every other piece of forge-supplied text put on one line.
+		// git permits a newline in a filename, so a pull request can carry a path that
+		// would otherwise forge a second heading here and invent a conversation -- the
+		// same reason FormatCanonical flattens a reported path and commissionNote
+		// flattens an author. Only the bodies below are multi-line, and they are quoted.
+		loc := Flatten(t.Path)
 		if t.Line > 0 {
 			loc = fmt.Sprintf("%s:%d", loc, t.Line)
 		}
-		fmt.Fprintf(&sb, "### thread %s -- %s (%s)\n%s\n\n", t.ID, loc, t.Author, Quote(t.Body))
+		fmt.Fprintf(&sb, "### thread %s -- %s (%s)\n", Flatten(t.ID), loc, Flatten(t.Author))
+		// The WHOLE exchange, root first. What was said after the question is what
+		// decides whether anything is still being asked: a clarification, somebody
+		// disagreeing, or this tool's own earlier answer -- which the reader needs in
+		// order to hold its ground rather than start over.
+		msgs := t.Comments
+		if len(msgs) == 0 {
+			msgs = []Comment{{Author: t.Author, Body: t.Body}}
+		}
+		for i, c := range msgs {
+			if i > 0 {
+				fmt.Fprintf(&sb, "\n%s replied:\n", Flatten(c.Author))
+			}
+			sb.WriteString(Quote(c.Body) + "\n")
+		}
+		sb.WriteString("\n")
 	}
 	sb.WriteString("Answer a conversation only when your work in this session addresses it. " +
 		"Say what you changed and where; if you decided not to act on it, say that and why. " +
@@ -838,6 +858,15 @@ type Conversation struct {
 	Line   int
 	Author string
 	Body   string
+	// Comments is the whole exchange, root first. Empty falls back to Author/Body,
+	// so a caller that only has the opening comment still renders correctly.
+	Comments []Comment
+}
+
+// Comment is one message in a conversation.
+type Comment struct {
+	Author string
+	Body   string
 }
 
 // commissionNote states that an issue came from a conversation rather than from
@@ -847,17 +876,28 @@ type Conversation struct {
 // name is chosen by the person it belongs to, so it reaches here as untrusted
 // content that must not be able to add lines to a prompt.
 func commissionNote(it model.Issue) string {
-	if it.Origin.Thread == "" {
+	convos := it.Conversations()
+	if len(convos) == 0 {
 		return ""
 	}
-	who := Flatten(it.Origin.Author)
-	if who == "" {
-		who = "an unnamed commenter"
+	parts := make([]string, 0, len(convos))
+	for _, o := range convos {
+		who := Flatten(o.Author)
+		if who == "" {
+			who = "an unnamed commenter"
+		}
+		p := fmt.Sprintf("%s (%s", Flatten(o.Thread), who)
+		if o.External {
+			p += ", not the account this run posts under"
+		}
+		parts = append(parts, p+")")
 	}
-	if it.Origin.External {
-		return fmt.Sprintf("Commissioned by conversation %s, opened by %s — not the account this run posts under. Answer that conversation once your fix is committed.",
-			Flatten(it.Origin.Thread), who)
+	// Every linked conversation, not just the first: two people can report one
+	// defect in two comments, and both are waiting for an answer even though there
+	// is only one fix to make.
+	if len(parts) == 1 {
+		return "Commissioned by conversation " + parts[0] + ". Answer that conversation once your fix is committed."
 	}
-	return fmt.Sprintf("Commissioned by conversation %s, opened by %s. Answer that conversation once your fix is committed.",
-		Flatten(it.Origin.Thread), who)
+	return "Commissioned by conversations " + strings.Join(parts, ", ") +
+		" — all about the same defect. Answer every one of them once your fix is committed."
 }

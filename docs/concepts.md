@@ -171,6 +171,13 @@ separated from the rest, signed. Agent-authored text is neutralized for a forge
 `-post-run` sends those bytes off disk, and the anchors that run computed with
 them.
 
+**A machine reply is marked.** Every answer this tool posts into a conversation
+ends with an invisible HTML comment carrying the run id, so a later run can tell
+its own answer from a person's — replies go out under the operator's account, and
+author identity cannot make that distinction. A conversation whose last word is
+ours is skipped as answered; when somebody writes back it is live again. See
+[config/README.md](../config/README.md#letting-the-comments-commission-work).
+
 **The signature does not name fixpoint.** It reads *"Reviewed by AI panel · agent,
 agent · run <id>"*, and a reply posted into a conversation reads *"Answered by AI
 panel"* — a reply is not a review, and the agent it names is the one coder that

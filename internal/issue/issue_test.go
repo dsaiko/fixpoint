@@ -757,3 +757,31 @@ func TestAbsorbPrefersTheWorstReadingOfTheRoundNotOfTheRun(t *testing.T) {
 		t.Errorf("Severity = %q, want high", it.Severity)
 	}
 }
+
+// Two people can report one defect in two comments. The ledger is right to merge
+// them -- it is one fix -- but each conversation is a person waiting for an
+// answer, and keeping only the first left the second marked as commissioned and
+// never replied to.
+func TestMergingKeepsEveryConversationWaitingOnAnIssue(t *testing.T) {
+	l := NewLedger()
+	same := func(thread, author string) model.Finding {
+		return model.Finding{
+			Agent: "triage", Category: "bug", Severity: "high", File: "a.go", Line: 7,
+			Title: "missing guard", Description: "the dereference at a.go:7 is unguarded",
+			Origin: model.Origin{Thread: thread, Author: author},
+		}
+	}
+	issues := l.Absorb(1, []model.Finding{same("100", "dsaiko"), same("200", "colleague")})
+	if len(issues) != 1 {
+		t.Fatalf("issues = %d, want 1: one defect is one fix", len(issues))
+	}
+	convos := issues[0].Conversations()
+	if len(convos) != 2 || convos[0].Thread != "100" || convos[1].Thread != "200" {
+		t.Fatalf("conversations = %+v, want both threads, primary first", convos)
+	}
+	// And a third report of the same thread does not duplicate it.
+	again := l.Absorb(1, []model.Finding{same("200", "colleague")})
+	if got := len(again[0].Conversations()); got != 2 {
+		t.Errorf("conversations = %d after a repeat report, want 2", got)
+	}
+}

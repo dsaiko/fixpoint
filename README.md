@@ -158,6 +158,12 @@ direct work, which is a real widening of what untrusted text can ask for — see
 [config/README.md](config/README.md#letting-the-comments-commission-work) for what
 bounds it.
 
+Conversations are read **whole**, replies included, and one whose last word is
+already this tool's answer is left alone — otherwise every later run would answer
+the same comment again, since replying does not resolve a thread. When a person
+writes back, the thread is live again and the agent sees the entire exchange,
+including what it said last time.
+
 `fix-pr` is the most dangerous config in the bundle and its flag says so: it edits
 a working tree holding **externally authored** code, with an agent whose
 permission checks are disabled. A payload in the diff, in a commit message, or in

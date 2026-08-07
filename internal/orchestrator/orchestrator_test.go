@@ -7128,19 +7128,26 @@ func (f *fixture) judgeRole() {
 // to survive with it: a dropped finding vanishes from the review, and the only
 // thing between that and an unaccountable filter is a sentence a human can read.
 //
-// The refutation round runs here and returns `unsure`, which keeps the finding and
-// marks it contested. That is what lets the judge drop a HIGH one: a lone judge may
-// not delete a blocking finding the panel stood behind -- see
-// TestOneJudgeAloneCannotDropABlockingFinding.
+// The refutation round runs here and REFUTES the finding with evidence, which
+// keeps it (one refuter is not unanimity) and records who doubted it. That is what
+// lets the judge drop a HIGH one: a lone judge may not delete a blocking finding
+// the panel stood behind -- see TestOneJudgeAloneCannotDropABlockingFinding -- and
+// an evidence-free `unsure` is not the second judgment either, see
+// TestAnUnsurePositionIsNotGroundsToDropABlocker.
 func TestJudgeDropsAFindingAndRecordsWhy(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 1})
-	f.reviewOnly("mock")
+	// Two reviewers, so one refuting is a recorded doubt rather than unanimity --
+	// which would delete the finding in the refutation round and never reach the
+	// judge at all.
+	f.reviewOnly("mock", "mock2")
 	f.refuteLens()
 	f.judgeRole()
 	f.respond(1, reviewResponse(t, model.ReviewFinding{
 		Category: "style", Severity: "high", File: "main.go", Line: 1, Title: "naming could be better"}))
-	f.respond(2, `<review>{"positions":[{"issue":"i1","position":"unsure","evidence":"nothing in main.go decides this"}]}</review>`)
-	f.respond(3, `<review>{"verdicts":[{"issue":"i1","verdict":"drop","reason":"style preference with no consequence named"}]}</review>`)
+	f.respond(2, reviewResponse(t))
+	f.respond(3, `<review>{"positions":[{"issue":"i1","position":"refute","evidence":"main.go:1 is the package clause; naming is not a defect here"}]}</review>`)
+	f.respond(4, `<review>{"positions":[{"issue":"i1","position":"maintain","evidence":"the name is still confusing"}]}</review>`)
+	f.respond(5, `<review>{"verdicts":[{"issue":"i1","verdict":"drop","reason":"style preference with no consequence named"}]}</review>`)
 
 	sum, err := f.orchestrator().Run(t.Context())
 	if err != nil {
@@ -8773,5 +8780,38 @@ func TestARefuterThatListsNoPositionsStillCountsAsAResponder(t *testing.T) {
 				t.Errorf("verdict = %q, want changes_requested: the high survived", sum.Verdict.Outcome)
 			}
 		})
+	}
+}
+
+// "I could not decide" is not the second judgment that authorizes deleting a
+// merge-blocking finding.
+//
+// ContestedBy is what applyJudgment reads to let a judge drop a blocker, and the
+// documented rule is that it takes another agent's EVIDENCE -- which refuteWith
+// requires for a refutation and deliberately does not for an unsure. Recording
+// unsures there made the strongest control in the tool reachable by the weakest
+// statement available: a reviewer with nothing to say unlocking the deletion of
+// the finding that blocks the merge.
+func TestAnUnsurePositionIsNotGroundsToDropABlocker(t *testing.T) {
+	rec := &model.RoundRecord{Round: 1, Issues: []model.Issue{
+		{ID: "i1", Severity: "high", Title: "a blocker"},
+	}}
+	positions := map[string]map[string]model.RefutePosition{
+		"i1": {"reviewer": {Issue: "i1", Position: model.PositionUnsure, Evidence: ""}},
+	}
+	applyRefutations(rec, positions, 1, 1, func(string, ...any) {})
+
+	it := rec.Issues[0]
+	if !it.Contested {
+		t.Error("an undecidable finding should still be marked for the reader")
+	}
+	if len(it.ContestedBy) != 0 {
+		t.Errorf("ContestedBy = %v, want empty: an evidence-free unsure must not authorize a drop", it.ContestedBy)
+	}
+	// And the gate must actually refuse on it.
+	applyJudgment(rec, []model.JudgeVerdict{{Issue: "i1", Verdict: model.JudgeDrop, Reason: "not worth it"}},
+		"high", "judge", func(string, ...any) {})
+	if rec.Issues[0].StatusOrDefault() == model.VerdictRejected {
+		t.Error("the judge dropped a blocker on the strength of an unsure position alone")
 	}
 }

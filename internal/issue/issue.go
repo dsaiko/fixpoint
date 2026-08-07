@@ -474,8 +474,16 @@ func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 	// the panel independently reports what a comment already asked for, the issue is
 	// still one somebody is waiting for an answer to -- and dropping the origin here
 	// would silently unanswer that conversation.
-	if it.Origin.Thread == "" && obs.Origin.Thread != "" {
-		it.Origin = obs.Origin
+	if obs.Origin.Thread != "" {
+		switch {
+		case it.Origin.Thread == "":
+			it.Origin = obs.Origin
+		case it.Origin.Thread != obs.Origin.Thread && !hasThread(it.Also, obs.Origin.Thread):
+			// A second conversation about the same defect. One issue, one fix -- but two
+			// people waiting, and dropping the second leaves a comment marked as
+			// commissioned that nothing ever answers.
+			it.Also = append(it.Also, obs.Origin)
+		}
 	}
 }
 
@@ -656,4 +664,14 @@ func sortedKeys(m map[int]bool) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+// hasThread reports whether a conversation is already linked to an issue.
+func hasThread(origins []model.Origin, thread string) bool {
+	for _, o := range origins {
+		if o.Thread == thread {
+			return true
+		}
+	}
+	return false
 }

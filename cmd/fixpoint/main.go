@@ -107,7 +107,15 @@ Flags:
 	// summary. Resolving a bundle here would let a config decide something about a
 	// review that was already produced under a different one.
 	if *postRunDir != "" {
-		return postRun(*postRunDir, *postVerdict, logf)
+		// Under the interrupt handler, like every other path that talks to a forge.
+		// Without it postRun ran on context.Background: agent.Supervise puts a forge CLI
+		// in its own process group, so a SIGINT delivered to fixpoint's foreground group
+		// -- or a plain SIGTERM -- killed the parent while gh kept going, and the review
+		// it was midway through publishing landed after the operator had stopped the
+		// command and been told nothing.
+		ctx, stop := installSignals(logf)
+		defer stop()
+		return postRun(ctx, *postRunDir, *postVerdict, logf)
 	}
 
 	name, err := configName(positionals, *cfgPath)

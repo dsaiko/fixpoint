@@ -32,7 +32,7 @@ var posterFor = forge.PosterFor
 // This makes it exist. The bytes posted are the bytes in the file, read off disk;
 // the anchors are the ones that run computed. Nothing is recalculated, so nothing
 // can differ from what was reviewed.
-func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
+func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string, ...any)) int {
 	sum, runDir, err := loadRunSummary(dir)
 	if err != nil {
 		logf("post-run: %v", err)
@@ -72,7 +72,6 @@ func postRun(dir string, postVerdict bool, logf func(string, ...any)) int {
 		return 1
 	}
 
-	ctx := context.Background()
 	p := posterFor(ctx, sum.Path)
 	if p == nil {
 		logf("post-run: no GitHub or GitLab remote recognized at %s", sum.Path)

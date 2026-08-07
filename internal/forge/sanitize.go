@@ -233,6 +233,23 @@ func AddressableLines(diff string) map[string]map[int]bool {
 	inHunk := false
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
+		// INSIDE a hunk, content wins over every header pattern. A file header can only
+		// appear between hunks, and testing for one first misread an added line whose
+		// own text begins "++ " -- which renders in a unified diff as "+++ ..." -- as
+		// the start of a new file. Everything after it was then recorded under a path
+		// taken from that line's content, so the anchor map named files the change
+		// never touched and lost the ones it did. The easy trigger is not exotic: any
+		// pull request that adds a .patch or .diff fixture contains such lines.
+		case inHunk && (strings.HasPrefix(line, "+") || strings.HasPrefix(line, " ")):
+			if out[path] == nil {
+				out[path] = map[int]bool{}
+			}
+			out[path][newLine] = true
+			newLine++
+		case inHunk && strings.HasPrefix(line, "-"):
+			// Removed: it exists only on the old side, which RIGHT comments cannot name.
+		case inHunk && strings.HasPrefix(line, "\\"):
+			// "\ No newline at end of file" -- a note about the previous line.
 		case strings.HasPrefix(line, "+++ "):
 			// "+++ b/path" -- and "+++ /dev/null" for a deletion, which has no side to
 			// comment on.
@@ -247,22 +264,12 @@ func AddressableLines(diff string) map[string]map[int]bool {
 			newLine = start
 		case !inHunk:
 			continue
-		// Inside a hunk ONLY these three prefixes are content; anything else ends it.
-		// Counting by "not a header I recognize" instead let `diff --git`, `index`
-		// and `similarity index` lines advance the counter and hand back anchors one
-		// past the end of the hunk -- which is exactly the kind of line a forge
-		// refuses, taking the whole review with it.
-		case strings.HasPrefix(line, "+"), strings.HasPrefix(line, " "):
-			if out[path] == nil {
-				out[path] = map[int]bool{}
-			}
-			out[path][newLine] = true
-			newLine++
-		case strings.HasPrefix(line, "-"):
-			// Removed: it exists only on the old side, which RIGHT comments cannot name.
-		case strings.HasPrefix(line, "\\"):
-			// "\ No newline at end of file" -- a note about the previous line.
 		default:
+			// Inside a hunk only the three prefixes above are content, and anything else
+			// ends it. Counting by "not a header I recognize" instead let `diff --git`,
+			// `index` and `similarity index` lines advance the counter and hand back
+			// anchors one past the end of the hunk -- exactly the kind of line a forge
+			// refuses, taking the whole review with it.
 			inHunk = false
 		}
 	}
