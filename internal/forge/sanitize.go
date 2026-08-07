@@ -34,7 +34,35 @@ import (
 //  3. Issue references are broken, so a forge's closing-keyword grammar
 //     (`Closes #42`, and the full-URL spelling of the same thing) cannot act.
 //  4. Mentions are broken, so a review cannot notify arbitrary people.
+//
+// Steps 1-4 hold wherever the text lands, so they live in sanitizeInline and are
+// shared with CodeSpan. Two more run only here, because they are about BLOCKS --
+// constructs that reach past the string into the document around it, which is
+// where fixpoint's own words are:
+//
+//  5. Raw HTML tags are escaped. `<details>` renders everything after it collapsed,
+//     and an unclosed `<?` block hides it outright -- either one takes the
+//     signature with it, and the signature's whole security property is that it
+//     sits outside every region an agent wrote.
+//  6. An unclosed code fence is closed. Without it a finding's description turns
+//     the rest of the review -- the findings under it and the attribution at the
+//     bottom -- into the inside of a code block.
+//
+// What is deliberately NOT escaped is inline markup: emphasis, links, headings,
+// balanced code spans. Those cannot reach past the string they are in, findings
+// use them constantly, and escaping them would make fixpoint misquote its own
+// evidence in exchange for nothing a reader could not already have been told in
+// plain prose.
 func SanitizeText(s string) string {
+	s = sanitizeInline(s)
+	s = escapeRawHTML(s)
+	return closeOpenFence(s)
+}
+
+// sanitizeInline is the part of the rule that holds in every context, including
+// inside a code span where no block can form. One function rather than two
+// call-site copies: the copies are how one of them ends up a rule behind.
+func sanitizeInline(s string) string {
 	s = model.StripControl(s)
 	s = escapeHTMLComments(s)
 	s = BreakReferences(s)
@@ -49,6 +77,68 @@ func SanitizeText(s string) string {
 func escapeHTMLComments(s string) string {
 	s = strings.ReplaceAll(s, "<!--", "&lt;!--")
 	return strings.ReplaceAll(s, "-->", "--&gt;")
+}
+
+// escapeRawHTML makes an agent's HTML render as the text it wrote.
+//
+// Both forges pass a subset of raw HTML through, and the dangerous part of that
+// subset is not scripting -- their sanitizers handle that -- it is the tags that
+// swallow what FOLLOWS them: `<details>` collapses the remainder of the comment
+// behind a disclosure triangle, and a `<?`-opened block that is never closed is
+// removed along with everything up to the end of the document. Either one hides
+// the signature while leaving a review posted under the operator's identity.
+//
+// Only the `<` is escaped, and only in the shapes that can begin an HTML block:
+// a tag name, a closing tag, a processing instruction, a declaration or CDATA. So
+// `x < y` and `a <- b` come through as written, and `<nil>` in a stack trace now
+// SURVIVES -- a forge used to drop it as an unknown tag.
+//
+// It deliberately does not match `<!--`: step 2 escaped every comment the agent
+// wrote, so the only one left in the string by the time this runs is the invisible
+// break breakMentions inserts, and escaping that would make a broken mention
+// visible as `@<!---->name`.
+func escapeRawHTML(s string) string {
+	return htmlTagOpen.ReplaceAllString(s, "&lt;$1")
+}
+
+// closeOpenFence terminates a code fence the agent left open.
+//
+// Each field is sanitized on its own and then written into a document beside
+// fixpoint's own text, so an unterminated ``` does not merely garble one finding:
+// every finding after it, and the signature, become the contents of that block.
+// Closing it costs three characters and keeps a legitimate code block -- which
+// findings do carry -- rendering exactly as the agent wrote it.
+//
+// It errs towards doing nothing. Only fences CommonMark is unambiguous about are
+// tracked (at most three spaces of indent, a backtick opener whose info string
+// carries no backtick), because a MISSED fence leaves the status quo while an
+// imagined one would append a delimiter that opens a block of its own -- the exact
+// harm this is here to prevent.
+func closeOpenFence(s string) string {
+	var open string
+	for _, line := range strings.Split(s, "\n") {
+		m := codeFence.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		fence, rest := m[1], m[2]
+		if open != "" {
+			// A closing fence is the same character, at least as long as the opener, and
+			// followed by nothing else: "```go" inside a block is content, not the end.
+			if fence[0] == open[0] && len(fence) >= len(open) && strings.TrimSpace(rest) == "" {
+				open = ""
+			}
+			continue
+		}
+		if fence[0] == '`' && strings.Contains(rest, "`") {
+			continue // not an opener: a backtick fence's info string may not contain one
+		}
+		open = fence
+	}
+	if open == "" {
+		return s
+	}
+	return strings.TrimSuffix(s, "\n") + "\n" + open + "\n"
 }
 
 // BreakReferences puts a space inside the issue references a forge's
@@ -77,6 +167,13 @@ var (
 	// @ keeps an email address in a stack trace from being mangled -- it is not a
 	// mention on either forge.
 	mention = regexp.MustCompile(`(^|[^\w@/])@([A-Za-z0-9][-\w]*)`)
+	// htmlTagOpen matches the openers CommonMark treats as the start of raw HTML,
+	// minus the comment (see escapeRawHTML on why): a tag or closing tag, `<?`, and
+	// a `<!` declaration or CDATA section.
+	htmlTagOpen = regexp.MustCompile(`<(/?[A-Za-z]|\?|![A-Za-z\[])`)
+	// codeFence splits a candidate fence line into its delimiter and whatever
+	// follows, which is the info string on an opener and must be blank on a closer.
+	codeFence = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 )
 
 // breakMentions stops a review from notifying people an injected finding named.
@@ -106,8 +203,14 @@ func breakMentions(s string) string { return mention.ReplaceAllString(s, "$1@<!-
 //
 // Exported because the review body puts a path in a span too (review.mdCode). Two
 // hand-rolled escapes for one rule is how one of them ends up without it.
+//
+// It composes sanitizeInline rather than SanitizeText because the two BLOCK rules
+// have nothing to do here: no HTML tag and no code fence can form inside a span,
+// the backtick escape below already denies the only way out of one, and applying
+// them anyway would misquote the path -- `a<b.txt` printed as `a&lt;b.txt`, which
+// a code span shows verbatim instead of rendering.
 func CodeSpan(s string) string {
-	return strings.ReplaceAll(SanitizeText(s), "`", "&#96;")
+	return strings.ReplaceAll(sanitizeInline(s), "`", "&#96;")
 }
 
 // AddressableLines reports which lines of which files a forge will accept a

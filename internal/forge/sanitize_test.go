@@ -170,6 +170,112 @@ func TestBreakReferencesIsIndependentOfTheCommentRules(t *testing.T) {
 	}
 }
 
+// A fence left open does not garble one finding: everything rendered after it --
+// the findings under it and the signature at the bottom -- becomes the contents of
+// that code block. The delimiter fixpoint appends is spelled out here because
+// which one it is matters: a closer must match the opener's character and be at
+// least as long, or the block stays open.
+func TestSanitizeTextClosesAnOpenFence(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			name: "unclosed backtick fence",
+			in:   "look here:\n```go\nx := 1",
+			want: "look here:\n```go\nx := 1\n```\n",
+		},
+		{
+			name: "unclosed tilde fence",
+			in:   "~~~\nswallowed",
+			want: "~~~\nswallowed\n~~~\n",
+		},
+		{
+			name: "a shorter delimiter does not close a longer fence",
+			in:   "````\n```\nstill inside",
+			want: "````\n```\nstill inside\n````\n",
+		},
+		{
+			name: "a delimiter carrying an info string is content, not a closer",
+			in:   "```\ncode\n```go",
+			want: "```\ncode\n```go\n```\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SanitizeText(tc.in); got != tc.want {
+				t.Errorf("SanitizeText(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// The raw HTML that matters is not the scripting a forge already strips: it is the
+// tags that swallow what FOLLOWS them, taking the signature with it while the
+// review still goes out under the operator's identity.
+func TestSanitizeTextNeutralizesRawHTML(t *testing.T) {
+	for _, tc := range []struct{ name, in, gone string }{
+		{"collapsing details block", "nothing to see <details><summary>ok</summary>", "<details"},
+		{"processing instruction", "fine <? the rest is removed", "<?"},
+		{"declaration", "fine <!DOCTYPE html>", "<!DOCTYPE"},
+		{"cdata section", "fine <![CDATA[ hidden", "<![CDATA["},
+		{"raw closing tag", "</summary> reopened", "</summary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeText(tc.in)
+			if strings.Contains(got, tc.gone) {
+				t.Errorf("live raw HTML survived: %q", got)
+			}
+			if !strings.Contains(got, "&lt;") {
+				t.Errorf("SanitizeText(%q) = %q, want the delimiter escaped rather than dropped", tc.in, got)
+			}
+		})
+	}
+}
+
+// A balanced code block is evidence, and findings carry them. Closing the document
+// must not mean rewriting what the agent actually wrote.
+func TestSanitizeTextLeavesBalancedMarkupAlone(t *testing.T) {
+	for _, in := range []string{
+		"before\n```go\nx := 1\n```\nafter",
+		"~~~\ntext\n~~~",
+		"a `code span` and *emphasis* and [a link](https://example.com)",
+		"the guard at x < y is wrong",
+		"the send on ch <- v blocks",
+	} {
+		if got := SanitizeText(in); got != in {
+			t.Errorf("SanitizeText(%q) = %q, want it unchanged", in, got)
+		}
+	}
+}
+
+// The escape has to leave the text readable: a forge used to DROP `<nil>` as an
+// unknown tag, so escaping it is what makes the finding quote itself correctly.
+func TestRawHTMLEscapeKeepsTheTextTheAgentWrote(t *testing.T) {
+	got := SanitizeText("got <nil>, want a value")
+	if strings.Contains(got, "<nil>") {
+		t.Errorf("a live tag survived: %q", got)
+	}
+	if !strings.Contains(got, "&lt;nil>") {
+		t.Errorf("SanitizeText() = %q, want the tag escaped rather than dropped", got)
+	}
+}
+
+// The mention break inserts a comment of its own AFTER the HTML rules run, and
+// escaping it would make the break visible in every review that neutralizes one.
+func TestTheMentionBreakIsNotEscapedAsRawHTML(t *testing.T) {
+	if got := SanitizeText("ask @octocat"); got != "ask @<!---->octocat" {
+		t.Errorf("SanitizeText() = %q, want the break left invisible", got)
+	}
+}
+
+// A code span has no blocks in it, so the block rules must not run there: the path
+// is evidence, and a span renders an entity verbatim rather than decoding it.
+func TestCodeSpanDoesNotEscapeMarkupThatCannotActInASpan(t *testing.T) {
+	if got := CodeSpan("internal/a<b>.go"); got != "internal/a<b>.go" {
+		t.Errorf("CodeSpan() = %q, want the path spelled as written", got)
+	}
+	if got := CodeSpan("weird/```.go"); got != "weird/&#96;&#96;&#96;.go" {
+		t.Errorf("CodeSpan() = %q, want only the span delimiter escaped", got)
+	}
+}
+
 // The verdict-to-event mapping is small but it decides whether fixpoint approves
 // somebody's pull request, so it is pinned rather than left to a switch nobody
 // reads. There is deliberately no event for an inconclusive review: both that
