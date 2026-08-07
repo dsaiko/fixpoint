@@ -685,7 +685,7 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 
 	// What the forge already knows about this head, read once before the panel
 	// runs so the reviewers' own context and the verdict see the same answer.
-	o.readForgeChecks(ctx, sum.ReviewedHead)
+	o.readForgeChecks(ctx, sum)
 	o.readForgeThreads(ctx)
 	// Decide what those conversations commission, before any of them has been read
 	// three times by three coder sessions and answered by none. Optional: without
@@ -4272,19 +4272,20 @@ func configBaseName(path string) string {
 // an approval never silently rests on a check nobody ran, nor on one that ran on a
 // commit nobody read.
 //
-// head is what the answer must be about: recordReviewedHead pinned it just above,
-// and the provider refuses rather than reporting the checks of whatever the pull
-// request proposes now.
-func (o *Orchestrator) readForgeChecks(ctx context.Context, head string) {
+// sum.ReviewedHead is what the answer must be about: recordReviewedHead pinned it
+// just above, and the provider refuses rather than reporting the checks of whatever
+// the pull request proposes now. The summary is passed rather than the SHA so that
+// binding lives inside the function a test can drive, not at the call site.
+func (o *Orchestrator) readForgeChecks(ctx context.Context, sum *model.RunSummary) {
 	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
 		return
 	}
-	p := forge.For(ctx, o.cfg.Target.Path)
+	p := checkerFor(ctx, o.cfg.Target.Path)
 	if p == nil {
 		o.logf("no GitHub or GitLab remote recognized; the verdict will carry no CI evidence")
 		return
 	}
-	checks, err := p.Checks(ctx, o.cfg.Target.Path, o.cfg.Target.PR, head)
+	checks, err := p.Checks(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead)
 	if err != nil {
 		o.logf("WARNING: could not read %s checks (%v); the verdict will carry no CI evidence", p.Kind(), err)
 		return
@@ -4915,6 +4916,12 @@ var posterFor = forge.PosterFor
 
 // readerFor is forge.ReaderFor behind a variable, for the same reason.
 var readerFor = forge.ReaderFor
+
+// checkerFor is forge.For behind a variable, for the same reason: what needs
+// asserting is that readForgeChecks asks about the commit the panel READ rather
+// than whatever the pull request proposes now, and that a refusal costs the
+// verdict its CI evidence instead of the run.
+var checkerFor = forge.For
 
 // postReview publishes the rendered review on the pull request.
 //

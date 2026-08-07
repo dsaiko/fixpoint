@@ -7700,6 +7700,127 @@ func TestTheReviewedCommitIsRecordedForPullRequestsOnly(t *testing.T) {
 	}
 }
 
+// fakeChecker is a forge.Provider that records which head it was asked about,
+// instead of shelling out to gh or glab.
+type fakeChecker struct {
+	asked  int
+	head   string
+	checks forge.Checks
+	err    error
+}
+
+func (*fakeChecker) Kind() forge.Kind { return forge.GitHub }
+
+func (c *fakeChecker) Checks(_ context.Context, _ string, _ int, head string) (forge.Checks, error) {
+	c.asked++
+	c.head = head
+	return c.checks, c.err
+}
+
+// The checks a verdict rests on must be the checks of the commit the panel READ.
+// The providers refuse a head that is not the reviewed one, so asking with the
+// wrong SHA -- or with none -- cannot report another commit's checks, but it does
+// cost every pr-mode verdict its CI evidence silently: failing checks would stop
+// forcing CHANGES_REQUESTED with nothing red anywhere to explain it.
+func TestForgeChecksAreAskedAboutTheReviewedCommit(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	o := f.orchestrator()
+	sum := &model.RunSummary{}
+	o.recordReviewedHead(t.Context(), sum)
+	if sum.ReviewedHead == "" {
+		t.Fatal("the fixture repository has no head to pin")
+	}
+
+	checker := &fakeChecker{checks: forge.Checks{Known: true, Failing: []string{"build"}, Pending: []string{"e2e"}}}
+	prev := checkerFor
+	checkerFor = func(context.Context, string) forge.Provider { return checker }
+	defer func() { checkerFor = prev }()
+
+	o.readForgeChecks(t.Context(), sum)
+
+	if checker.head != sum.ReviewedHead {
+		t.Errorf("checks read for %q, want the reviewed commit %q", checker.head, sum.ReviewedHead)
+	}
+	if !o.ci.Known || !slices.Equal(o.ci.Failing, []string{"build"}) || !slices.Equal(o.ci.Pending, []string{"e2e"}) {
+		t.Errorf("o.ci = %+v, want the provider's answer", o.ci)
+	}
+}
+
+// Reading the forge is best-effort: no recognized remote, or a provider that
+// refuses because the head moved out from under the read, leaves CI unknown and
+// says so. Neither may stop the run -- the review is still worth producing, and an
+// unknown CI is stated in the verdict's reasons rather than assumed green.
+func TestAForgeThatWillNotAnswerLeavesCIUnknown(t *testing.T) {
+	cases := []struct {
+		name       string
+		mode       config.Mode
+		pr         int
+		noProvider bool
+		checksErr  error
+		wantAsked  bool
+		wantLog    string
+	}{
+		{name: "directory mode never asks", mode: "directory"},
+		{name: "pr mode without a number never asks", mode: config.ModePR},
+		{
+			name:       "no recognized remote",
+			mode:       config.ModePR,
+			pr:         7,
+			noProvider: true,
+			wantLog:    "no GitHub or GitLab remote recognized; the verdict will carry no CI evidence",
+		},
+		{
+			name:      "the provider refuses",
+			mode:      config.ModePR,
+			pr:        7,
+			checksErr: errors.New("head moved"),
+			wantAsked: true,
+			wantLog:   "could not read github checks (head moved); the verdict will carry no CI evidence",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			f.cfg.Target.Mode = tc.mode
+			f.cfg.Target.PR = tc.pr
+
+			logf, logs := captureLog()
+			o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			checker := &fakeChecker{checks: forge.Checks{Known: true}, err: tc.checksErr}
+			prev := checkerFor
+			checkerFor = func(context.Context, string) forge.Provider {
+				if tc.noProvider {
+					return nil
+				}
+				return checker
+			}
+			defer func() { checkerFor = prev }()
+
+			o.readForgeChecks(t.Context(), &model.RunSummary{ReviewedHead: strings.Repeat("a", 40)})
+
+			if got := checker.asked > 0; got != tc.wantAsked {
+				t.Errorf("checks asked = %v, want %v", got, tc.wantAsked)
+			}
+			if o.ci.Known {
+				t.Errorf("o.ci = %+v, want unknown", o.ci)
+			}
+			if tc.wantLog != "" && !strings.Contains(logs(), tc.wantLog) {
+				t.Errorf("want %q in the log:\n%s", tc.wantLog, logs())
+			}
+		})
+	}
+}
+
 // The repository is recorded alongside the commit, and for the same reason: a
 // -post-run days later resolves its destination from whatever checkout occupies the
 // recorded path, so without this the review can land on pull request N of a
