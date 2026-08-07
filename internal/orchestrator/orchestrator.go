@@ -4741,11 +4741,13 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 		// Orchestrator. Rendering a nil template PANICS, which would take down a run
 		// over a filter -- fail the filter closed instead.
 		o.logf("WARNING: judge prompt %q was never loaded; every finding stands and the review cannot approve", j.Prompt)
+		o.endPhase("JUDGE  did not run; every finding stands")
 		return false
 	}
 	text, err := prompt.Render(tmpl, d)
 	if err != nil {
 		o.logf("WARNING: judge: render failed (%v); every finding stands and the review cannot approve", err)
+		o.endPhase("JUDGE  did not run; every finding stands")
 		return false
 	}
 	res := o.runAgent(ctx, "judge: "+j.Agent, "judge", j.Agent, j.Prompt, rec.Round, text)

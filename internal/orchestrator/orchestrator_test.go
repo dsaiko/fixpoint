@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
@@ -9115,6 +9116,42 @@ func TestACancelledJudgeCannotReportItselfAsHavingFiltered(t *testing.T) {
 	o.decideVerdict(ctx, rec, sum, false)
 	if sum.Verdict.Outcome == model.VerdictApprove {
 		t.Errorf("verdict = approve after an unfiltered review: %v", sum.Verdict.Reasons)
+	}
+}
+
+// The two fail-closed returns between opening the JUDGE block and running the
+// agent used to return without closing it, so the rest of the run logged indented
+// under a block that had ended -- in exactly the case where "the judge never ran"
+// is the explanation for the INCONCLUSIVE exit that follows.
+func TestAJudgeThatFailsBeforeItRunsStillClosesItsBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		breakIt func(o *Orchestrator)
+	}{
+		{"template never loaded", func(o *Orchestrator) { delete(o.templates, "judge") }},
+		{"render fails", func(o *Orchestrator) {
+			o.templates["judge"] = template.Must(template.New("judge").
+				Option("missingkey=error").Parse("{{.NoSuchField}}"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			f.judgeRole()
+
+			o, rec := f.recordingOrchestrator()
+			tc.breakIt(o)
+			round := &model.RoundRecord{
+				Round:  1,
+				Issues: []model.Issue{{ID: "i1", Severity: "low", Title: "minor"}},
+			}
+			if ran := o.runJudge(t.Context(), round, "material"); ran {
+				t.Error("runJudge reported a judge that never ran as having filtered")
+			}
+			if open := rec.unclosed(); len(open) > 0 {
+				t.Errorf("the JUDGE block was left open: %v", open)
+			}
+		})
 	}
 }
 
