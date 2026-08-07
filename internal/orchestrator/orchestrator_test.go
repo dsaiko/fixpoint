@@ -7394,6 +7394,22 @@ func TestJudgeDropsAFindingAndRecordsWhy(t *testing.T) {
 	if !strings.Contains(it.VerdictDetail, "style preference") {
 		t.Errorf("the judge's reason was lost: %q", it.VerdictDetail)
 	}
+	// The drop has to reach the round's OBSERVATIONS too. The summary renders the
+	// findings block from these, and one with an empty verdict prints as UNRESOLVED
+	// directly above an issues block saying REJECTED -- about the same problem, in
+	// the same document. The reason has to travel with it: this is the only
+	// per-observation record of why the finding vanished.
+	if len(sum.Rounds[0].Findings) != 1 {
+		t.Fatalf("got %d observations, want 1", len(sum.Rounds[0].Findings))
+	}
+	obs := sum.Rounds[0].Findings[0]
+	if obs.Verdict != model.VerdictRejected {
+		t.Errorf("observation verdict = %q, want it mirrored as rejected (it renders as %s in the summary)",
+			obs.Verdict, strings.ToUpper(obs.VerdictOrDefault()))
+	}
+	if !strings.Contains(obs.VerdictDetail, "style preference") {
+		t.Errorf("observation detail = %q, want the judge's reason mirrored onto it", obs.VerdictDetail)
+	}
 }
 
 // A judge that dies must leave every finding standing AND block the approval: a

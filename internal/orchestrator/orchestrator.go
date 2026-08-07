@@ -2135,6 +2135,15 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		o.material = material
 		o.runRefutation(ctx, recP, material)
 		judged := o.runJudge(ctx, recP, material)
+		// Mirrored AGAIN, after both filters have run. Both record a drop by writing
+		// the rejection straight onto rec.Issues rather than through setIssueVerdict,
+		// so the observations that reported a dropped finding still carry an empty
+		// verdict at this point -- and the summary would render them UNRESOLVED
+		// directly above an issues block saying REJECTED with the refuter's evidence
+		// or the judge's reason. This is the same self-contradiction the call above
+		// exists to prevent; the mirror is idempotent, so running it twice costs
+		// nothing.
+		mirrorCarriedVerdicts(recP)
 		// The verdict is computed either way -- an interrupted review still owes the
 		// operator whatever it managed to conclude, and decideVerdict's own callees
 		// (postReview) decide for themselves what a canceled context permits.
@@ -2329,14 +2338,23 @@ func (o *Orchestrator) logLedgerConflicts() {
 	}
 }
 
-// mirrorCarriedVerdicts copies a verdict an issue ALREADY carries out of Absorb
-// onto this round's observations of it. Only a previously rejected issue arrives
-// that way, and setIssueVerdict never reaches it (the cap and the coder both skip
-// non-work issues), so its observations would keep an empty verdict and
-// FormatHistory would render them UNRESOLVED. The history preamble tells
-// reviewers to re-report anything UNRESOLVED, so the run would solicit the
-// re-report of a decided issue every round and the summary would show it as
-// unresolved in every round after the one that rejected it.
+// mirrorCarriedVerdicts copies a verdict an issue ALREADY carries onto this
+// round's observations of it -- the finding-level half of what setIssueVerdict
+// writes, for the verdicts that never went through setIssueVerdict.
+//
+// Two kinds arrive that way. An issue Absorb returns already rejected: the cap and
+// the coder both skip non-work issues, so setIssueVerdict never reaches it. And a
+// finding dropped by refutation or the judge: applyRefutations and applyJudgment
+// write the rejection onto rec.Issues directly.
+//
+// Either way the observations would keep an empty verdict, and FormatHistory would
+// render them UNRESOLVED. The history preamble tells reviewers to re-report
+// anything UNRESOLVED, so the run would solicit the re-report of a decided issue
+// every round and the summary would show it as unresolved in every round after the
+// one that decided it -- directly above an issues block saying REJECTED.
+//
+// Idempotent: it only ever overwrites an observation with its own issue's verdict,
+// so callers may run it after each stage that can decide one.
 func mirrorCarriedVerdicts(rec *model.RoundRecord) {
 	for _, it := range rec.Issues {
 		if it.Verdict == "" {
