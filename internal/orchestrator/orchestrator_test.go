@@ -7321,6 +7321,45 @@ func TestJudgeUnknownVerdictKeepsTheFinding(t *testing.T) {
 	}
 }
 
+// Two verdicts on one finding is the same failure as an unknown one: the judge did
+// not answer the question. Letting the last entry win would delete a finding on a
+// malformed reply -- and the reply is untrusted material, so "malformed" includes
+// "written that way on purpose".
+func TestJudgeDuplicateVerdictsKeepTheFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		verdicts []model.JudgeVerdict
+	}{
+		{"keep then drop", []model.JudgeVerdict{
+			{Issue: "i1", Verdict: model.JudgeKeep, Reason: "real"},
+			{Issue: "i1", Verdict: model.JudgeDrop, Reason: "the guard exists at main.go:7"},
+		}},
+		{"drop then keep", []model.JudgeVerdict{
+			{Issue: "i1", Verdict: model.JudgeDrop, Reason: "the guard exists at main.go:7"},
+			{Issue: "i1", Verdict: model.JudgeKeep, Reason: "real"},
+		}},
+		{"drop twice", []model.JudgeVerdict{
+			{Issue: "i1", Verdict: model.JudgeDrop, Reason: "the guard exists at main.go:7"},
+			{Issue: "i1", Verdict: model.JudgeDrop, Reason: "the guard exists at main.go:7"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Medium and refuted by another agent, so the blocking-severity rule is not
+			// what keeps it -- only the ambiguity is.
+			rec := &model.RoundRecord{Issues: []model.Issue{
+				{ID: "i1", Severity: "medium", Title: "t", Contested: true, ContestedBy: []string{"other"}},
+			}}
+			kept, dropped := applyJudgment(rec, tc.verdicts, "", "judge", func(string, ...any) {})
+			if rec.Issues[0].Status == model.VerdictRejected {
+				t.Error("a finding the judge answered twice was dropped")
+			}
+			if kept != 1 || dropped != 0 {
+				t.Errorf("kept, dropped = %d, %d; want 1, 0", kept, dropped)
+			}
+		})
+	}
+}
+
 // Posting is gated on an explicit flag AND on there being a pull request. Without
 // either, the review is still written and the operator is told where.
 func TestPostIsSkippedWithAWarningWhenThereIsNoPullRequest(t *testing.T) {

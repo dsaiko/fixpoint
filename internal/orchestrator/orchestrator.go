@@ -4771,18 +4771,30 @@ func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockA
 	}
 	floor := model.SeverityRank(blockAt)
 	decided := map[string]model.JudgeVerdict{}
+	// Two verdicts on one finding is not a judgment, it is a contract violation, and
+	// whichever one arrived last is not more authoritative than the other. Keeping
+	// the finding is the same fail-closed reading applied to an unknown verdict
+	// below: a judge that answered "keep and drop" did not decide to drop.
+	ambiguous := map[string]bool{}
 	for _, v := range verdicts {
 		if !model.ValidJudgeVerdict(v.Verdict) {
 			logf("WARNING: judge returned an unknown verdict %q on %s; the finding stands", v.Verdict, v.Issue)
 			continue
 		}
 		v.Verdict = strings.ToLower(strings.TrimSpace(v.Verdict))
+		if _, seen := decided[v.Issue]; seen {
+			if !ambiguous[v.Issue] {
+				logf("WARNING: judge returned more than one verdict on %s; one finding gets one answer -- kept", v.Issue)
+			}
+			ambiguous[v.Issue] = true
+			continue
+		}
 		decided[v.Issue] = v
 	}
 	for i := range rec.Issues {
 		it := &rec.Issues[i]
 		v, ok := decided[it.ID]
-		if !ok || v.Verdict != model.JudgeDrop || it.StatusOrDefault() == model.VerdictRejected {
+		if !ok || ambiguous[it.ID] || v.Verdict != model.JudgeDrop || it.StatusOrDefault() == model.VerdictRejected {
 			continue
 		}
 		reason := strings.TrimSpace(v.Reason)
