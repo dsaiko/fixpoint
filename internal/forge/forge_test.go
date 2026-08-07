@@ -1238,10 +1238,11 @@ func TestOnlyOurOwnAccountsMarkerAnswersAConversation(t *testing.T) {
 		{"our reply, other capitalisation", "DSaiko", ThreadComment{Author: "dsaiko", Body: marker}, true},
 		{"a marker somebody else wrote", "dsaiko", ThreadComment{Author: "stranger", Body: marker}, false},
 		{"the operator asking again", "dsaiko", ThreadComment{Author: "dsaiko", Body: "and the parser?"}, false},
-		// Without a login there is nothing to check the author against, and refusing to
-		// call anything answered would re-answer every conversation on every run. The
-		// marker alone decides, which costs a forger silence on their own thread.
-		{"no login, our marker", "", ThreadComment{Author: "dsaiko", Body: marker}, true},
+		// Without a login there is nothing to check the author against, so nothing is
+		// provably ours. Letting the marker alone stand in would mean a failed `gh api
+		// user` is all it takes for a copied marker to bury a maintainer's thread; the
+		// caller leaves conversations unread instead of guessing (see readForgeThreads).
+		{"no login, our marker", "", ThreadComment{Author: "dsaiko", Body: marker}, false},
 		{"no login, no marker", "", ThreadComment{Author: "dsaiko", Body: "and the parser?"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

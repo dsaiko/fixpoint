@@ -1265,19 +1265,20 @@ func (c ThreadComment) ours(me string) bool {
 // person replies under it, it is live again and gets read afresh -- with the whole
 // exchange, including what we said last time.
 //
-// When me is "" the marker alone decides, because the alternative is re-answering
-// every conversation this tool has already answered, on every run -- the loop the
-// marker exists to prevent. That fallback costs a forger nothing but silence on
-// their own conversation, which is what the marker's own documentation describes.
+// When me is "" nothing is ours and no conversation reads as answered. Letting the
+// marker alone decide there would hand a forger the whole check for the price of a
+// failed `gh api user`: a marker appended to a maintainer's thread is not silence on
+// the forger's own conversation, it is somebody else's security review dropped
+// before triage or the coder ever sees it. The apparent alternative -- re-answering
+// every conversation on every run, the loop the marker exists to prevent -- is not
+// the only other option, and is not what happens: a caller that cannot name its own
+// account has no business classifying conversations at all, and leaves them unread
+// for the run instead. See readForgeThreads, which is that caller.
 func (t Thread) AnsweredByMachine(me string) bool {
 	if len(t.Comments) == 0 {
 		return false
 	}
-	last := t.Comments[len(t.Comments)-1]
-	if me == "" {
-		return HasReplyMarker(last.Body)
-	}
-	return last.ours(me)
+	return t.Comments[len(t.Comments)-1].ours(me)
 }
 
 // Requesters names everyone whose message makes up the conversation's LIVE

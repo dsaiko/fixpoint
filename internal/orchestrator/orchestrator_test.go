@@ -8341,6 +8341,7 @@ func TestConversationsAreReadOnlyForAFixRunOnAPullRequest(t *testing.T) {
 		mode       string
 		pr         int
 		reviewOnly bool
+		noLogin    bool
 		threadsErr error
 		wantRead   bool
 		wantThread bool
@@ -8357,6 +8358,17 @@ func TestConversationsAreReadOnlyForAFixRunOnAPullRequest(t *testing.T) {
 			threadsErr: errors.New("gh exploded"),
 			wantLog:    "could not read the pull request's conversations",
 		},
+		{
+			// Which conversations are already answered is "did this account post the last
+			// word", and without the account the only thing left to go on is the marker --
+			// which anybody who can comment can copy onto somebody else's thread. So the
+			// run reads none rather than deciding on forgeable text alone, and says so.
+			name:    "an unknown login leaves them unread and warns",
+			mode:    string(config.ModePR),
+			pr:      7,
+			noLogin: true,
+			wantLog: "could not determine which account this tool posts under",
+		},
 	}
 
 	for _, tc := range cases {
@@ -8371,7 +8383,11 @@ func TestConversationsAreReadOnlyForAFixRunOnAPullRequest(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			reader := &fakeReader{threads: []forge.Thread{thread}, threadsErr: tc.threadsErr}
+			login := "dsaiko"
+			if tc.noLogin {
+				login = ""
+			}
+			reader := &fakeReader{threads: []forge.Thread{thread}, threadsErr: tc.threadsErr, login: login}
 			prev := readerFor
 			readerFor = func(context.Context, string) forge.Reader { return reader }
 			defer func() { readerFor = prev }()

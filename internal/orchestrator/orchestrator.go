@@ -5159,6 +5159,20 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 	if r == nil {
 		return
 	}
+	// Which conversations are already answered is decided below by "did THIS account
+	// post the last word", and that question has no answer without the account. Asked
+	// first, and a run that cannot get it reads no conversations at all.
+	//
+	// The alternative -- let the copyable marker decide on its own -- is what makes a
+	// failed lookup exploitable: anybody who can comment on the pull request could
+	// append a marker to a maintainer's thread and have it skipped here, unseen by
+	// triage and by the coder. Unread is the honest answer to "we do not know who we
+	// are", and it is the same best-effort empty list a missing gh already produces.
+	me := r.Login(ctx, o.cfg.Target.Path)
+	if me == "" {
+		o.logf("WARNING: could not determine which account this tool posts under; the pull request's conversations are left unread this run")
+		return
+	}
 	threads, err := r.Threads(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
 	if err != nil {
 		o.logf("WARNING: could not read the pull request's conversations (%v); the coder will not see them", err)
@@ -5173,7 +5187,6 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 	// "Ours" needs the login as well as the marker: the marker is copyable, so
 	// without the author check anybody who can comment could append one to their own
 	// message and drop that conversation out of every run from then on.
-	me := r.Login(ctx, o.cfg.Target.Path)
 	live := make([]forge.Thread, 0, len(threads))
 	answered := 0
 	for _, t := range threads {
