@@ -51,6 +51,11 @@ func writeRunAt(t *testing.T, dir string, sum model.RunSummary, body string) str
 // The commit a replayable summary says it reviewed.
 const head = "0123456789abcdef0123456789abcdef01234567"
 
+// And the repository it reviewed it in. Publishing compares this against the
+// repository the checkout at sum.Path resolves to, so a test that means to reach the
+// forge has to agree with it -- see installPoster.
+const reviewedRepo = "github.com/o/r"
+
 // Publishing a finished run must refuse anything it cannot faithfully replay,
 // and say which. The whole point of the mode is that what goes out is what was
 // reviewed, so guessing at a missing fact would defeat it.
@@ -84,12 +89,24 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 			"body", "does not record which commit it reviewed",
 		},
 		{
+			// The commit says what was reviewed, not where it belongs. Without the
+			// repository there is nothing to compare the checkout against, and the review
+			// would go to pull request 3 of whatever repository sum.Path holds by then.
+			"a run that does not say which repository it reviewed",
+			model.RunSummary{
+				Mode: "pr", PR: 3, ReviewedHead: head,
+				Termination: model.TermReviewOnly,
+				Verdict:     &model.ReviewVerdict{Outcome: model.VerdictApprove},
+			},
+			"body", "does not record which repository it reviewed",
+		},
+		{
 			// The verdict and the body are written before the round checks whether it
 			// was canceled, so an interrupted review leaves a complete-looking APPROVE
 			// the run itself refused to post and exited non-zero over.
 			"a review the operator stopped part-way",
 			model.RunSummary{
-				Mode: "pr", PR: 3, ReviewedHead: head,
+				Mode: "pr", PR: 3, ReviewedHead: head, ReviewedRepo: reviewedRepo,
 				Termination: model.TermInterrupted,
 				Verdict:     &model.ReviewVerdict{Outcome: model.VerdictApprove},
 			},
@@ -100,7 +117,7 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 			// which the forge may have accepted before the client gave up.
 			"a review whose own publish failed",
 			model.RunSummary{
-				Mode: "pr", PR: 3, ReviewedHead: head,
+				Mode: "pr", PR: 3, ReviewedHead: head, ReviewedRepo: reviewedRepo,
 				Termination: model.TermError, LoopTermination: model.TermReviewOnly,
 				Error:   "post review: 502 from github",
 				Verdict: &model.ReviewVerdict{Outcome: model.VerdictApprove},
@@ -112,7 +129,7 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 			// carrying one is a summary that did not come from a completed review.
 			"a fix termination carrying a verdict",
 			model.RunSummary{
-				Mode: "pr", PR: 3, ReviewedHead: head,
+				Mode: "pr", PR: 3, ReviewedHead: head, ReviewedRepo: reviewedRepo,
 				Termination: model.TermMaxIterations,
 				Verdict:     &model.ReviewVerdict{Outcome: model.VerdictApprove},
 			},
@@ -125,7 +142,7 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 			// second time under the operator's identity.
 			"a review the run itself already published",
 			model.RunSummary{
-				Mode: "pr", PR: 3, ReviewedHead: head,
+				Mode: "pr", PR: 3, ReviewedHead: head, ReviewedRepo: reviewedRepo,
 				Termination:  model.TermReviewOnly,
 				ReviewPosted: "comment",
 				Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
@@ -138,7 +155,7 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 			// already on the pull request, not send the operator off to review again.
 			"a publish the forge accepted before the call failed",
 			model.RunSummary{
-				Mode: "pr", PR: 3, ReviewedHead: head,
+				Mode: "pr", PR: 3, ReviewedHead: head, ReviewedRepo: reviewedRepo,
 				Termination: model.TermError, LoopTermination: model.TermReviewOnly,
 				Error:        "confirm approval: head moved",
 				ReviewPosted: "approve",
@@ -182,6 +199,7 @@ func TestPostRunReadsTheBodyBesideTheSummary(t *testing.T) {
 			dir := writeRun(t, model.RunSummary{
 				Mode: "pr", PR: 3, Path: t.TempDir(),
 				ReviewedHead: head,
+				ReviewedRepo: reviewedRepo,
 				Termination:  model.TermReviewOnly,
 				ReviewBody:   "/gone/review-body.md",
 				Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
@@ -217,6 +235,7 @@ func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
 	base := model.RunSummary{
 		Mode: "pr", PR: 3, Path: t.TempDir(),
 		ReviewedHead: head,
+		ReviewedRepo: reviewedRepo,
 		Termination:  model.TermReviewOnly,
 		ReviewBody:   secret,
 		Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
@@ -343,11 +362,27 @@ func (f *fakePoster) PostReview(_ context.Context, dir string, pr int, head, bod
 }
 
 // installPoster points -post-run's forge lookup at p for one test.
+//
+// It answers the repository lookup too, with the identity replayable records. Both
+// ask the same question of the same checkout -- "what is at sum.Path?" -- and sum.Path
+// in these tests is an empty temp directory, so a test that left the second one real
+// would exercise the refusal in front of the submission rather than the submission.
+// A test about that refusal calls installRepoID afterwards to disagree on purpose.
 func installPoster(t *testing.T, p forge.Poster) {
 	t.Helper()
 	prev := posterFor
 	posterFor = func(context.Context, string) forge.Poster { return p }
 	t.Cleanup(func() { posterFor = prev })
+	installRepoID(t, reviewedRepo)
+}
+
+// installRepoID makes the checkout at sum.Path resolve to id for one test, as
+// forge.RepoID would have resolved it from a real one.
+func installRepoID(t *testing.T, id string) {
+	t.Helper()
+	prev := repoIDFor
+	repoIDFor = func(context.Context, string) string { return id }
+	t.Cleanup(func() { repoIDFor = prev })
 }
 
 // replayable is a summary -post-run will publish, so a test can vary the one
@@ -357,6 +392,7 @@ func replayable(t *testing.T, outcome string, anchors []model.ReviewAnchor) mode
 	return model.RunSummary{
 		Mode: "pr", PR: 3, Path: t.TempDir(),
 		ReviewedHead: head,
+		ReviewedRepo: reviewedRepo,
 		Termination:  model.TermReviewOnly,
 		ReviewInline: anchors,
 		Verdict:      &model.ReviewVerdict{Outcome: outcome},
@@ -424,6 +460,71 @@ func TestPostRunPublishesTheRunItReplays(t *testing.T) {
 			}
 			if !strings.Contains(logs.String(), string(tc.want)) || !strings.Contains(logs.String(), p.url) {
 				t.Errorf("the log should name the event and the URL:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// The destination is the repository that was REVIEWED, not whatever repository the
+// recorded path holds when the replay runs.
+//
+// sum.Path is a path, and both the poster lookup and the submission resolve their
+// repository from the checkout occupying it: gh's {owner}/{repo} come from that
+// directory. Days can pass between a run and its -post-run -- that delay is the whole
+// point of the mode -- and in them the directory can be reused for another repository
+// on the same forge, have its remotes rewritten, or be a copied run directory whose
+// absolute path now names somebody else's tree. The head check does not notice, since
+// the reviewed commit is public and anyone may open a pull request proposing it: with
+// -post-verdict that is an approval on a pull request nobody reviewed, under the
+// operator's identity.
+func TestPostRunPublishesOnlyToTheRepositoryItReviewed(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		now   string
+		calls int
+		want  string
+	}{
+		{
+			"another repository on the same forge",
+			"github.com/o/other", 0, "is now a checkout of github.com/o/other",
+		},
+		{
+			// Fails closed like requireHead: unanswered is not a license to publish, and
+			// the identity comes from the same gh that would have done the posting.
+			"a checkout whose repository cannot be established",
+			"", 0, "cannot establish which repository",
+		},
+		{
+			// And it must not false-alarm on the ordinary case, which would break the
+			// mode for everybody: GitHub reads an owner and a name case-insensitively.
+			"the same repository, spelled differently",
+			"GitHub.com/O/R", 1, "publishing to github",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeRun(t, replayable(t, model.VerdictApprove, nil), "the review that was actually produced")
+			p := &fakePoster{url: "https://github.com/o/r/pull/3#pullrequestreview-1"}
+			installPoster(t, p)
+			installRepoID(t, tc.now)
+
+			var logs strings.Builder
+			code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			if tc.calls == 0 && code != 2 {
+				t.Errorf("postRun(t.Context(), ) = %d, want the refusal 2; logs:\n%s", code, logs.String())
+			}
+			if tc.calls == 1 && code != 0 {
+				t.Errorf("postRun(t.Context(), ) = %d, want 0; logs:\n%s", code, logs.String())
+			}
+			if len(p.calls) != tc.calls {
+				t.Errorf("PostReview called %d times, want %d", len(p.calls), tc.calls)
+			}
+			if !strings.Contains(logs.String(), tc.want) {
+				t.Errorf("logs should say %q:\n%s", tc.want, logs.String())
+			}
+			// A refusal that published nothing must leave the run publishable from the
+			// right checkout: the receipt is a claim on a submission that was attempted.
+			if _, err := os.Stat(filepath.Join(dir, postReceipt)); tc.calls == 0 && err == nil {
+				t.Error("the run was claimed by a replay that never submitted anything")
 			}
 		})
 	}

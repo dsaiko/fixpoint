@@ -43,6 +43,11 @@ const postReceipt = "review-posted"
 // the body all reach the forge in one call, and only a fake poster can see them.
 var posterFor = forge.PosterFor
 
+// repoIDFor is forge.RepoID behind a variable for the same reason, and it has to be
+// one: the check it feeds refuses to publish, so a test that could not answer it
+// would be testing the refusal rather than the submission.
+var repoIDFor = forge.RepoID
+
 // postRun publishes a review a previous run already produced, without invoking a
 // single agent.
 //
@@ -134,6 +139,13 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 	if p == nil {
 		logf("post-run: no GitHub or GitLab remote recognized at %s", sum.Path)
 		return 1
+	}
+	// Which FORGE is now known; which REPOSITORY on it is a separate question, and
+	// sum.Path cannot answer it. Refused before the receipt is claimed, so a run
+	// blocked here can still be published from the right checkout afterwards.
+	if why := wrongRepository(ctx, sum); why != "" {
+		logf("post-run: %s", why)
+		return 2
 	}
 	// The same mapping the run itself would have used, from the same function --
 	// a replay that approved what the live path would have commented on would be a
@@ -286,6 +298,41 @@ func committedRun(ctx context.Context, runDir string) string {
 	return fmt.Sprintf("%s is tracked by git (%s is committed), so it came in with a repository's content rather than from a run on this machine. Its summary -- not review-body.md -- chooses the pull request, the verdict and the inline comments that would be published under your identity, so it is refused. Publish your own run's directory, or move this one outside the work tree if it really is yours.", runDir, tracked)
 }
 
+// wrongRepository says why the checkout the submission would go through is not the
+// repository the run reviewed, or "" when it demonstrably is.
+//
+// It closes the last thing the summary chooses that nothing checked. sum.Path is a
+// PATH, and posterFor and PostReview both resolve the destination repository from
+// whatever checkout occupies it now: gh's own {owner}/{repo} placeholders come from
+// that directory. Between a run and a replay -- which may be days, the workflow this
+// mode exists for -- that directory can be reused for another repository on the same
+// forge, have its remotes rewritten, or simply be a copied run directory whose
+// recorded path now names somebody else's tree. The review then lands on pull request
+// sum.PR of a repository no agent read, and the head check does not catch it: it
+// compares commit SHAs, and the reviewed commit is public, so a request proposing it
+// can be opened by anyone. With -post-verdict that is an approval, under the
+// operator's identity, on a pull request that was never reviewed.
+//
+// FAILS CLOSED, like requireHead and for the same reason: "which repository does this
+// land on?" unanswered is not a license to publish. It costs nothing in practice --
+// the identity comes from the same gh that would do the posting, so a call that cannot
+// name the repository could not have submitted either.
+//
+// It is a check and the submission is a separate round trip, so it does not close a
+// rewrite of the checkout's remotes in between -- that residue is the same shape as
+// requireHead's window, and it needs write access to the operator's own checkout at
+// that instant rather than a run directory or a pull request.
+func wrongRepository(ctx context.Context, sum *model.RunSummary) string {
+	now := repoIDFor(ctx, sum.Path)
+	if now == "" {
+		return fmt.Sprintf("cannot establish which repository %s is a checkout of, so this review cannot be bound to the one it reviewed (%s); the submission would go wherever that directory points now, so it is refused", sum.Path, sum.ReviewedRepo)
+	}
+	if !strings.EqualFold(now, sum.ReviewedRepo) {
+		return fmt.Sprintf("this run reviewed %s, but %s is now a checkout of %s -- publishing would put the review, and any verdict in it, on pull request %d of a repository nobody reviewed. Replay it from a checkout of %s.", sum.ReviewedRepo, sum.Path, now, sum.PR, sum.ReviewedRepo)
+	}
+	return ""
+}
+
 // unreplayable says why a summary cannot be published, or returns "" if it can.
 //
 // Every answer names dir and ends the same way, because they are all the same
@@ -309,6 +356,15 @@ func unreplayable(dir string, sum *model.RunSummary) string {
 	// read is the reason this is checked at all.
 	case sum.ReviewedHead == "":
 		return dir + " does not record which commit it reviewed, so the review cannot be bound to one. Runs from before that was recorded cannot be replayed; review again to produce one that can."
+	// WHICH REPOSITORY that commit is in. A commit does not name a destination, and
+	// everything else the replay has -- a path and a number -- describes wherever that
+	// path points at publication time. Without this there is nothing to compare the
+	// checkout against, so wrongRepository could only ever pass, and the review would
+	// go to pull request PR of whatever repository the directory holds by then. Refused
+	// here with the same answer as the missing head above, since it is the same
+	// situation: a fact the run did not record, which a replay must not invent.
+	case sum.ReviewedRepo == "":
+		return dir + " does not record which repository it reviewed, so the review cannot be bound to one -- only the path it was run in, which may hold a different repository by now. Runs from before that was recorded cannot be replayed; review again to produce one that can."
 	// This run ALREADY published. `review-pr -post` leaves a summary that is
 	// otherwise perfectly replayable -- review-only termination, no error -- so
 	// without this the inspect-then-publish workflow applied to a run that was

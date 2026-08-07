@@ -1028,6 +1028,66 @@ func TestTheForgeRemoteIsFoundWhateverItIsNamed(t *testing.T) {
 	}
 }
 
+// A run has to record WHICH REPOSITORY it reviewed, because a later -post-run has
+// nothing else to bind its submission to: the summary's path is a path, and the
+// checkout occupying it can be a different repository on the same forge by then.
+// The identity comes from gh -- the same resolution `gh pr checkout` used -- and an
+// unanswerable read yields nothing rather than a guess, which the callers treat as
+// the absence of the fact.
+func TestRepoIDIsTheRepositoryGHResolvedForTheCheckout(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		ghBase string
+		want   string
+	}{
+		{"the repository gh names", "https://github.com/o/r", "github.com/o/r"},
+		{"gh cannot name one", "", ""},
+		{
+			// A host alone is a forge, not a repository on it: comparing that would
+			// accept every repository there, which is the comparison this exists to make.
+			"a URL that names no repository",
+			"https://github.com", "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := gitRepoWithRemotes(t, [][2]string{{"origin", "https://github.com/o/r.git"}})
+			stubGHRepoView(t, tc.ghBase)
+			if got := RepoID(t.Context(), dir); got != tc.want {
+				t.Errorf("RepoID() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The identity has to be the SAME STRING for the same repository however its URL is
+// spelled, or the replay refuses the ordinary case: a run recorded from an https
+// remote and replayed in a checkout gh describes with a trailing .git, a port, or
+// different capitalization is the same repository, and a refusal there would break
+// the mode for everybody. It must still separate repositories that differ only in
+// owner or host, which is the whole point of comparing it.
+func TestCanonicalRepoNamesOneRepositoryOneWay(t *testing.T) {
+	for _, tc := range []struct {
+		remote string
+		want   string
+	}{
+		{"https://github.com/Owner/Repo", "github.com/owner/repo"},
+		{"https://GitHub.com/owner/repo.git", "github.com/owner/repo"},
+		{"https://user:token@github.com:443/owner/repo/", "github.com/owner/repo"},
+		{"git@github.com:owner/repo.git", "github.com/owner/repo"},
+		{"ssh://git@gitlab.example.com/group/sub/proj.git", "gitlab.example.com/group/sub/proj"},
+		{"https://github.com/owner/other", "github.com/owner/other"},
+		{"https://github.com/other/repo", "github.com/other/repo"},
+		{"https://ghe.example.com/owner/repo", "ghe.example.com/owner/repo"},
+		// Neither URL shape, so nothing is named.
+		{"/srv/git/repo.git", ""},
+		{"", ""},
+	} {
+		if got := canonicalRepo(tc.remote); got != tc.want {
+			t.Errorf("canonicalRepo(%q) = %q, want %q", tc.remote, got, tc.want)
+		}
+	}
+}
+
 // A review permalink is the only handle this run holds on the approval it just
 // posted, and asking the API which review is ours would race anything else
 // posting. Anything that is not a plain numeric id must fail closed: dismissing

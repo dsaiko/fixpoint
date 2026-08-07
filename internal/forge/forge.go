@@ -111,28 +111,82 @@ func DetectKind(remote string) Kind {
 // remoteHost extracts the hostname from either URL shape git uses:
 // scp-like (git@host:owner/repo.git) and real URLs (https://host/owner/repo).
 func remoteHost(remote string) string {
+	host, _ := splitRemote(remote)
+	return host
+}
+
+// splitRemote separates either URL shape git uses -- scp-like
+// (git@host:owner/repo.git) and real URLs (https://host/owner/repo) -- into its
+// lowercased host and the path that follows it. Both halves are empty for
+// anything that is neither shape.
+func splitRemote(remote string) (host, path string) {
 	remote = strings.TrimSpace(remote)
 	if remote == "" {
-		return ""
+		return "", ""
 	}
 	if i := strings.Index(remote, "://"); i >= 0 {
 		rest := remote[i+3:]
 		if at := strings.Index(rest, "@"); at >= 0 {
 			rest = rest[at+1:] // strip userinfo
 		}
-		rest, _, _ = strings.Cut(rest, "/")
-		host, _, _ := strings.Cut(rest, ":") // strip any port
-		return strings.ToLower(host)
+		authority, path, _ := strings.Cut(rest, "/")
+		host, _, _ := strings.Cut(authority, ":") // strip any port
+		return strings.ToLower(host), path
 	}
 	// scp-like: [user@]host:path
 	if at := strings.Index(remote, "@"); at >= 0 {
 		remote = remote[at+1:]
 	}
-	host, _, found := strings.Cut(remote, ":")
+	host, path, found := strings.Cut(remote, ":")
 	if !found {
+		return "", ""
+	}
+	return strings.ToLower(host), path
+}
+
+// RepoID is the canonical identity of the repository whose pull request this
+// checkout holds: "host/owner/repo", lowercased and stripped of scheme,
+// credentials, port and ".git".
+//
+// It exists because a run's destination has to survive the run. The summary a
+// review leaves records a PATH, and a path is not an identity: the checkout that
+// occupied it can be repointed at another repository on the same forge, or the
+// directory reused for one, and a later -post-run resolving its destination from
+// whatever is there now would publish to pull request N of THAT repository. The
+// head check does not notice -- it compares commit SHAs, and the reviewed commit
+// is public, so anyone may open a request proposing it. Recording this at review
+// time is what lets the replay refuse.
+//
+// Asked of gh rather than assembled from a remote URL, for the same reason
+// providerKind asks gh to settle a disagreement: `gh pr checkout` fetched the
+// reviewed pull request from the repository gh calls this checkout's base, so
+// that -- not whichever remote happens to be listed first -- is the identity the
+// review is about.
+//
+// "" when it cannot be established: gh missing, unauthenticated, no repository it
+// recognizes, or a URL that does not name an owner and a repository. That is the
+// absence of the fact, never a guess at it, and both callers treat it as one --
+// recording warns, publishing refuses.
+func RepoID(ctx context.Context, dir string) string {
+	return canonicalRepo(ghBaseRepoURL(ctx, dir))
+}
+
+// canonicalRepo reduces a repository URL to the identity RepoID promises, or ""
+// when it does not name one.
+//
+// Lowercased whole, host and path together: GitHub treats an owner and a
+// repository name case-insensitively, so two spellings of one repository must
+// compare equal -- a replay refused over capitalization would be a false alarm
+// about the one thing this identity exists to detect.
+func canonicalRepo(remote string) string {
+	host, path := splitRemote(remote)
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+	// An owner and a repository, both present: a host alone identifies a forge, not
+	// a repository on it, and comparing that would accept every repository there.
+	if host == "" || !strings.Contains(path, "/") {
 		return ""
 	}
-	return strings.ToLower(host)
+	return strings.ToLower(host + "/" + path)
 }
 
 // providerKind decides WHICH forge the pull request under review lives on.

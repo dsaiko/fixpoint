@@ -233,6 +233,16 @@ On GitHub the submission also names that commit (`commit_id`), so the review is
 recorded against it and its comments are marked outdated if the branch moves
 afterwards.
 
+It is bound to the **repository** it was about too. A commit is not a destination:
+the run directory records the path it ran in, and `-post-run` submits through
+whatever checkout is at that path when you run it — which, days later, may have been
+reused for another repository on the same forge or had its remotes rewritten. Pull
+request 170 of *that* repository would then receive the review, and the head check
+would not notice, because the reviewed commit is public and anyone can open a pull
+request proposing it. So a run also records the repository `gh` resolved for the
+checkout, and `-post-run` refuses unless the checkout still resolves to it — or
+cannot say what it resolves to at all.
+
 `-post`/`-post-run` and `-post-verdict` are separate flags because they are
 separate acts. The first makes a machine review visible; the second approves
 somebody's change or formally blocks it. None of them can be set from a config

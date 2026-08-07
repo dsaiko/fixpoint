@@ -678,8 +678,10 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// a pre-existing failure is attributable to the project, not to this run).
 	o.captureVerifyBaseline(ctx)
 
-	// WHICH commit all of the above is about, pinned before any of it is read.
+	// WHICH commit all of the above is about, pinned before any of it is read, and
+	// which repository that commit is in -- a commit alone does not name a destination.
 	o.recordReviewedHead(ctx, sum)
+	o.recordReviewedRepo(ctx, sum)
 
 	// What the forge already knows about this head, read once before the panel
 	// runs so the reviewers' own context and the verdict see the same answer.
@@ -755,6 +757,32 @@ func (o *Orchestrator) recordReviewedHead(ctx context.Context, sum *model.RunSum
 		return
 	}
 	sum.ReviewedHead = head
+}
+
+// recordReviewedRepo pins WHICH repository this run reviews, alongside the commit.
+//
+// The head says what the review is about; it does not say where it belongs. All a
+// later -post-run has to go on otherwise is sum.Path and sum.PR, and a path is not
+// an identity: the checkout there can be repointed at another repository on the same
+// forge, or the directory reused for one, and the replay would then submit to pull
+// request PR of THAT repository -- with the head check satisfied by anyone who opens
+// a request proposing the reviewed commit, which is public. Recording the repository
+// gh resolved for this checkout is what lets the replay refuse a destination the
+// panel never read. See forge.RepoID.
+//
+// A failure is a warning rather than a run failure, exactly like the head's: the
+// review is still worth producing, and the posting path fails closed on the missing
+// identity rather than publishing to a repository it cannot vouch for.
+func (o *Orchestrator) recordReviewedRepo(ctx context.Context, sum *model.RunSummary) {
+	if o.cfg.Target.Mode != config.ModePR {
+		return
+	}
+	repo := forge.RepoID(ctx, o.cfg.Target.Path)
+	if repo == "" {
+		o.logf("WARNING: could not record which repository is under review; publishing this review later with -post-run will refuse rather than submit it to whatever repository that checkout points at by then")
+		return
+	}
+	sum.ReviewedRepo = repo
 }
 
 // finishRun runs the closing phase and then applies a per_run squash over

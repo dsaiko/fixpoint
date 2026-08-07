@@ -7700,6 +7700,46 @@ func TestTheReviewedCommitIsRecordedForPullRequestsOnly(t *testing.T) {
 	}
 }
 
+// The repository is recorded alongside the commit, and for the same reason: a
+// -post-run days later resolves its destination from whatever checkout occupies the
+// recorded path, so without this the review can land on pull request N of a
+// different repository on the same forge -- with the head check satisfied, since the
+// reviewed commit is public. A directory run has no pull request to bind to.
+//
+// A gh that cannot answer is a WARNING, not a failed run: the review is still worth
+// producing, and -post-run refuses on the missing identity rather than publishing
+// somewhere it cannot vouch for.
+func TestTheReviewedRepositoryIsRecordedForPullRequestsOnly(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+
+	binDir := t.TempDir()
+	stub := "#!/bin/sh\n" +
+		`case "$*" in` + "\n" +
+		`"repo view --json url") printf '%s' '{"url":"https://github.com/Owner/Repo"}' ;;` + "\n" +
+		`*) echo "unexpected gh call: $@" >&2; exit 1 ;;` + "\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	sum := &model.RunSummary{}
+	f.orchestrator().recordReviewedRepo(t.Context(), sum)
+	if sum.ReviewedRepo != "" {
+		t.Errorf("ReviewedRepo = %q for a directory review, want empty", sum.ReviewedRepo)
+	}
+
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+	f.orchestrator().recordReviewedRepo(t.Context(), sum)
+	// Canonical, so the string a replay compares against does not depend on how the
+	// URL happened to be spelled.
+	if want := "github.com/owner/repo"; sum.ReviewedRepo != want {
+		t.Errorf("ReviewedRepo = %q, want the repository gh resolved %q", sum.ReviewedRepo, want)
+	}
+}
+
 // Findings are anchored to their lines so a reader meets each one where the code
 // is. Only those with a location, and only those still standing.
 func TestInlineCommentsCoverLocatedSurvivingFindingsOnly(t *testing.T) {

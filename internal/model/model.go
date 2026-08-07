@@ -276,6 +276,17 @@ type RunSummary struct {
 	// read. Empty for a run from before it was recorded, which the posting paths
 	// treat as "cannot be bound" and refuse.
 	ReviewedHead string `json:"reviewed_head,omitempty"`
+	// ReviewedRepo is WHICH repository that commit belongs to, in pr mode: the
+	// canonical host/owner/repo gh resolved for the checkout (see forge.RepoID).
+	// Path and PR alone cannot say -- a path is not an identity, and the checkout
+	// occupying it can be repointed at another repository on the same forge or the
+	// directory reused for one, at which point a later -post-run would publish to
+	// pull request PR of THAT repository. The reviewed head does not catch it: the
+	// commit is public, so anyone may open a request proposing it. So publishing
+	// compares this against the repository the checkout resolves to now and refuses
+	// when they differ. Empty for a run from before it was recorded, which -post-run
+	// treats as "cannot be bound" and refuses.
+	ReviewedRepo string `json:"reviewed_repo,omitempty"`
 	Path         string `json:"path"`
 	Strategy     string `json:"strategy"`
 	ReviewOnly   bool   `json:"review_only"`
