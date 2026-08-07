@@ -166,6 +166,68 @@ func TestTriageIgnoresInventedIdsAndReasonlessDecisions(t *testing.T) {
 	}
 }
 
+// An acceptance is a work order, and the title and description are the whole of
+// what the coder is given: the comment itself is context it is told not to act on
+// by its own say-so. So an accept that carries neither must not be commissioned --
+// it would spend a coder pass, a verify gate and a commit on an empty instruction,
+// and an empty title reaches both the fingerprint that groups findings and the
+// commit subject. The panel's own findings are already refused for this
+// (validateReviewFindings); a comment enters the same pipeline.
+func TestAnAcceptanceWithNothingToWorkFromIsLeftUndecided(t *testing.T) {
+	for name, tc := range map[string]struct{ decision, want string }{
+		"no title":       {`{"thread":"100","verdict":"accept","reason":"r","title":"  ","severity":"high","category":"bug","file":"a.go","description":"d"}`, "no title"},
+		"no description": {`{"thread":"100","verdict":"accept","reason":"r","title":"t","severity":"high","category":"bug","file":"a.go"}`, "no description"},
+		"neither":        {`{"thread":"100","verdict":"accept","reason":"r","severity":"high","category":"bug","file":"a.go"}`, "no title or description"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.triageRole()
+			f.cfg.Review.Post = true
+			o, reader, logs := f.withThreads("dsaiko",
+				forge.Thread{ID: "100", Path: "a.go", Line: 3, Author: "dsaiko", Body: "missing guard"})
+			f.respond(1, `<review>{"decisions":[`+tc.decision+`]}</review>`)
+
+			o.triageConversations(t.Context())
+
+			if len(o.commissioned) != 0 {
+				t.Fatalf("commissioned %+v; an acceptance with no %s is not work anyone can do", o.commissioned, tc.want)
+			}
+			if len(reader.bodies) != 0 {
+				t.Errorf("posted %q; an unusable acceptance is not a decline either", reader.bodies)
+			}
+			if len(o.threads) != 1 {
+				t.Errorf("threads = %+v, want the conversation left as context", o.threads)
+			}
+			if !strings.Contains(logs(), tc.want) || !strings.Contains(logs(), "left undecided") {
+				t.Errorf("the log must name what was missing and that nothing was decided:\n%s", logs())
+			}
+			if !strings.Contains(logs(), "0 accepted, 0 declined, 1 left undecided") {
+				t.Errorf("a run that says it answers every conversation must say when it did not:\n%s", logs())
+			}
+		})
+	}
+}
+
+// A review comment is anchored to a file, so an acceptance that omits one still has
+// its location in front of it. Taking it from the conversation keeps the issue
+// locatable instead of refusing work over a field the thread already answers.
+func TestACommissionedFindingFallsBackToTheConversationsFile(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.triageRole()
+	o, _, _ := f.withThreads("dsaiko", forge.Thread{ID: "100", Path: "pkg/a.go", Line: 3, Author: "dsaiko", Body: "missing guard"})
+	f.respond(1, `<review>{"decisions":[{"thread":"100","verdict":"accept","reason":"r","title":"missing nil check",
+		"severity":"high","category":"bug","description":"Guard the dereference."}]}</review>`)
+
+	o.triageConversations(t.Context())
+
+	if len(o.commissioned) != 1 {
+		t.Fatalf("commissioned %d, want 1: a missing file is not a missing decision", len(o.commissioned))
+	}
+	if got := o.commissioned[0].File; got != "pkg/a.go" {
+		t.Errorf("file = %q, want the conversation's own path", got)
+	}
+}
+
 // The verdict a decision is validated as must be the verdict it is dispatched as.
 // The validator trims and folds case, so " Accept\n" passes the gate; if the raw
 // spelling then reached the dispatch it would miss the accept branch and fall

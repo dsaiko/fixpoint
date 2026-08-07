@@ -76,6 +76,7 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 		known[th.ID] = th
 	}
 	for _, d := range decisions {
+		missing := missingAcceptFields(d)
 		switch {
 		case !model.ValidTriageVerdict(d.Verdict):
 			o.logf("WARNING: triage returned an unknown verdict %q on conversation %s; it is left undecided", d.Verdict, d.Thread)
@@ -88,6 +89,14 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 			// acceptance. A decision nobody can argue with is not a decision, and on the
 			// reject side it would post an empty answer to a person.
 			o.logf("WARNING: triage decided %s with no reason; it is left undecided", d.Thread)
+		case model.NormalizeTriageVerdict(d.Verdict) == model.TriageAccept && missing != "":
+			// An acceptance is a work order, and these fields are the whole of it. The
+			// comment itself is context the coder is told not to act on by its own say-so,
+			// so an accept with no title or no description commissions a session with
+			// nothing to do -- and spends a coder pass, a verify gate and a commit
+			// subject on it. Left undecided instead: the conversation stays context,
+			// exactly as it would have without this step.
+			o.logf("WARNING: triage accepted conversation %s with no %s; it is left undecided", d.Thread, missing)
 		case byThread[d.Thread].Thread != "":
 			o.logf("WARNING: triage decided conversation %s more than once; the first decision stands", d.Thread)
 		default:
@@ -131,6 +140,27 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 	}
 	o.threads = remaining
 	o.endPhase("TRIAGE  %d accepted, %d declined, %d left undecided", accepted, rejected, undecided)
+}
+
+// missingAcceptFields names the required fields an acceptance left empty, or ""
+// when it carries them all.
+//
+// Only the two the coder actually works from. Severity and category are left out on
+// purpose: both have a documented default and a warning below, because a
+// mislabeled issue is still workable, while a nameless one is not -- an empty title
+// reaches the fingerprint that groups findings and the subject of the commit, and
+// an empty description is an instruction to fix nothing in particular. This mirrors
+// validateReviewFindings, which refuses a titleless finding from the panel; work
+// commissioned by a comment enters the same pipeline and is held to the same bar.
+func missingAcceptFields(d model.TriageDecision) string {
+	var missing []string
+	if strings.TrimSpace(d.Title) == "" {
+		missing = append(missing, "title")
+	}
+	if strings.TrimSpace(d.Description) == "" {
+		missing = append(missing, "description")
+	}
+	return strings.Join(missing, " or ")
 }
 
 // askTriage runs the agent over the collected material and returns its decisions.
@@ -198,13 +228,21 @@ func (o *Orchestrator) commissionedFinding(d model.TriageDecision, th forge.Thre
 	if cat == "" {
 		cat = "bug"
 	}
+	file := strings.TrimSpace(d.File)
+	if file == "" {
+		// The conversation names the file even when the decision forgot to -- a review
+		// comment is anchored to a path. Taking it from there keeps the issue locatable
+		// for the coder and for the history, rather than refusing an acceptance whose
+		// location was in front of the agent all along.
+		file = th.Path
+	}
 	external := me == "" || !strings.EqualFold(me, th.Author)
 	return model.Finding{
 		Agent:       o.cfg.Roles.Triage.Agent,
 		Lens:        o.cfg.Roles.Triage.Prompt,
 		Category:    cat,
 		Severity:    sev,
-		File:        strings.TrimSpace(d.File),
+		File:        file,
 		Line:        d.Line,
 		Title:       strings.TrimSpace(d.Title),
 		Description: strings.TrimSpace(d.Description),
