@@ -7942,6 +7942,64 @@ func TestRepliesAreNotPostedWithoutTheFlag(t *testing.T) {
 	}
 }
 
+// A reply claims work landed, so it waits for the commit that landed it.
+//
+// Everything up to verifyAndCommitFix can still take the fix away: the gate can
+// fail, the correction attempt can revert it, the edits can end up stashed. A
+// reply posted on the coder's say-so alone would put a claim on somebody's pull
+// request, under the operator's identity, that nothing had verified.
+func TestRepliesWaitForTheFixToCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		committed   bool
+		wantReplied []string
+	}{
+		{name: "the fix did not commit", committed: false, wantReplied: nil},
+		{name: "the fix committed", committed: true, wantReplied: []string{"100"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.cfg.Review.Post = true
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 7
+
+			logf, logs := captureLog()
+			o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			o.threads = []forge.Thread{{ID: "100", Path: "a.go", Line: 1, Author: "human", Body: "why?"}}
+
+			var replied []string
+			prev := readerFor
+			readerFor = func(context.Context, string) forge.Reader {
+				return &fakeReader{threads: o.threads, replied: &replied}
+			}
+			defer func() { readerFor = prev }()
+
+			it := model.Issue{ID: "i1"}
+			o.answerConversations(t.Context(), it, tc.committed, []model.FixReply{
+				{Thread: "100", Message: "guarded the dereference"},
+			})
+
+			if !slices.Equal(replied, tc.wantReplied) {
+				t.Errorf("replied to %v, want %v", replied, tc.wantReplied)
+			}
+			if tc.committed {
+				return
+			}
+			// A withheld reply is a decision, not a disappearance: it names the issue
+			// whose fix did not land, so the operator can see which claim was dropped.
+			if !strings.Contains(logs(), it.ID) {
+				t.Errorf("the skipped replies must name the issue:\n%s", logs())
+			}
+			if !strings.Contains(logs(), "did not commit") {
+				t.Errorf("the skipped replies must say why they were withheld:\n%s", logs())
+			}
+		})
+	}
+}
+
 // A conversation reply is the third channel agent text reaches a forge, after the
 // review body and the inline comments, and it is the one that looks most like a
 // person: it arrives in a human's notifications under their own question. So it
