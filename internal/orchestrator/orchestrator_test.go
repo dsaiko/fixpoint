@@ -7794,12 +7794,15 @@ func TestReplySignatureTemplateIsConfigurable(t *testing.T) {
 type fakeReader struct {
 	threads []forge.Thread
 	replied *[]string
+	login   string
 	// bodies records what was actually sent, for the tests that assert on the
 	// posted bytes rather than only on which thread was answered.
 	bodies []string
 }
 
 func (*fakeReader) Kind() forge.Kind { return forge.GitHub }
+
+func (r *fakeReader) Login(context.Context, string) string { return r.login }
 
 func (*fakeReader) Checks(context.Context, string, int) (forge.Checks, error) {
 	return forge.Checks{}, nil

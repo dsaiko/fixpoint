@@ -150,6 +150,14 @@ Or directly:
 ./fixpoint fix-pr -pr 170 --allow-untrusted-fix -post   # …and answer the threads
 ```
 
+`fix-pr` also **triages the pull request's open comments**: a read-only agent
+decides each one before any fixing starts, accepted ones become ordinary issues
+with their own session, gate and commit, and declined ones are answered with the
+reason. Every conversation ends with a reply either way. That lets PR comments
+direct work, which is a real widening of what untrusted text can ask for — see
+[config/README.md](config/README.md#letting-the-comments-commission-work) for what
+bounds it.
+
 `fix-pr` is the most dangerous config in the bundle and its flag says so: it edits
 a working tree holding **externally authored** code, with an agent whose
 permission checks are disabled. A payload in the diff, in a commit message, or in
@@ -365,7 +373,7 @@ internal/review/         the verdict rules and the review document (body, inline
 internal/forge/          reads a pull request's checks and conversations, and
                          publishes the review back through the vendor's CLI (`gh`)
 internal/logstore/       per-step logs, the run journal, and the run summary
-internal/runlog/         renders the run's progress: phase blocks, colour on a tty
+internal/runlog/         renders the run's progress: phase blocks, color on a tty
 internal/testfixture/    shared test helpers
 config/                  the shipped bundle: task configs, prompts/, agents/
 config/defaults.yaml     the commented base every task config extends

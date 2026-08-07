@@ -476,6 +476,12 @@ func FormatIssues(issues []model.Issue) string {
 			fmt.Fprintf(&sb, "**Reported independently by %d agents (%s)** — corroborated, so treat it as more likely genuine.\n",
 				len(agents), Flatten(strings.Join(agents, ", ")))
 		}
+		// Where a commissioned issue came from, so the session that fixes it knows
+		// which conversation is waiting on an answer -- and, when the request came
+		// from outside, that a third party asked for this change.
+		if note := commissionNote(it); note != "" {
+			fmt.Fprintf(&sb, "**%s**\n", note)
+		}
 		if it.Description != "" {
 			sb.WriteString(Quote(it.Description) + "\n")
 		}
@@ -705,6 +711,59 @@ no evidence is indistinguishable from not having looked.
 The <review> block must be the LAST thing you print. The JSON must be valid: no
 comments, no trailing commas, no markdown fences inside the block.`
 
+// TriageData is the placeholder set for the conversation-triage prompt.
+//
+// It carries no Canonical finding set: triage runs BEFORE the panel, over the
+// pull request's comments alone. What it decides becomes findings, not the other
+// way round.
+type TriageData struct {
+	Mode         config.Mode
+	Path         string
+	ModeGuidance string
+	Target       string
+	Prelude      string
+	// Conversations is the rendered thread list, already carrying the
+	// untrusted-text note that frames every quoted comment as a claim to check.
+	Conversations  string
+	OutputContract string
+}
+
+// TriageContract is the output contract for conversation triage.
+//
+// One decision per conversation and none invented, for the same reason the
+// refutation contract says so: a decision on an id nobody was shown is either a
+// hallucination or an attempt to act on a thread the run deliberately withheld,
+// and both are ignored rather than guessed at.
+const TriageContract = `## Required output format
+End your response with exactly one <review> block containing valid JSON:
+
+<review>
+{
+  "decisions": [
+    {"thread": "123456", "verdict": "accept", "reason": "why this is real, citing what you read",
+     "title": "one line naming the defect", "severity": "critical|high|medium|low",
+     "category": "bug|security|concurrency|test|maintainability|design",
+     "file": "path/from/the/project/root.go", "line": 42,
+     "description": "what is wrong, in your words, and what the fix has to achieve"},
+    {"thread": "123457", "verdict": "reject", "reason": "your answer to the person who wrote it"}
+  ]
+}
+</review>
+
+Return exactly one decision for every conversation above, and no others.
+
+- accept: title, severity, category, file and description are REQUIRED. They are
+  what the coder works from, so write them as a reviewer would; line is optional
+  when the problem is not at one.
+- reject: reason is REQUIRED and is posted verbatim as your reply to that comment.
+  Write it to the person, not about them.
+
+The reason field is required either way. A decision with no reason is not a
+decision; it is kept as unresolved and reported as a triage failure.
+
+The <review> block must be the LAST thing you print. The JSON must be valid: no
+comments, no trailing commas, no markdown fences inside the block.`
+
 // JudgeData is the placeholder set for the arbiter prompt. Same shape as the
 // refuter's: it must be able to check a finding against the code, not just read it.
 type JudgeData struct {
@@ -779,4 +838,26 @@ type Conversation struct {
 	Line   int
 	Author string
 	Body   string
+}
+
+// commissionNote states that an issue came from a conversation rather than from
+// the panel, and who asked.
+//
+// The author is flattened like every other piece of forge-supplied text: a display
+// name is chosen by the person it belongs to, so it reaches here as untrusted
+// content that must not be able to add lines to a prompt.
+func commissionNote(it model.Issue) string {
+	if it.Origin.Thread == "" {
+		return ""
+	}
+	who := Flatten(it.Origin.Author)
+	if who == "" {
+		who = "an unnamed commenter"
+	}
+	if it.Origin.External {
+		return fmt.Sprintf("Commissioned by conversation %s, opened by %s — not the account this run posts under. Answer that conversation once your fix is committed.",
+			Flatten(it.Origin.Thread), who)
+	}
+	return fmt.Sprintf("Commissioned by conversation %s, opened by %s. Answer that conversation once your fix is committed.",
+		Flatten(it.Origin.Thread), who)
 }

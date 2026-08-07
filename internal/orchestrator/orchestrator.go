@@ -52,6 +52,14 @@ type Orchestrator struct {
 	// material is the round's collected diff, kept so the poster can tell which
 	// lines a forge will accept a comment on.
 	material string
+	// commissioned are findings triage accepted from the pull request's comments,
+	// waiting to join round 1. They are kept here rather than injected on the spot
+	// because triage runs before the first round exists.
+	commissioned []model.Finding
+	// triageStep is that pass's I/O record, held until there is a round to bill it
+	// to. Triage runs before round 1 and still costs tokens; a step that vanished
+	// from the summary would make the run's reported cost wrong.
+	triageStep model.StepStat
 	// threads are the pull request's OPEN review conversations, read once at start.
 	// Empty for every target that is not a pull request, and for a forge that
 	// cannot be asked.
@@ -208,6 +216,11 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 	}
 	if cfg.Review.Refute != "" {
 		if err := load(cfg.Review.Refute, cfg.Review.RefutePath, prompt.RefuteData{}); err != nil {
+			return nil, err
+		}
+	}
+	if t := cfg.Roles.Triage; t.Prompt != "" {
+		if err := load(t.Prompt, t.PromptPath, prompt.TriageData{}); err != nil {
 			return nil, err
 		}
 	}
@@ -661,6 +674,10 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// runs so the reviewers' own context and the verdict see the same answer.
 	o.readForgeChecks(ctx)
 	o.readForgeThreads(ctx)
+	// Decide what those conversations commission, before any of them has been read
+	// three times by three coder sessions and answered by none. Optional: without
+	// roles.triage the threads stay context, which is what every run before this did.
+	o.triageConversations(ctx)
 
 	// Where the run's commits begin, for a per_run squash at the end. Captured on the
 	// same pristine tree as the verification baseline: everything after this point is
@@ -1084,6 +1101,24 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 	).Replace(o.fixCommitMessage())
 	var body strings.Builder
 	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, flattenField(it.Category), flattenField(it.Severity), flattenField(it.Loc()))
+	// Who asked for this change, when it was not the panel. A commissioned fix comes
+	// from a comment somebody left on the pull request, and whoever reads this commit
+	// later -- in a bisect, in a blame, in a release note -- should be able to see
+	// that without reconstructing it from a conversation that may be resolved by then.
+	// Stated as a bullet rather than a `token: value` line for the same reason the
+	// detail below is: a trailing one of those IS a git trailer.
+	if it.Origin.FromConversation() {
+		who := flattenField(it.Origin.Author)
+		if who == "" {
+			who = "an unnamed commenter"
+		}
+		if it.Origin.External {
+			fmt.Fprintf(&body, "\n- requested in conversation %s by %s, who is not the account this run posts under\n",
+				flattenField(it.Origin.Thread), who)
+		} else {
+			fmt.Fprintf(&body, "\n- requested in conversation %s by %s\n", flattenField(it.Origin.Thread), who)
+		}
+	}
 	// The detail is the body's LAST line, and a lone `token: value` line at the end
 	// of a message IS a git trailer -- so it goes out as a bullet, the same shape
 	// writeVerdictSection uses, which git's trailer parser can never accept.
@@ -1980,6 +2015,18 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	})
 	o.phase("REVIEW  %d reviewer(s), %d lens(es)", len(panelAgents(rec.Assignments)), len(rec.Assignments))
 	o.review(ctx, &rec, material, sum.Rounds)
+	// What the pull request's comments asked for joins the panel's own reports, once,
+	// in the first round. From here they are ordinary findings: the ledger groups
+	// them (so a comment and a reviewer describing the same defect become one issue,
+	// still carrying the conversation to answer), the cap orders them by severity,
+	// and each is fixed in its own session behind the verify gate.
+	if len(o.commissioned) > 0 {
+		rec.Findings = append(rec.Findings, o.commissioned...)
+		rec.Steps = append(rec.Steps, o.triageStep)
+		o.logf("round %d: %d finding(s) from the pull request's conversations join the panel's %d",
+			round, len(o.commissioned), len(rec.Findings)-len(o.commissioned))
+		o.commissioned = nil
+	}
 	sum.Rounds = append(sum.Rounds, rec)
 	recP := &sum.Rounds[len(sum.Rounds)-1]
 	o.journal(model.EvReviewFinished, round, model.JournalReviewFinished{
@@ -2671,6 +2718,13 @@ func (o *Orchestrator) activeAgentNames() []string {
 	}
 	if o.cfg.Roles.Judge.Agent != "" {
 		add(o.cfg.Roles.Judge.Agent)
+	}
+	// Triage runs before the first round and its failure costs the operator every
+	// answer to every comment, so it belongs in the preflight ping like any other
+	// agent the run will actually invoke -- an expired login should fail here rather
+	// than after the panel has been paid for.
+	if o.cfg.Roles.Triage.Agent != "" {
+		add(o.cfg.Roles.Triage.Agent)
 	}
 	sort.Strings(names)
 	return names
@@ -4911,12 +4965,7 @@ func (o *Orchestrator) postReplies(ctx context.Context, replies []model.FixReply
 	// carried nothing at all to say otherwise -- the one place in this tool where a
 	// reader could be misled about who they were talking to. Built once: it is the
 	// same run, the same agent, for every thread.
-	signature := review.ReplySignature(o.cfg.Review.ReplySignature, review.SignatureFacts{
-		Agents:  []string{o.cfg.Roles.Coder.Agent},
-		Run:     o.logs.RunID(),
-		Version: review.Version(),
-		Config:  configBaseName(o.source.Config),
-	})
+	signature := o.replySignature()
 	for _, reply := range replies {
 		if !known[reply.Thread] {
 			o.logf("WARNING: the coder answered thread %q, which it was not shown; not posted", reply.Thread)

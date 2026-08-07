@@ -223,6 +223,49 @@ to the reader.
 
 A `review-` config needs no `roles.coder` at all.
 
+### Letting the comments commission work
+
+```yaml
+roles:
+  triage: { agent: claude, prompt: triage }   # read-only; validation refuses can_edit
+```
+
+Without `roles.triage` a comment is context and nothing more: the coder reads the
+threads and is told to leave alone whatever its own issue does not address. That
+is the safe default — anyone who can reach a pull request can write a comment, and
+"fix this" from a stranger must not reach the working tree on its own say-so. The
+cost is that a reviewer can leave five comments, watch a fix run go past, and get
+no reply to any of them.
+
+With it, one read-only agent reads every unresolved conversation **before** any
+fixing starts and decides each one:
+
+- **accept** — it becomes an ordinary issue, in triage's own words rather than the
+  comment's, and goes through the same pipeline as anything the panel found: one
+  coder session, the project's verify gate, its own commit. The conversation is
+  answered once that commit lands.
+- **decline** — answered immediately with the reason triage gave. A rejection
+  claims no work was done, so it has no commit to wait behind.
+
+Every conversation gets a decision, and a run reports how many it left undecided
+rather than pretending otherwise.
+
+Naming this role widens the trust surface, and the widening is the point: PR
+content now directs work. It is the same assertion `--allow-untrusted-fix` already
+makes about the diff, and nothing on the path from that text to a commit is
+shortened. Two things bound it. The agent is **read-only** by validation, for the
+same reason as the judge — whatever decides what untrusted text commissions must
+not be able to act on it itself. And a request from an account other than the one
+`gh` is authenticated as is **labeled external** wherever it travels: in the
+coder's prompt and in the commit message, so a reader of the history can see that
+a change was asked for by a third party without reconstructing it from a
+conversation that may be resolved by then. An unreadable login makes every author
+external, which errs toward saying more.
+
+Deciding once also fixes a bug the tool found in itself: a thread used to stay in
+the list for the whole run, so several sessions could each reply to the same
+comment.
+
 ## Answering a pull request's conversations
 
 A fix run over a pull request is shown its **unresolved** review threads, and may

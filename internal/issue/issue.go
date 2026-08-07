@@ -421,6 +421,7 @@ func (l *Ledger) create(round int, obs model.Finding) int {
 		Description: obs.Description,
 		Suggestion:  obs.Suggestion,
 		Advisory:    obs.Advisory,
+		Origin:      obs.Origin,
 		FirstRound:  round,
 	}
 	l.issues = append(l.issues, iss)
@@ -468,6 +469,13 @@ func (l *Ledger) attach(idx, round int, obs *model.Finding) {
 	}
 	if model.WorseSeverity(obs.Severity, it.Severity) {
 		it.Severity = obs.Severity
+	}
+	// A conversation origin survives merging, whichever observation carried it. If
+	// the panel independently reports what a comment already asked for, the issue is
+	// still one somebody is waiting for an answer to -- and dropping the origin here
+	// would silently unanswer that conversation.
+	if it.Origin.Thread == "" && obs.Origin.Thread != "" {
+		it.Origin = obs.Origin
 	}
 }
 

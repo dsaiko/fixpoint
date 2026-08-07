@@ -37,6 +37,16 @@ type Finding struct {
 	// observations from different agents and lenses can share one.
 	IssueID string `json:"issue_id,omitempty"`
 
+	// Origin records that this finding came from a CONVERSATION on the pull
+	// request rather than from the panel -- a comment somebody left, which triage
+	// accepted as real work. Zero value means the panel found it.
+	//
+	// It travels with the finding because two later steps need it: the coder is
+	// told which conversation to answer once its fix is committed, and the commit
+	// records who commissioned the change. A fix nobody on the panel asked for
+	// should say whose request it was.
+	Origin Origin `json:"origin,omitempty"`
+
 	// Filled in after the coder round.
 	Verdict       string `json:"verdict,omitempty"` // fixed | rejected | deferred
 	VerdictDetail string `json:"verdict_detail,omitempty"`
@@ -498,6 +508,9 @@ type Issue struct {
 
 	Verdict       string `json:"verdict,omitempty"`
 	VerdictDetail string `json:"verdict_detail,omitempty"`
+	// Origin is where this issue came from, when it was not the panel. See
+	// Finding.Origin.
+	Origin Origin `json:"origin,omitempty"`
 	// Contested records that the refutation round disagreed about this finding:
 	// somebody who looked at it did not believe it, or nobody could decide. It is
 	// kept -- one reviewer still standing behind a defect is enough -- but a reader
@@ -593,6 +606,47 @@ const (
 	JudgeDrop = "drop"
 )
 
+// TriageOutput is the conversation-triage reply.
+type TriageOutput struct {
+	Decisions []TriageDecision `json:"decisions"`
+}
+
+// TriageDecision is accept-or-reject on one pull-request conversation.
+//
+// An accepted decision carries a whole finding, written by triage rather than
+// quoted from the comment: the coder acts on these words, and a comment that says
+// "this looks wrong to me" is not something anyone can fix. A rejected one carries
+// only the reason, which is posted verbatim as the reply -- so it is addressed to
+// the person who commented, not about them.
+type TriageDecision struct {
+	Thread  string `json:"thread"`
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
+
+	// Set on accept.
+	Title       string `json:"title,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Category    string `json:"category,omitempty"`
+	File        string `json:"file,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// What triage may decide.
+const (
+	TriageAccept = "accept"
+	TriageReject = "reject"
+)
+
+// ValidTriageVerdict reports whether v is one triage may return.
+func ValidTriageVerdict(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case TriageAccept, TriageReject:
+		return true
+	}
+	return false
+}
+
 // ValidJudgeVerdict reports whether v is one the judge may return.
 func ValidJudgeVerdict(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
@@ -619,3 +673,24 @@ type ReviewAnchor struct {
 	Line int    `json:"line"`
 	Body string `json:"body"`
 }
+
+// Origin identifies a pull-request conversation a finding was commissioned by.
+//
+// External says the comment's author is NOT the account fixpoint is authenticated
+// as -- so it is neither the operator nor anything fixpoint itself posted. Such a
+// request is still acted on (a colleague reviewing your pull request is the normal
+// case), but it is labeled everywhere it travels: in the coder's prompt and in
+// the commit. Somebody reading the history later should be able to see that a
+// change was asked for by a third party, without reconstructing it from the pull
+// request.
+//
+// Unknown authorship counts as external. The check is "does this match the login
+// gh reports", and a login it could not read proves nothing.
+type Origin struct {
+	Thread   string `json:"thread,omitempty"`
+	Author   string `json:"author,omitempty"`
+	External bool   `json:"external,omitempty"`
+}
+
+// FromConversation reports whether the finding was commissioned by a comment.
+func (o Origin) FromConversation() bool { return o.Thread != "" }

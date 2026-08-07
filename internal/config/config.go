@@ -97,6 +97,23 @@ type Roles struct {
 	// that it never invokes something that can modify the target. Same judgment,
 	// different hands.
 	Judge RoleRef `yaml:"judge"`
+	// Triage is the optional arbiter for the pull request's OPEN CONVERSATIONS: a
+	// read-only agent that reads every unresolved comment and decides, one by one,
+	// whether it names real work.
+	//
+	// Naming it turns comments from context into input. Without it a coder is shown
+	// the conversations and told to leave them alone; with it, an accepted comment
+	// becomes an issue that goes through the ordinary pipeline -- one session, the
+	// verify gate, its own commit -- and a rejected one gets an answer saying why.
+	// Every conversation ends with a decision and a reply either way.
+	//
+	// Read-only for the same reason as the judge: this agent reads text that anyone
+	// with access to the pull request can write, and the decision it makes must not
+	// be made by something that can also edit the tree.
+	//
+	// It is only meaningful in pr mode; in any other mode there are no
+	// conversations and the step does not run.
+	Triage RoleRef `yaml:"triage"`
 }
 
 // RoleRef points one role at an agent and a prompt, both by BARE NAME:
@@ -1219,6 +1236,14 @@ func (c *Config) Validate() error {
 			return errors.New("roles.judge: both agent and prompt are required when either is set")
 		}
 	}
+	if t := c.Roles.Triage; t.Agent != "" || t.Prompt != "" {
+		if t.Agent == "" || t.Prompt == "" {
+			return errors.New("roles.triage: both agent and prompt are required when either is set")
+		}
+		if c.Target.Mode != ModePR {
+			return fmt.Errorf("roles.triage is set but target.mode is %q: conversations exist only on a pull request", c.Target.Mode)
+		}
+	}
 	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
 		return fmt.Errorf("review.block_at: unknown severity %q (want %s)", c.Review.BlockAt, strings.Join(model.Severities, " | "))
 	}
@@ -1461,6 +1486,20 @@ func (c *Config) Validate() error {
 	// claim from being contradicted by the argv. The shipped configs pin the judge
 	// to an agent that is also in the reviewer pool and so was checked there; a
 	// judge-only agent has no other place to be validated.
+	if t := c.Roles.Triage; t.Agent != "" {
+		if err := check("roles.triage", t.Agent); err != nil {
+			return err
+		}
+		// Same rule as the judge, and here it is the load-bearing half of the feature:
+		// triage reads comments written by anyone who can reach the pull request and
+		// decides what work they commission. An agent that could also edit would let
+		// that text reach the tree without passing through the coder, the verify gate
+		// and a commit -- which are the three things that make a commissioned change
+		// reviewable.
+		if c.Agents[t.Agent].CanEdit {
+			return fmt.Errorf("roles.triage.agent: %q declares can_edit; triage decides what untrusted comments commission and must not be able to act on them itself", t.Agent)
+		}
+	}
 	if j := c.Roles.Judge; j.Agent != "" {
 		if err := check("roles.judge", j.Agent); err != nil {
 			return err

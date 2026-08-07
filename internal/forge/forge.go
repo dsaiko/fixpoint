@@ -807,6 +807,14 @@ type Reader interface {
 	Threads(ctx context.Context, dir string, pr int) ([]Thread, error)
 	// Reply posts a response into an existing conversation.
 	Reply(ctx context.Context, dir string, pr int, threadID, body string) error
+	// Login is the account this CLI is authenticated as, or "" when it cannot be
+	// determined.
+	//
+	// It exists to answer one question: is this comment from the account fixpoint
+	// posts under, or from somebody else? A conversation that commissions work is
+	// labeled by that answer wherever it travels. "" is the safe answer -- an
+	// unknown login makes every author external, which only ever adds a label.
+	Login(ctx context.Context, dir string) string
 }
 
 // ReaderFor is For, narrowed to providers that can read conversations.
@@ -888,6 +896,21 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 		})
 	}
 	return threads, nil
+}
+
+// Login asks gh who it is authenticated as.
+//
+// `gh api user` rather than `gh auth status`, whose output is prose meant for a
+// human and has changed shape between releases. A failure is not an error worth
+// stopping for: the caller only uses this to decide whether to LABEL a comment as
+// externally authored, and an unknown login labels every one of them, which errs
+// toward saying more rather than less.
+func (githubProvider) Login(ctx context.Context, dir string) string {
+	out, err := run(ctx, dir, "gh", "api", "user", "--jq", ".login")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 func (githubProvider) Reply(ctx context.Context, dir string, pr int, threadID, body string) error {

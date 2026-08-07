@@ -582,3 +582,37 @@ func RenderJudgeMD(agentName string, round int, verdicts []model.JudgeVerdict, e
 	}
 	return b.String()
 }
+
+// RenderTriageMD is the human-readable record of what the pull request's comments
+// were decided to commission.
+//
+// It is the audit trail for the one step where text somebody else wrote turns into
+// work: an accepted decision becomes a commit and a declined one becomes a reply
+// posted under the operator's identity, so both need to be readable afterwards
+// without reconstructing them from the pull request.
+func RenderTriageMD(agentName string, decisions []model.TriageDecision, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# conversation triage by %s\n\n", agentName)
+	if err != nil {
+		fmt.Fprintf(&b, "**failed:** %v\n\n", err)
+	}
+	if len(decisions) == 0 {
+		b.WriteString("_No decisions returned._\n")
+		return b.String()
+	}
+	for _, d := range decisions {
+		fmt.Fprintf(&b, "## conversation %s — %s\n\n", d.Thread, d.Verdict)
+		if t := strings.TrimSpace(d.Title); t != "" {
+			loc := strings.TrimSpace(d.File)
+			if d.Line > 0 {
+				loc = fmt.Sprintf("%s:%d", loc, d.Line)
+			}
+			fmt.Fprintf(&b, "**%s** (%s) %s\n\n", t, strings.TrimSpace(d.Severity), loc)
+		}
+		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(d.Reason))
+		if desc := strings.TrimSpace(d.Description); desc != "" {
+			fmt.Fprintf(&b, "%s\n\n", desc)
+		}
+	}
+	return b.String()
+}
