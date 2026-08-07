@@ -322,6 +322,50 @@ func TestTheTriagePromptCarriesTheChangeUnderReview(t *testing.T) {
 	}
 }
 
+// Triage costs tokens whatever it decides, so the summary has to show it ran.
+//
+// The step used to be appended to the round only alongside commissioned findings,
+// so a pass that declined every conversation -- an ordinary outcome -- or that
+// failed to parse left no trace at all: its tokens, cost, duration and Failed flag
+// vanished from the scoreboard, and the run under-reported what it spent.
+func TestTriageIsBilledToTheRoundEvenWhenItCommissionsNothing(t *testing.T) {
+	for name, reply := range map[string]string{
+		"declined everything": `<review>{"decisions":[{"thread":"100","verdict":"reject","reason":"not a defect"}]}</review>`,
+		"failed to parse":     "prose, not a block",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.triageRole()
+			o, _, _ := f.withThreads("dsaiko", forge.Thread{ID: "100", Author: "dsaiko", Body: "c"})
+			f.respond(1, reply)
+			f.respond(2, reviewResponse(t))
+
+			o.triageConversations(t.Context())
+			if len(o.commissioned) != 0 {
+				t.Fatalf("commissioned %d, want 0 for this case", len(o.commissioned))
+			}
+			sum := &model.RunSummary{}
+			cleanStreak := 0
+			if _, err := o.runRound(t.Context(), 1, sum, &cleanStreak); err != nil {
+				t.Fatalf("runRound() err = %v", err)
+			}
+
+			var billed int
+			for _, st := range sum.Rounds[0].Steps {
+				if st.Role == "triage" {
+					billed++
+				}
+			}
+			if billed != 1 {
+				t.Fatalf("triage steps in round 1 = %d, want 1: the pass ran and its cost must reach the summary", billed)
+			}
+			if o.triageStep.Role != "" {
+				t.Error("the step must be cleared once billed, or a second round bills it again")
+			}
+		})
+	}
+}
+
 // End to end: a comment becomes an issue, the issue reaches the coder with the
 // conversation it owes an answer to, and the commit records who asked.
 func TestACommissionedFixNamesItsConversationInThePromptAndTheCommit(t *testing.T) {

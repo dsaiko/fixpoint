@@ -2020,9 +2020,17 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	// them (so a comment and a reviewer describing the same defect become one issue,
 	// still carrying the conversation to answer), the cap orders them by severity,
 	// and each is fixed in its own session behind the verify gate.
+	// Billed for having RUN, not for what it decided. A pass that declined every
+	// conversation, or that failed to parse, spent the same tokens as one that
+	// commissioned work -- and the failed one is precisely the pass whose Failed
+	// flag the summary must show. Role is set by stepStat, so a non-empty one means
+	// the agent was invoked; cleared after so a later round does not bill it again.
+	if o.triageStep.Role != "" {
+		rec.Steps = append(rec.Steps, o.triageStep)
+		o.triageStep = model.StepStat{}
+	}
 	if len(o.commissioned) > 0 {
 		rec.Findings = append(rec.Findings, o.commissioned...)
-		rec.Steps = append(rec.Steps, o.triageStep)
 		o.logf("round %d: %d finding(s) from the pull request's conversations join the panel's %d",
 			round, len(o.commissioned), len(rec.Findings)-len(o.commissioned))
 		o.commissioned = nil
