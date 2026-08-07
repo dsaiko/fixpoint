@@ -83,6 +83,40 @@ func TestRunTargetExitsNonZero(t *testing.T) {
 	}
 }
 
+// postGuardLine returns the recipe line that vets POST. `make -n` prints it with
+// $(POST) already expanded and does not run it, so the test can execute that one
+// line by itself: running the target for real is not an option, since fix-pr's
+// build/test/vet prerequisites would re-enter this suite.
+func postGuardLine(t *testing.T, recipe string) string {
+	t.Helper()
+	var found []string
+	for _, line := range strings.Split(recipe, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "test -z ") && strings.Contains(trimmed, "POST must be 1 or unset") {
+			found = append(found, trimmed)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one POST guard line, got %d; without it a mistyped POST reaches the recipe:\n%s", len(found), recipe)
+	}
+	return found[0]
+}
+
+// runPostGuard executes the guard line as the shell would and reports its exit
+// status.
+func runPostGuard(t *testing.T, recipe string) (int, string) {
+	t.Helper()
+	out, err := exec.Command("sh", "-c", postGuardLine(t, recipe)).CombinedOutput()
+	if err == nil {
+		return 0, string(out)
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("running the POST guard: %v\n%s", err, out)
+	}
+	return exit.ExitCode(), string(out)
+}
+
 func hasArg(argv []string, want string) bool {
 	for _, arg := range argv {
 		if arg == want {
@@ -98,17 +132,45 @@ func hasArg(argv []string, want string) bool {
 // default, and misplacing it would silently swallow replies that were asked for.
 func TestFixPRPostsOnlyWhenAskedTo(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
-		argv := fixpointCommand(t, makeDryRun(t, "fix-pr", "PR=170"))
-		if hasArg(argv, "-post") {
+		recipe := makeDryRun(t, "fix-pr", "PR=170")
+		if argv := fixpointCommand(t, recipe); hasArg(argv, "-post") {
 			t.Errorf("make fix-pr PR=170 passes -post; posting must stay opt-in: %v", argv)
+		}
+		if code, out := runPostGuard(t, recipe); code != 0 {
+			t.Errorf("the POST guard exits %d with POST unset; the default invocation must still run:\n%s", code, out)
 		}
 	})
 	t.Run("POST=1", func(t *testing.T) {
-		argv := fixpointCommand(t, makeDryRun(t, "fix-pr", "PR=170", "POST=1"))
-		if !hasArg(argv, "-post") {
+		recipe := makeDryRun(t, "fix-pr", "PR=170", "POST=1")
+		if argv := fixpointCommand(t, recipe); !hasArg(argv, "-post") {
 			t.Errorf("make fix-pr PR=170 POST=1 omits -post; the replies would never be sent: %v", argv)
 		}
+		if code, out := runPostGuard(t, recipe); code != 0 {
+			t.Errorf("the POST guard exits %d on POST=1, the one value that opts in:\n%s", code, out)
+		}
 	})
+	// The values the opt-in exists to refuse: a POST that is neither empty nor
+	// exactly 1 -- mistyped, inherited from the environment, or meant as a
+	// negation. Both halves have to hold. The conditional must not expand to
+	// -post, or a POST=0 run publishes replies into somebody's pull request under
+	// the operator's identity; and the guard must stop the run before the binary
+	// is reached, so the operator learns the value was ignored rather than
+	// silently getting the non-posting behaviour of a flag they thought they set.
+	for _, post := range []string{"0", "false", "true", "yes"} {
+		t.Run("POST="+post, func(t *testing.T) {
+			recipe := makeDryRun(t, "fix-pr", "PR=170", "POST="+post)
+			if argv := fixpointCommand(t, recipe); hasArg(argv, "-post") {
+				t.Errorf("make fix-pr PR=170 POST=%s passes -post; only POST=1 opts in: %v", post, argv)
+			}
+			code, out := runPostGuard(t, recipe)
+			if code != 2 {
+				t.Errorf("the POST guard exits %d on POST=%s, want 2 -- anything but 1 or unset is refused:\n%s", code, post, out)
+			}
+			if !strings.Contains(out, post) {
+				t.Errorf("the POST=%s refusal does not name the value it rejected:\n%s", post, out)
+			}
+		})
+	}
 	// The trust flags travel with the same recipe line, and the narrow one is
 	// what keeps a pull request's own content from being trusted.
 	argv := fixpointCommand(t, makeDryRun(t, "fix-pr", "PR=170"))
