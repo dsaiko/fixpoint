@@ -736,6 +736,11 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 	if err := requireHead(pr, head, cur); err != nil {
 		return "", err
 	}
+	// From here to confirmApproval is ONE critical section for an approval.
+	ctx, err = approvalSubmitContext(ctx, pr, event)
+	if err != nil {
+		return "", err
+	}
 	id, url, err := githubSubmitReview(ctx, dir, pr, head, body, event, inline)
 	if err != nil {
 		// Only a submission that CARRIED anchors can have been rejected for them.
@@ -763,6 +768,40 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 	// to call it a clean approval, because a caller that wants to name what has to be
 	// dismissed needs it.
 	return url, confirmApproval(ctx, dir, pr, head, event, id, url)
+}
+
+// approvalSubmitContext is the context an approval's submission runs on: the run's
+// own, detached from cancellation, and only after one last check that the run has not
+// been canceled already.
+//
+// Detaching the CONFIRMATION is not enough on its own, because the submission and the
+// confirmation are one operation and cancellation could still land between them. On
+// the run's context the POST is killed with the rest of the process group -- and a
+// killed `gh api` is not a submission that did not happen. GitHub validates and
+// creates the review before it answers, so an interrupt arriving while the response
+// was in flight leaves the approval ON the pull request while githubSubmitReview
+// returns an error and no review id. confirmApproval is then never called, nothing
+// holds the handle that would withdraw the approval, and it stands over whatever the
+// branch proposes next: exactly the outcome the dismissal exists to prevent, reached
+// through the window an interrupt opens. Detached, every accepted approval reaches the
+// confirmation that can bind it or take it off again.
+//
+// The cancellation check is what an interrupt still buys here. Before this point it
+// stops the publication outright, which is the whole of what canceling a post can
+// safely mean; after it, cliTimeout inside runStdin is the bound, so an interrupt
+// still does not wait on the network for long. Same trade as confirmApproval, over the
+// window immediately before it.
+//
+// APPROVALS only. A comment or a change request grants nothing, so there is no repair
+// to keep alive, and making Ctrl-C wait on one would spend responsiveness for nothing.
+func approvalSubmitContext(ctx context.Context, pr int, event Event) (context.Context, error) {
+	if event != EventApprove {
+		return ctx, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return ctx, fmt.Errorf("the run ended before the approval on #%d was submitted, so nothing was published: %w", pr, err)
+	}
+	return context.WithoutCancel(ctx), nil
 }
 
 // confirmApproval re-reads the head AFTER an approval has been submitted, and
@@ -795,8 +834,12 @@ func (githubProvider) PostReview(ctx context.Context, dir string, pr int, head, 
 // context both the read and the dismissal would then fail instantly with
 // context.Canceled -- leaving standing precisely the approval over unread code this
 // exists to withdraw, exactly when the operator asked the run to stop. Cancellation
-// must be able to abort the submission; it must not abort the repair of one that
-// already landed. Each CLI call is still bounded by cliTimeout inside run, so
+// must be able to stop an approval before it goes out -- approvalSubmitContext is
+// where it still can -- but not to abort the repair of one that already landed. The
+// same reason it cannot abort the submission itself once that begins: an interrupt
+// there would leave an accepted approval with no id to dismiss it by.
+//
+// Each CLI call is still bounded by cliTimeout inside run, so
 // nothing here outlives the interrupt for long. Same reasoning as the
 // orchestrator's stashForReconcile.
 func confirmApproval(ctx context.Context, dir string, pr int, reviewed string, event Event, id, url string) error {

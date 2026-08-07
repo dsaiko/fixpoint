@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -646,6 +647,50 @@ func TestAnApprovalOnAMovedHeadIsWithdrawnEvenWhenTheRunWasInterrupted(t *testin
 	}
 	if strings.Contains(err.Error(), "by hand") {
 		t.Errorf("the operator was sent to do by hand what was already done: %v", err)
+	}
+}
+
+// The submission has to be detached too, not only the confirmation that follows it. An
+// interrupt landing while the APPROVE POST is in flight kills gh after GitHub has
+// already created the review, so the submission reports a failure and carries back no
+// review id -- and an approval nobody can name is an approval nobody can dismiss. So
+// once the pre-submit head check has passed, cancellation stops the approval from
+// going out at all or it does not touch it: never halfway.
+func TestAnApprovalIsSubmittedOnAContextAnInterruptCannotKill(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+
+	submit, err := approvalSubmitContext(ctx, 7, EventApprove)
+	if err != nil {
+		t.Fatalf("approvalSubmitContext() = %v on a live run", err)
+	}
+	// The interrupt arrives in the window between the head check and the POST.
+	cancel()
+	if err := submit.Err(); err != nil {
+		t.Errorf("the approval submission was canceled mid-flight (%v) -- it can land on the forge with no id to withdraw it by", err)
+	}
+
+	// A comment grants nothing, so there is no repair to keep alive and Ctrl-C stays
+	// as responsive as it was.
+	plain, err := approvalSubmitContext(ctx, 7, Comment)
+	if err != nil {
+		t.Fatalf("approvalSubmitContext() = %v for a comment", err)
+	}
+	if plain.Err() == nil {
+		t.Error("a comment review outlives cancellation, spending responsiveness on a post that grants nothing")
+	}
+}
+
+// Before the POST, though, cancellation means what it says: detaching the submission
+// must not turn an interrupt that arrived earlier into an approval published on a run
+// the operator already stopped.
+func TestAnAlreadyInterruptedRunSubmitsNoApproval(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := approvalSubmitContext(ctx, 7, EventApprove); err == nil {
+		t.Fatal("approvalSubmitContext() = nil on an interrupted run -- the approval would be published anyway")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Errorf("the refusal does not carry the cancellation: %v", err)
 	}
 }
 
