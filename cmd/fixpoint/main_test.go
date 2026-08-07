@@ -1517,6 +1517,10 @@ func TestRunScoreboardWritesThroughLockedWriter(t *testing.T) {
 	w := &gateWriter{mark: strings.Repeat("─", 10), hold: 200 * time.Millisecond, started: make(chan struct{})}
 	orig := newRunLogger
 	racer := make(chan struct{})
+	// Closed when the test is done, so the racer never outlives it: a scoreboard
+	// that bypassed the run's writers never closes w.started, and the goroutine
+	// would otherwise park forever and hang the package.
+	testDone := make(chan struct{})
 	newRunLogger = func(io.Writer) *runlog.Log {
 		l := newLogger(w)
 		// Race a log line against the table write: the gate closes w.started as the
@@ -1525,21 +1529,24 @@ func TestRunScoreboardWritesThroughLockedWriter(t *testing.T) {
 		// table is whole; without it the line lands first, as it would mid-table.
 		go func() {
 			defer close(racer)
-			<-w.started
-			l.Printf("concurrent")
+			select {
+			case <-w.started:
+				l.Printf("concurrent")
+			case <-testDone:
+			}
 		}()
 		return l
 	}
+	t.Cleanup(func() { close(testDone) })
 	t.Cleanup(func() { newRunLogger = orig })
 
 	var buf bytes.Buffer
 	if got := run([]string{"-config", f.configFile("directory", "", "  review_only: true")}, &buf, &buf); got != 0 {
 		t.Fatalf("run() = %d, want 0; log:\n%s", got, strings.Join(w.recorded(), ""))
 	}
-	// Joined before anything is measured: the racer only reaches the writer once
-	// the table has released the lock, which is the whole property under test.
-	<-racer
-
+	// Counted before the join: the table is whole by the time run() returns, and a
+	// scoreboard that bypassed the run's writers would leave the racer blocked, so
+	// joining first would hang here instead of reporting tables = 0.
 	got := w.recorded()
 	tables := 0
 	for _, s := range got {
@@ -1550,6 +1557,11 @@ func TestRunScoreboardWritesThroughLockedWriter(t *testing.T) {
 	if tables != 1 {
 		t.Fatalf("the scoreboard reached the locked writer %d times, want 1: run() is not printing the table through Raw", tables)
 	}
+	// The table arrived, so the racer was released by it; join before measuring
+	// order, since the line only reaches the writer once the lock is free.
+	<-racer
+
+	got = w.recorded()
 	table, concurrent := -1, -1
 	for i, s := range got {
 		if strings.Contains(s, w.mark) && table < 0 {
