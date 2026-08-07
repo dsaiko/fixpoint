@@ -8476,11 +8476,22 @@ func TestAnAnsweredConversationIsNotOfferedOrPostedToAgain(t *testing.T) {
 	if !strings.Contains(convs, "200") {
 		t.Errorf("an unanswered conversation must still be offered:\n%s", convs)
 	}
-	// A failed post answers nobody, so that thread stays open for a later session.
+	// A failed post is not proof that nothing was posted: gh can time out or be
+	// canceled after GitHub accepted the comment. The thread is closed for the rest
+	// of the run so the next session cannot answer the same question a second time
+	// under the operator's name; if the post really failed, the next run reads the
+	// conversation as unanswered and picks it up again.
 	reader.replyErr = errors.New("forge said no")
 	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "200", Message: "fixed in b.go"}})
-	if !o.threadOpen("200") {
-		t.Error("a reply that never reached the forge must leave the conversation unanswered")
+	if o.threadOpen("200") {
+		t.Error("a reply whose outcome is unknown must not stay open for another session to repeat")
+	}
+	// The transient failure clears -- the forge was reachable all along, gh just lost
+	// the response -- and the next session names the same thread. It must not land.
+	reader.replyErr = nil
+	o.postReplies(t.Context(), nil, []model.FixReply{{Thread: "200", Message: "fixed in b.go, really"}})
+	if len(replied) != 1 {
+		t.Errorf("replied to %v, want no second answer to a thread whose first reply may already be posted", replied)
 	}
 }
 

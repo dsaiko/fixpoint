@@ -5268,9 +5268,21 @@ func (o *Orchestrator) postReplies(ctx context.Context, own map[string]bool, rep
 		// an unclosed HTML comment swallow its own attribution.
 		body := publishedText(forge.SanitizeText(reply.Message) + "\n\n" + signature)
 		if err := r.Reply(ctx, o.cfg.Target.Path, o.cfg.Target.PR, reply.Thread, body); err != nil {
-			// Left open deliberately: nothing was posted, so the conversation is still
-			// unanswered and a later session may still answer it.
-			o.logf("ERROR: replying to conversation %s failed: %v", reply.Thread, err)
+			// Closed anyway, and that is the point: an error is not proof that nothing
+			// reached the forge. gh can time out, be canceled, or lose the response after
+			// GitHub has already accepted the comment, and a thread left open is one the
+			// NEXT session of this run is shown, answers again, and posts a second machine
+			// answer under the operator's name for the same question.
+			//
+			// The trade is deliberately asymmetric. Closing costs at most one conversation
+			// going unanswered for the rest of this run -- if the post really did fail,
+			// the next run reads the thread as still unanswered and picks it up, since the
+			// answered check is a read of the forge, not of this list. Leaving it open
+			// costs a duplicate comment on a person's review, which is public and cannot
+			// be taken back.
+			o.closeThread(reply.Thread)
+			o.logf("ERROR: replying to conversation %s failed: %v; the comment may still have been posted, so nothing further will be posted to it this run",
+				reply.Thread, err)
 			continue
 		}
 		o.closeThread(reply.Thread)
