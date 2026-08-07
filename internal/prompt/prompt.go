@@ -667,11 +667,10 @@ func FormatCanonical(issues []model.Issue) string {
 	var sb strings.Builder
 	sb.WriteString("## Findings to judge\n\n")
 	for _, it := range issues {
-		loc := it.File
-		if it.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", loc, it.Line)
-		}
-		fmt.Fprintf(&sb, "### %s (%s) %s\n", it.ID, it.Severity, loc)
+		// The location and severity are agent-authored like everything else here:
+		// through Flatten, or a newline in a reported path forges a second entry in
+		// the canonical set every refuter and the judge then read as real.
+		fmt.Fprintf(&sb, "### %s (%s) %s\n", it.ID, Flatten(it.Severity), Flatten(it.Loc()))
 		fmt.Fprintf(&sb, "%s\n\n", Quote(it.Title))
 		if d := strings.TrimSpace(it.Description); d != "" {
 			fmt.Fprintf(&sb, "%s\n\n", Quote(d))
