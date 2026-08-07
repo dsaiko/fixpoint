@@ -8081,6 +8081,91 @@ func TestRefutationNeedsEveryResponderNotEveryPositionReceived(t *testing.T) {
 	}
 }
 
+// An operator's Ctrl-C is not a position on a finding.
+//
+// Cancellation reaches the refuters as a killed process, and a killed refuter
+// answers nothing -- so a round that just aggregates whoever came back reads a
+// PARTIAL panel as the round's judgment. Here the panel is two: `fast` refutes i1
+// and returns, `slow` is still running when the interrupt lands. The responded ==
+// panel rule in applyRefutations keeps that from deleting i1, but the survivor's
+// refutation was still being counted, marking i1 Contested and naming `fast` in
+// ContestedBy for a round the other half never finished. A stopped round has to
+// record nothing.
+func TestAnInterruptDuringRefutationTouchesNoFinding(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.refuteLens()
+	bin := t.TempDir()
+	for name, body := range map[string]string{
+		// `cat > /dev/null` drains the prompt, as the shared mock script does.
+		"fast": "#!/bin/sh\ncat > /dev/null\n" +
+			`printf '%s\n' '<review>{"positions":[{"issue":"i1","position":"refute",` +
+			`"evidence":"a.go:1 is guarded by its caller"}]}</review>'` + "\n",
+		"slow": "#!/bin/sh\ncat > /dev/null\nsleep 60\n",
+	} {
+		path := filepath.Join(bin, name+".sh")
+		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		f.cfg.Agents[name] = config.Agent{
+			Command: []string{path}, PromptVia: "stdin", Timeout: config.Duration(time.Minute),
+		}
+	}
+
+	o, logs := f.capturingOrchestrator()
+	rec := &model.RoundRecord{
+		Round: 1,
+		Assignments: []model.Assignment{
+			{Lens: "review", Agent: "fast"},
+			{Lens: "review", Agent: "slow"},
+		},
+		Issues: []model.Issue{{ID: "i1", Severity: "high", Title: "a blocking defect", File: "a.go", Line: 1}},
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		o.runRefutation(ctx, rec, "target")
+	}()
+
+	// Interrupt only once fast's refutation is ON DISK. That artifact is written
+	// after its agent exited and its reply parsed, so the position the round would
+	// otherwise aggregate is definitely in hand -- without the wait, the test could
+	// pass on the trivial nobody-answered path instead.
+	artifact := filepath.Join(f.cfg.Logs.StaticBase(), "*", "round-1", "refute-fast-*.md")
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		matches, err := filepath.Glob(artifact)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the fast refuter never recorded a position; nothing under %s", artifact)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("runRefutation did not return after the interrupt")
+	}
+
+	if got := rec.Issues[0].Status; got != "" {
+		t.Errorf("i1 Status = %q after an interrupted round, want it untouched: an interrupted panel is not a unanimous one", got)
+	}
+	if it := rec.Issues[0]; it.Contested {
+		t.Errorf("i1 was marked contested by %v, but half the panel was killed before it could answer; a round the operator stopped records no doubt",
+			it.ContestedBy)
+	}
+	if !strings.Contains(logs(), "refutation: interrupted before it could run; every finding stands") {
+		t.Errorf("an interrupted refutation must say so, in the shape the judge uses:\n%s", logs())
+	}
+}
+
 // The refutation and judge passes must leave artifacts, not just a count in the
 // log. Their product is judgment WITH EVIDENCE: an outvoted refuter's argument
 // exists nowhere else, and "who refuted what, on what grounds" was unanswerable

@@ -4320,6 +4320,22 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		}
 	}
 
+	// An interrupt during the fan-out is not a verdict. A killed refuter answers
+	// nothing, so aggregating whoever is left reads a PARTIAL panel as the round's
+	// judgment: the survivors' positions are counted, and a finding they refuted
+	// comes out Contested with their names in ContestedBy -- a recorded doubt from a
+	// round most of the panel never finished, which is then persisted and can be
+	// published. applyRefutations' responded == panel rule already stops a shrunken
+	// electorate from DELETING anything, but it reads a killed reviewer and one that
+	// failed on its own as the same fact, and they are not: nobody stopped the second
+	// one. Fail closed in the same shape as runJudge -- a round the operator
+	// interrupted records no judgment at all, and an operator's Ctrl-C can never
+	// be part of what happens to a finding.
+	if ctx.Err() != nil {
+		o.logf("refutation: interrupted before it could run; every finding stands")
+		return
+	}
+
 	// Keyed by issue AND by the agent that spoke, at most one position each.
 	//
 	// A flat list let one reviewer forge unanimity: counting position RECORDS rather
