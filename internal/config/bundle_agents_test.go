@@ -98,7 +98,7 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 //
 // 0 is the documented "no limit" default, so dropping or emptying the key is
 // neither a parse error nor a validation error: it silently restores the
-// behaviour the budget exists to prevent -- the agent runs a full round of wall
+// behavior the budget exists to prevent -- the agent runs a full round of wall
 // clock and returns "Prompt is too long", which looks like a crashed agent in the
 // summary rather than a prompt fixpoint should never have built. Pinning the
 // values (rather than only asserting > 0) makes a widening visible in the diff
