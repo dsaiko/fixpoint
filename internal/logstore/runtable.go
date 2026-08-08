@@ -614,7 +614,18 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 			"%d rejected session(s) left edits: %s · recover with `git stash pop`",
 			len(stashed), strings.Join(stashed, " "))})
 	}
-	exit := fmt.Sprintf("%s (exit %d)", sum.Termination, model.ExitCode(sum.Termination))
+	// The verdict is what a review run IS, so it goes above the exit line rather
+	// than being left for the reader to infer from an exit code.
+	if v := sum.Verdict; v != nil {
+		label := strings.ToUpper(strings.ReplaceAll(v.Outcome, "_", " "))
+		out = append(out, [2]string{"verdict", label})
+		for _, r := range v.Reasons {
+			// Escaped like every other cell: a reason can name an agent, and agent names
+			// come from a config the repository under review may own.
+			out = append(out, [2]string{"", "· " + agent.EscapeTerminal(r)})
+		}
+	}
+	exit := fmt.Sprintf("%s (exit %d)", sum.Termination, model.ExitCodeFor(sum))
 	if sum.Error != "" {
 		// A run error routinely wraps a subprocess's stderr verbatim -- including,
 		// in pr mode, `remote:` lines whose bytes an attacker-controlled server

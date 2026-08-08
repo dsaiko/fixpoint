@@ -78,7 +78,18 @@ type Overrides struct {
 	// be copied and edited once per PR.
 	PR                int
 	AllowUntrustedFix bool
-	TrustedTarget     bool
+	// Post publishes the review on the pull request, and PostVerdict additionally
+	// lets it carry the verdict (approve / request changes) instead of a comment.
+	//
+	// Flags, never config keys, for the same reason the trust gates are: publishing
+	// is an action on somebody else's pull request, and the config that would grant
+	// it may have been shipped by the repository under review. See TrustedTarget.
+	Post          bool
+	PostVerdict   bool
+	TrustedTarget bool
+	// TrustedBundle asserts trust in the bundle alone, not in the target's content;
+	// see Loop.TrustedBundle for why the two are separate assertions.
+	TrustedBundle bool
 }
 
 // apply folds the overrides into the configuration being compiled.
@@ -91,8 +102,17 @@ func (o Overrides) apply(c *Config) {
 	if o.AllowUntrustedFix {
 		c.Loop.AllowUntrustedFix = true
 	}
+	if o.Post {
+		c.Review.Post = true
+	}
+	if o.PostVerdict {
+		c.Review.PostVerdict = true
+	}
 	if o.TrustedTarget {
 		c.Loop.TrustedTarget = true
+	}
+	if o.TrustedBundle {
+		c.Loop.TrustedBundle = true
 	}
 	// Any nonzero value applies, including a negative one: an explicit
 	// -max-iterations -1 must reach Validate so its must-not-be-negative rule
@@ -127,8 +147,20 @@ func (o Overrides) Applied() []string {
 	if o.AllowUntrustedFix {
 		out = append(out, "allow_untrusted_fix=true")
 	}
+	// Recorded for the same reason the trust gates are: publishing acts on somebody
+	// else's pull request, so the authorization to do it belongs in the run log even
+	// when the run ends in a comment rather than a verdict.
+	if o.Post {
+		out = append(out, "post=true")
+	}
+	if o.PostVerdict {
+		out = append(out, "post_verdict=true")
+	}
 	if o.TrustedTarget {
 		out = append(out, "trusted_target=true")
+	}
+	if o.TrustedBundle {
+		out = append(out, "trusted_bundle=true")
 	}
 	if o.MaxIterations != 0 {
 		out = append(out, "max_iterations="+strconv.Itoa(o.MaxIterations))
@@ -263,25 +295,40 @@ func loadWithExtends(r *Resolver, path string) (*Config, string, map[string]bool
 	return merged, basePath, own, nil
 }
 
-// trustKeys are the authorization keys a task config may not set. They are
-// deliberately absent from the Loop struct (see Loop.TrustedTarget for why), so
-// the decoder would already reject them as unknown fields -- but as "field
+// The two reasons a key is refused here, spelled out for the operator reading the
+// error: both start from the same fact -- the first bundle on the search path is
+// the target's own -- and differ in what the key would buy the repository that
+// shipped it.
+const (
+	whyNotTrust = "Configs are searched in the target's own directory first, so a config that could grant trust would let reviewed code authorize fixpoint to execute its agent definitions and run the coder against it -- the very thing that assertion is meant to gate"
+	whyNotPost  = "Configs are searched in the target's own directory first, so a config that could turn publishing on would let reviewed code arrange for a review -- or, with post_verdict, an approval -- to be published on its own pull request under the operator's identity"
+)
+
+// trustKeys are the authorization keys a task config may not set: the trust
+// assertions and the publishing switches. They are deliberately absent from the
+// Loop and Review structs (see Loop.TrustedTarget and Review.Post for why), so the
+// decoder would already reject them as unknown fields -- but as "field
 // trusted_target not found in type config.Loop", which reads like a schema
 // mismatch to fix rather than a boundary being enforced. Naming them here is what
 // turns the refusal into an explanation.
 var trustKeys = []struct {
-	key, flag string
+	section, key, flag, why string
 }{
-	{"trusted_target", "-trusted-target"},
-	{"allow_untrusted_fix", "-allow-untrusted-fix"},
+	{"loop", "trusted_target", "-trusted-target", whyNotTrust},
+	{"loop", "trusted_bundle", "-trusted-bundle", whyNotTrust},
+	{"loop", "allow_untrusted_fix", "-allow-untrusted-fix", whyNotTrust},
+	{"review", "post", "-post", whyNotPost},
+	{"review", "post_verdict", "-post-verdict", whyNotPost},
 }
 
-// rejectTrustKeys fails when a task config tries to assert its own trust.
+// rejectTrustKeys fails when a task config tries to assert its own trust or turn
+// on publishing.
 //
 // Configs are resolved from <project>/config first, so this file may well have
 // come from the repository being reviewed: a config that could grant trust would
 // let the code under review authorize executing its own agent definitions and
-// running the write-capable coder against itself.
+// running the write-capable coder against itself, and one that could set
+// review.post would let it publish on its own pull request as the operator.
 func rejectTrustKeys(path string) error {
 	data, err := readBundleFile(path)
 	if err != nil {
@@ -290,7 +337,8 @@ func rejectTrustKeys(path string) error {
 	// A permissive probe: this runs BEFORE the strict decode, so it must not fail
 	// on unrelated keys and steal the better error message the real decode gives.
 	var probe struct {
-		Loop map[string]yaml.Node `yaml:"loop"`
+		Loop   map[string]yaml.Node `yaml:"loop"`
+		Review map[string]yaml.Node `yaml:"review"`
 	}
 	if err := yaml.Unmarshal(data, &probe); err != nil {
 		// Not this function's error to report: it runs BEFORE the strict decode, so
@@ -301,11 +349,11 @@ func rejectTrustKeys(path string) error {
 		// few lines later and never reaches a run.
 		return nil //nolint:nilerr // deliberate: the strict decode reports this file's syntax properly
 	}
+	sections := map[string]map[string]yaml.Node{"loop": probe.Loop, "review": probe.Review}
 	for _, tk := range trustKeys {
-		if _, ok := probe.Loop[tk.key]; ok {
-			return fmt.Errorf("%s: loop.%s cannot be set in a configuration file; pass %s on the command line instead. "+
-				"Configs are searched in the target's own directory first, so a config that could grant trust would let reviewed code authorize fixpoint to execute its agent definitions and run the coder against it -- the very thing that assertion is meant to gate",
-				path, tk.key, tk.flag)
+		if _, ok := sections[tk.section][tk.key]; ok {
+			return fmt.Errorf("%s: %s.%s cannot be set in a configuration file; pass %s on the command line instead. %s",
+				path, tk.section, tk.key, tk.flag, tk.why)
 		}
 	}
 	return nil
@@ -371,13 +419,18 @@ func (c *Config) resolveAgents(r *Resolver, into map[string]string) error {
 }
 
 // referencedAgents names the agents a run is built around: every active reviewer
-// plus the coder. Resolution and the env.inherit_all gate judge exactly this set,
-// so "the agents this configuration is about" has one definition. The coder is
-// included even for -review-only: it is resolved eagerly there too, and an agent
-// declaration that would be refused is better refused before a later invocation
-// makes it live.
+// plus the coder and the judge. Resolution and the env.inherit_all gate judge
+// exactly this set, so "the agents this configuration is about" has one
+// definition. The coder is included even for -review-only: it is resolved
+// eagerly there too, and an agent declaration that would be refused is better
+// refused before a later invocation makes it live. The judge is included for the
+// same reason and because it is invoked on the review-only path, where it reads
+// the untrusted code and the findings written about it -- an inline-only judge
+// agent that never appears here would skip resolution and slip past the
+// unconditional env.inherit_all refusal. Unset roles contribute an empty name,
+// which resolveAgents and the refusal loop already skip.
 func (c *Config) referencedAgents() []string {
-	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent)
+	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent, c.Roles.Judge.Agent, c.Roles.Triage.Agent)
 }
 
 // resolvePrompts turns every bare prompt name into a concrete file path, stored
@@ -399,17 +452,40 @@ func (c *Config) resolvePrompts(r *Resolver, into map[string]string) error {
 		into[name] = p
 		return p, nil
 	}
-	p, err := resolve(c.Roles.Coder.Prompt)
-	if err != nil {
-		return err
+	if c.Roles.Coder.Prompt != "" {
+		p, err := resolve(c.Roles.Coder.Prompt)
+		if err != nil {
+			return err
+		}
+		c.Roles.Coder.PromptPath = p
 	}
-	c.Roles.Coder.PromptPath = p
 	for i := range c.Roles.Review.Prompts {
 		p, err := resolve(c.Roles.Review.Prompts[i].Prompt)
 		if err != nil {
 			return err
 		}
 		c.Roles.Review.Prompts[i].PromptPath = p
+	}
+	if c.Roles.Judge.Prompt != "" {
+		p, err := resolve(c.Roles.Judge.Prompt)
+		if err != nil {
+			return err
+		}
+		c.Roles.Judge.PromptPath = p
+	}
+	if c.Roles.Triage.Prompt != "" {
+		p, err := resolve(c.Roles.Triage.Prompt)
+		if err != nil {
+			return err
+		}
+		c.Roles.Triage.PromptPath = p
+	}
+	if c.Review.Refute != "" {
+		p, err := resolve(c.Review.Refute)
+		if err != nil {
+			return err
+		}
+		c.Review.RefutePath = p
 	}
 	return nil
 }
@@ -465,11 +541,16 @@ func (c *Config) anchor(projectRoot string) {
 // target" and straight past the gate.
 //
 // The consequence is deliberate: pointing fixpoint at a project that carries its
-// own bundle requires -trusted-target even for a review-only run. The alternative
-// is deciding, per key, which of the reviewed repository's own policy is harmless.
+// own bundle requires an explicit trust assertion even for a review-only run. The
+// alternative is deciding, per key, which of the reviewed repository's own policy
+// is harmless.
 //
-// The caller gates on this: acting on a target's own bundle requires the same
-// explicit trust assertion as letting the coder edit it.
+// The caller gates on this, and either -trusted-bundle or -trusted-target
+// satisfies it. -trusted-bundle is the assertion that says only what this list is
+// about; -trusted-target says the same and more (see Loop.TrustedBundle), so a
+// caller that needs no more than bundle trust must not reach for it -- in pr mode
+// the wider flag also disarms guards over content `gh pr checkout` has not written
+// yet.
 func (l *Loaded) ProjectSuppliedPolicy() []string {
 	if l.ProjectRoot == "" {
 		return nil
@@ -513,7 +594,7 @@ func (l *Loaded) ProjectSuppliedPolicy() []string {
 // reader can audit and in the run's own provenance log.
 //
 // The refusal is unconditional, which is what separates this from
-// ProjectSuppliedPolicy's -trusted-target gate: that assertion says the target's
+// ProjectSuppliedPolicy's -trusted-bundle gate: that assertion says the target's
 // policy may be EXECUTED, not that the target may help itself to secrets it
 // cannot even name. It is the same boundary as the one that keeps
 // FIXPOINT_KEEP_ENV out of YAML (see internal/agent/env.go) -- the environment

@@ -24,6 +24,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/orchestrator"
+	"github.com/dsaiko/fixpoint/internal/runlog"
 )
 
 func main() {
@@ -58,6 +59,10 @@ Flags:
 	pr := fs.Int("pr", 0, "override target.pr in pr mode; which PR to review is per-invocation, so review-pr ships without a number (0 = use config)")
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
+	trustedBundle := fs.Bool("trusted-bundle", false, "assert only that the bundle files resolved from inside the target may be run; trusts no other target content and permits no fix round")
+	post := fs.Bool("post", false, "publish the review on the pull request as a COMMENT: findings become visible, no verdict is acted on")
+	postRunDir := fs.String("post-run", "", "publish the review a FINISHED run already produced, from its .fixpoint/<run> directory; invokes no agent")
+	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
 	porcelain := fs.Bool("porcelain", false, "with --list, emit a stable tab-separated form for scripts and shell completion")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
@@ -72,7 +77,8 @@ Flags:
 		return 2
 	}
 
-	logf, logRaw := newRunLogger(stderr)
+	runLog := newRunLogger(stderr)
+	logf, logRaw := runLog.Logf(), runLog.Raw
 
 	// Anchor the run at the project root -- the git root, or the nearest directory
 	// holding a config bundle, found by walking up from the working directory. Every
@@ -96,6 +102,22 @@ Flags:
 		return code
 	}
 
+	// Publishing a finished run needs no configuration at all: everything it acts
+	// on -- the pull request, the body, the anchors -- is recorded in that run's own
+	// summary. Resolving a bundle here would let a config decide something about a
+	// review that was already produced under a different one.
+	if *postRunDir != "" {
+		// Under the interrupt handler, like every other path that talks to a forge.
+		// Without it postRun ran on context.Background: agent.Supervise puts a forge CLI
+		// in its own process group, so a SIGINT delivered to fixpoint's foreground group
+		// -- or a plain SIGTERM -- killed the parent while gh kept going, and the review
+		// it was midway through publishing landed after the operator had stopped the
+		// command and been told nothing.
+		ctx, stop := installSignals(logf)
+		defer stop()
+		return postRun(ctx, *postRunDir, *postVerdict, logf)
+	}
+
 	name, err := configName(positionals, *cfgPath)
 	if err != nil {
 		logf("%v", err)
@@ -114,6 +136,9 @@ Flags:
 		PR:                *pr,
 		AllowUntrustedFix: *allowUntrustedFix,
 		TrustedTarget:     *trustedTarget,
+		TrustedBundle:     *trustedBundle,
+		Post:              *post,
+		PostVerdict:       *postVerdict,
 	})
 	if err != nil {
 		logf("config: %v", err)
@@ -144,6 +169,9 @@ Flags:
 	agent.SetExtraRedactions(extraRedactions)
 
 	o, err := orchestrator.New(loaded, logf)
+	if o != nil {
+		o.WithProgress(runLog)
+	}
 	if err != nil {
 		logf("startup validation: %v", err)
 		return 1
@@ -187,7 +215,7 @@ Flags:
 		return 1
 	}
 	logOutcome(sum, logf)
-	return model.ExitCode(sum.Termination)
+	return model.ExitCodeFor(sum)
 }
 
 // logOutcome prints the one-line, timestamped, greppable outcome that goes
@@ -264,8 +292,28 @@ func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Co
 		return 1
 	}
 	logf("scope: %s", scope)
-	logf("configuration OK: %d review lens(es), coder %s, strategy %s",
-		len(cfg.Roles.Review.Prompts), cfg.Roles.Coder.Agent, cfg.Roles.Review.Strategy)
+	// A review-only config has no coder at all, so say that rather than printing an
+	// empty name -- "coder " reads like a lookup that failed.
+	who := "no coder (review only)"
+	if cfg.Roles.Coder.Agent != "" {
+		who = "coder " + cfg.Roles.Coder.Agent
+	}
+	if j := cfg.Roles.Judge.Agent; j != "" {
+		who += ", judge " + j
+	}
+	logf("configuration OK: %d review lens(es), %s, strategy %s",
+		len(cfg.Roles.Review.Prompts), who, cfg.Roles.Review.Strategy)
+	// --check is static, so the fix-trust gate has not fired -- but reporting
+	// "configuration OK" for a run that will refuse to start on its first step is a
+	// half-truth the operator finds out about after waiting for a PR checkout.
+	if !cfg.Loop.ReviewOnly {
+		switch {
+		case cfg.Target.Mode == config.ModePR && !cfg.Loop.AllowUntrustedFix:
+			logf("NOTE: fix rounds over a pull request need -allow-untrusted-fix; this run would refuse to start without it")
+		case cfg.Target.Mode != config.ModePR && !cfg.Loop.TrustedTarget && !cfg.Loop.AllowUntrustedFix:
+			logf("NOTE: fix rounds need -trusted-target; this run would refuse to start without it")
+		}
+	}
 	return 0
 }
 
@@ -276,42 +324,29 @@ func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Co
 // a table written straight to stderr would never reach the wrapper.
 var newRunLogger = newLogger
 
-// newLogger builds the run's two stderr writers over ONE mutex: logf for the
-// timestamped single lines everything logs, and logRaw for pre-formatted
-// multi-line output. It is a function rather than two closures inside run() so
-// a test can drive both against a writer of its own and pin the shared lock --
-// the interleaving it prevents needs a concurrent writer, which a normal run
-// only has in a window (the end-of-run table racing the signal handler) that a
-// full-CLI test cannot open on demand.
-func newLogger(stderr io.Writer) (logf func(string, ...any), logRaw func(string)) {
-	var logMu sync.Mutex // reviewer goroutines log concurrently
-	logf = func(format string, args ...any) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		// Redact before writing: reviewer/coder/git errors flow through here
-		// verbatim, and a prompt-injected agent can smuggle a credential into one
-		// (e.g. inside an invalid severity that validateReviewFindings echoes back).
-		// Persisted logs already mask these; stderr and CI console logs must too.
-		//
-		// Then escape, so every line is display-only. The same target-controlled text
-		// reaches here as reaches the listing: agent/prompt names and the bundle paths
-		// they resolved to (logSource), the ProjectSuppliedPolicy listing the operator
-		// reads before asserting -trusted-target, and git/agent output quoted into an
-		// error. Escaping last means the redaction mask itself is never split by an
-		// escape, and that a name embedding ESC/CSI cannot scroll the other entries of
-		// a refusal off the screen and get trust asserted on a listing it drew.
-		msg := agent.EscapeTerminal(agent.RedactSecrets(fmt.Sprintf(format, args...)))
-		fmt.Fprintf(stderr, "%s %s\n", time.Now().Format("15:04:05"), msg)
-	}
-	// logRaw writes pre-formatted, multi-line output under the same lock as logf,
-	// so a heartbeat or signal-handler line cannot land mid-table and shred the
-	// column alignment. Callers own redaction/escaping for what they pass.
-	logRaw = func(s string) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		fmt.Fprint(stderr, s)
-	}
-	return logf, logRaw
+// newLogger builds the run's output: one runlog.Log over stderr, which renders
+// the run's phase structure and holds the single mutex every writer shares.
+//
+// It is a function rather than a closure inside run() so a test can drive it
+// against a writer of its own and pin that lock -- the interleaving it prevents
+// needs a concurrent writer, which a normal run only has in a window (the
+// end-of-run table racing the signal handler) that a full-CLI test cannot open on
+// demand.
+//
+// Redaction and terminal escaping are installed as the log's transform rather than
+// applied at each call site: reviewer, coder and git errors flow through here
+// verbatim, and a prompt-injected agent can smuggle a credential into one (e.g.
+// inside an invalid severity that validateReviewFindings echoes back). Persisted
+// logs already mask these; stderr and CI console logs must too.
+//
+// Escaping runs after redaction, so the mask itself is never split by an escape,
+// and so a name embedding ESC/CSI cannot scroll the other entries of a refusal off
+// the screen and get trust asserted on a listing it drew. The log adds its own
+// color AFTER this transform, which is what keeps agent text unable to forge it.
+func newLogger(stderr io.Writer) *runlog.Log {
+	return runlog.New(stderr).Transform(func(s string) string {
+		return agent.EscapeTerminal(agent.RedactSecrets(s))
+	})
 }
 
 // forceQuit ends the process on a second interrupt, with the interrupted run's
@@ -616,18 +651,25 @@ func escapeTerminal(s string) string { return agent.EscapeTerminal(s) }
 // file or inline in the task config) and a verify command are argv fixpoint runs,
 // and a prompt is the instruction stream it hands an agent that can read anything
 // the invoking user can. None of that needs a model's cooperation or a prompt
-// injection to exploit, so it requires the same explicit trust assertion as letting
-// the coder edit that repository.
+// injection to exploit, so it requires an explicit trust assertion.
+//
+// Either -trusted-bundle or -trusted-target clears it. They are separate flags
+// because this gate is about files that were read BEFORE anything replaced the
+// tree, while -trusted-target additionally speaks for the target's content as it
+// will be when the run touches it -- which in pr mode is the PR author's. A caller
+// that only needs its own bundle (`make review-pr` reviews someone else's branch
+// with fixpoint's own config/ bundle) must pass the narrow flag, or it silently
+// downgrades the pr-mode checkout guards as well. See config.Loop.TrustedBundle.
 func allowProjectSuppliedPolicy(l *config.Loaded, logf func(string, ...any)) bool {
 	supplied := l.ProjectSuppliedPolicy()
-	if len(supplied) == 0 || l.Config.Loop.TrustedTarget {
+	if len(supplied) == 0 || l.Config.Loop.TrustedBundle || l.Config.Loop.TrustedTarget {
 		return true
 	}
 	logf("refusing to run: the run is built from files inside the target, which supply the commands fixpoint executes and the instructions it sends to agents:")
 	for _, s := range supplied {
 		logf("  %s", s)
 	}
-	logf("Read those files, then pass -trusted-target to assert the target is trusted -- or point -config at a bundle outside it.")
+	logf("Read those files, then pass -trusted-bundle to assert those files are trusted -- or point -config at a bundle outside the target. (-trusted-target also clears this, but it asserts more: that the target's own content is trusted, which in mode pr means the pull request's.)")
 	return false
 }
 

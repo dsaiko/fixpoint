@@ -362,6 +362,23 @@ func TestProjectSuppliedInheritAll(t *testing.T) {
 			wantInheritAll: true,
 		},
 		{
+			// The judge is the role referencedAgents omitted, and an agent that is not
+			// in that set skips both resolution and this refusal -- so an inline judge
+			// declared by a config inside the target could take fixpoint's entire
+			// environment while reading the untrusted code and the findings about it.
+			name: "a judge-only agent defined inline in a project-resolved config",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				const inlineJudge = "agents:\n  judge:\n    command: [true]\n    env: {inherit_all: true}\n"
+				dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"task": "target: {mode: directory}\n" + inlineJudge + taskBody + "  judge: {agent: judge, prompt: judge}\n",
+				}, []string{"fix", "review-bugs", "judge"}, []string{"mock"})
+				return []string{dir}, root, "task"
+			},
+			wantRefuse: true,
+		},
+		{
 			name: "a project-supplied agent without inherit_all is untouched",
 			setup: func(t *testing.T) ([]string, string, string) {
 				t.Helper()

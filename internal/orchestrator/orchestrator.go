@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,10 +18,12 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/issue"
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
+	"github.com/dsaiko/fixpoint/internal/review"
 	"github.com/dsaiko/fixpoint/internal/target"
 	"github.com/dsaiko/fixpoint/internal/verify"
 )
@@ -39,6 +40,41 @@ type Orchestrator struct {
 	// notion of "which lens is this" everywhere.
 	templates map[string]*template.Template
 	logf      func(format string, args ...any)
+	// progress declares the run's STRUCTURE -- which phase a line belongs to -- so
+	// the sink can render it. Optional: nil means every call degrades to an ordinary
+	// logf line, which is what the tests (and anything embedding the orchestrator)
+	// get without arranging for a renderer.
+	progress Phaser
+	// ci is what the forge reported about the reviewed head, when a provider could
+	// be asked. Zero value means "not known", which never blocks a verdict but is
+	// recorded in its reasons -- see internal/review.CI.
+	ci review.CI
+	// material is the round's collected diff, kept so the poster can tell which
+	// lines a forge will accept a comment on.
+	material string
+	// commissioned are findings triage accepted from the pull request's comments,
+	// waiting to join round 1. They are kept here rather than injected on the spot
+	// because triage runs before the first round exists.
+	commissioned []model.Finding
+	// triageStep is that pass's I/O record, held until there is a round to bill it
+	// to. Triage runs before round 1 and still costs tokens; a step that vanished
+	// from the summary would make the run's reported cost wrong.
+	triageStep model.StepStat
+	// threads are the pull request's OPEN UNANSWERED review conversations, read
+	// once at start. Empty for every target that is not a pull request, and for a
+	// forge that cannot be asked.
+	//
+	// A thread leaves this list the moment it has been answered -- declined by
+	// triage, or replied to by the session that fixed it. That is what makes a
+	// conversation answerable at most once per run: conversations() renders this
+	// list into every coder prompt and postReplies refuses an id that is not in it,
+	// so a thread still here after N sessions is one no session has answered.
+	threads []forge.Thread
+	// commissionedThreads are the threads triage turned into issues, so a reply can
+	// be matched against the session that owes it. Each such thread is answered by
+	// the ONE session fixing its issue; another session naming it is answering a
+	// question that was not asked of it.
+	commissionedThreads map[string]bool
 	// gitExclude holds the logs dir as a repo-relative path when it lives
 	// inside target.path, so round commits and clean checks never touch the
 	// run's own logs.
@@ -184,8 +220,25 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		templates[name] = t
 		return nil
 	}
-	if err := load(cfg.Roles.Coder.Prompt, cfg.Roles.Coder.PromptFile(), prompt.FixData{}); err != nil {
-		return nil, err
+	if cfg.Roles.Coder.Prompt != "" {
+		if err := load(cfg.Roles.Coder.Prompt, cfg.Roles.Coder.PromptFile(), prompt.FixData{}); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.Review.Refute != "" {
+		if err := load(cfg.Review.Refute, cfg.Review.RefutePath, prompt.RefuteData{}); err != nil {
+			return nil, err
+		}
+	}
+	if t := cfg.Roles.Triage; t.Prompt != "" {
+		if err := load(t.Prompt, t.PromptPath, prompt.TriageData{}); err != nil {
+			return nil, err
+		}
+	}
+	if j := cfg.Roles.Judge; j.Prompt != "" {
+		if err := load(j.Prompt, j.PromptPath, prompt.JudgeData{}); err != nil {
+			return nil, err
+		}
 	}
 	for _, l := range cfg.Roles.Review.Prompts {
 		if err := load(l.Prompt, l.PromptFile(), prompt.ReviewData{}); err != nil {
@@ -225,6 +278,59 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		o.collector.ExcludeLogs(rel)
 	}
 	return o, nil
+}
+
+// Phaser receives the run's structure: which block is open, and what closed it.
+// internal/runlog implements it; anything that only wants the text can ignore it
+// and read logf, which every phase call also has a plain equivalent for.
+type Phaser interface {
+	Rule(format string, args ...any)
+	Phase(format string, args ...any)
+	EndPhase(format string, args ...any)
+	Progress(format string, args ...any)
+}
+
+// WithProgress installs the structure sink and returns o, so a caller can build
+// and configure in one expression. Safe to call with nil.
+func (o *Orchestrator) WithProgress(p Phaser) *Orchestrator {
+	o.progress = p
+	return o
+}
+
+// rule, phase, endPhase and progress are the four structural log calls. Each
+// falls back to an ordinary line when no sink is installed, so the orchestrator
+// never has to ask whether one is -- and a test reading the log still sees every
+// word, just without the shape.
+func (o *Orchestrator) rule(format string, args ...any) {
+	if o.progress != nil {
+		o.progress.Rule(format, args...)
+		return
+	}
+	o.logf("=== "+format+" ===", args...)
+}
+
+func (o *Orchestrator) phase(format string, args ...any) {
+	if o.progress != nil {
+		o.progress.Phase(format, args...)
+		return
+	}
+	o.logf(format, args...)
+}
+
+func (o *Orchestrator) endPhase(format string, args ...any) {
+	if o.progress != nil {
+		o.progress.EndPhase(format, args...)
+		return
+	}
+	o.logf(format, args...)
+}
+
+func (o *Orchestrator) progressf(format string, args ...any) {
+	if o.progress != nil {
+		o.progress.Progress(format, args...)
+		return
+	}
+	o.logf(format, args...)
 }
 
 // logsDirWithin returns the logs dir as a path relative to the target root if
@@ -353,6 +459,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 			Prompts: o.source.Prompts,
 		},
 		Mode:                string(o.cfg.Target.Mode),
+		PR:                  o.cfg.Target.PR,
 		Path:                o.cfg.Target.Path,
 		Strategy:            string(o.cfg.Roles.Review.Strategy),
 		ReviewOnly:          o.cfg.Loop.ReviewOnly,
@@ -520,10 +627,12 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// Then ping (spends a little on each agent), then Prepare (may mutate
 	// state -- pr checkout): each stage fails before the next spends more.
 	if o.cfg.Ping() {
-		o.logf("preflight: pinging agents...")
+		o.phase("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
 		if err := o.Ping(ctx); err != nil {
+			o.endPhase("PREFLIGHT  failed")
 			return err
 		}
+		o.endPhase("PREFLIGHT  every agent responded")
 	}
 
 	// Prepare can switch branches (pr mode runs gh pr checkout), which invalidates
@@ -569,6 +678,20 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// a pre-existing failure is attributable to the project, not to this run).
 	o.captureVerifyBaseline(ctx)
 
+	// WHICH commit all of the above is about, pinned before any of it is read, and
+	// which repository that commit is in -- a commit alone does not name a destination.
+	o.recordReviewedHead(ctx, sum)
+	o.recordReviewedRepo(ctx, sum)
+
+	// What the forge already knows about this head, read once before the panel
+	// runs so the reviewers' own context and the verdict see the same answer.
+	o.readForgeChecks(ctx, sum)
+	o.readForgeThreads(ctx)
+	// Decide what those conversations commission, before any of them has been read
+	// three times by three coder sessions and answered by none. Optional: without
+	// roles.triage the threads stay context, which is what every run before this did.
+	o.triageConversations(ctx)
+
 	// Where the run's commits begin, for a per_run squash at the end. Captured on the
 	// same pristine tree as the verification baseline: everything after this point is
 	// the run's own work and nothing of the operator's.
@@ -611,6 +734,55 @@ func (o *Orchestrator) resolveRunBase(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return o.collector.HeadSHA(ctx)
+}
+
+// recordReviewedHead pins the commit this run reviews, for the posting paths.
+//
+// In pr mode the checked-out HEAD is the pull request's head: `gh pr checkout` put
+// it there, and the clean-tree check just proved nothing else has touched the tree.
+// Recording it is what lets a post -- now, or later through -post-run -- refuse when
+// the pull request has moved, so a review of one commit can never become an approval
+// of another. Only pr mode has a head to bind to; a directory run posts nothing.
+//
+// A failure is a warning, not a run failure: the review is still worth producing,
+// and the posting path fails closed on the missing SHA rather than publishing an
+// unbound verdict.
+func (o *Orchestrator) recordReviewedHead(ctx context.Context, sum *model.RunSummary) {
+	if o.cfg.Target.Mode != config.ModePR {
+		return
+	}
+	head, err := o.collector.HeadSHA(ctx)
+	if err != nil {
+		o.logf("WARNING: could not record which commit is under review (%v); publishing this review will refuse rather than post it against a commit that may have moved", err)
+		return
+	}
+	sum.ReviewedHead = head
+}
+
+// recordReviewedRepo pins WHICH repository this run reviews, alongside the commit.
+//
+// The head says what the review is about; it does not say where it belongs. All a
+// later -post-run has to go on otherwise is sum.Path and sum.PR, and a path is not
+// an identity: the checkout there can be repointed at another repository on the same
+// forge, or the directory reused for one, and the replay would then submit to pull
+// request PR of THAT repository -- with the head check satisfied by anyone who opens
+// a request proposing the reviewed commit, which is public. Recording the repository
+// gh resolved for this checkout is what lets the replay refuse a destination the
+// panel never read. See forge.RepoID.
+//
+// A failure is a warning rather than a run failure, exactly like the head's: the
+// review is still worth producing, and the posting path fails closed on the missing
+// identity rather than publishing to a repository it cannot vouch for.
+func (o *Orchestrator) recordReviewedRepo(ctx context.Context, sum *model.RunSummary) {
+	if o.cfg.Target.Mode != config.ModePR {
+		return
+	}
+	repo := forge.RepoID(ctx, o.cfg.Target.Path)
+	if repo == "" {
+		o.logf("WARNING: could not record which repository is under review; publishing this review later with -post-run will refuse rather than submit it to whatever repository that checkout points at by then")
+		return
+	}
+	sum.ReviewedRepo = repo
 }
 
 // finishRun runs the closing phase and then applies a per_run squash over
@@ -756,7 +928,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 			return false, committed, ctx.Err()
 		}
 		fixedBefore := rec.Fixed
-		salvaged, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it}, o.staleFiles(ctx, reviewedAt, it))
+		salvaged, replies, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it}, o.staleFiles(ctx, reviewedAt, it))
 		if err != nil {
 			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
@@ -790,11 +962,17 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 			// tree was clean when it started), so they are stashed and the loop moves
 			// to the next issue rather than ending the run with the remaining issues
 			// unheard. Only a stash failure aborts.
+			//
+			// The replies go through the same gate as a committed session's, which
+			// drops them and logs the skip: this is the case the gate was written for,
+			// and it is recorded before the stash so an abort there does not swallow it.
+			o.answerConversations(ctx, it, false, replies)
 			if !clean {
 				if err := o.reconcileRejectedSession(ctx, rec, it); err != nil {
 					return false, committed, err
 				}
 			}
+			o.endPhase("FIX %s  rejected by the coder", it.ID)
 			continue
 		}
 		if clean {
@@ -803,13 +981,57 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		}
 		did, err := o.verifyAndCommitFix(ctx, rec, it)
 		if err != nil {
+			o.endPhase("FIX %s  failed: %v", it.ID, err)
 			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
 		if did {
 			committed++
 		}
+		o.answerConversations(ctx, it, did, replies)
+		o.closeFix(it.ID, did)
 	}
 	return false, committed, nil
+}
+
+// closeFix ends a fix block with what became of the issue. Its own function so
+// the outcome is stated in one place -- and so runFixSessions, which is already at
+// the complexity limit, does not grow a branch for a log line.
+func (o *Orchestrator) closeFix(issueID string, committed bool) {
+	if committed {
+		o.endPhase("FIX %s  committed", issueID)
+		return
+	}
+	o.endPhase("FIX %s  not committed; the finding stays open", issueID)
+}
+
+// answerConversations posts this session's replies, but only once its fix is
+// COMMITTED.
+//
+// Until that point the work can still be withdrawn: the gate can fail, the
+// correction attempt can revert it, the edits can end up stashed. Posting on the
+// coder's say-so alone put a claim on somebody's pull request, under the
+// operator's identity, that nothing had verified.
+//
+// A rejected issue's replies are dropped rather than posted. An answer explaining
+// why nothing was changed would often be welcome, but it cannot be told apart here
+// from one claiming work that did not land, and over-posting is the failure being
+// fixed. The skip is logged so it is a decision rather than a disappearance.
+func (o *Orchestrator) answerConversations(ctx context.Context, it model.Issue, committed bool, replies []model.FixReply) {
+	if len(replies) == 0 {
+		return
+	}
+	if !committed {
+		o.logf("%d conversation repl(y|ies) for %s were not posted: the fix did not commit", len(replies), it.ID)
+		return
+	}
+	// Every conversation linked to this issue, not just the primary one: merging
+	// records a second commissioning comment on Issue.Also and the coder is told to
+	// answer all of them, so an issue's session legitimately owes replies to each.
+	own := make(map[string]bool, len(it.Also)+1)
+	for _, c := range it.Conversations() {
+		own[c.Thread] = true
+	}
+	o.postReplies(ctx, own, replies)
 }
 
 // staleFiles reports which of the issue's files have been committed to since
@@ -880,22 +1102,11 @@ func (o *Orchestrator) staleFiles(ctx context.Context, reviewedAt string, it mod
 // must not reach a reader's clipboard, and a bidi override must not make the
 // finding read as something the reviewer never wrote.
 func flattenField(s string) string {
-	one := agent.EscapeTerminal(strings.Join(strings.Fields(s), " "))
-	return forgeIssueRef.ReplaceAllString(forgeIssueURL.ReplaceAllString(one, "$1 $2"), "$1 $2")
+	// forge.BreakReferences is shared with the review body: a commit message and a
+	// review comment are both read by a forge's closing-keyword grammar, so the rule
+	// has one definition rather than two that can drift.
+	return forge.BreakReferences(agent.EscapeTerminal(strings.Join(strings.Fields(s), " ")))
 }
-
-// forgeIssueRef matches the issue references a forge's closing-keyword grammar
-// accepts and an injected string can name without knowing the repository: `#42`
-// -- which is also the tail of `owner/repo#42` -- and `GH-42`. Both groups are
-// captured so the rewrite can put the digit back after a space.
-var forgeIssueRef = regexp.MustCompile(`(?i)(#|\bGH-)(\d)`)
-
-// forgeIssueURL matches the other reference form that grammar accepts: the full
-// URL of an issue or a pull/merge request. The `//host/` prefix is required so
-// only a URL is rewritten -- a plain path like `docs/issues/1-intro.md` names no
-// issue and keeps its spelling. Groups match forgeIssueRef's so one replacement
-// string serves both.
-var forgeIssueURL = regexp.MustCompile(`(?i)(//\S+/(?:issues|pull|pulls|merge_requests)/)(\d)`)
 
 // verifyAndCommitFix puts ONE fix through the gate and commits it. Same contract as
 // a round commit -- nothing lands unverified -- with the granularity moved down to
@@ -936,6 +1147,33 @@ func (o *Orchestrator) verifyAndCommitFix(ctx context.Context, rec *model.RoundR
 	).Replace(o.fixCommitMessage())
 	var body strings.Builder
 	fmt.Fprintf(&body, "%s (%s, %s) %s\n", it.ID, flattenField(it.Category), flattenField(it.Severity), flattenField(it.Loc()))
+	// Who asked for this change, when it was not the panel. A commissioned fix comes
+	// from a comment somebody left on the pull request, and whoever reads this commit
+	// later -- in a bisect, in a blame, in a release note -- should be able to see
+	// that without reconstructing it from a conversation that may be resolved by then.
+	// Stated as a bullet rather than a `token: value` line for the same reason the
+	// detail below is: a trailing one of those IS a git trailer.
+	//
+	// Every linked conversation, not just the primary one -- two comments merging
+	// onto one issue is the ordinary case (see Issue.Also). Recording only the first
+	// dropped the second requester from the one artifact that gets pushed, and with
+	// them the external label, which is exactly what a later reader of the history
+	// needs to see.
+	for i, c := range it.Conversations() {
+		if i == 0 {
+			body.WriteString("\n")
+		}
+		who := flattenField(c.Author)
+		if who == "" {
+			who = "an unnamed commenter"
+		}
+		if c.External {
+			fmt.Fprintf(&body, "- requested in conversation %s by %s, who is not the account this run posts under\n",
+				flattenField(c.Thread), who)
+		} else {
+			fmt.Fprintf(&body, "- requested in conversation %s by %s\n", flattenField(c.Thread), who)
+		}
+	}
 	// The detail is the body's LAST line, and a lone `token: value` line at the end
 	// of a message IS a git trailer -- so it goes out as a bullet, the same shape
 	// writeVerdictSection uses, which git's trailer parser can never accept.
@@ -1327,7 +1565,7 @@ func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary, passes int) {
 // reaches the coder.
 func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, asgs []model.Assignment, label string) (done bool, err error) {
 	round := len(sum.Rounds) + 1
-	o.logf("=== closing round, %s (round %d): %d reviewer(s) over the finished tree ===", label, round, len(asgs))
+	o.phase("CLOSING %s  round %d, %d reviewer(s) over the finished tree", label, round, len(asgs))
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
@@ -1358,7 +1596,7 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 		Issues:       len(recP.Issues),
 		Corroborated: corroboratedCount(recP.Issues),
 	})
-	o.logf("closing %s: %d finding(s), %d advisory, %d reviewer error(s)",
+	o.endPhase("CLOSING %s  %d finding(s), %d advisory, %d reviewer error(s)",
 		label, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
 	// A failed closing reviewer is a failed closing pass, checked BEFORE an empty
 	// finding set is read as a completed final review. Nothing follows to catch what
@@ -1809,7 +2047,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		sum.Termination = model.TermInterrupted
 		return true, nil //nolint:nilerr // interruption is a normal termination, not a round error
 	}
-	o.logf("=== round %d/%d ===", round, o.cfg.Loop.MaxIterations)
+	o.rule("round %d/%d", round, o.cfg.Loop.MaxIterations)
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
@@ -1830,7 +2068,24 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	o.journal(model.EvRoundStarted, round, model.JournalRoundStarted{
 		Assignments: journalAssignments(rec.Assignments),
 	})
+	o.phase("REVIEW  %d reviewer(s), %d lens(es)", len(panelAgents(rec.Assignments)), len(rec.Assignments))
 	o.review(ctx, &rec, material, sum.Rounds)
+	// Billed for having RUN, not for what it decided. A pass that declined every
+	// conversation, or that failed to parse, spent the same tokens as one that
+	// commissioned work -- and the failed one is precisely the pass whose Failed
+	// flag the summary must show. Role is set by stepStat, so a non-empty one means
+	// the agent was invoked; cleared after so a later round does not bill it again.
+	if o.triageStep.Role != "" {
+		rec.Steps = append(rec.Steps, o.triageStep)
+		o.triageStep = model.StepStat{}
+	}
+	// What the pull request's comments asked for joins the panel's own reports. From
+	// here they are ordinary findings: the ledger groups them (so a comment and a
+	// reviewer describing the same defect become one issue, still carrying the
+	// conversation to answer), the cap orders them by severity, and each is fixed in
+	// its own session behind the verify gate. Offered again every round until the
+	// coder decides them -- see mergeCommissioned.
+	o.mergeCommissioned(&rec)
 	sum.Rounds = append(sum.Rounds, rec)
 	recP := &sum.Rounds[len(sum.Rounds)-1]
 	o.journal(model.EvReviewFinished, round, model.JournalReviewFinished{
@@ -1856,24 +2111,63 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		Corroborated: corroboratedCount(recP.Issues),
 	})
 
-	o.logf("round %d: %d finding(s), %d advisory, %d reviewer error(s)",
-		round, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
+	o.endPhase("REVIEW  %d finding(s), %d advisory, %d reviewer error(s)",
+		len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
 
 	if ctx.Err() != nil {
 		sum.Termination = model.TermInterrupted
 		return true, nil //nolint:nilerr // interruption is a normal termination, not a round error
 	}
 
-	// Review-only runs exactly one round, and it only counts as a successful
-	// review if every reviewer completed: reporting success over a partial
-	// round would let automation trust an incomplete review. The round record
-	// stays in the summary either way.
+	// Review-only runs exactly one round, and ends with a VERDICT rather than a
+	// bare success.
+	//
+	// A partial panel used to fail the run outright, on the argument that
+	// reporting success over an incomplete review would let automation trust it.
+	// The verdict is a better answer to the same worry and keeps the guarantee:
+	// without quorum it cannot approve, so the process still exits non-zero -- but
+	// it exits with a reason naming who was missing, instead of an error that
+	// cannot tell an infrastructure failure from a reviewer that timed out on one
+	// lens of four. See internal/review.
 	if o.cfg.Loop.ReviewOnly {
-		if len(recP.ReviewErrors) > 0 {
-			return false, roundReviewErr(recP)
+		// Judge the merged set before concluding anything from it: the verdict, the
+		// review body and the exit code all read what survives this.
+		o.material = material
+		o.runRefutation(ctx, recP, material)
+		judged := o.runJudge(ctx, recP, material)
+		// Mirrored AGAIN, after both filters have run. Both record a drop by writing
+		// the rejection straight onto rec.Issues rather than through setIssueVerdict,
+		// so the observations that reported a dropped finding still carry an empty
+		// verdict at this point -- and the summary would render them UNRESOLVED
+		// directly above an issues block saying REJECTED with the refuter's evidence
+		// or the judge's reason. This is the same self-contradiction the call above
+		// exists to prevent; the mirror is idempotent, so running it twice costs
+		// nothing.
+		mirrorCarriedVerdicts(recP)
+		// The verdict is computed either way -- an interrupted review still owes the
+		// operator whatever it managed to conclude, and decideVerdict's own callees
+		// (postReview) decide for themselves what a canceled context permits.
+		postErr := o.decideVerdict(ctx, recP, sum, judged)
+		// Checked AFTER decideVerdict, not before it, and that ordering is the whole
+		// point: refutation and judging take minutes, and decideVerdict then writes
+		// the body and may spend up to the forge timeout posting it, so an interrupt
+		// anywhere in that span leaves a review that was never filtered or never
+		// published. Recording it as a completed review-only run would exit 0 over
+		// exactly that -- a cancellation must never be overwritten with a clean
+		// termination, because finishRun honors the canceled context by returning nil
+		// and leaves whatever this set standing.
+		if ctx.Err() != nil {
+			sum.Termination = model.TermInterrupted
+			return true, nil //nolint:nilerr // an interruption is a termination, not a round error
 		}
+		// The review itself finished, so that outcome is recorded BEFORE the posting
+		// failure is returned: recordRunError then keeps "review-only" in
+		// LoopTermination and marks the run itself failed, which is the honest pair --
+		// the panel reached a verdict and the publish the operator asked for did not
+		// happen. Nothing is lost by returning here instead of through finishRun: both
+		// of its halves are no-ops for a review-only run, by their own design.
 		sum.Termination = model.TermReviewOnly
-		return true, nil
+		return true, postErr
 	}
 
 	// Termination on clean rounds (advisory findings do not count).
@@ -2044,14 +2338,23 @@ func (o *Orchestrator) logLedgerConflicts() {
 	}
 }
 
-// mirrorCarriedVerdicts copies a verdict an issue ALREADY carries out of Absorb
-// onto this round's observations of it. Only a previously rejected issue arrives
-// that way, and setIssueVerdict never reaches it (the cap and the coder both skip
-// non-work issues), so its observations would keep an empty verdict and
-// FormatHistory would render them UNRESOLVED. The history preamble tells
-// reviewers to re-report anything UNRESOLVED, so the run would solicit the
-// re-report of a decided issue every round and the summary would show it as
-// unresolved in every round after the one that rejected it.
+// mirrorCarriedVerdicts copies a verdict an issue ALREADY carries onto this
+// round's observations of it -- the finding-level half of what setIssueVerdict
+// writes, for the verdicts that never went through setIssueVerdict.
+//
+// Two kinds arrive that way. An issue Absorb returns already rejected: the cap and
+// the coder both skip non-work issues, so setIssueVerdict never reaches it. And a
+// finding dropped by refutation or the judge: applyRefutations and applyJudgment
+// write the rejection onto rec.Issues directly.
+//
+// Either way the observations would keep an empty verdict, and FormatHistory would
+// render them UNRESOLVED. The history preamble tells reviewers to re-report
+// anything UNRESOLVED, so the run would solicit the re-report of a decided issue
+// every round and the summary would show it as unresolved in every round after the
+// one that decided it -- directly above an issues block saying REJECTED.
+//
+// Idempotent: it only ever overwrites an observation with its own issue's verdict,
+// so callers may run it after each stage that can decide one.
 func mirrorCarriedVerdicts(rec *model.RoundRecord) {
 	for _, it := range rec.Issues {
 		if it.Verdict == "" {
@@ -2439,7 +2742,9 @@ func (o *Orchestrator) warnArgModePrompts() {
 }
 
 // warnTargetSuppliedCommand reports an agent command element that resolves inside
-// target.path while the target is a pull request. config.Validate REFUSES that
+// target.path -- or a PATH entry that does, for a bare command name, which is the
+// same file substitution one lookup removed -- while the target is a pull request.
+// config.Validate REFUSES that
 // combination absent a trust assertion (the PR's `gh pr checkout` decides what
 // fixpoint execs as the agent process); with -trusted-target/-allow-untrusted-fix
 // the run proceeds, and this is where the operator learns that the assertion also
@@ -2453,19 +2758,36 @@ func (o *Orchestrator) warnTargetSuppliedCommand() {
 		return
 	}
 	for _, n := range o.activeAgentNames() {
-		tok := config.TargetSuppliedArg(o.cfg.Agents[n].Argv(), o.cfg.Target.Path)
-		if tok == "" {
+		argv := o.cfg.Agents[n].Argv()
+		if len(argv) == 0 {
 			continue
 		}
-		o.logf("WARNING: agent %q has command element %q inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so PR-authored code runs as the agent process itself, with the credentials this agent declares and before any reviewer sandbox; -trusted-target/-allow-untrusted-fix accepts that on top of coder prompt-injection. Point the command at a binary outside the target, or review under an external sandbox (container/VM)", n, tok, o.cfg.Target.Path)
+		if tok := config.TargetSuppliedArg(argv, o.cfg.Target.Path); tok != "" {
+			o.logf("WARNING: agent %q has command element %q inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so PR-authored code runs as the agent process itself, with the credentials this agent declares and before any reviewer sandbox; -trusted-target/-allow-untrusted-fix accepts that on top of coder prompt-injection. Point the command at a binary outside the target, or review under an external sandbox (container/VM)", n, tok, o.cfg.Target.Path)
+		}
+		// The same acceptance, for the spelling argv cannot show: a bare command name
+		// is re-resolved through PATH after the checkout, so a PATH entry inside the
+		// target lets the PR supply or shadow the executable itself.
+		if dir := config.TargetSuppliedPATHDir(argv[0], o.cfg.Target.Path); dir != "" {
+			o.logf("WARNING: agent %q runs the bare command %q, and PATH entry %s is inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and its code runs as the agent process itself, with the credentials this agent declares and before any reviewer sandbox; -trusted-target/-allow-untrusted-fix accepts that on top of coder prompt-injection. Give the command an absolute path outside the target, drop that PATH entry, or review under an external sandbox (container/VM)", n, argv[0], dir, o.cfg.Target.Path)
+		}
 	}
 }
 
 // activeAgentNames returns the sorted, distinct set of agents this run will
-// invoke: the coder (unless review-only) plus every active reviewer agent.
-// Ping and warnArgModePrompts share it so "the agents this run uses" has a
-// single definition. Sorted so per-agent log lines and failure lists are
-// deterministic run-to-run, matching review's index-ordered collection.
+// invoke: the coder (unless review-only) plus every active reviewer agent and the
+// judge when one is configured. Ping and warnArgModePrompts share it so "the
+// agents this run uses" has a single definition. Sorted so per-agent log lines
+// and failure lists are deterministic run-to-run, matching review's index-ordered
+// collection.
+//
+// The judge is unconditional once configured: it runs on the review-only path
+// too, so it is active whenever it is set. Leaving it out silently dropped all
+// four per-agent preflights for it -- prompt_via: arg (the judge prompt embeds
+// the material AND every finding's text, so argv exposure is at its worst there),
+// env.inherit_all, a target-supplied command, and the ping that would have caught
+// an expired login before the panel was paid for rather than after, where a
+// failing judge downgrades the verdict to inconclusive.
 func (o *Orchestrator) activeAgentNames() []string {
 	seen := map[string]bool{}
 	var names []string
@@ -2480,6 +2802,16 @@ func (o *Orchestrator) activeAgentNames() []string {
 	}
 	for _, a := range o.cfg.Roles.Review.ActiveAgents() {
 		add(a)
+	}
+	if o.cfg.Roles.Judge.Agent != "" {
+		add(o.cfg.Roles.Judge.Agent)
+	}
+	// Triage runs before the first round and its failure costs the operator every
+	// answer to every comment, so it belongs in the preflight ping like any other
+	// agent the run will actually invoke -- an expired login should fail here rather
+	// than after the panel has been paid for.
+	if o.cfg.Roles.Triage.Agent != "" {
+		add(o.cfg.Roles.Triage.Agent)
 	}
 	sort.Strings(names)
 	return names
@@ -2702,7 +3034,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 		t := time.NewTicker(every)
 		defer t.Stop()
 		heartbeat(done, t.C, func() {
-			o.logf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
+			o.progressf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
 		})
 	}()
 	res := agent.Run(ctx, o.cfg.Agents[agentName], text, o.cfg.Target.Path)
@@ -2771,7 +3103,11 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 	md := logstore.RenderReviewMD(asg.Agent, lensName, round, findings, parseErr)
 	o.logStep("review", asg.Agent, lensName, round, parseErr == nil, out, md, res, salvage.raw)
 	outBytes := len(res.Stdout) + len(res.Stderr) + salvage.outputBytes
-	o.logf("%s done (%d findings, %s, output %s)", label, len(out.Findings), res.Duration.Round(time.Second), logstore.SizeDesc(outBytes))
+	if parseErr != nil {
+		o.logf("%s FAILED after %s (%v)", label, res.Duration.Round(time.Second), parseErr)
+	} else {
+		o.logf("%s done (%d findings, %s, output %s)", label, len(out.Findings), res.Duration.Round(time.Second), logstore.SizeDesc(outBytes))
+	}
 	// A salvaged step is billed for both invocations: res already carries the
 	// summed usage and duration, and salvage carries the byte counts that cannot
 	// live on a single Result. See reformatReview.
@@ -3100,7 +3436,7 @@ func (o *Orchestrator) discardEdits(ctx context.Context, d discard) error {
 //
 // stale names files an earlier session of this same round has already committed to
 // since the reviewers read the tree; empty when nothing moved. See staleFiles.
-func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue, stale []string) (salvaged bool, err error) {
+func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue, stale []string) (salvaged bool, replies []model.FixReply, err error) {
 	coder := o.cfg.Roles.Coder
 	promptName := config.LensName(coder.Prompt)
 	label := "fix: " + coder.Agent
@@ -3121,12 +3457,14 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		Findings:       prompt.FormatIssues(active),
 		History:        prompt.FormatHistory(history),
 		Stale:          prompt.FormatStale(stale),
+		Conversations:  o.conversations(),
 		OutputContract: prompt.FixContract,
 	}
 	text, err := prompt.Render(o.templates[coder.Prompt], d)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
+	o.phase("FIX %s  %s", fixSubject(active), firstLineOf(fixTitle(active)))
 	o.logf("%s starting on %d issue(s) (prompt %s)", label, len(active), logstore.SizeDesc(len(text)))
 	res := o.runAgent(ctx, label, "fix", coder.Agent, promptName, rec.Round, text)
 	var out model.FixOutput
@@ -3138,8 +3476,20 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	// The coder contract requires every finding exactly once with a valid
 	// verdict; anything else fails the round rather than being silently
 	// miscounted (an empty result set must not read as "all rejected").
+	//
+	// Checked BEFORE applyVerdicts, which is what writes the verdicts onto rec: a
+	// session refused for owing an answer must leave its issue exactly as it found
+	// it, not recorded as fixed by a round that then failed.
+	if runErr == nil {
+		runErr = o.unansweredCommission(active, out.Results, out.Replies)
+	}
 	if runErr == nil {
 		runErr = o.applyVerdicts(rec, out.Results, active)
+	}
+	// The replies are carried back to the caller rather than posted here. They may
+	// only go out once the fix they describe is COMMITTED -- see runFixSessions.
+	if runErr == nil {
+		replies = out.Replies
 	}
 
 	rec.Steps = append(rec.Steps, stepStat("fix", coder.Agent, promptName, len(text), res, runErr != nil))
@@ -3153,7 +3503,11 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	}
 	md := logstore.RenderFixMD(coder.Agent, rec.Round, seen, out.Notes, runErr)
 	o.logStep("fix", coder.Agent, promptName, rec.Round, runErr == nil, out, md, res, "")
-	o.logf("%s done (%s, output %s)", label, res.Duration.Round(time.Second), logstore.SizeDesc(len(res.Stdout)+len(res.Stderr)))
+	if runErr != nil {
+		o.logf("%s FAILED after %s (%v)", label, res.Duration.Round(time.Second), runErr)
+	} else {
+		o.logf("%s done (%s, output %s)", label, res.Duration.Round(time.Second), logstore.SizeDesc(len(res.Stdout)+len(res.Stderr)))
+	}
 	// The coder's self-report, recorded as such. Whether any of it survives is
 	// decided by the verify_finished record that follows.
 	fixEv := model.JournalFixFinished{
@@ -3180,15 +3534,16 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		if interrupted == nil {
 			interrupted = ctx.Err()
 		}
-		return false, o.reconcileInterrupt(rec.Round, interrupted) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+		return false, nil, o.reconcileInterrupt(rec.Round, interrupted) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
 	}
 	if runErr != nil {
 		if !allowSalvage {
-			return false, o.discardFailedFix(ctx, rec.Round, runErr)
+			return false, nil, o.discardFailedFix(ctx, rec.Round, runErr)
 		}
-		return o.salvagePartialFix(ctx, rec, runErr)
+		salvaged, err := o.salvagePartialFix(ctx, rec, runErr)
+		return salvaged, nil, err
 	}
-	return false, nil
+	return false, replies, nil
 }
 
 // discardFailedFix handles a failed coder in a round nothing follows -- the
@@ -3398,6 +3753,60 @@ func shortSHA(sha string) string {
 	return sha
 }
 
+// unansweredCommission refuses a session that claims to have FIXED a commissioned
+// issue without writing the answer its conversation is owed.
+//
+// A reply is optional in the contract because a panel finding has nobody waiting
+// on it. A commissioned issue does: a person asked for the change, the prompt tells
+// this session to answer them once its fix is committed, and triage reserved that
+// conversation for THIS session alone -- postReplies turns away every other
+// session's reply to it (commissionedThreads). Taking the fix anyway marked the
+// issue fixed, which is what drops it from the commissioned queue
+// (mergeCommissioned), so the run went on to converge with the comment that
+// commissioned all of it never answered by anybody.
+//
+// Refusing is the only remedy available here, and it is the fail-closed one:
+// nothing is committed yet, so the issue stays open, its conversation stays
+// reserved and unanswered, and a later round can do both halves of the job. The
+// alternative -- posting an answer fixpoint wrote itself -- is ruled out by
+// model.FixReply: a reply lands under a person's comment with the operator's
+// identity on it, so the words have to come from the agent that did the work.
+//
+// Only conversations the session was actually SHOWN are required (threadOpen). A
+// thread this run cannot see is one the coder was never given and cannot answer,
+// and demanding a reply for it would fail every session forever.
+func (o *Orchestrator) unansweredCommission(batch []model.Issue, results []model.FixResult, replies []model.FixReply) error {
+	fixed := make(map[string]bool, len(results))
+	for _, r := range results {
+		// The exact spelling applyVerdicts accepts: anything else is its error to
+		// report, not a missing answer.
+		if r.Verdict == model.VerdictFixed {
+			fixed[r.ID] = true
+		}
+	}
+	answered := make(map[string]bool, len(replies))
+	for _, r := range replies {
+		// Blank is not an answer: postReplies would put the signature under a person's
+		// comment with nothing above it.
+		if strings.TrimSpace(r.Message) != "" {
+			answered[r.Thread] = true
+		}
+	}
+	for _, it := range batch {
+		if !fixed[it.ID] {
+			continue
+		}
+		for _, c := range it.Conversations() {
+			if answered[c.Thread] || !o.threadOpen(c.Thread) {
+				continue
+			}
+			return fmt.Errorf("coder reported %s fixed but wrote no reply to conversation %s, which commissioned it; "+
+				"no other session may answer that conversation, so the fix is not accepted without it", it.ID, c.Thread)
+		}
+	}
+	return nil
+}
+
 // applyVerdicts validates the coder's result set against the round's ISSUES --
 // every id exactly once, only known ids, only valid verdicts -- and applies it.
 // Any violation fails the round, and nothing is applied unless the whole set is
@@ -3496,7 +3905,12 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 	if !o.cfg.Verify.Enabled() || o.cfg.Loop.ReviewOnly {
 		return
 	}
-	o.logf("verify: capturing baseline (%d command(s))", len(o.cfg.Verify.Commands))
+	o.phase("BASELINE  capturing %d verification command(s)", len(o.cfg.Verify.Commands))
+	// Closed on every path, including the returns in the middle: the block's summary
+	// is the last thing said about the baseline, and an unclosed block would indent
+	// the whole run under it.
+	outcome := "no baseline"
+	defer func() { o.endPhase("BASELINE  %s", outcome) }()
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
 	// A cancellation inside the baseline is ordinary -- it is the longest step before
 	// round 1, a full build and test suite over an untouched tree -- and it leaves a
@@ -3515,6 +3929,7 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 			Checks:      journalChecks(rep.Results),
 		})
 		o.logf("verify baseline: interrupted (%v) -- no baseline was captured; the commands that had started were stopped by the run, not by the project", ctx.Err())
+		outcome = "interrupted; no baseline captured"
 		return
 	}
 	o.verifyBaseline = rep
@@ -3527,9 +3942,10 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 		Checks: journalChecks(rep.Results),
 	})
 	if rep.Passed() {
-		o.logf("verify baseline: all checks pass")
+		outcome = "all checks pass"
 		return
 	}
+	outcome = rep.Summary()
 	o.logf("verify baseline: %s", rep.Summary())
 	// What a red baseline MEANS depends entirely on the policy, and saying the
 	// wrong one here is worse than saying nothing: Report.Blocking reads the
@@ -3767,4 +4183,1171 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 		o.logf("round %d: verification-correction output was unparseable: %v", rec.Round, parseErr)
 	}
 	return nil
+}
+
+// decideVerdict computes a review run's conclusion and records it on the summary.
+//
+// The inputs are all facts the round already carries: which agents were assigned,
+// which of their steps failed, and what survived as issues. Nothing here asks a
+// model anything -- see internal/review for why the verdict must not.
+//
+// The verdict itself never fails; the error is the one from publishing it, passed
+// through from postReview so the caller can fail the run over a post the operator
+// asked for and did not get.
+func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, judged bool) error {
+	// Only failures on GATING lenses may deny a quorum. An advisory lens is
+	// reported for a human and QuorumFrom leaves it out of the panel entirely, so
+	// counting its failure here would let a lens that gates nothing for the
+	// findings gate everything for the verdict: an agent that answered every
+	// gating lens and merely timed out on an advisory one would be Missing, and on
+	// a small panel that alone turns an approval into INCONCLUSIVE.
+	//
+	// Assignment.Lens is the configured reference and StepStat.Lens the basename it
+	// was logged under, so the two are matched through config.LensName.
+	advisory := map[string]bool{}
+	for _, a := range rec.Assignments {
+		if a.Advisory {
+			advisory[a.Agent+"\x00"+config.LensName(a.Lens)] = true
+		}
+	}
+	failed := map[string]int{}
+	for _, st := range rec.Steps {
+		if st.Role != "review" || !st.Failed {
+			continue
+		}
+		if advisory[st.Agent+"\x00"+st.Lens] {
+			o.logf("advisory lens %s failed for %s; it gates nothing, so it does not cost a quorum slot", st.Lens, st.Agent)
+			continue
+		}
+		failed[st.Agent]++
+	}
+	d := review.Decide(review.Input{
+		Issues:       rec.Issues,
+		Quorum:       review.QuorumFrom(rec.Assignments, failed),
+		CI:           o.ci,
+		BlockAt:      o.cfg.Review.BlockAt,
+		FilterFailed: !judged,
+	})
+	sum.Verdict = d.Summary()
+	o.phase("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	for _, r := range d.Reasons {
+		o.logf("%s", r)
+	}
+	err := o.writeReviewBody(ctx, rec, sum, d)
+	o.endPhase("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	return err
+}
+
+// writeReviewBody renders the review document and puts it in the run directory.
+//
+// It is written even when the verdict is an approval with nothing to say: the file
+// is the run's answer, and an operator who has to work out from its ABSENCE
+// whether the review ran is being asked the wrong question. Failure to write it is
+// a warning, not a run failure -- the verdict is already in the summary, the
+// journal and the exit code. WITH -post it is a run failure, because then the file
+// is not the only thing lost: see the write path below.
+//
+// The returned error is the POSTING one, which is a different matter: see
+// postReview for why a publish the operator asked for and did not get has to reach
+// the exit status.
+func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundRecord, sum *model.RunSummary, d review.Decision) error {
+	panel := map[string]bool{}
+	for _, a := range rec.Assignments {
+		panel[a.Agent] = true
+	}
+	agents := make([]string, 0, len(panel))
+	for name := range panel {
+		agents = append(agents, name)
+	}
+	sort.Strings(agents)
+
+	// One signature for the whole review, used by the summary AND by every inline
+	// comment: an inline comment is read on its own in the Files tab, with no sight
+	// of the review it belongs to, so an unsigned one is an unattributed assertion
+	// sitting on somebody's code.
+	signature := review.Signature(o.cfg.Review.Signature, review.SignatureFacts{
+		Agents:  agents,
+		Run:     o.logs.RunID(),
+		Version: review.Version(),
+		Config:  configBaseName(o.source.Config),
+		Verdict: string(d.Outcome),
+	})
+	body := review.RenderBody(review.BodyInput{
+		Config:    configBaseName(o.source.Config),
+		Target:    describeTarget(o.cfg.Target),
+		Decision:  d,
+		Issues:    rec.Issues,
+		Advisory:  rec.Advisory,
+		Panel:     agents,
+		Signature: signature,
+	})
+	// The PUBLISHED bytes, computed once and used for both the file and the post.
+	//
+	// This used to write agent.RedactSecrets(body) to disk and post the raw body,
+	// so a credential a prompt-injected reviewer had quoted into a finding was
+	// masked in the 0600 log directory and published verbatim on the pull request.
+	// It also falsified the control the whole posting design rests on: an operator
+	// reads review-body.md, sees [REDACTED], and publishes believing they checked
+	// the bytes that go out. Caught by the panel reviewing this branch.
+	//
+	// Redaction is what every other artifact already gets; the terminal escaping
+	// comes with it because logstore applies both, and passing the same string
+	// through keeps the two copies identical rather than merely similar. Both
+	// transforms are idempotent, so logstore re-applying them changes nothing.
+	published := publishedText(body)
+	path, err := o.logs.ReviewBody(published)
+	if err != nil {
+		// A warning here used to swallow the publish as well: the early return skipped
+		// postReview, so a run given -post exited 0 having posted nothing, and an
+		// approval was reported as delivered when it never left the machine.
+		//
+		// It fails rather than posting the bytes it still holds, because the file is
+		// half of what posting means here -- it is what the operator inspects, what
+		// `-post-run` replays, and the only local record of what went out. Publishing
+		// under the operator's identity with no such record is the wrong half to keep.
+		if o.cfg.Review.Post {
+			return fmt.Errorf("-post was given but the review body could not be written: %w -- nothing was posted", err)
+		}
+		o.logf("WARNING: failed to write the review body: %v", err)
+		return nil
+	}
+	sum.ReviewBody = path
+	o.logf("review body: %s", path)
+	// Recorded before any posting, so `-post-run` can publish exactly this review
+	// later without re-running the panel -- and so an operator who reads the file
+	// first is reading the bytes that will actually go out.
+	for _, c := range inlineComments(rec, o.material, signature) {
+		sum.ReviewInline = append(sum.ReviewInline, model.ReviewAnchor{Path: c.Path, Line: c.Line, Body: c.Body})
+	}
+	return o.postReview(ctx, sum, published)
+}
+
+// publishedText is the ONE transform between text an agent wrote and text that
+// leaves fixpoint -- to a file, to a terminal, or onto a pull request.
+//
+// It exists as a function because the review has TWO channels out: the summary
+// body and the inline comments. When only the body went through this pair, a
+// credential a prompt-injected reviewer had quoted into a finding was masked in
+// review-body.md and published verbatim in that finding's line comment -- the
+// operator read [REDACTED] and approved the post, and the leak went out beside it.
+// Naming the transform is what keeps the two channels from drifting again.
+//
+// Both transforms are idempotent, so logstore re-applying them changes nothing.
+func publishedText(s string) string {
+	return agent.EscapeTerminalBlock(agent.RedactSecrets(s))
+}
+
+// describeTarget names what was reviewed in one phrase, for the review's footer.
+func describeTarget(t config.Target) string {
+	if t.Mode == config.ModePR && t.PR > 0 {
+		return fmt.Sprintf("pull request #%d", t.PR)
+	}
+	if t.Mode == config.ModeGitDiff && t.BaseRef != "" {
+		return "the changes since " + t.BaseRef
+	}
+	return string(t.Mode)
+}
+
+// configBaseName is the config's bare name, as `fixpoint --list` shows it.
+func configBaseName(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// readForgeChecks asks the forge what its own checks say about the reviewed head,
+// and records the answer for the verdict and the review body.
+//
+// Reading the forge rather than RUNNING the project's checks is the whole point.
+// A review run reviews code somebody else wrote: `make test` on a pull request
+// executes that pull request's Makefile, which is arbitrary code on this host with
+// this operator's credentials. The forge already ran those checks in its own
+// sandbox and will tell us the answer for free.
+//
+// pr mode only, because that is where a pull request exists to ask about. It is
+// also entirely best-effort: no gh/glab installed, no remote, a private repo the
+// token cannot see, a head that moved out from under the read -- every one of those
+// leaves CI unknown, which never blocks a verdict but is stated in its reasons, so
+// an approval never silently rests on a check nobody ran, nor on one that ran on a
+// commit nobody read.
+//
+// sum.ReviewedHead is what the answer must be about: recordReviewedHead pinned it
+// just above, and the provider refuses rather than reporting the checks of whatever
+// the pull request proposes now. The summary is passed rather than the SHA so that
+// binding lives inside the function a test can drive, not at the call site.
+func (o *Orchestrator) readForgeChecks(ctx context.Context, sum *model.RunSummary) {
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
+		return
+	}
+	p := checkerFor(ctx, o.cfg.Target.Path)
+	if p == nil {
+		o.logf("no GitHub or GitLab remote recognized; the verdict will carry no CI evidence")
+		return
+	}
+	checks, err := p.Checks(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead)
+	if err != nil {
+		o.logf("WARNING: could not read %s checks (%v); the verdict will carry no CI evidence", p.Kind(), err)
+		return
+	}
+	o.ci = review.CI{Known: checks.Known, Failing: checks.Failing, Pending: checks.Pending}
+	switch {
+	case len(checks.Failing) > 0:
+		o.logf("%s checks: FAILING (%s)", p.Kind(), strings.Join(checks.Failing, ", "))
+	case len(checks.Pending) > 0:
+		o.logf("%s checks: none failing, %d still running (%s)", p.Kind(), len(checks.Pending), strings.Join(checks.Pending, ", "))
+	default:
+		o.logf("%s checks: all passing", p.Kind())
+	}
+}
+
+// runRefutation asks every reviewer on the panel to take a position on the MERGED
+// finding set, and drops what they unanimously refute.
+//
+// It exists because agreement cannot sort signal from noise in this panel.
+// Measured across 19 runs: under 4% of findings were reported by more than one
+// reviewer, and 0 of 25 findings the coder rejected as false positives were among
+// them -- so an intersection would filter none of the noise while discarding 237
+// of 248 confirmed defects. What is left is to judge each finding on its own
+// evidence, which is a better test than counting votes anyway.
+//
+// Every reviewer sees the same canonical set and nothing about who reported what.
+// Attribution would hand a reviewer a reason that is not evidence: "this came from
+// the model I have disagreed with twice today" is not a fact about the code.
+func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord, material string) {
+	if o.cfg.Review.Refute == "" || len(rec.Issues) == 0 || ctx.Err() != nil {
+		return
+	}
+	panel := panelAgents(rec.Assignments)
+	if len(panel) == 0 {
+		return
+	}
+	// Only what the gate protects. Everything below the floor goes straight to the
+	// judge, which may already drop it alone -- a second opinion there buys nothing
+	// it can act on. See ReviewPolicy.RefuteAt for the measurement.
+	floor := o.cfg.Review.RefuteFloor()
+	subject := issuesAtOrAbove(rec.Issues, floor)
+	if len(subject) == 0 {
+		o.logf("refutation: skipped -- none of the %d finding(s) is %s or above", len(rec.Issues), floor)
+		return
+	}
+	o.phase("REFUTE  %d reviewer(s) judging %d of %d finding(s) at %s or above",
+		len(panel), len(subject), len(rec.Issues), floor)
+
+	type reply struct {
+		agent     string
+		answered  bool
+		positions []model.RefutePosition
+		step      *model.StepStat
+	}
+	replies := make([]reply, len(panel))
+	var wg sync.WaitGroup
+	for i, name := range panel {
+		wg.Add(1)
+		// i and name are passed in rather than captured, matching review() and Ping().
+		// Per-iteration loop variables would make this correct today, but the slot a
+		// goroutine writes decides which agent's positions land in which reply -- and
+		// applyRefutations counts one vote per distinct agent -- so the binding is
+		// fixed at spawn time instead of resting on what a later edit to the loop body
+		// does to i or name.
+		go func(i int, name string) {
+			defer wg.Done()
+			positions, answered, step := o.refuteWith(ctx, name, rec.Round, subject, material)
+			replies[i] = reply{agent: name, answered: answered, positions: positions, step: step}
+		}(i, name)
+	}
+	wg.Wait()
+	// Collected AFTER the join, into rec in panel order. Appending from inside the
+	// goroutines raced -- two refuters could write the same slice index and one
+	// step would vanish, taking that reviewer's tokens out of the run's reported
+	// cost. This mirrors review(), which already collects into an indexed slice for
+	// the same reason; doing it here also makes the step order deterministic
+	// instead of dependent on which refuter finished first.
+	for _, r := range replies {
+		if r.step != nil {
+			rec.Steps = append(rec.Steps, *r.step)
+		}
+	}
+
+	// An interrupt during the fan-out is not a verdict. A killed refuter answers
+	// nothing, so aggregating whoever is left reads a PARTIAL panel as the round's
+	// judgment: the survivors' positions are counted, and a finding they refuted
+	// comes out Contested with their names in ContestedBy -- a recorded doubt from a
+	// round most of the panel never finished, which is then persisted and can be
+	// published. applyRefutations' responded == panel rule already stops a shrunken
+	// electorate from DELETING anything, but it reads a killed reviewer and one that
+	// failed on its own as the same fact, and they are not: nobody stopped the second
+	// one. Fail closed in the same shape as runJudge -- a round the operator
+	// interrupted records no judgment at all, and an operator's Ctrl-C can never
+	// be part of what happens to a finding.
+	if ctx.Err() != nil {
+		o.logf("refutation: interrupted before it could run; every finding stands")
+		o.endPhase("REFUTE  interrupted; every finding stands")
+		return
+	}
+
+	// Keyed by issue AND by the agent that spoke, at most one position each.
+	//
+	// A flat list let one reviewer forge unanimity: counting position RECORDS rather
+	// than distinct agents meant a single prompt-injected refuter emitting four
+	// duplicate refutes for one finding satisfied "every responder refuted it" while
+	// the other three never mentioned it -- deleting a genuine high before the
+	// verdict ever saw it, which on a malicious pull request turns CHANGES_REQUESTED
+	// into APPROVE. Identity is the fix: a reviewer gets one vote per finding no
+	// matter how many times it says the same thing.
+	// Keyed on what the refuters were SHOWN, not on every finding in the round: a
+	// position on an id that was below the floor is a position on something this
+	// reviewer never read, and counting it would let the round act on a finding it
+	// deliberately did not ask about.
+	known := make(map[string]bool, len(subject))
+	for _, it := range subject {
+		known[it.ID] = true
+	}
+	byIssue := map[string]map[string]model.RefutePosition{}
+	responded := 0
+	// "This reviewer answered" and "this reviewer listed positions" are separate
+	// facts, and conflating them was the second way to forge unanimity: an agent
+	// whose reply parsed but omitted the positions key (or set it to null) left a
+	// nil slice, was skipped here, and never counted toward `responded`. Three
+	// reviewers answering `{}` plus one refuter made responded == 1 and unanimity
+	// trivial. An answer with nothing in it is still an answer: it counts as a
+	// responder and casts no vote, which is what makes the count safe.
+	for _, r := range replies {
+		if !r.answered {
+			continue
+		}
+		responded++
+		for _, p := range r.positions {
+			switch {
+			case !known[p.Issue]:
+				// An id nobody was shown. It cannot affect a finding that exists, but a
+				// reviewer inventing them is worth saying out loud.
+				o.logf("WARNING: refute: %s took a position on %q, which was not in the set it was shown; ignored", r.agent, p.Issue)
+				continue
+			case byIssue[p.Issue] != nil && byIssue[p.Issue][r.agent] != model.RefutePosition{}:
+				o.logf("WARNING: refute: %s gave more than one position on %s; only the first counts", r.agent, p.Issue)
+				continue
+			}
+			if byIssue[p.Issue] == nil {
+				byIssue[p.Issue] = map[string]model.RefutePosition{}
+			}
+			byIssue[p.Issue][r.agent] = p
+		}
+	}
+	if responded == 0 {
+		// Nobody judged anything. Dropping findings on the strength of an empty round
+		// would be the worst possible reading of silence.
+		o.logf("refutation: no reviewer returned a usable position; every finding stands")
+		o.endPhase("REFUTE  no usable position returned; every finding stands")
+		return
+	}
+	dropped, contested := applyRefutations(rec, byIssue, responded, len(panel), o.logf)
+	o.endPhase("REFUTE  %d of %d responder(s), %d dropped, %d contested", responded, len(panel), dropped, contested)
+}
+
+// issuesAtOrAbove selects the findings a refutation round is asked about: those
+// at or worse than the floor, in the order they were merged.
+//
+// Undecided only. A finding the coder already fixed or rejected in an earlier
+// round is not a claim anyone still needs a position on, and asking would spend a
+// reviewer's pass on settled work.
+func issuesAtOrAbove(issues []model.Issue, floor string) []model.Issue {
+	rank := model.SeverityRank(floor)
+	out := make([]model.Issue, 0, len(issues))
+	for _, it := range issues {
+		switch it.StatusOrDefault() {
+		case model.VerdictFixed, model.VerdictRejected:
+			continue
+		}
+		if model.SeverityRank(it.Severity) <= rank {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// panelAgents lists the distinct non-advisory agents a round assigned, in a
+// stable order.
+func panelAgents(assignments []model.Assignment) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(assignments))
+	for _, a := range assignments {
+		if a.Advisory || seen[a.Agent] {
+			continue
+		}
+		seen[a.Agent] = true
+		out = append(out, a.Agent)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// refuteWith runs one reviewer's refutation pass. The second return says whether
+// this reviewer ANSWERED -- which is not the same as whether it took any position,
+// and the caller needs both separately to count unanimity safely. A failed refuter
+// is not a round failure: it simply does not get a vote. Nor does its silence help
+// anyone delete a finding -- unanimity is measured over the whole assigned panel,
+// so a reviewer that never answered counts as one that did not refute.
+func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, round int, subject []model.Issue, material string) ([]model.RefutePosition, bool, *model.StepStat) {
+	label := "refute: " + agentName
+	d := prompt.RefuteData{
+		Mode:           o.cfg.Target.Mode,
+		Path:           o.cfg.Target.Path,
+		Round:          round,
+		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
+		Target:         material,
+		Canonical:      prompt.FormatCanonical(subject),
+		OutputContract: prompt.RefuteContract,
+	}
+	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
+		Mode: d.Mode, Path: d.Path, Round: d.Round, ModeGuidance: d.ModeGuidance, Target: d.Target,
+	})
+	tmpl, ok := o.templates[o.cfg.Review.Refute]
+	if !ok || tmpl == nil {
+		o.logf("WARNING: %s: refute prompt %q was never loaded; this reviewer casts no position", label, o.cfg.Review.Refute)
+		return nil, false, nil
+	}
+	text, err := prompt.Render(tmpl, d)
+	if err != nil {
+		o.logf("WARNING: %s: render failed (%v); this reviewer casts no position", label, err)
+		return nil, false, nil
+	}
+	res := o.runAgent(ctx, label, "refute", agentName, o.cfg.Review.Refute, round, text)
+	var out model.RefuteOutput
+	parseErr := res.Err
+	if parseErr == nil {
+		parseErr = agent.ExtractJSON(res.Stdout, "review", &out)
+	}
+	step := stepStat("refute", agentName, o.cfg.Review.Refute, len(text), res, parseErr != nil)
+	// Persisted like a review step. The product of this round is JUDGMENT WITH
+	// EVIDENCE, and without the artifact none of it survives: a refuter that is
+	// outvoted leaves no trace of what it argued, and "who refuted what, on what
+	// grounds" cannot be answered even from a run you have in front of you. That
+	// was true of the first three runs and made the round impossible to evaluate.
+	o.logStep("refute", agentName, o.cfg.Review.Refute, round, parseErr == nil, out,
+		logstore.RenderRefuteMD(agentName, round, out.Positions, parseErr), res, "")
+	if parseErr != nil {
+		o.logf("WARNING: %s failed (%v); this reviewer casts no position", label, parseErr)
+		return nil, false, &step
+	}
+	valid := make([]model.RefutePosition, 0, len(out.Positions))
+	for _, p := range out.Positions {
+		if !model.ValidPosition(p.Position) {
+			o.logf("WARNING: %s returned an unknown position %q on %s; ignored", label, p.Position, p.Issue)
+			continue
+		}
+		p.Position = strings.ToLower(strings.TrimSpace(p.Position))
+		// A refutation with no evidence is not a refutation. Only this position
+		// DELETES a finding, and the contract, the prompt and RefutePosition's own
+		// doc all say the deletion has to be grounded in code -- but nothing checked
+		// it, so a bare {"issue":"i1","position":"refute"} counted toward unanimity
+		// and could drop a high finding, then leave the record asserting "refuted by
+		// every reviewer that judged it: " with nothing after the colon. Dropped
+		// here rather than in the aggregation so the reviewer still counts as a
+		// responder and casts no vote on this id, which fails closed: the finding is
+		// kept and marked contested instead of deleted.
+		if p.Position == model.PositionRefute && strings.TrimSpace(p.Evidence) == "" {
+			o.logf("WARNING: %s refuted %s with no evidence; ignored -- a refutation must say what in the code disproves it", label, p.Issue)
+			continue
+		}
+		valid = append(valid, p)
+	}
+	o.logf("%s done (%d position(s), %s)", label, len(valid), res.Duration.Round(time.Second))
+	return valid, true, &step
+}
+
+// applyRefutations drops the findings every responder refuted, and marks the rest.
+//
+// UNANIMOUS, not majority. A refutation deletes a finding from the review and
+// nothing downstream will look for it again, while a wrongly-kept finding costs a
+// human one paragraph. With that asymmetry the bar for deletion belongs at the top:
+// one reviewer still standing behind a defect is enough to keep it.
+//
+// Unanimity is measured over the whole ASSIGNED PANEL -- not over the positions
+// that happen to have arrived for one finding, and not over the reviewers that
+// merely responded. Both narrower readings let one reviewer delete a finding on its
+// own word, and the difference is the whole safety property.
+//
+// Counting `refuted == len(positions)` made a single refuter enough whenever the
+// others simply omitted that id, which is the likely failure: the contract asks for
+// a position on every finding and nothing enforces coverage, so a refuter working
+// through thirty of them truncates.
+//
+// Counting against the RESPONDERS left the same hole one step out, because a
+// refuter that fails its contract is not counted as a responder at all. Three of a
+// four-agent panel timing out or returning unparseable output alongside one that
+// refutes made responded == 1, and unanimity trivial again -- and a pull request is
+// input the panel reads, so an injection that breaks one model's output format
+// while another refutes a security finding is a way to arrange exactly that. The
+// finding is then rejected, the judge skips it, and the run can approve. An
+// electorate an attacker can shrink is not an electorate: a reviewer that never
+// answered is a reviewer that did not refute, and it keeps the finding.
+//
+// Issues nobody took a position on are untouched, for the same reason. panel is the
+// number of reviewers the round asked, from panelAgents.
+func applyRefutations(rec *model.RoundRecord, byIssue map[string]map[string]model.RefutePosition, responded, panel int, logf func(string, ...any)) (dropped, contested int) {
+	for i := range rec.Issues {
+		it := &rec.Issues[i]
+		positions := byIssue[it.ID]
+		if len(positions) == 0 {
+			continue
+		}
+		refuted, maintained, unsure := 0, 0, 0
+		var evidence string
+		// Who doubted it, not just how many: the judge gate downstream must be able to
+		// tell a second agent's refutation from the judge's own.
+		var refuters []string
+		// In agent order, not map order: the evidence a dropped finding records is
+		// persisted, and which refuter's words it quotes must not depend on a map
+		// walk. Two refuters produced a different VerdictDetail on every run.
+		names := make([]string, 0, len(positions))
+		for name := range positions {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			p := positions[name]
+			switch p.Position {
+			case model.PositionRefute:
+				refuted++
+				refuters = append(refuters, name)
+				if evidence == "" {
+					evidence = p.Evidence
+				}
+			case model.PositionMaintain:
+				maintained++
+			case model.PositionUnsure:
+				unsure++
+				// Deliberately not collected: see the all-unsure branch below.
+			}
+		}
+		switch {
+		case refuted == responded && len(positions) == responded && responded == panel:
+			it.Status = model.VerdictRejected
+			it.Verdict = model.VerdictRejected
+			it.VerdictDetail = "refuted by every reviewer on the panel: " + evidence
+			dropped++
+			logf("refutation: %s dropped -- all %d reviewer(s) on the panel refuted it", it.ID, panel)
+		case refuted == len(positions) && len(positions) == responded && responded < panel:
+			// Every reviewer that answered refuted it, but some never answered. Their
+			// silence is not a refutation, and treating it as one would hand a single
+			// refuter the deletion whenever the rest of the panel fails -- which is
+			// something the code under review can influence. Kept and flagged.
+			it.Contested = true
+			it.ContestedBy = refuters
+			contested++
+			logf("refutation: %s refuted by all %d reviewer(s) that answered, but %d of %d never answered -- kept",
+				it.ID, refuted, panel-responded, panel)
+		case refuted == len(positions) && len(positions) < responded:
+			// Everyone who spoke about this finding refuted it, but not everyone spoke.
+			// Silence is not agreement: the reviewers that omitted the id may never have
+			// looked at it. Kept and flagged rather than deleted on a partial count.
+			it.Contested = true
+			it.ContestedBy = refuters
+			contested++
+			logf("refutation: %s refuted by %d of %d responding reviewer(s), the rest did not say -- kept",
+				it.ID, refuted, responded)
+		case refuted > 0:
+			// Kept, but the disagreement is recorded: a reader deciding what to do about
+			// this finding should know somebody who looked did not believe it.
+			it.Contested = true
+			it.ContestedBy = refuters
+			contested++
+			logf("refutation: %s contested (%d refute, %d maintain, %d unsure) -- kept", it.ID, refuted, maintained, unsure)
+		case unsure == len(positions):
+			// Marked for the reader, but NOT recorded as doubt the judge may build on.
+			//
+			// ContestedBy is what authorizes a judge to drop a merge-blocking finding, and
+			// the documented rule is that removing a blocker takes a second agent's
+			// EVIDENCE -- refuteWith requires it for a refutation and deliberately does not
+			// for an unsure, whose whole meaning is "I could not decide". Letting that
+			// satisfy the gate would make the strongest control here reachable by the
+			// weakest possible statement: an agent with nothing to say could unlock the
+			// deletion of the finding that blocks the merge.
+			it.Contested = true
+			contested++
+			logf("refutation: %s uncertain -- no reviewer could decide it from the evidence; recorded for the reader, not as grounds to drop it", it.ID)
+		}
+	}
+	return dropped, contested
+}
+
+// runJudge is the last filter before a review is published: one read-only agent
+// sees what survived refutation and decides which findings are worth a human's
+// attention.
+//
+// It is a separate role from the coder, deliberately. The coder already makes this
+// judgment in a fix run -- fix.md asks it to reject what is correct but not worth
+// fixing -- but the coder is can_edit, and a review- config's whole promise is that
+// it never invokes anything that can modify the target. Same judgment, different
+// hands.
+//
+// It became necessary rather than nice-to-have when the verdict gained a hard
+// severity gate: if one `high` blocks a merge, something must filter severity
+// BEFORE the gate, or the noisiest reviewer decides the outcome. Measured, that
+// reviewer is real -- one panel member's highs were rejected half the time.
+//
+// Fails closed. A judge that dies leaves every finding standing AND prevents an
+// approval, because a review whose filter never ran has not been filtered, and
+// approving on that basis would be trusting a step that did not happen.
+func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, material string) (ran bool) {
+	j := o.cfg.Roles.Judge
+	if j.Agent == "" || j.Prompt == "" || len(rec.Issues) == 0 {
+		return true // not configured is not a failure; there is nothing to fail closed about
+	}
+	// A judge that was STOPPED is the opposite: it was configured, it did not run, and
+	// saying otherwise here approves a review whose filter never happened. This
+	// line read `|| ctx.Err() != nil` above the early return and so reported a
+	// killed judge as having filtered -- caught by the panel reviewing this branch.
+	if ctx.Err() != nil {
+		o.logf("judge: interrupted before it could run; every finding stands and the review cannot approve")
+		return false
+	}
+	open := 0
+	for _, it := range rec.Issues {
+		if it.StatusOrDefault() != model.VerdictRejected {
+			open++
+		}
+	}
+	if open == 0 {
+		return true
+	}
+	o.phase("JUDGE  %s weighing %d surviving finding(s)", j.Agent, open)
+
+	d := prompt.JudgeData{
+		Mode:           o.cfg.Target.Mode,
+		Path:           o.cfg.Target.Path,
+		Round:          rec.Round,
+		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
+		Target:         material,
+		Canonical:      prompt.FormatCanonical(undecidedIssues(rec)),
+		OutputContract: prompt.JudgeContract,
+	}
+	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
+		Mode: d.Mode, Path: d.Path, Round: d.Round, ModeGuidance: d.ModeGuidance, Target: d.Target,
+	})
+	tmpl, ok := o.templates[j.Prompt]
+	if !ok || tmpl == nil {
+		// Defensive: New loads this template, so reaching here means a hand-built
+		// Orchestrator. Rendering a nil template PANICS, which would take down a run
+		// over a filter -- fail the filter closed instead.
+		o.logf("WARNING: judge prompt %q was never loaded; every finding stands and the review cannot approve", j.Prompt)
+		o.endPhase("JUDGE  did not run; every finding stands")
+		return false
+	}
+	text, err := prompt.Render(tmpl, d)
+	if err != nil {
+		o.logf("WARNING: judge: render failed (%v); every finding stands and the review cannot approve", err)
+		o.endPhase("JUDGE  did not run; every finding stands")
+		return false
+	}
+	res := o.runAgent(ctx, "judge: "+j.Agent, "judge", j.Agent, j.Prompt, rec.Round, text)
+	var out model.JudgeOutput
+	parseErr := res.Err
+	if parseErr == nil {
+		parseErr = agent.ExtractJSON(res.Stdout, "review", &out)
+	}
+	rec.Steps = append(rec.Steps, stepStat("judge", j.Agent, j.Prompt, len(text), res, parseErr != nil))
+	// Persisted for the same reason as the refutation: a dropped finding's reason
+	// reaches the summary, but a KEPT one's does not, and neither does anything
+	// about how the judge weighed the rest.
+	o.logStep("judge", j.Agent, j.Prompt, rec.Round, parseErr == nil, out,
+		logstore.RenderJudgeMD(j.Agent, rec.Round, out.Verdicts, parseErr), res, "")
+	if parseErr != nil {
+		o.logf("WARNING: judge failed (%v); every finding stands and the review cannot approve", parseErr)
+		o.endPhase("JUDGE  did not finish; every finding stands")
+		return false
+	}
+	kept, dropped := applyJudgment(rec, out.Verdicts, o.cfg.Review.BlockAt, j.Agent, o.logf)
+	o.endPhase("JUDGE  %d kept, %d dropped", kept, dropped)
+	return true
+}
+
+// undecidedIssues are the findings still standing after refutation -- the only
+// ones worth a judge's session.
+func undecidedIssues(rec *model.RoundRecord) []model.Issue {
+	out := make([]model.Issue, 0, len(rec.Issues))
+	for _, it := range rec.Issues {
+		if it.StatusOrDefault() != model.VerdictRejected {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// applyJudgment records the arbiter's decisions.
+//
+// A finding it does not mention is KEPT. The judge is a filter, and a filter that
+// removes what it forgot to consider is not a filter -- it is a leak whose size
+// depends on how long the reply was.
+//
+// A drop with no reason is also kept. The reason is the only thing standing between
+// a filter and an unaccountable one, and an empty string cannot be disagreed with.
+//
+// Above all, ONE judge cannot delete a BLOCKING finding on its own word. The judge
+// prompt already forbids dropping a high or critical for cost or unlikelihood --
+// only for being wrong -- but a prompt is not a control: this single agent reads the
+// same untrusted material the panel read, so a pull request carrying injection text
+// aimed at the judge could retract exactly the finding that was about to block it,
+// and -post-verdict would then approve it. Code cannot check whether the judge
+// PROVED a finding wrong, so it checks the one mechanical fact that a second,
+// independent agent produced: the refutation round recorded disagreement about it.
+// A blocking finding every responding reviewer stood behind survives the judge, and
+// the verdict blocks -- the wrong answer costs a human one paragraph, and the other
+// wrong answer is an approval nobody gave. Two agents must now agree to remove a
+// blocker, one of them in a round that never sees the judge's reasoning.
+//
+// INDEPENDENT is the operative word, and a boolean could not carry it. The shipped
+// pr configuration makes the same agent both a panel refuter and the judge, so
+// injection text could buy both halves of the corroboration from one agent: refute
+// the finding in the panel round, drop it in the judging round. The doubt therefore
+// has to come from an agent that is not the judge -- which is why the refutation
+// round records WHO doubted each finding and not merely that somebody did.
+func applyJudgment(rec *model.RoundRecord, verdicts []model.JudgeVerdict, blockAt, judge string, logf func(string, ...any)) (kept, dropped int) {
+	if blockAt == "" {
+		blockAt = model.DefaultBlockAt
+	}
+	floor := model.SeverityRank(blockAt)
+	decided := map[string]model.JudgeVerdict{}
+	// Two verdicts on one finding is not a judgment, it is a contract violation, and
+	// whichever one arrived last is not more authoritative than the other. Keeping
+	// the finding is the same fail-closed reading applied to an unknown verdict
+	// below: a judge that answered "keep and drop" did not decide to drop.
+	ambiguous := map[string]bool{}
+	for _, v := range verdicts {
+		if !model.ValidJudgeVerdict(v.Verdict) {
+			logf("WARNING: judge returned an unknown verdict %q on %s; the finding stands", v.Verdict, v.Issue)
+			continue
+		}
+		v.Verdict = strings.ToLower(strings.TrimSpace(v.Verdict))
+		if _, seen := decided[v.Issue]; seen {
+			if !ambiguous[v.Issue] {
+				logf("WARNING: judge returned more than one verdict on %s; one finding gets one answer -- kept", v.Issue)
+			}
+			ambiguous[v.Issue] = true
+			continue
+		}
+		decided[v.Issue] = v
+	}
+	for i := range rec.Issues {
+		it := &rec.Issues[i]
+		v, ok := decided[it.ID]
+		if !ok || ambiguous[it.ID] || v.Verdict != model.JudgeDrop || it.StatusOrDefault() == model.VerdictRejected {
+			continue
+		}
+		reason := strings.TrimSpace(v.Reason)
+		if reason == "" {
+			logf("WARNING: judge dropped %s with no reason; a drop nobody can argue with is not a judgment -- kept", it.ID)
+			continue
+		}
+		if model.SeverityRank(it.Severity) <= floor && !doubtedByOther(*it, judge) {
+			// Recorded as contested for the reader: the judge is a reviewer of the panel's
+			// work, and its dissent is evidence even when it is not authority. Its own
+			// name is NOT added to ContestedBy: that list is what the gate above reads,
+			// and writing to it here would let this round's refusal authorize the next
+			// round's drop on nothing but the judge's repeated opinion.
+			it.Contested = true
+			logf("judge: %s is %s and no other reviewer refuted it, so one judge may not drop it alone -- kept and contested (%s)",
+				it.ID, model.NormalizeSeverity(it.Severity), firstLineOf(reason))
+			continue
+		}
+		it.Status = model.VerdictRejected
+		it.Verdict = model.VerdictRejected
+		it.VerdictDetail = "judged not worth reporting: " + v.Reason
+		dropped++
+		logf("judge: %s dropped -- %s", it.ID, firstLineOf(reason))
+	}
+	for _, it := range rec.Issues {
+		if it.StatusOrDefault() != model.VerdictRejected {
+			kept++
+		}
+	}
+	return kept, dropped
+}
+
+// doubtedByOther reports whether the refutation round recorded doubt about this
+// finding from an agent other than the judge.
+//
+// A judge that refuted the finding itself corroborates nothing: it is the same
+// model, reading the same untrusted material, reachable by the same injection. An
+// issue carrying Contested from an older summary with no names recorded also fails
+// this test, which is the safe direction -- the finding stands.
+func doubtedByOther(it model.Issue, judge string) bool {
+	for _, name := range it.ContestedBy {
+		if name != judge {
+			return true
+		}
+	}
+	return false
+}
+
+// fixSubject and fixTitle name a coder session's block. One issue per session is
+// the rule (see runFixSessions), so the usual answer is that issue's id and title;
+// the plural forms exist only for a config that batches, and for the closing
+// round's correction pass.
+func fixSubject(active []model.Issue) string {
+	switch len(active) {
+	case 0:
+		return "(nothing)"
+	case 1:
+		return active[0].ID
+	default:
+		return fmt.Sprintf("%d issues", len(active))
+	}
+}
+
+func fixTitle(active []model.Issue) string {
+	if len(active) != 1 {
+		return ""
+	}
+	return active[0].Title
+}
+
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// posterFor is forge.PosterFor behind a variable so a test can observe what would
+// be published without a network call. The seam is here rather than in forge
+// because what needs asserting is the ORCHESTRATOR's choice of bytes and event,
+// not the CLI invocation.
+var posterFor = forge.PosterFor
+
+// readerFor is forge.ReaderFor behind a variable, for the same reason.
+var readerFor = forge.ReaderFor
+
+// checkerFor is forge.For behind a variable, for the same reason: what needs
+// asserting is that readForgeChecks asks about the commit the panel READ rather
+// than whatever the pull request proposes now, and that a refusal costs the
+// verdict its CI evidence instead of the run.
+var checkerFor = forge.For
+
+// postReview publishes the rendered review on the pull request.
+//
+// Two assertions, because there are two risk levels and collapsing them would
+// price the smaller one at the larger one's rate. -post publishes the findings as
+// a COMMENT: the review becomes visible and nothing is spent -- no approval given,
+// nobody's merge blocked. -post-verdict additionally lets it carry the verdict,
+// which either approves somebody's change or formally requests changes on it, and
+// that is a social act as much as a technical one.
+//
+// Both are command-line flags and neither can come from YAML: the first bundle on
+// the search path belongs to the target, so a config key here would let reviewed
+// code arrange for a review to be posted under the operator's identity.
+//
+// A failed post is REPORTED, never swallowed. Reads in this package fail soft
+// because a missing datum only weakens the evidence; a write that the operator
+// asked for and did not get is the opposite -- silence there would tell them the
+// review is on the pull request when it is not.
+//
+// "Reported" means the RUN fails, which is why this returns an error instead of
+// only logging one. A log line is not observable to automation: the caller went on
+// to record a normal review-only termination, so `fixpoint review-pr -post` exited
+// 0 on an expired token, a 5xx or a timeout, and on the head-moved mismatch
+// confirmApproval exists to raise -- the case where an approval IS on the pull
+// request and a human has to dismiss it. Two exceptions stay warnings: a run with
+// no pull request to post to never had anywhere to publish, and an interruption
+// already terminates the run non-zero on its own.
+func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, body string) error {
+	if !o.cfg.Review.Post {
+		return nil
+	}
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
+		o.logf("WARNING: -post was given but this run reviews no pull request; the review is in %s", sum.ReviewBody)
+		return nil
+	}
+	if ctx.Err() != nil {
+		o.logf("WARNING: interrupted before posting; the review is in %s", sum.ReviewBody)
+		return nil //nolint:nilerr // the round already records an interruption, which exits non-zero on its own
+	}
+	p := posterFor(ctx, o.cfg.Target.Path)
+	if p == nil {
+		// A requested publish that did not happen, so it fails the run like any other
+		// -- cmd/fixpoint/postrun.go answers the same situation with exit 1. In pr mode
+		// this means the forge remote is not the one PosterFor looks at, not that there
+		// is no forge: Prepare already reached the pull request to check it out.
+		return fmt.Errorf("-post was given but no GitHub or GitLab remote was recognized; the review is in %s", sum.ReviewBody)
+	}
+	// forge.EventFor, not a switch here: -post-run publishes the same verdicts from
+	// a finished run, and two hand-copied mappings of "which verdict approves
+	// somebody's pull request" is one edit away from disagreeing.
+	//
+	// A summary with no verdict posts as a comment. It should not happen -- the
+	// verdict is recorded before this is reached -- but the fallback a missing one
+	// deserves is the one that spends nothing.
+	outcome := ""
+	if sum.Verdict != nil {
+		outcome = sum.Verdict.Outcome
+	}
+	event := forge.EventFor(outcome, o.cfg.Review.PostVerdict)
+	// The anchors RECORDED for this review, not a second computation of them.
+	// writeReviewBody already stored them, and recomputing here would let the posted
+	// review and the replayable one drift apart over the same run.
+	inline := make([]forge.InlineComment, 0, len(sum.ReviewInline))
+	for _, a := range sum.ReviewInline {
+		inline = append(inline, forge.InlineComment{Path: a.Path, Line: a.Line, Body: a.Body})
+	}
+	// sum.ReviewedHead binds the review to the commit the panel actually read. The
+	// poster refuses when the pull request has moved since -- an author who pushes
+	// while a review runs must not collect a verdict about the commit before it.
+	url, err := p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead, body, event, inline)
+	if forge.AnchorRejection(err) {
+		// The forge refused the anchors, not the review. Publishing the summary alone
+		// is strictly better than publishing nothing: every finding is in it, they
+		// just lose their line links. Any other failure is reported below and NOT
+		// retried -- it may have been accepted before it failed.
+		o.logf("WARNING: %s rejected the inline comments (%v); posting the summary without them", p.Kind(), err)
+		url, err = p.PostReview(ctx, o.cfg.Target.Path, o.cfg.Target.PR, sum.ReviewedHead, body, event, nil)
+	}
+	// Recorded from the URL, not from the absence of an error. A poster that returns
+	// a URL has SUBMITTED the review, and one failure arrives after that succeeded:
+	// confirmApproval re-reads the head and reports a mismatch as an error on an
+	// approval that is already on the pull request. Leaving ReviewPosted empty there
+	// would make the summary -- documented as empty when nothing was posted -- deny a
+	// review a human has to go and dismiss, and send a later `-post-run` to publish
+	// it a second time.
+	if err == nil || url != "" {
+		sum.ReviewPosted = string(event)
+	}
+	if err != nil {
+		return fmt.Errorf("posting the review to %s failed: %w -- it is written at %s", p.Kind(), err, sum.ReviewBody)
+	}
+	if url != "" {
+		o.logf("review posted to %s as %s: %s", p.Kind(), event, url)
+	} else {
+		o.logf("review posted to %s as %s", p.Kind(), event)
+	}
+	// An approval outlives the commit it was given for -- see forge.ApprovalNotice.
+	// Said after the post, and only when one happened, because it is about something
+	// that is now on the pull request; a run that exits 0 here otherwise reads as
+	// "the approval is bound to what was reviewed", which the forge does not promise.
+	if notice := forge.ApprovalNotice(p.Kind(), event, o.cfg.Target.PR, sum.ReviewedHead); notice != "" {
+		o.logf("WARNING: %s", notice)
+	}
+	return nil
+}
+
+// inlineComments anchors each surviving finding to its line, so a reader meets it
+// where the code is rather than in a list at the bottom.
+//
+// Only findings with a file AND a line: a forge has nowhere to hang the rest, and
+// including one without a location fails the whole submission. Decided findings
+// are left out for the same reason the body omits them -- they are not work
+// anybody has to act on.
+//
+// The text is the finding's own, already sanitized by the body renderer's rules,
+// with the severity leading so a reader skimming the Files tab can tell a blocker
+// from a note without opening anything.
+func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.InlineComment {
+	// A forge accepts an anchor only inside the pull request's own diff, and it
+	// rejects the WHOLE review when one falls outside -- with a 422 that names
+	// nothing. Measured on this project's own pull request: without this filter
+	// every anchor was refused, every time, because most findings point at code the
+	// change did not touch.
+	addressable := forge.AddressableLines(diff)
+	out := make([]forge.InlineComment, 0, len(rec.Issues))
+	for _, it := range rec.Issues {
+		switch it.StatusOrDefault() {
+		case model.VerdictFixed, model.VerdictRejected:
+			continue
+		}
+		if it.File == "" || it.Line <= 0 || !addressable[it.File][it.Line] {
+			continue
+		}
+		out = append(out, forge.InlineComment{
+			Path: it.File,
+			Line: it.Line,
+			// Through publishedText, exactly like the body: an inline comment is the
+			// second way agent text reaches the pull request, and a finding about a
+			// hardcoded credential quotes that credential on a line the diff contains,
+			// which is precisely the case that anchors.
+			Body: publishedText(review.RenderInline(it, signature)),
+		})
+	}
+	return out
+}
+
+// readForgeThreads loads the pull request's OPEN review conversations, so a fix
+// run can answer the humans who asked for the change rather than making it
+// silently.
+//
+// Unresolved only, and that filter is the point: a resolved thread is a settled
+// question, and handing it to a coder invites it to reopen something a person
+// already closed.
+//
+// Best-effort, like every other read: no gh, no permission, a forge without the
+// concept -- all leave the list empty, and a fix run then behaves exactly as it
+// did before conversations existed.
+func (o *Orchestrator) readForgeThreads(ctx context.Context) {
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 || o.cfg.Loop.ReviewOnly {
+		return
+	}
+	r := readerFor(ctx, o.cfg.Target.Path)
+	if r == nil {
+		return
+	}
+	// Which conversations are already answered is decided below by "did THIS account
+	// post the last word", and that question has no answer without the account. Asked
+	// first, and a run that cannot get it reads no conversations at all.
+	//
+	// The alternative -- let the copyable marker decide on its own -- is what makes a
+	// failed lookup exploitable: anybody who can comment on the pull request could
+	// append a marker to a maintainer's thread and have it skipped here, unseen by
+	// triage and by the coder. Unread is the honest answer to "we do not know who we
+	// are", and it is the same best-effort empty list a missing gh already produces.
+	me := r.Login(ctx, o.cfg.Target.Path)
+	if me == "" {
+		o.logf("WARNING: could not determine which account this tool posts under; the pull request's conversations are left unread this run")
+		return
+	}
+	threads, err := r.Threads(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	if err != nil {
+		o.logf("WARNING: could not read the pull request's conversations (%v); the coder will not see them", err)
+		return
+	}
+	// A conversation whose last word is ours is not waiting on anything. Skipping it
+	// is what stops a run from answering the same comment again -- and again the run
+	// after that -- since a reply does not resolve a thread and every later run reads
+	// it as unresolved. The moment a person writes under it, the thread is live again
+	// and is read afresh, with the whole exchange including what we said last time.
+	//
+	// "Ours" needs the login as well as the marker: the marker is copyable, so
+	// without the author check anybody who can comment could append one to their own
+	// message and drop that conversation out of every run from then on.
+	live := make([]forge.Thread, 0, len(threads))
+	answered := 0
+	for _, t := range threads {
+		if t.AnsweredByMachine(me) {
+			answered++
+			continue
+		}
+		live = append(live, t)
+	}
+	o.threads = live
+	switch {
+	case answered > 0:
+		o.logf("%d open conversation(s) on this pull request; %d already carry this tool's answer as the last word and are left alone",
+			len(live), answered)
+	case len(live) > 0:
+		o.logf("%d open conversation(s) on this pull request will be shown to the coder", len(live))
+	}
+}
+
+// conversations renders the open threads for the coder prompt.
+func (o *Orchestrator) conversations() string {
+	if len(o.threads) == 0 {
+		return ""
+	}
+	out := make([]prompt.Conversation, 0, len(o.threads))
+	for _, t := range o.threads {
+		c := prompt.Conversation{ID: t.ID, Path: t.Path, Line: t.Line, Author: t.Author, Body: t.Body}
+		for _, m := range t.Comments {
+			c.Comments = append(c.Comments, prompt.Comment{Author: m.Author, Body: m.Body})
+		}
+		out = append(out, c)
+	}
+	return prompt.FormatConversations(out)
+}
+
+// postReplies answers the conversations the coder said its work addressed.
+//
+// own is the set of threads that commissioned this session's issue -- more than
+// one when two comments about the same defect were merged onto it -- and is empty
+// for an ordinary panel finding.
+//
+// Gated on -post, like every other write to a forge: an answer appears under a
+// human's comment with the operator's identity on it. Gated on the thread being
+// one we actually SHOWED the coder, too -- a reply addressed to an id it invented,
+// or to a resolved thread it remembered from somewhere, would post into a
+// conversation nobody asked it to touch.
+//
+// Gated, finally, on the thread still being unanswered, and on a commissioned
+// thread being answered by the session that owes it. Every session is a fresh
+// agent shown the same list, so without those two rules one human comment
+// collects a reply from each of them, all under the operator's name.
+//
+// Failures are reported per reply and never abort the round: the fix is already
+// committed and verified, and losing that over a comment would be the wrong trade.
+func (o *Orchestrator) postReplies(ctx context.Context, own map[string]bool, replies []model.FixReply) {
+	if len(replies) == 0 || len(o.threads) == 0 {
+		return
+	}
+	if !o.cfg.Review.Post {
+		o.logf("%d conversation repl(y|ies) were written but not posted (-post was not given)", len(replies))
+		return
+	}
+	r := readerFor(ctx, o.cfg.Target.Path)
+	if r == nil {
+		// Said out loud, like answerConversations says its own skip: this was the one
+		// path here that discarded a coder's answers with no line at all, so an
+		// operator who asked for -post saw nothing happen and nothing explaining it.
+		o.logf("WARNING: %d conversation repl(y|ies) were not posted: no GitHub or GitLab remote recognized", len(replies))
+		return
+	}
+	// Signed with the CODER, because that is who is answering. A reply lands in a
+	// human's notifications looking exactly like a colleague's, and until now it
+	// carried nothing at all to say otherwise -- the one place in this tool where a
+	// reader could be misled about who they were talking to. Built once: it is the
+	// same run, the same agent, for every thread.
+	signature := o.replySignature(o.cfg.Roles.Coder.Agent)
+	for _, reply := range replies {
+		if !o.threadOpen(reply.Thread) {
+			// Covers an invented id, a thread from some other pull request, and one this
+			// run has already answered -- a session is shown only the conversations still
+			// open, so all three are "not something you were asked about".
+			o.logf("WARNING: the coder answered thread %q, which it was not shown as an open conversation; not posted", reply.Thread)
+			continue
+		}
+		if o.commissionedThreads[reply.Thread] && !own[reply.Thread] {
+			o.logf("WARNING: conversation %s commissioned a different issue and is answered by that issue's session; this reply is not posted", reply.Thread)
+			continue
+		}
+		// The signature goes AFTER the sanitized agent text and is sanitized
+		// separately, exactly as RenderBody places the review's: appending it to text
+		// that has not been through the forge funnel yet would let a reply ending in
+		// an unclosed HTML comment swallow its own attribution.
+		body := publishedText(forge.SanitizeText(reply.Message) + "\n\n" + signature)
+		if err := r.Reply(ctx, o.cfg.Target.Path, o.cfg.Target.PR, reply.Thread, body); err != nil {
+			// Closed anyway, and that is the point: an error is not proof that nothing
+			// reached the forge. gh can time out, be canceled, or lose the response after
+			// GitHub has already accepted the comment, and a thread left open is one the
+			// NEXT session of this run is shown, answers again, and posts a second machine
+			// answer under the operator's name for the same question.
+			//
+			// The trade is deliberately asymmetric. Closing costs at most one conversation
+			// going unanswered for the rest of this run -- if the post really did fail,
+			// the next run reads the thread as still unanswered and picks it up, since the
+			// answered check is a read of the forge, not of this list. Leaving it open
+			// costs a duplicate comment on a person's review, which is public and cannot
+			// be taken back.
+			o.closeThread(reply.Thread)
+			o.logf("ERROR: replying to conversation %s failed: %v; the comment may still have been posted, so nothing further will be posted to it this run",
+				reply.Thread, err)
+			continue
+		}
+		o.closeThread(reply.Thread)
+		o.logf("replied to conversation %s", reply.Thread)
+	}
+}
+
+// threadOpen reports whether a conversation is still one this run may answer.
+func (o *Orchestrator) threadOpen(id string) bool {
+	for _, t := range o.threads {
+		if t.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// closeThread takes an answered conversation out of the open list, so no later
+// session is shown it and none can post to it a second time.
+func (o *Orchestrator) closeThread(id string) {
+	for i, t := range o.threads {
+		if t.ID == id {
+			o.threads = append(o.threads[:i:i], o.threads[i+1:]...)
+			return
+		}
+	}
 }

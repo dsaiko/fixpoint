@@ -1,0 +1,74 @@
+# One review round over WHAT THIS BRANCH CHANGED, no edits. The review sibling of
+# fix-branch: same material, same lens panel, but the coder is never invoked, so
+# nothing is modified and no fix-round trust gate applies.
+#
+# Use it to see what fix-branch would be handed before letting it edit anything,
+# or as a pre-push check on your own work.
+description: Review this branch's changes once, no edits.
+
+extends: defaults
+
+target:
+  mode: git-diff
+
+  # The MERGE BASE of the upstream branch and HEAD -- see the trailing "...",
+  # which is git's own notation for it and is resolved once at run start.
+  #
+  # The three dots are the whole point. Against a bare `@{upstream}` the diff is
+  # taken from the upstream TIP, which is the same commit only while nobody has
+  # pushed since you branched. The moment upstream gains a commit you do not have,
+  # that commit appears in the diff BACKWARDS -- and the panel spends a round
+  # reviewing someone else's work rendered as deletions you made. With two
+  # machines pushing to one repo that is a matter of hours, not months.
+  #
+  # @{upstream} rather than a hard-coded branch name so this config is not
+  # specific to one repository's trunk. It needs the branch to have an upstream
+  # set (`git push -u`); on a branch that has never been pushed, override it on
+  # the command line with the branch you forked from, keeping the dots:
+  #
+  #     fixpoint fix-branch -base-ref 'origin/main...' -trusted-target
+  base_ref: "@{upstream}..."
+
+roles:
+  # The judge: the last filter before a review is published, and read-only by
+  # design -- a review- config must never invoke something that can edit.
+  #
+  # Pinned to claude on measurement: across 19 runs its findings were rejected 1%
+  # of the time against another panel member's 50% on high-severity ones, and this
+  # role decides what a hard severity gate ever sees. A judge that fails leaves
+  # every finding standing and blocks the approval.
+  judge: { agent: claude, prompt: judge }
+  review:
+    # all: every lens on every reviewer -- see review-code.yaml for why a one-round
+    # review spends its budget on breadth.
+    strategy: all
+    prompts:
+      - review-bugs
+      - review-security
+      - review-concurrency
+      # A review-only run has no closing round (there is no coder to hand findings
+      # to), so a final lens simply runs in this one round. That keeps this config a
+      # complete preview of its fix sibling rather than a subset of it.
+      - { prompt: review-tests, final: true }
+
+loop:
+  review_only: true
+
+# The refutation round: after the panel reports, every reviewer is shown the MERGED
+# finding set and must take an evidenced position on each one. What all of them
+# refute is dropped; what any of them still stands behind is kept and marked
+# contested.
+#
+# It replaces the obvious alternative -- keep only what two reviewers both found --
+# which measurement ruled out: across 19 runs under 4% of findings were reported by
+# more than one reviewer, and NONE of the 25 the coder rejected as false positives
+# were among them. An intersection would have filtered none of the noise while
+# discarding 237 of 248 confirmed defects.
+#
+# refute_at (default high, inherited) decides WHICH findings it is asked about: the
+# ones the judge gate protects. The round costs a full pass per reviewer per round
+# and has never dropped anything -- 97 findings over two measured runs, 29
+# contested, zero unanimous -- so it is kept for the gate, not as a filter, and
+# scoped to what the gate covers. Set refute_at: low to put everything to it.
+review:
+  refute: refute

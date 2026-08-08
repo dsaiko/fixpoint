@@ -15,6 +15,8 @@ import (
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/dsaiko/fixpoint/internal/model"
 )
 
 // Config is the whole of fixpoint.yaml: what to review, who reviews and
@@ -40,6 +42,9 @@ type Config struct {
 	// trivial prompt (in parallel) and abort if any fails. Catches expired
 	// logins and broken CLIs before tokens are spent. Default true.
 	PingAgents *bool `yaml:"ping_agents"`
+	// Review is the verdict policy for review-only runs; ignored by a fix run,
+	// which has no verdict.
+	Review ReviewPolicy `yaml:"review"`
 }
 
 // Ping reports whether the preflight agent ping is enabled.
@@ -84,6 +89,31 @@ type Target struct {
 type Roles struct {
 	Coder  RoleRef `yaml:"coder"`
 	Review Review  `yaml:"review"`
+	// Judge is the optional arbiter for a REVIEW run: a read-only agent that sees
+	// the surviving findings and decides which are worth reporting.
+	//
+	// It is a separate role from the coder rather than the coder itself, and that is
+	// load-bearing: the coder is can_edit, and a review- config's whole promise is
+	// that it never invokes something that can modify the target. Same judgment,
+	// different hands.
+	Judge RoleRef `yaml:"judge"`
+	// Triage is the optional arbiter for the pull request's OPEN CONVERSATIONS: a
+	// read-only agent that reads every unresolved comment and decides, one by one,
+	// whether it names real work.
+	//
+	// Naming it turns comments from context into input. Without it a coder is shown
+	// the conversations and told to leave them alone; with it, an accepted comment
+	// becomes an issue that goes through the ordinary pipeline -- one session, the
+	// verify gate, its own commit -- and a rejected one gets an answer saying why.
+	// Every conversation ends with a decision and a reply either way.
+	//
+	// Read-only for the same reason as the judge: this agent reads text that anyone
+	// with access to the pull request can write, and the decision it makes must not
+	// be made by something that can also edit the tree.
+	//
+	// It is only meaningful in pr mode; in any other mode there are no
+	// conversations and the step does not run.
+	Triage RoleRef `yaml:"triage"`
 }
 
 // RoleRef points one role at an agent and a prompt, both by BARE NAME:
@@ -637,8 +667,13 @@ func permissionBypassFlag(argv []string) string {
 // Exported for the orchestrator's warning on the trust-asserted path; the
 // refusal itself lives in Validate.
 //
+// A bare command name is measured by TargetSuppliedPATHDir instead: it names no
+// path, so PATH -- not argv -- decides which file it runs.
+//
 // An element counts as a path when it is absolute or explicitly relative
 // ("./x", "../x"), or when it contains a separator and something sits there now.
+// Both the whole element and, for a packed option ("--require=./hook.js"), the
+// value after the "=" are measured -- see argPathSpellings.
 // The one exemption is an existing DIRECTORY named as the value of a data-scope
 // flag (see dataScopeFlags), in any spelling. The existence requirement is what
 // keeps the separator-bearing strings that are not paths at all out of the answer
@@ -660,26 +695,115 @@ func TargetSuppliedArg(argv []string, root string) string {
 		if i > 0 {
 			_, dataScope = dataScopeFlags[argv[i-1]]
 		}
-		if !pathLikeArg(tok, root, dataScope) {
+		for _, cand := range argPathSpellings(tok, dataScope) {
+			if !pathLikeArg(cand.tok, root, cand.dataScope) {
+				continue
+			}
+			// Only a relative element resolves against the working directory; joining
+			// root onto an absolute one would fabricate a path under the target and
+			// report every absolute command as target-supplied.
+			p := cand.tok
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(root, p)
+			}
+			if within(p, root) {
+				return tok
+			}
+			// A path that is outside the target lexically can still LAND inside it
+			// through a symlink, which withinTree resolves -- but withinTree answers
+			// "inside" for a path it cannot canonicalize at all, so ask it only about
+			// one that exists. Otherwise an absolute argument naming no file
+			// (--config /etc/absent.toml) would be reported as PR-supplied.
+			if _, err := os.Lstat(p); err == nil && withinTree(p, root) {
+				return tok
+			}
+		}
+	}
+	return ""
+}
+
+// argSpelling is one substring of an argv element that may name a filesystem
+// path, with the data-scope verdict that applies to THAT substring.
+type argSpelling struct {
+	tok       string
+	dataScope bool
+}
+
+// argPathSpellings returns the substrings of tok to measure against the target:
+// the whole token, plus -- when tok is an option that PACKS its value with "=" --
+// the value after the first "=".
+//
+// The packed form is the hole the whole-token test cannot see. `--require=./hook.js`
+// contains a separator but names no file, so pathLikeArg's existence rule drops it
+// and the ./hook.js inside it is never measured -- yet node loads that hook out of
+// the post-checkout worktree and runs it as part of the agent process. Reading the
+// value out is the same reasoning permissionBypassFlag already applies to packed
+// flag spellings: a check worth anything cannot be evaded by writing the same
+// argument one character differently.
+//
+// The data-scope exemption is re-derived from the packed KEY rather than inherited
+// from the token's predecessor: `--add-dir=./sub` says the same thing about ./sub
+// that `--add-dir ./sub` does, while the element after it is still unexempt (that
+// is why the caller matches dataScopeFlags on the whole previous token).
+func argPathSpellings(tok string, dataScope bool) []argSpelling {
+	out := []argSpelling{{tok: tok, dataScope: dataScope}}
+	// Only an OPTION packs a value this way. Without this the "key=value" split
+	// would also fire on a bare argument that merely contains "=", measuring a
+	// suffix no CLI reads as a path of its own.
+	if !strings.HasPrefix(tok, "-") {
+		return out
+	}
+	key, val, ok := strings.Cut(tok, "=")
+	if !ok || val == "" {
+		return out
+	}
+	_, scope := dataScopeFlags[key]
+	return append(out, argSpelling{tok: val, dataScope: scope})
+}
+
+// TargetSuppliedPATHDir returns the PATH entry that lies inside root, or "" when
+// bin is not resolved through PATH or no entry does. It answers the question
+// TargetSuppliedArg cannot: a BARE command name (no separator) names no path at
+// all, so nothing in argv reveals that the file behind it is the target's.
+//
+// exec.LookPath proves a bare name resolves to SOME file now, but it is re-resolved
+// against the same PATH at every invocation, and in mode pr `gh pr checkout` has
+// rewritten the target by then. An operator PATH carrying a directory inside the
+// target -- /repo/bin, a repo-local toolchain shim -- therefore lets the PR supply
+// that executable outright, or shadow one resolved further down PATH by adding a
+// file of the same name. Either way fixpoint execs PR-authored code as the agent
+// process itself, which is exactly what the argv gate refuses.
+//
+// The whole PATH is measured rather than only where the name resolves today,
+// because the shadowing case is the one where today's resolution is outside the
+// target and tomorrow's is not.
+//
+// Exported alongside TargetSuppliedArg for the orchestrator's trust-asserted
+// warning; the refusal itself lives in Validate.
+func TargetSuppliedPATHDir(bin, root string) string {
+	if bin == "" || filepath.IsAbs(bin) || strings.ContainsRune(bin, '/') || strings.ContainsRune(bin, filepath.Separator) {
+		// Not a PATH lookup: an absolute or separator-bearing command names its file
+		// directly, and TargetSuppliedArg already measures that spelling.
+		return ""
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		// A relative entry -- including the empty one, which means the working
+		// directory -- can never decide what runs: exec.LookPath reports ErrDot for a
+		// name resolved through one, so the LookPath check in Validate has already
+		// rejected the command and exec.Cmd would refuse to start it. Skipping them
+		// also keeps the very common trailing-colon PATH from reading as "the target
+		// is on PATH" whenever fixpoint is launched from inside the target.
+		if !filepath.IsAbs(dir) {
 			continue
 		}
-		// Only a relative element resolves against the working directory; joining
-		// root onto an absolute one would fabricate a path under the target and
-		// report every absolute command as target-supplied.
-		p := tok
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(root, p)
+		// Lexically first, so an entry the PR has yet to CREATE (/repo/bin in a tree
+		// that has no bin/ yet) counts; then resolved, for an entry that is a symlink
+		// into the target. Same order and same reason as TargetSuppliedArg.
+		if within(dir, root) {
+			return dir
 		}
-		if within(p, root) {
-			return tok
-		}
-		// A path that is outside the target lexically can still LAND inside it
-		// through a symlink, which withinTree resolves -- but withinTree answers
-		// "inside" for a path it cannot canonicalize at all, so ask it only about
-		// one that exists. Otherwise an absolute argument naming no file
-		// (--config /etc/absent.toml) would be reported as PR-supplied.
-		if _, err := os.Lstat(p); err == nil && withinTree(p, root) {
-			return tok
+		if _, err := os.Lstat(dir); err == nil && withinTree(dir, root) {
+			return dir
 		}
 	}
 	return ""
@@ -882,6 +1006,33 @@ type Loop struct {
 	// apply to every project the operator ever runs it in, including the next
 	// untrusted repository they clone.
 	TrustedTarget bool `yaml:"-"`
+
+	// TrustedBundle asserts ONLY that the bundle files this run was built from may
+	// be executed and sent to agents, even though they were resolved from inside
+	// the target -- see Loaded.ProjectSuppliedPolicy. It is the narrow half of
+	// TrustedTarget, and it exists because the two claims are separable and, for a
+	// pull request, have different answers.
+	//
+	// The bundle is resolved and read ENTIRELY before Prepare: LoadBundle resolves
+	// every agent and prompt path eagerly, and Orchestrator.New parses each prompt
+	// template at construction. So in pr mode the files this assertion covers are
+	// the ones on the pre-checkout tree -- the operator's own commit -- while
+	// `gh pr checkout` replaces the worktree afterwards. A run that reviews its own
+	// repository's pull requests therefore needs to trust its bundle without
+	// trusting the branch, which is exactly what asserting TrustedTarget for it
+	// would get wrong: that flag also downgrades the pr-mode refusals of a
+	// target-relative agent command (validateAgents) and of externally-defined
+	// content filters and diff drivers (orchestrator.guardActivatableConfig), both
+	// of which are about content that lands only AFTER the checkout.
+	//
+	// TrustedTarget implies this: trusting the whole target trusts its bundle.
+	// Nothing else consults it, and it never permits a fix round.
+	//
+	// Set ONLY by the -trusted-bundle flag, `yaml:"-"` for exactly the reason given
+	// on TrustedTarget: the first bundle search location is the target's own
+	// directory, so a YAML-readable form would let a bundle authorize its own
+	// execution.
+	TrustedBundle bool `yaml:"-"`
 }
 
 // Logs configures where run artifacts are written and in which renderings.
@@ -1201,6 +1352,34 @@ func (c *Config) Validate() error {
 	if c.Loop.CleanRoundsToStop < 0 {
 		return fmt.Errorf("loop.clean_rounds_to_stop: must not be negative, got %d", c.Loop.CleanRoundsToStop)
 	}
+	if j := c.Roles.Judge; j.Agent != "" || j.Prompt != "" {
+		if j.Agent == "" || j.Prompt == "" {
+			return errors.New("roles.judge: both agent and prompt are required when either is set")
+		}
+	}
+	if t := c.Roles.Triage; t.Agent != "" || t.Prompt != "" {
+		if t.Agent == "" || t.Prompt == "" {
+			return errors.New("roles.triage: both agent and prompt are required when either is set")
+		}
+		if c.Target.Mode != ModePR {
+			return fmt.Errorf("roles.triage is set but target.mode is %q: conversations exist only on a pull request", c.Target.Mode)
+		}
+	}
+	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
+		return fmt.Errorf("review.block_at: unknown severity %q (want %s)", c.Review.BlockAt, strings.Join(model.Severities, " | "))
+	}
+	if c.Review.RefuteAt != "" && !model.ValidSeverity(c.Review.RefuteAt) {
+		return fmt.Errorf("review.refute_at: unknown severity %q (want %s)", c.Review.RefuteAt, strings.Join(model.Severities, " | "))
+	}
+	// A floor stricter than the block floor would leave a blocking finding the
+	// refutation round never saw -- and applyJudgment only lets the judge drop a
+	// blocker where refutation recorded doubt, so such a finding could never be
+	// dropped however wrong it was. Refused at load rather than silently widened:
+	// the operator asked for two settings that cannot both hold.
+	if c.Review.Refute != "" && model.WorseSeverity(c.Review.RefuteFloor(), c.Review.BlockFloor()) {
+		return fmt.Errorf("review.refute_at (%s) is stricter than review.block_at (%s): a blocking finding would skip refutation, and the judge may only drop a blocker that refutation doubted",
+			c.Review.RefuteFloor(), c.Review.BlockFloor())
+	}
 	for i, g := range c.Loop.FinalSkipRunEdits {
 		// An empty pattern compiles to ^$, which matches no real path -- so it would
 		// sit in the config looking like an active rule and hide nothing. Refused for
@@ -1342,6 +1521,15 @@ func (c *Config) Validate() error {
 			if tok := TargetSuppliedArg(argv, c.Target.Path); tok != "" {
 				return fmt.Errorf("agents.%s: command element %q resolves inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Point the command at a binary outside the target (a bare name on PATH, or an absolute path), or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, tok, c.Target.Path)
 			}
+			// And the same refusal for the spelling argv cannot show: a BARE name is
+			// resolved through PATH at every invocation, so a PATH entry inside the
+			// target hands the PR the same direct execution -- by shipping that
+			// executable, or by shadowing one further down PATH with a file of the same
+			// name. The LookPath check above proves only that SOMETHING answers to the
+			// name on the PRE-checkout tree.
+			if dir := TargetSuppliedPATHDir(argv[0], c.Target.Path); dir != "" {
+				return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, argv[0], dir, c.Target.Path)
+			}
 		}
 		// A read-only claim contradicted by the command's own argv. Reviewers are
 		// the agents that carry can_edit: false, they read untrusted content, they
@@ -1384,14 +1572,28 @@ func (c *Config) Validate() error {
 		return nil
 	}
 
-	if c.Roles.Coder.Agent == "" {
-		return errors.New("roles.coder.agent: required")
-	}
-	if err := check("roles.coder", c.Roles.Coder.Agent); err != nil {
-		return err
-	}
-	if !c.Agents[c.Roles.Coder.Agent].CanEdit {
-		return fmt.Errorf("roles.coder: agent %q has can_edit: false -- the coder must be able to edit files", c.Roles.Coder.Agent)
+	// A REVIEW-ONLY config needs no coder, and naming one is worse than pointless:
+	// the coder is the one role that must be able to edit, so a review- config
+	// declaring it puts a write-capable agent in a configuration whose entire
+	// promise is that nothing modifies the target. A reader then has to work out
+	// from the loop settings that it never runs.
+	//
+	// It stays REQUIRED for a fix run, and stays validated whenever it is present,
+	// so a config that names a coder still cannot name a broken one.
+	switch {
+	case c.Roles.Coder.Agent == "" && c.Roles.Coder.Prompt == "":
+		if !c.Loop.ReviewOnly {
+			return errors.New("roles.coder.agent: required (a fix run needs a coder; set loop.review_only for a config that only reviews)")
+		}
+	case c.Roles.Coder.Agent == "" || c.Roles.Coder.Prompt == "":
+		return errors.New("roles.coder: both agent and prompt are required when either is set")
+	default:
+		if err := check("roles.coder", c.Roles.Coder.Agent); err != nil {
+			return err
+		}
+		if !c.Agents[c.Roles.Coder.Agent].CanEdit {
+			return fmt.Errorf("roles.coder: agent %q has can_edit: false -- the coder must be able to edit files", c.Roles.Coder.Agent)
+		}
 	}
 	for _, name := range c.Roles.Review.ActiveAgents() {
 		if err := check("roles.review", name); err != nil {
@@ -1404,6 +1606,46 @@ func (c *Config) Validate() error {
 		// committed as coder fixes. Keep write access exclusive to the coder.
 		if c.Agents[name].CanEdit {
 			return fmt.Errorf("roles.review: agent %q has can_edit: true -- reviewers run concurrently against the shared working tree and must be read-only; only roles.coder may edit files", name)
+		}
+	}
+	// Triage goes through the SAME check as every other invoked agent, not a
+	// reduced one: it is exec'd like any other, so the pr-mode refusal of a
+	// command element resolving inside target.path binds it too -- otherwise
+	// triage would be one more way to run PR-authored code as a fixpoint agent.
+	// A triage agent that is not also in the reviewer pool has no other place to
+	// be validated.
+	if t := c.Roles.Triage; t.Agent != "" {
+		if err := check("roles.triage", t.Agent); err != nil {
+			return err
+		}
+		// Same can_edit rule as the judge below, and here it is the load-bearing half of the feature:
+		// triage reads comments written by anyone who can reach the pull request and
+		// decides what work they commission. An agent that could also edit would let
+		// that text reach the tree without passing through the coder, the verify gate
+		// and a commit -- which are the three things that make a commissioned change
+		// reviewable.
+		if c.Agents[t.Agent].CanEdit {
+			return fmt.Errorf("roles.triage.agent: %q declares can_edit; triage decides what untrusted comments commission and must not be able to act on them itself", t.Agent)
+		}
+	}
+	// The judge goes through the SAME check as every other invoked agent, not a
+	// reduced one. Two of check's rules are security controls the judge needs most:
+	// the pr-mode refusal of a command element resolving inside target.path (the
+	// judge would otherwise be a second way to exec PR-authored code as a fixpoint
+	// agent), and the permission-bypass cross-check that keeps a can_edit: false
+	// claim from being contradicted by the argv. The shipped configs pin the judge
+	// to an agent that is also in the reviewer pool and so was checked there; a
+	// judge-only agent has no other place to be validated.
+	if j := c.Roles.Judge; j.Agent != "" {
+		if err := check("roles.judge", j.Agent); err != nil {
+			return err
+		}
+		// The judge decides what a review reports; it never edits. Allowing a
+		// write-capable agent here would put an editing agent inside a review- config,
+		// whose entire promise is that it cannot modify the target -- the same rule
+		// that keeps write-capable agents out of the reviewer pool.
+		if c.Agents[j.Agent].CanEdit {
+			return fmt.Errorf("roles.judge.agent: %q declares can_edit; the judge must be read-only, since a review config never modifies its target", j.Agent)
 		}
 	}
 
@@ -1439,7 +1681,13 @@ func (c *Config) Validate() error {
 	// that was never resolved through a bundle (unit tests), in which case the
 	// name itself is treated as the path.
 	type promptRef struct{ name, file string }
-	refs := []promptRef{{c.Roles.Coder.Prompt, c.Roles.Coder.PromptFile()}}
+	refs := make([]promptRef, 0, len(c.Roles.Review.Prompts)+2)
+	if c.Roles.Coder.Prompt != "" {
+		refs = append(refs, promptRef{c.Roles.Coder.Prompt, c.Roles.Coder.PromptFile()})
+	}
+	if j := c.Roles.Judge; j.Prompt != "" {
+		refs = append(refs, promptRef{j.Prompt, j.PromptFile()})
+	}
 	for _, l := range c.Roles.Review.Prompts {
 		refs = append(refs, promptRef{l.Prompt, l.PromptFile()})
 	}
@@ -1579,7 +1827,9 @@ func (c *Config) logIdentities() [][3]string {
 			ids = append(ids, [3]string{"review", a, name}, [3]string{"review", a, ReformatLensName(name)})
 		}
 	}
-	ids = append(ids, [3]string{"fix", c.Roles.Coder.Agent, LensName(c.Roles.Coder.Prompt)})
+	if c.Roles.Coder.Agent != "" {
+		ids = append(ids, [3]string{"fix", c.Roles.Coder.Agent, LensName(c.Roles.Coder.Prompt)})
+	}
 	return ids
 }
 
@@ -1771,6 +2021,102 @@ type Verify struct {
 	// Timeout bounds EACH command. A hung test suite must not hang the run.
 	Timeout  Duration        `yaml:"timeout"`
 	Commands []VerifyCommand `yaml:"commands"`
+}
+
+// ReviewPolicy holds what a REVIEW run concludes with, as opposed to what it
+// looks for. It is empty by default and every field has a working default, so a
+// config that says nothing about reviews still produces a verdict.
+type ReviewPolicy struct {
+	// BlockAt is the severity at or above which a surviving finding forces
+	// CHANGES_REQUESTED (default: high). Lower it to medium for a stricter gate,
+	// knowing what that costs: across 19 measured runs the panel produced 322
+	// issues of which only 66 were high or critical, so a medium floor blocks
+	// nearly every review -- and a gate that always fires is one people route
+	// around.
+	BlockAt string `yaml:"block_at"`
+	// Signature is appended to the rendered review, with {agents} {run} {version}
+	// {config} {verdict} substituted. Empty uses review.DefaultSignature.
+	//
+	// It is rendered by fixpoint from fixpoint's own facts and placed outside every
+	// region carrying agent text: a signature composed from a finding's prose could
+	// be forged by whatever wrote that prose.
+	Signature string `yaml:"signature"`
+	// ReplySignature signs an answer posted into an existing conversation, with the
+	// same placeholders. Empty uses review.DefaultReplySignature.
+	//
+	// Its own key because a reply is not a review: the review signature says
+	// "Reviewed by", which is a claim a two-line answer in a thread does not
+	// support, and {agents} here is the single coder that wrote the reply rather
+	// than the panel that reviewed.
+	ReplySignature string `yaml:"reply_signature"`
+	// Refute names the prompt for the refutation round, or is empty to skip it.
+	//
+	// One key rather than a bool plus a name, because the two could disagree and
+	// then the config would say something it does not do.
+	//
+	// The round exists because agreement cannot sort signal from noise in this
+	// panel: measured across 19 runs, under 4% of findings were reported by more
+	// than one reviewer, and 0 of 25 false positives were among them. Keeping only
+	// corroborated findings -- the obvious alternative -- would have discarded 237
+	// of 248 confirmed defects. Asking every reviewer to take an evidenced position
+	// on the merged set gets a judgment on each finding instead of a popularity
+	// count.
+	Refute string `yaml:"refute"`
+	// RefutePath is the resolved file for Refute; filled in during loading.
+	RefutePath string `yaml:"-"`
+	// RefuteAt is the severity floor for what the round is asked about (default:
+	// high). Findings below it skip refutation entirely and go straight to the
+	// judge.
+	//
+	// The round pays for itself as a SAFETY GATE, not as a filter, and the gate only
+	// covers blocking findings -- applyJudgment honors a drop on one of those only
+	// where refutation recorded doubt, so no single agent can delete a blocker.
+	// Below the floor the judge already decides alone and a second opinion changes
+	// nothing about what it may do.
+	//
+	// Measured over the two runs that ran it (97 findings): 29 contested, zero
+	// dropped unanimously, so as a filter it never fired. It is not worthless --
+	// contested findings were dropped by the judge at 55% against 26% for the rest
+	// (Fisher two-sided p = 0.010), and the judge does not see the flag, so those are
+	// two independent judgments agreeing -- but agreeing with a decision the judge
+	// makes anyway is not worth a full extra pass per reviewer per round. Restricting
+	// it to the severities the gate protects cut it to roughly a third of that cost:
+	// 37 of those 97 findings were high or critical.
+	//
+	// Set it to low to refute everything, as every run before 2026-08-06 did.
+	RefuteAt string `yaml:"refute_at"`
+
+	// Post and PostVerdict are set ONLY by -post / -post-verdict on the command
+	// line; `yaml:"-"` is load-bearing security, not style. Publishing is an action
+	// on somebody else's pull request, and the first bundle on the search path is
+	// the target's own -- so a YAML-readable key would let reviewed code arrange to
+	// have a review posted under the operator's identity. Same argument as
+	// Loop.TrustedTarget, and the decoder's KnownFields(true) makes an attempt to
+	// set them a load error rather than a silent no-op -- rejectTrustKeys names both
+	// keys so that error reads as the boundary it is rather than as a typo.
+	Post        bool `yaml:"-"`
+	PostVerdict bool `yaml:"-"`
+}
+
+// BlockFloor is the resolved severity floor that forces CHANGES_REQUESTED.
+//
+// BlockFloor and RefuteFloor resolve the two floors the same way every consumer
+// must, so validation compares the values that will actually be applied rather than
+// the raw -- possibly empty -- strings, and the orchestrator selecting findings for
+// refutation reads the same answer this file validated.
+func (r ReviewPolicy) BlockFloor() string {
+	if r.BlockAt == "" {
+		return model.DefaultBlockAt
+	}
+	return model.NormalizeSeverity(r.BlockAt)
+}
+
+// RefuteFloor is the resolved severity floor for the refutation round.
+func (r ReviewPolicy) RefuteFloor() string {
+	if r.RefuteAt == "" {
+		return model.DefaultRefuteAt
+	}
+	return model.NormalizeSeverity(r.RefuteAt)
 }
 
 // VerifyCommand is one check. Argv, not a shell string: there is no shell to
