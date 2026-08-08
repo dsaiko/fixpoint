@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/dsaiko/fixpoint/internal/model"
 )
@@ -371,8 +372,8 @@ func hasInflection(set map[string]bool, w string) bool {
 // is the shorter one plus a suffix, as in deref/dereferenced and
 // config/configuration -- and nothing has diverged, so stemRoot is enough.
 func sameStem(a, b string) bool {
-	n := commonPrefixLen(a, b)
-	if n == len(a) || n == len(b) {
+	n := commonPrefixRunes(a, b)
+	if strings.HasPrefix(a, b) || strings.HasPrefix(b, a) {
 		return n >= stemRoot
 	}
 	return n >= stemPrefix
@@ -387,16 +388,27 @@ const (
 	stemPrefix = 6
 )
 
-// commonPrefixLen counts the leading bytes two words share. Tokens are lowercase
-// letters and digits by construction -- notWordRune drops everything else -- so
-// for the ASCII titles this stemming rule is tuned on, bytes are characters. A
-// multi-byte token can share a partial rune's bytes with another, which UTF-8
-// makes possible only between runes that already agree on their opening bytes;
-// the stem thresholds below are a heuristic either way, and exact tokens are
-// compared before it is consulted.
-func commonPrefixLen(a, b string) int {
+// commonPrefixRunes counts the leading CHARACTERS two words share, not bytes.
+//
+// stemRoot and stemPrefix are counts of letters, tuned on ASCII titles where the
+// two are the same number. Since notWordRune keeps the letters of every script, a
+// title written in Chinese or Cyrillic reaches here as real tokens -- and counting
+// bytes there divides the bar by the encoding's width: three CJK characters are
+// nine bytes, so 空指针解引用 and 空指针检查缺失 cleared stemPrefix on a shared
+// TOPIC. Each is also a single token, so that one loose stem match was the whole
+// title on both sides, taking the same-words exception in titlesAgree and merging
+// two distinct defects in one file into one issue -- the outcome this file prices
+// as strictly worse than a duplicate. Runes hold the bar at the letter count the
+// thresholds name, in every script.
+func commonPrefixRunes(a, b string) int {
 	n := 0
-	for n < len(a) && n < len(b) && a[n] == b[n] {
+	for a != "" && b != "" {
+		ra, wa := utf8.DecodeRuneInString(a)
+		rb, wb := utf8.DecodeRuneInString(b)
+		if ra != rb {
+			break
+		}
+		a, b = a[wa:], b[wb:]
 		n++
 	}
 	return n
