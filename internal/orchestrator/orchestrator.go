@@ -5387,8 +5387,17 @@ func (o *Orchestrator) closeThread(id string) {
 // unreadable login, a failed read -- which fails toward saying something twice
 // rather than staying quiet about something new. A duplicate is visible and
 // annoying; a finding suppressed because a lookup failed is invisible.
+//
+// Deliberately NOT gated on Review.Post. The delta belongs to the RENDERED
+// review, not to this process: a run without -post still writes review-body.md
+// and sum.ReviewInline, and `fixpoint -post-run <dir>` publishes exactly those
+// recorded bytes later. Gating on Review.Post made the inspect-then-publish
+// workflow -- the one the README tells operators to prefer -- post a second
+// thread for every finding the pull request already carried. The read is
+// read-only, so the cost of doing it in a run that never publishes is one
+// forge query.
 func (o *Orchestrator) publishedFindings(ctx context.Context) map[string]bool {
-	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 || !o.cfg.Review.Post {
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
 		return nil
 	}
 	r := readerFor(ctx, o.cfg.Target.Path)

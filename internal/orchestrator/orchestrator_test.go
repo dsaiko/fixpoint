@@ -8465,6 +8465,104 @@ func TestConversationsAreReadOnlyForAFixRunOnAPullRequest(t *testing.T) {
 	}
 }
 
+// What the pull request already carries is looked up for the RENDERED review,
+// not for the process that happens to be posting.
+//
+// The -post option is deliberately absent from the guard: a run without it still
+// writes review-body.md and the inline anchors, and `fixpoint -post-run <dir>`
+// publishes exactly those bytes later. Gating the lookup on -post made that
+// documented inspect-then-publish workflow open a second thread for every
+// finding the first review already left on the pull request, with no "already
+// reported" line to show for it. The remaining conditions are the ones that
+// decide whether the question is answerable at all.
+func TestFindingsAlreadyOnThePullRequestAreLookedUpEvenWhenThisRunIsNotPosting(t *testing.T) {
+	published := forge.Thread{
+		ID: "100", Path: "a.go", Line: 1, Author: "dsaiko", Body: "old finding",
+		Comments: []forge.ThreadComment{
+			{Author: "dsaiko", Body: "old finding\n" + forge.FindingMarker("20260101-000000", "deadbeefcafe")},
+		},
+	}
+
+	cases := []struct {
+		name       string
+		mode       string
+		pr         int
+		post       bool
+		noLogin    bool
+		threadsErr error
+		wantRead   bool
+		wantIDs    []string
+		wantLog    string
+	}{
+		{
+			name: "a run that will publish later still gets the delta",
+			mode: string(config.ModePR), pr: 7, post: false,
+			wantRead: true, wantIDs: []string{"deadbeefcafe"},
+		},
+		{
+			name: "a run posting directly gets the same delta",
+			mode: string(config.ModePR), pr: 7, post: true,
+			wantRead: true, wantIDs: []string{"deadbeefcafe"},
+		},
+		{name: "directory mode never asks", mode: "directory", pr: 0, post: true},
+		{name: "pr mode without a number never asks", mode: string(config.ModePR), pr: 0, post: true},
+		{
+			// Nothing can be proven ours without the account, and deciding on the copyable
+			// marker alone would let anybody who can comment suppress a real finding. Empty
+			// is the honest answer, and it repeats rather than hides.
+			name: "an unknown login suppresses nothing and warns",
+			mode: string(config.ModePR), pr: 7, post: true, noLogin: true,
+			wantLog: "could not establish which account this run posts as",
+		},
+		{
+			name: "a failed read suppresses nothing and warns",
+			mode: string(config.ModePR), pr: 7, post: true, threadsErr: errors.New("gh exploded"),
+			wantLog: "could not read what this pull request already carries",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.cfg.Target.Mode = config.Mode(tc.mode)
+			f.cfg.Target.PR = tc.pr
+			f.cfg.Review.Post = tc.post
+
+			logf, logs := captureLog()
+			o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			login := "dsaiko"
+			if tc.noLogin {
+				login = ""
+			}
+			reader := &fakeReader{threads: []forge.Thread{published}, threadsErr: tc.threadsErr, login: login}
+			prev := readerFor
+			readerFor = func(context.Context, string) forge.Reader { return reader }
+			defer func() { readerFor = prev }()
+
+			got := o.publishedFindings(t.Context())
+
+			if read := reader.threadsRead > 0; read != tc.wantRead {
+				t.Errorf("pull request read = %v, want %v", read, tc.wantRead)
+			}
+			if len(got) != len(tc.wantIDs) {
+				t.Errorf("published = %v, want %v", got, tc.wantIDs)
+			}
+			for _, id := range tc.wantIDs {
+				if !got[id] {
+					t.Errorf("published = %v, want it to carry %q", got, id)
+				}
+			}
+			if tc.wantLog != "" && !strings.Contains(logs(), tc.wantLog) {
+				t.Errorf("want %q in the log:\n%s", tc.wantLog, logs())
+			}
+		})
+	}
+}
+
 // A reply is posted under a human's comment with the operator's identity on it,
 // so fixpoint only ever answers a conversation it actually showed the coder. An
 // id the coder invented -- or remembered from a resolved thread -- must not become
