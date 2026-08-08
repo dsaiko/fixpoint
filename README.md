@@ -262,6 +262,11 @@ somebody's change or formally blocks it. None of them can be set from a config
 file — the first bundle on the search path belongs to the target, so a YAML key
 would let reviewed code arrange to have a review posted under your identity.
 
+Reviewing the same pull request twice is fine: findings it already carries are
+recognized and not repeated, the new ones are published, and the body says how
+many it left out — see
+[config/README.md](config/README.md#reviewing-the-same-pull-request-twice).
+
 Findings that name a file and a line are also posted as **inline comments**, so a
 reader meets each one beside the code instead of in a list at the bottom. Each one
 carries the same signature as the body, because it is read in the Files tab with no

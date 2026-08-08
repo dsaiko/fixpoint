@@ -332,3 +332,67 @@ func TestInlineCommentsAreSignedToo(t *testing.T) {
 		t.Errorf("the signature precedes agent text and could be forged:\n%s", got)
 	}
 }
+
+// Two reviews of one commit is a legitimate thing to want -- a second panel sees
+// what the first missed -- but repeating what is already posted is not. And
+// because the panel is not deterministic the repeat would not even read as a copy:
+// it overlaps, differs in wording, and a reader cannot tell it is one finding
+// described twice.
+//
+// What is left out is COUNTED. A body showing three findings where an earlier one
+// showed thirty, with nothing saying the difference is history, reads as a project
+// that has just been cleaned up.
+func TestABodyOmitsWhatThePullRequestAlreadyCarriesAndSaysHowMuch(t *testing.T) {
+	old := model.Issue{ID: "i1", Severity: "high", Title: "already said", File: "a.go", Line: 1, Fingerprint: "a.go#L1"}
+	fresh := model.Issue{ID: "i2", Severity: "high", Title: "new this time", File: "b.go", Line: 2, Fingerprint: "b.go#L2"}
+	in := BodyInput{
+		Decision:         Decision{Outcome: ChangesRequested, Reasons: []string{"1 unresolved finding"}},
+		Issues:           []model.Issue{old, fresh},
+		AlreadyPublished: map[string]bool{FindingID(old): true},
+	}
+	got := RenderBody(in)
+
+	if strings.Contains(got, "already said") {
+		t.Errorf("a finding already on the pull request was repeated:\n%s", got)
+	}
+	if !strings.Contains(got, "new this time") {
+		t.Errorf("a new finding must still be published:\n%s", got)
+	}
+	if !strings.Contains(got, "1 further finding(s) are already reported") {
+		t.Errorf("the omission must be counted, or a short list reads as a clean bill of health:\n%s", got)
+	}
+}
+
+// Everything already said, nothing new: the body says exactly that rather than
+// "No findings", which would claim the opposite of the truth.
+func TestABodyWithNothingNewSaysSo(t *testing.T) {
+	it := model.Issue{ID: "i1", Severity: "medium", Title: "known", File: "a.go", Line: 1, Fingerprint: "a.go#L1"}
+	got := RenderBody(BodyInput{
+		Decision:         Decision{Outcome: ChangesRequested},
+		Issues:           []model.Issue{it},
+		AlreadyPublished: map[string]bool{FindingID(it): true},
+	})
+	if strings.Contains(got, "No findings.") {
+		t.Errorf("a pull request with an outstanding finding must not be told there are none:\n%s", got)
+	}
+	if !strings.Contains(got, "not already reported") {
+		t.Errorf("the body should say the findings are known, not absent:\n%s", got)
+	}
+}
+
+// The identity has to survive rewording, or a second run reports the same defect
+// again just because two models described it differently.
+func TestFindingIDIsStableAcrossWordingAndUnstableAcrossPlaces(t *testing.T) {
+	a := model.Issue{Title: "nil deref", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+	b := model.Issue{Title: "dereference before the guard", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+	c := model.Issue{Title: "nil deref", File: "a.go", Line: 8, Fingerprint: "a.go#L8"}
+	if FindingID(a) != FindingID(b) {
+		t.Error("two wordings of one finding must share an identity")
+	}
+	if FindingID(a) == FindingID(c) {
+		t.Error("two places must not share an identity")
+	}
+	if id := FindingID(a); len(id) != 12 || strings.ContainsAny(id, "->< ") {
+		t.Errorf("identity %q must be short and safe inside an HTML comment", id)
+	}
+}

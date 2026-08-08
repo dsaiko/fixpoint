@@ -1,6 +1,8 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,6 +22,15 @@ type BodyInput struct {
 	Advisory  []model.Finding // reported for a human; gates nothing
 	Signature string          // already rendered; see Signature
 	Panel     []string        // agents that reviewed, for the header line
+	// AlreadyPublished are FindingIDs this pull request already carries from an
+	// earlier review, keyed by FindingID. They are omitted from the lists and
+	// counted in a line of their own.
+	//
+	// Counted rather than dropped silently: a review that showed three findings
+	// where a previous one showed thirty, with nothing to say the difference is
+	// history rather than progress, would read as a project that had just been
+	// cleaned up.
+	AlreadyPublished map[string]bool
 }
 
 // RenderBody produces the review document: the same text whether it is written to
@@ -49,6 +60,13 @@ func RenderBody(in BodyInput) string {
 	b.WriteString("\n")
 
 	blocking, other := split(in.Issues, in.Decision)
+	var repeated int
+	if len(in.AlreadyPublished) > 0 {
+		blocking, repeated = withoutPublished(blocking, in.AlreadyPublished)
+		var n int
+		other, n = withoutPublished(other, in.AlreadyPublished)
+		repeated += n
+	}
 	if len(blocking) > 0 {
 		fmt.Fprintf(&b, "### Blocking (%d)\n\n", len(blocking))
 		for _, it := range blocking {
@@ -62,7 +80,18 @@ func RenderBody(in BodyInput) string {
 		}
 	}
 	if len(blocking)+len(other) == 0 {
-		b.WriteString("No findings.\n\n")
+		if repeated > 0 {
+			b.WriteString("No findings that are not already reported on this pull request.\n\n")
+		} else {
+			b.WriteString("No findings.\n\n")
+		}
+	}
+	if repeated > 0 {
+		// The count, always: it is what tells a reader that a short list is a delta
+		// against what is already here rather than a clean bill of health. The verdict
+		// above still counts every surviving finding, including these -- what was
+		// already said is still true.
+		fmt.Fprintf(&b, "_%d further finding(s) are already reported on this pull request and are not repeated here. The verdict above accounts for them._\n\n", repeated)
 	}
 
 	if len(in.Advisory) > 0 {
@@ -229,4 +258,36 @@ func RenderInline(it model.Issue, signature string) string {
 		fmt.Fprintf(&b, "\n%s\n", signature)
 	}
 	return b.String()
+}
+
+// FindingID is the stable identity of a finding as published on a pull request.
+//
+// The ledger's fingerprint is what makes "have we already reported this?"
+// answerable across runs -- it is derived from the location, or from the title
+// when there is no line -- but it is a path and a sentence, which cannot go inside
+// an HTML comment. Hashed to a short hex string, which can, and which stays the
+// same for the same defect however the two runs worded it.
+func FindingID(it model.Issue) string {
+	fp := it.Fingerprint
+	if fp == "" {
+		// An issue that reached here without one still needs an identity, and its
+		// location plus title is what the fingerprint would have been built from.
+		fp = fmt.Sprintf("%s#L%d#%s", it.File, it.Line, it.Title)
+	}
+	sum := sha256.Sum256([]byte(fp))
+	return hex.EncodeToString(sum[:6])
+}
+
+// withoutPublished drops the findings this pull request already carries, and
+// reports how many were dropped.
+func withoutPublished(issues []model.Issue, published map[string]bool) (kept []model.Issue, dropped int) {
+	kept = make([]model.Issue, 0, len(issues))
+	for _, it := range issues {
+		if published[FindingID(it)] {
+			dropped++
+			continue
+		}
+		kept = append(kept, it)
+	}
+	return kept, dropped
 }

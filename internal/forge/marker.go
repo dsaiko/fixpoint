@@ -38,14 +38,63 @@ func ReplyMarker(runID string) string {
 	// spaces so the marker stays one line, and the two sequences that can END a
 	// comment early are removed rather than escaped: there is nothing inside a marker
 	// worth preserving them for.
-	id := strings.Join(strings.Fields(runID), " ")
-	id = strings.NewReplacer("--", "", ">", "").Replace(id)
-	return "<!-- ai-panel run " + id + " -->"
+	return "<!-- ai-panel run " + markerSafe(runID) + " -->"
+}
+
+// FindingMarker tags a published FINDING with a stable identity, so a later run
+// can tell what it has already said on this pull request from what is new.
+//
+// The identity is the caller's, and it has to be stable across runs for the same
+// defect -- the issue ledger's fingerprint is, which is what makes "already
+// reported" answerable at all. Without this, running a review twice over one
+// commit posts the panel's findings again, and because the panel is not
+// deterministic the second review is not even a copy: it overlaps, differs, and
+// a reader has no way to tell it is the same code being described twice.
+//
+// Sanitized like the run id, for the same reason: this goes inside a comment, and
+// a value that could close one early would print bookkeeping on the page.
+func FindingMarker(runID, findingID string) string {
+	id := markerSafe(findingID)
+	if id == "" {
+		return ReplyMarker(runID)
+	}
+	return "<!-- ai-panel run " + markerSafe(runID) + " finding " + id + " -->"
+}
+
+func markerSafe(s string) string {
+	out := strings.Join(strings.Fields(s), " ")
+	return strings.NewReplacer("--", "", ">", "").Replace(out)
 }
 
 // markerPattern matches any run's marker, since the reply being tested was
 // written by an earlier run with an id this one does not know.
 var markerPattern = regexp.MustCompile(`(?i)<!--\s*ai-panel run [^>]*-->`)
 
+// findingPattern pulls the finding identity out of a marker that carries one.
+var findingPattern = regexp.MustCompile(`(?i)<!--\s*ai-panel run [^>]*\bfinding ([^\s>]+)\s*-->`)
+
 // HasReplyMarker reports whether a comment body carries a machine-reply marker.
 func HasReplyMarker(body string) bool { return markerPattern.MatchString(body) }
+
+// PublishedFindings lists the finding identities already posted on these
+// conversations by this tool, from comments that are ours by BOTH halves --
+// marker and authoring account.
+//
+// Both halves for the same reason AnsweredByMachine needs both: a marker copied
+// into somebody else's comment would otherwise let a third party suppress a
+// finding from every future review of this pull request, which is a quieter and
+// worse outcome than a duplicate.
+func PublishedFindings(threads []Thread, me string) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range threads {
+		for _, c := range t.Comments {
+			if !c.ours(me) {
+				continue
+			}
+			if m := findingPattern.FindStringSubmatch(c.Body); m != nil {
+				out[m[1]] = true
+			}
+		}
+	}
+	return out
+}

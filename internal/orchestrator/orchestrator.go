@@ -4261,6 +4261,19 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	}
 	sort.Strings(agents)
 
+	// What this pull request has ALREADY been told by an earlier review of it.
+	//
+	// Running a review twice over one commit is legitimate -- a second panel sees
+	// what the first missed -- but repeating what is already posted is not. Since the
+	// panel is not deterministic the repeat would not even read as a copy: it
+	// overlaps, differs in wording, and a reader cannot tell it is one finding
+	// described twice. So the new findings are published and the rest are counted.
+	//
+	// Read from the forge rather than from the previous run's summary, because the
+	// pull request is the record that matters and the earlier run may have been on
+	// another machine.
+	alreadySaid := o.publishedFindings(ctx)
+
 	// One signature for the whole review, used by the summary AND by every inline
 	// comment: an inline comment is read on its own in the Files tab, with no sight
 	// of the review it belongs to, so an unsigned one is an unattributed assertion
@@ -4280,6 +4293,10 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 		Advisory:  rec.Advisory,
 		Panel:     agents,
 		Signature: signature,
+		// Findings this pull request already carries. The body states how many it left
+		// out rather than dropping them silently -- the count is what tells a reader
+		// that the short list is a delta, not a clean bill of health.
+		AlreadyPublished: alreadySaid,
 	})
 	// The PUBLISHED bytes, computed once and used for both the file and the post.
 	//
@@ -4316,7 +4333,7 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	// Recorded before any posting, so `-post-run` can publish exactly this review
 	// later without re-running the panel -- and so an operator who reads the file
 	// first is reading the bytes that will actually go out.
-	for _, c := range inlineComments(rec, o.material, signature) {
+	for _, c := range inlineComments(rec, o.material, signature, o.logs.RunID(), alreadySaid) {
 		sum.ReviewInline = append(sum.ReviewInline, model.ReviewAnchor{Path: c.Path, Line: c.Line, Body: c.Body})
 	}
 	return o.postReview(ctx, sum, published)
@@ -5139,7 +5156,7 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 // The text is the finding's own, already sanitized by the body renderer's rules,
 // with the severity leading so a reader skimming the Files tab can tell a blocker
 // from a note without opening anything.
-func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.InlineComment {
+func inlineComments(rec *model.RoundRecord, diff, signature, runID string, published map[string]bool) []forge.InlineComment {
 	// A forge accepts an anchor only inside the pull request's own diff, and it
 	// rejects the WHOLE review when one falls outside -- with a 422 that names
 	// nothing. Measured on this project's own pull request: without this filter
@@ -5155,6 +5172,14 @@ func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.Inli
 		if it.File == "" || it.Line <= 0 || !addressable[it.File][it.Line] {
 			continue
 		}
+		id := review.FindingID(it)
+		if published[id] {
+			// Already on this pull request from an earlier review of it. Posting it again
+			// would start a SECOND thread saying the same thing -- and since the panel is
+			// not deterministic, the two would be worded differently enough that a reader
+			// could not tell they were one finding.
+			continue
+		}
 		out = append(out, forge.InlineComment{
 			Path: it.File,
 			Line: it.Line,
@@ -5162,7 +5187,10 @@ func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.Inli
 			// second way agent text reaches the pull request, and a finding about a
 			// hardcoded credential quotes that credential on a line the diff contains,
 			// which is precisely the case that anchors.
-			Body: publishedText(review.RenderInline(it, signature)),
+			//
+			// The marker carries this finding's identity, which is how the NEXT review of
+			// this pull request knows it has already been said.
+			Body: publishedText(review.RenderInline(it, signature) + "\n" + forge.FindingMarker(runID, id)),
 		})
 	}
 	return out
@@ -5350,4 +5378,36 @@ func (o *Orchestrator) closeThread(id string) {
 			return
 		}
 	}
+}
+
+// publishedFindings asks the forge which of this tool's findings are already on
+// the pull request.
+//
+// Empty on every path that cannot answer -- not a pull request, no forge, an
+// unreadable login, a failed read -- which fails toward saying something twice
+// rather than staying quiet about something new. A duplicate is visible and
+// annoying; a finding suppressed because a lookup failed is invisible.
+func (o *Orchestrator) publishedFindings(ctx context.Context) map[string]bool {
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 || !o.cfg.Review.Post {
+		return nil
+	}
+	r := readerFor(ctx, o.cfg.Target.Path)
+	if r == nil {
+		return nil
+	}
+	me := r.Login(ctx, o.cfg.Target.Path)
+	if me == "" {
+		o.logf("WARNING: could not establish which account this run posts as; findings already on this pull request may be posted again")
+		return nil
+	}
+	threads, err := r.Threads(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	if err != nil {
+		o.logf("WARNING: could not read what this pull request already carries (%v); findings may be posted again", err)
+		return nil
+	}
+	published := forge.PublishedFindings(threads, me)
+	if len(published) > 0 {
+		o.logf("%d finding(s) are already on this pull request from an earlier review and will not be repeated", len(published))
+	}
+	return published
 }

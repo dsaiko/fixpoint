@@ -383,6 +383,29 @@ shortened diff is not: the omission is visible to the reader, and nothing is
 decided from what was dropped — the decision is about the code, which the agent
 reads itself.
 
+### Reviewing the same pull request twice
+
+Running a review twice over one commit is a reasonable thing to want: a second
+panel sees what the first missed. What it must not do is say everything again.
+
+Every inline comment fixpoint posts carries an invisible marker holding that
+finding's identity — the issue ledger's fingerprint, hashed — so a later review
+can read back what this pull request already carries. Those findings are dropped
+from the inline comments and omitted from the body, and the body states **how many
+it left out**. The count is not decoration: a review showing three findings where
+an earlier one showed thirty, with nothing saying the difference is history, reads
+as a project that has just been cleaned up.
+
+The verdict still accounts for every surviving finding, including the omitted
+ones. What was already said is still true.
+
+Recognition needs both halves — the marker and the authoring account — for the
+same reason answering does: a marker copied into a third party's comment would
+otherwise let anyone suppress a finding from every future review of that pull
+request, which is quieter and worse than a duplicate. Every path that cannot
+establish the account, or cannot read the conversations, publishes everything and
+says so: a duplicate is visible, a silently withheld finding is not.
+
 ## Reporting what a run cost
 
 An agent file may declare where its CLI reports token usage and cost, and fixpoint

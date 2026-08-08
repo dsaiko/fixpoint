@@ -70,3 +70,38 @@ func TestTheMarkerStaysOnOneLine(t *testing.T) {
 		t.Errorf("marker spans lines: %q", m)
 	}
 }
+
+// A finding's identity has to be readable back out of what was posted, and only
+// from comments that are ours by BOTH halves. A marker copied into somebody
+// else's comment would otherwise let a third party suppress a finding from every
+// future review of the pull request -- quieter, and worse, than a duplicate.
+func TestPublishedFindingsReadsOurOwnMarkersOnly(t *testing.T) {
+	ours := ThreadComment{Author: "dsaiko", Body: "**HIGH** — a defect\n" + FindingMarker("20260808-120000", "abc123def456")}
+	forged := ThreadComment{Author: "stranger", Body: "looks fine to me\n" + FindingMarker("20260808-120000", "deadbeef0000")}
+	unmarked := ThreadComment{Author: "dsaiko", Body: "just a comment"}
+	threads := []Thread{{ID: "1", Comments: []ThreadComment{ours, forged, unmarked}}}
+
+	got := PublishedFindings(threads, "dsaiko")
+	if !got["abc123def456"] {
+		t.Error("our own published finding was not recognized, so it will be posted again")
+	}
+	if got["deadbeef0000"] {
+		t.Error("a marker in a third party's comment suppressed a finding from every future review")
+	}
+	if len(got) != 1 {
+		t.Errorf("published = %v, want exactly ours", got)
+	}
+	// And with no login established, nothing is claimed to be published: a duplicate
+	// is visible, a silently suppressed finding is not.
+	if n := len(PublishedFindings(threads, "")); n != 0 {
+		t.Errorf("published %d finding(s) with no authenticated account, want 0", n)
+	}
+}
+
+// The finding marker must still read as a reply marker: both say "this message is
+// ours", and the conversation skip rule depends on recognizing either.
+func TestAFindingMarkerIsAlsoAMachineMarker(t *testing.T) {
+	if !HasReplyMarker("x\n" + FindingMarker("20260808-120000", "abc123")) {
+		t.Error("a finding marker is not recognized as one of ours")
+	}
+}

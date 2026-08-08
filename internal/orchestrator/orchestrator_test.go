@@ -8204,7 +8204,7 @@ func TestInlineCommentsCoverLocatedSurvivingFindingsOnly(t *testing.T) {
 	// Every finding's line is inside this diff, so the filter keeps what it should.
 	diff := "+++ b/a.go\n@@ -1,20 +1,20 @@\n" + strings.Repeat(" x\n", 20) +
 		"+++ b/b.go\n@@ -1,5 +1,5 @@\n" + strings.Repeat(" y\n", 5)
-	got := inlineComments(rec, diff, "-- AI panel")
+	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000", nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d inline comments, want 1: %+v", len(got), got)
 	}
@@ -9484,5 +9484,32 @@ func TestOverBudgetReviewerIsARoundFailureNotACleanRound(t *testing.T) {
 	}
 	if !strings.Contains(first.ReviewErrors[0], "prompt_budget") {
 		t.Errorf("review error %q should name prompt_budget so the summary explains itself", first.ReviewErrors[0])
+	}
+}
+
+// An inline comment for a finding the pull request already carries must not be
+// posted again -- it would start a SECOND thread saying the same thing -- and a
+// new one must carry its identity so the next review can recognize it.
+func TestInlineCommentsSkipWhatIsAlreadyOnThePullRequest(t *testing.T) {
+	known := model.Issue{ID: "i1", Severity: "high", Title: "already there", File: "a.go", Line: 2, Fingerprint: "a.go#L2"}
+	fresh := model.Issue{ID: "i2", Severity: "high", Title: "new", File: "a.go", Line: 3, Fingerprint: "a.go#L3"}
+	rec := &model.RoundRecord{Round: 1, Issues: []model.Issue{known, fresh}}
+	diff := "+++ b/a.go\n@@ -1,3 +1,3 @@\n line one\n line two\n line three\n"
+
+	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000",
+		map[string]bool{review.FindingID(known): true})
+
+	if len(got) != 1 {
+		t.Fatalf("posted %d inline comment(s), want only the new one: %+v", len(got), got)
+	}
+	if got[0].Line != 3 {
+		t.Errorf("anchored at line %d, want the new finding at 3", got[0].Line)
+	}
+	if !forge.HasReplyMarker(got[0].Body) {
+		t.Errorf("a published finding must carry its identity, or the next review repeats it:\n%s", got[0].Body)
+	}
+	if n := len(forge.PublishedFindings(
+		[]forge.Thread{{Comments: []forge.ThreadComment{{Author: "me", Body: got[0].Body}}}}, "me")); n != 1 {
+		t.Errorf("the identity in a posted comment is not readable back out: %s", got[0].Body)
 	}
 }
