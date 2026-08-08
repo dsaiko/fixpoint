@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/dsaiko/fixpoint/internal/model"
 )
@@ -387,8 +388,12 @@ const (
 )
 
 // commonPrefixLen counts the leading bytes two words share. Tokens are lowercase
-// ASCII letters and digits by construction -- notAlphanumeric drops everything
-// else -- so bytes are characters here.
+// letters and digits by construction -- notWordRune drops everything else -- so
+// for the ASCII titles this stemming rule is tuned on, bytes are characters. A
+// multi-byte token can share a partial rune's bytes with another, which UTF-8
+// makes possible only between runes that already agree on their opening bytes;
+// the stem thresholds below are a heuristic either way, and exact tokens are
+// compared before it is consulted.
 func commonPrefixLen(a, b string) int {
 	n := 0
 	for n < len(a) && n < len(b) && a[n] == b[n] {
@@ -399,7 +404,7 @@ func commonPrefixLen(a, b string) int {
 
 func titleTokens(t string) map[string]bool {
 	out := map[string]bool{}
-	for _, w := range strings.FieldsFunc(strings.ToLower(t), notAlphanumeric) {
+	for _, w := range strings.FieldsFunc(strings.ToLower(t), notWordRune) {
 		if !stopwords[w] {
 			out[w] = true
 		}
@@ -634,7 +639,7 @@ func normalizePath(p string) string {
 // pairs the fingerprint with this key.
 func NormalizeTitle(t string) string {
 	var words []string
-	for _, w := range strings.FieldsFunc(strings.ToLower(t), notAlphanumeric) {
+	for _, w := range strings.FieldsFunc(strings.ToLower(t), notWordRune) {
 		if !stopwords[w] {
 			words = append(words, w)
 		}
@@ -643,11 +648,19 @@ func NormalizeTitle(t string) string {
 	return strings.Join(words, "-")
 }
 
-// notAlphanumeric is the word separator for title tokenizing: anything that is
-// not a lowercase letter or digit. Titles arrive with punctuation, backticks, and
-// code identifiers, none of which should split a word differently per reviewer.
-func notAlphanumeric(r rune) bool {
-	return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+// notWordRune is the word separator for title tokenizing: anything that is not a
+// letter or a digit. Titles arrive with punctuation, backticks, and code
+// identifiers, none of which should split a word differently per reviewer.
+//
+// unicode, not ASCII. An ASCII-only rule treated every other script as
+// punctuation, so a title written in Chinese or Cyrillic tokenized to NOTHING and
+// two unrelated defects reduced to the same empty key -- which review.FindingID
+// hashes into the identity that decides whether a finding is withheld from a pull
+// request. Keeping the letters costs nothing for ASCII titles, whose tokens are
+// unchanged, and keeps two findings distinct in the scripts most of the world
+// reviews in.
+func notWordRune(r rune) bool {
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 }
 
 // stopwords are words that carry no identity, so a title differing only in them

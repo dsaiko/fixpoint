@@ -654,7 +654,7 @@ func TestEachElisionStatesHowManyCommentsItDropped(t *testing.T) {
 func TestTheElisionBoundaryIsExact(t *testing.T) {
 	build := func(n int) []Comment {
 		msgs := make([]Comment, 0, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			msgs = append(msgs, Comment{Author: "a", Body: fmt.Sprintf("message %d", i)})
 		}
 		return msgs

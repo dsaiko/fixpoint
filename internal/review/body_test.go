@@ -500,6 +500,28 @@ func TestTheIdentityIsTooWideToCollideOnPurpose(t *testing.T) {
 	}
 }
 
+// The title half of the identity is a NORMALIZED title, and normalization can
+// throw everything away: an ASCII-only tokenizer reduced every non-Latin script to
+// nothing, and a title of only filler words reduces to nothing in any script. Two
+// such titles on one line then hash alike, so the second defect is withheld from
+// the pull request and counted as already reported -- the same suppression the
+// location-only identity caused, on the titles a lexical rule cannot key.
+func TestTitlesThatNormalizationCannotTellApartStillGetDistinctIdentities(t *testing.T) {
+	for _, tc := range []struct{ name, a, b string }{
+		{"non-latin script", "空指针解引用", "忽略错误返回值"},
+		{"filler words only", "It is not the one", "may be that this can be"},
+		{"punctuation only", "!!!", "???"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := model.Issue{Title: tc.a, File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+			b := model.Issue{Title: tc.b, File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+			if FindingID(a) == FindingID(b) {
+				t.Errorf("%q and %q share an identity, so one suppresses the other", tc.a, tc.b)
+			}
+		})
+	}
+}
+
 // One statement routinely holds two defects -- the nil deref and the unchecked
 // error it came from -- which is why the ledger refuses to call a shared location
 // identity on its own. The published identity has to refuse it too: a second panel

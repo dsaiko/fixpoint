@@ -356,6 +356,26 @@ func AdvisoryID(f model.Finding) string {
 	return findingID(issue.Fingerprint(f), f.Title)
 }
 
+// titleKey is the title half of a published identity: what the ledger calls the
+// same defect, with a fallback for the titles that reduce to nothing.
+//
+// issue.NormalizeTitle drops punctuation and filler words, and a title made only
+// of those normalizes to the empty string -- at which point every such title on
+// one line hashes alike, and the second of two distinct defects there is withheld
+// from the pull request and counted as already reported. That is the failure this
+// identity exists to prevent, so when normalization keeps nothing the raw title
+// stands in: lowercased and trimmed, which is what issue.Fingerprint already
+// falls back to for the same reason. It recognizes fewer rewordings than a
+// normalized key, and that is the right way to be wrong -- an unrecognized reword
+// costs a visible duplicate, an unwanted equality costs a finding nobody ever
+// sees.
+func titleKey(title string) string {
+	if k := issue.NormalizeTitle(title); k != "" {
+		return k
+	}
+	return strings.ToLower(strings.TrimSpace(title))
+}
+
 // findingID hashes the pair the ledger calls one defect. 16 bytes of the digest,
 // not the 6 a display id would want: this value is the sole thing that decides
 // whether a finding is WITHHELD from a pull request, and its pre-image -- a path,
@@ -370,7 +390,7 @@ func AdvisoryID(f model.Finding) string {
 // characters cost nothing and the marker pattern already accepts any non-space
 // run.
 func findingID(fingerprint, title string) string {
-	sum := sha256.Sum256([]byte(fingerprint + "#" + issue.NormalizeTitle(title)))
+	sum := sha256.Sum256([]byte(fingerprint + "#" + titleKey(title)))
 	return hex.EncodeToString(sum[:16])
 }
 
