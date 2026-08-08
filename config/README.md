@@ -393,6 +393,17 @@ shortened diff is not: the omission is visible to the reader, and nothing is
 decided from what was dropped — the decision is about the code, which the agent
 reads itself.
 
+Triage is the exception, so it is held to the stricter rule: **a conversation too
+long to render whole cannot commission work.** Accepting is the one verdict that
+turns comment text into a commit, and the omitted middle is where an objection to
+the request would be — anybody who can write on the pull request can post six short
+replies under a maintainer's "no, that removes the auth check" and push it out of
+the rendered window, leaving the request and their own tail in view. Saying that
+replies were dropped does not help, because an agent cannot weigh an objection it
+was never shown. An accept on such a thread is refused and logged, and the
+conversation stays context for a human. A decline is still allowed: it writes an
+answer and no code.
+
 ### Reviewing the same pull request twice
 
 Running a review twice over one commit is a reasonable thing to want: a second

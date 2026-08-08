@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
@@ -76,36 +77,15 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 		known[th.ID] = th
 	}
 	for _, d := range decisions {
-		missing := missingAcceptFields(d)
-		switch {
-		case !model.ValidTriageVerdict(d.Verdict):
-			o.logf("WARNING: triage returned an unknown verdict %q on conversation %s; it is left undecided", d.Verdict, d.Thread)
-		case known[d.Thread].ID == "":
-			// An id nobody was shown. It cannot answer a conversation that exists, but a
-			// triage agent inventing them is worth saying out loud.
-			o.logf("WARNING: triage decided conversation %q, which was not in the set it was shown; ignored", d.Thread)
-		case strings.TrimSpace(d.Reason) == "":
-			// The reason IS the reply on a rejection and the justification on an
-			// acceptance. A decision nobody can argue with is not a decision, and on the
-			// reject side it would post an empty answer to a person.
-			o.logf("WARNING: triage decided %s with no reason; it is left undecided", d.Thread)
-		case model.NormalizeTriageVerdict(d.Verdict) == model.TriageAccept && missing != "":
-			// An acceptance is a work order, and these fields are the whole of it. The
-			// comment itself is context the coder is told not to act on by its own say-so,
-			// so an accept with no title or no description commissions a session with
-			// nothing to do -- and spends a coder pass, a verify gate and a commit
-			// subject on it. Left undecided instead: the conversation stays context,
-			// exactly as it would have without this step.
-			o.logf("WARNING: triage accepted conversation %s with no %s; it is left undecided", d.Thread, missing)
-		case byThread[d.Thread].Thread != "":
-			o.logf("WARNING: triage decided conversation %s more than once; the first decision stands", d.Thread)
-		default:
-			// Store the spelling the validator checked, not the one the agent typed: the
-			// dispatch below compares against the constants, so a padded "accept\n" would
-			// validate as an acceptance and be dispatched as a rejection.
-			d.Verdict = model.NormalizeTriageVerdict(d.Verdict)
-			byThread[d.Thread] = d
+		if why := unusableDecision(d, known[d.Thread], byThread[d.Thread].Thread != ""); why != "" {
+			o.logf("WARNING: %s", why)
+			continue
 		}
+		// Store the spelling the validator checked, not the one the agent typed: the
+		// dispatch below compares against the constants, so a padded "accept\n" would
+		// validate as an acceptance and be dispatched as a rejection.
+		d.Verdict = model.NormalizeTriageVerdict(d.Verdict)
+		byThread[d.Thread] = d
 	}
 
 	var accepted, rejected, undecided int
@@ -224,6 +204,54 @@ func missingAcceptFields(d model.TriageDecision) string {
 		missing = append(missing, "description")
 	}
 	return strings.Join(missing, " or ")
+}
+
+// unusableDecision says why a triage decision cannot be acted on, or "" when it
+// can. th is the conversation it names -- zero when it names none -- and decided
+// says whether an earlier decision already claimed that thread.
+//
+// Every answer here leaves the conversation undecided, which is the state it would
+// have been in without this pass at all: it stays in the list as context and a
+// human still sees it. The sentence returned is logged verbatim, because a
+// decision that quietly evaporates is indistinguishable from one nobody made.
+func unusableDecision(d model.TriageDecision, th forge.Thread, decided bool) string {
+	accept := model.NormalizeTriageVerdict(d.Verdict) == model.TriageAccept
+	switch {
+	case !model.ValidTriageVerdict(d.Verdict):
+		return fmt.Sprintf("triage returned an unknown verdict %q on conversation %s; it is left undecided", d.Verdict, d.Thread)
+	case th.ID == "":
+		// An id nobody was shown. It cannot answer a conversation that exists, but a
+		// triage agent inventing them is worth saying out loud.
+		return fmt.Sprintf("triage decided conversation %q, which was not in the set it was shown; ignored", d.Thread)
+	case strings.TrimSpace(d.Reason) == "":
+		// The reason IS the reply on a rejection and the justification on an
+		// acceptance. A decision nobody can argue with is not a decision, and on the
+		// reject side it would post an empty answer to a person.
+		return fmt.Sprintf("triage decided %s with no reason; it is left undecided", d.Thread)
+	case accept && missingAcceptFields(d) != "":
+		// An acceptance is a work order, and these fields are the whole of it. The
+		// comment itself is context the coder is told not to act on by its own say-so,
+		// so an accept with no title or no description commissions a session with
+		// nothing to do -- and spends a coder pass, a verify gate and a commit
+		// subject on it. Left undecided instead: the conversation stays context,
+		// exactly as it would have without this step.
+		return fmt.Sprintf("triage accepted conversation %s with no %s; it is left undecided", d.Thread, missingAcceptFields(d))
+	case accept && prompt.ElidesComments(len(th.Comments)):
+		// A thread too long to render whole is not decided from. Accepting is the one
+		// verdict that turns a comment into a commit, and the middle of the thread is
+		// where the objection to it lives -- a maintainer's "no, that opens a hole" is
+		// pushed out of the rendered window by anybody willing to post six short
+		// replies under it, and the pull request's comments are untrusted text by the
+		// time they reach the prompt. The contract says so too, but a prompt is advice:
+		// the agent cannot weigh an objection it was never shown, so the refusal has to
+		// live here. A rejection is still allowed -- it writes an answer and no code --
+		// and leaving one refused too would answer the person with silence.
+		return fmt.Sprintf("triage accepted conversation %s, but %d comments is too many to render whole and the omitted middle was not read; it is left undecided",
+			d.Thread, len(th.Comments))
+	case decided:
+		return fmt.Sprintf("triage decided conversation %s more than once; the first decision stands", d.Thread)
+	}
+	return ""
 }
 
 // askTriage runs the agent over the collected material and returns its decisions.

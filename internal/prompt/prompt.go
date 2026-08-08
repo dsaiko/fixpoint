@@ -759,6 +759,12 @@ Return exactly one decision for every conversation above, and no others.
 - reject: reason is REQUIRED and is posted verbatim as your reply to that comment.
   Write it to the person, not about them.
 
+A conversation whose rendering says earlier replies are not shown cannot be
+accepted, and an accept on one is refused and left undecided. You are reading part
+of that thread, and the part you cannot see is where an objection to the request
+would be. Reject it if what you CAN see answers it; otherwise leave it out, and it
+stays context for a human to decide.
+
 The reason field is required either way. A decision with no reason is not a
 decision; it is kept as unresolved and reported as a triage failure.
 
@@ -940,11 +946,29 @@ const conversationTail = 6
 // prompt no model will take -- measured on this project's own: 54 KB when only
 // the opening comments were shown, 434 KB once whole threads were, which is
 // larger than the biggest review prompt this tool has ever built.
+//
+// "Nothing is decided from what is dropped" is a claim the caller has to keep,
+// not a property of this function: see ElidesComments.
 func elideMiddle(msgs []Comment) (kept []Comment, elided int) {
-	if len(msgs) <= conversationTail+1 {
+	if !ElidesComments(len(msgs)) {
 		return msgs, 0
 	}
 	kept = append(kept, msgs[0])
 	kept = append(kept, msgs[len(msgs)-conversationTail:]...)
 	return kept, len(msgs) - len(kept)
 }
+
+// ElidesComments reports whether a conversation of n comments loses its middle
+// when it is rendered.
+//
+// Exported because a caller that DECIDES something from a conversation needs to
+// know it is looking at part of one. elideMiddle is safe for a reader that argues
+// with the code itself, which is why it exists; it is not safe for triage, the one
+// pass that turns a comment into a work order. Anyone who can write on the pull
+// request -- on a public repository, anyone -- can post conversationTail short
+// replies after a maintainer's "no, this opens a hole" and push that message into
+// the omitted middle, leaving the request and their own tail in view. Stating that
+// replies were dropped does not help: an agent cannot weigh an objection it was
+// not shown, however clearly it is told that one may exist. So the gate is in the
+// code that reads the decision, not in the prompt (triageConversations).
+func ElidesComments(n int) bool { return n > conversationTail+1 }
