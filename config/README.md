@@ -387,7 +387,11 @@ adds a reply to every open thread, and on this project's own pull request it wen
 from 54 kB, when only the comment that opened each thread was rendered, to 434 kB
 once whole threads were — larger than the biggest review prompt this tool has ever
 built. A long thread is therefore rendered as its opening comment plus its six
-most recent ones, with the number of omitted replies stated in the text. That is
+most recent ones — and, wherever it sits, fixpoint's own most recent reply, with
+the number of omitted replies stated at each gap. Our own answer is kept because
+the tail rule alone let anyone who can comment delete it: six replies after it and
+what reaches the prompt is the request plus a queue pressing for it, with no record
+that fixpoint already examined and declined it. That is
 the one place fixpoint truncates on purpose, and it is bounded by two things a
 shortened diff is not: the omission is visible to the reader, and nothing is
 decided from what was dropped — the decision is about the code, which the agent

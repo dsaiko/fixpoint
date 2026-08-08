@@ -26,7 +26,7 @@ import (
 // for anyone who looks, which is the point. On its own it is not a security
 // control, because anybody who can comment can copy it: what decides whether a
 // comment is this tool's is the marker AND its author being the account this run
-// posts under (see Thread.ours). A copied marker in somebody else's comment
+// posts under (see ThreadComment.Ours). A copied marker in somebody else's comment
 // therefore changes nothing about who is recorded as having asked for a change.
 // The one thing it can still do is silence the forger's own conversation when the
 // account's login could not be read at all, and that is a self-inflicted silence
@@ -112,7 +112,7 @@ func PublishedFindings(threads []Thread, reviews []Review, me string) map[string
 	out := map[string]bool{}
 	for _, t := range threads {
 		for _, c := range t.Comments {
-			if c.ours(me) {
+			if c.Ours(me) {
 				collectFindings(c.Body, out)
 			}
 		}

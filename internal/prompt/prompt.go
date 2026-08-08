@@ -848,14 +848,12 @@ func FormatConversations(threads []Conversation) string {
 		if len(msgs) == 0 {
 			msgs = []Comment{{Author: t.Author, Body: t.Body}}
 		}
-		kept, elided := elideMiddle(msgs)
-		for i, c := range kept {
-			switch {
-			case i == 0:
-			case elided > 0 && i == 1:
-				fmt.Fprintf(&sb, "\n_(%d earlier repl(y|ies) in this conversation are not shown)_\n\n%s replied:\n",
-					elided, Flatten(c.Author))
-			default:
+		for i, c := range elideMiddle(msgs) {
+			if c.elidedBefore > 0 {
+				fmt.Fprintf(&sb, "\n_(%d earlier repl(y|ies) in this conversation are not shown)_\n",
+					c.elidedBefore)
+			}
+			if i > 0 {
 				fmt.Fprintf(&sb, "\n%s replied:\n", Flatten(c.Author))
 			}
 			sb.WriteString(Quote(c.Body) + "\n")
@@ -883,6 +881,11 @@ type Conversation struct {
 type Comment struct {
 	Author string
 	Body   string
+	// Ours marks a message this tool posted itself. Set by the caller, which is the
+	// only layer that can decide it: proving a comment ours takes the reply marker
+	// AND the account this run posts under, and prompt renders text without knowing
+	// where it came from. It exists so elideMiddle can keep our own last word.
+	Ours bool
 }
 
 // commissionNote states that an issue came from a conversation rather than from
@@ -932,7 +935,7 @@ func commissionNote(it model.Issue) string {
 const conversationTail = 6
 
 // elideMiddle keeps a conversation's opening comment and its most recent ones,
-// returning how many it dropped between them.
+// each carrying the number of comments dropped just before it.
 //
 // This is the one place fixpoint truncates material on purpose, and it is bounded
 // by two things that make it different from trimming a diff. The omission is
@@ -947,15 +950,64 @@ const conversationTail = 6
 // the opening comments were shown, 434 KB once whole threads were, which is
 // larger than the biggest review prompt this tool has ever built.
 //
+// Our own most recent message survives too, wherever it sits. The tail rule alone
+// dropped it as soon as conversationTail comments followed it, and that is the one
+// message the reader cannot do without: it is fixpoint's answer to the request, and
+// without it the block reads as the request plus a queue of people pressing for it,
+// with no record that the question was already examined. Anyone who can write on
+// the pull request can arrange that for the price of six replies -- so what would
+// be elided is not a settled middle, it is the tool's own position, removed by
+// whoever disagrees with it.
+//
 // "Nothing is decided from what is dropped" is a claim the caller has to keep,
 // not a property of this function: see ElidesComments.
-func elideMiddle(msgs []Comment) (kept []Comment, elided int) {
+func elideMiddle(msgs []Comment) []keptComment {
 	if !ElidesComments(len(msgs)) {
-		return msgs, 0
+		return withGaps(msgs, allOf(len(msgs)))
 	}
-	kept = append(kept, msgs[0])
-	kept = append(kept, msgs[len(msgs)-conversationTail:]...)
-	return kept, len(msgs) - len(kept)
+	tail := len(msgs) - conversationTail
+	idx := []int{0}
+	for i := tail - 1; i >= 1; i-- {
+		if msgs[i].Ours {
+			idx = append(idx, i)
+			break
+		}
+	}
+	for i := tail; i < len(msgs); i++ {
+		idx = append(idx, i)
+	}
+	return withGaps(msgs, idx)
+}
+
+// keptComment is one comment elideMiddle chose to render and how many comments
+// were dropped immediately before it.
+//
+// Per gap rather than one total for the thread, because a retained answer of ours
+// sits BETWEEN two gaps, and a single count printed at the first of them would
+// claim the rest of the thread followed unbroken.
+type keptComment struct {
+	Comment
+	elidedBefore int
+}
+
+// allOf is the index list that keeps everything.
+func allOf(n int) []int {
+	idx := make([]int, n)
+	for i := range idx {
+		idx[i] = i
+	}
+	return idx
+}
+
+// withGaps pairs the chosen comments with the size of the hole before each.
+func withGaps(msgs []Comment, idx []int) []keptComment {
+	kept := make([]keptComment, 0, len(idx))
+	prev := -1
+	for _, i := range idx {
+		kept = append(kept, keptComment{Comment: msgs[i], elidedBefore: i - prev - 1})
+		prev = i
+	}
+	return kept
 }
 
 // ElidesComments reports whether a conversation of n comments loses its middle

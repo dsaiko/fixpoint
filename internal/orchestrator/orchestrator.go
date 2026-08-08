@@ -70,6 +70,10 @@ type Orchestrator struct {
 	// list into every coder prompt and postReplies refuses an id that is not in it,
 	// so a thread still here after N sessions is one no session has answered.
 	threads []forge.Thread
+	// threadsLogin is the account this run posts under, as read when threads were.
+	// Empty when no conversations were read, and then nothing in them is ours --
+	// the same answer forge gives for an unknown account.
+	threadsLogin string
 	// commissionedThreads are the threads triage turned into issues, so a reply can
 	// be matched against the session that owes it. Each such thread is answered by
 	// the ONE session fixing its issue; another session naming it is answering a
@@ -5257,6 +5261,9 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 		live = append(live, t)
 	}
 	o.threads = live
+	// Kept for conversations(), which has to mark our own comments and cannot ask
+	// the forge again: it renders from o.threads long after this read.
+	o.threadsLogin = me
 	switch {
 	case answered > 0:
 		o.logf("%d open conversation(s) on this pull request; %d already carry this tool's answer as the last word and are left alone",
@@ -5267,6 +5274,11 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 }
 
 // conversations renders the open threads for the coder prompt.
+//
+// Each comment is marked ours or not here, because this is the layer that can
+// prove it -- the marker plus the account this run posts under (forge's
+// ThreadComment.Ours). A long thread drops its middle when it is rendered, and
+// that flag is what keeps this tool's own answer out of the part that is dropped.
 func (o *Orchestrator) conversations() string {
 	if len(o.threads) == 0 {
 		return ""
@@ -5275,7 +5287,9 @@ func (o *Orchestrator) conversations() string {
 	for _, t := range o.threads {
 		c := prompt.Conversation{ID: t.ID, Path: t.Path, Line: t.Line, Author: t.Author, Body: t.Body}
 		for _, m := range t.Comments {
-			c.Comments = append(c.Comments, prompt.Comment{Author: m.Author, Body: m.Body})
+			c.Comments = append(c.Comments, prompt.Comment{
+				Author: m.Author, Body: m.Body, Ours: m.Ours(o.threadsLogin),
+			})
 		}
 		out = append(out, c)
 	}

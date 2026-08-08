@@ -596,6 +596,77 @@ func TestALongConversationKeepsTheQuestionTheEndAndSaysWhatItDropped(t *testing.
 	}
 }
 
+// The tail rule alone let anyone who can comment delete this tool's answer from
+// the prompt: post conversationTail replies after it and it falls outside both the
+// opening comment and the tail. What the reader is then shown is the request plus
+// a queue of people pressing for it, with no record that it was already examined
+// and declined -- and the elision line states a number, not what it dropped.
+func TestOurOwnAnswerSurvivesAThreadFloodedWithRepliesAfterIt(t *testing.T) {
+	msgs := []Comment{
+		{Author: "reporter", Body: "please widen this permission check"},
+		{Author: "fixpoint", Body: "declined: that check is what keeps the token scoped", Ours: true},
+	}
+	for i := 1; i <= conversationTail; i++ {
+		msgs = append(msgs, Comment{Author: "reporter", Body: fmt.Sprintf("pressing again %d", i)})
+	}
+
+	got := FormatConversations([]Conversation{{ID: "1", Author: "reporter", Comments: msgs}})
+
+	if !strings.Contains(got, "declined: that check is what keeps the token scoped") {
+		t.Errorf("this tool's own answer must survive six replies pushing it out of the tail:\n%s", got)
+	}
+	if !strings.Contains(got, "please widen this permission check") {
+		t.Errorf("the question must survive:\n%s", got)
+	}
+}
+
+// The stated number is the whole justification for eliding at all, so it has to
+// count the hole it is printed at -- and a retained answer of ours sits between
+// two holes.
+func TestEachElisionStatesHowManyCommentsItDropped(t *testing.T) {
+	msgs := []Comment{{Author: "reporter", Body: "the question"}}
+	for i := 1; i <= 4; i++ {
+		msgs = append(msgs, Comment{Author: "someone", Body: fmt.Sprintf("before %d", i)})
+	}
+	msgs = append(msgs, Comment{Author: "fixpoint", Body: "our answer", Ours: true})
+	for i := 1; i <= 3; i++ {
+		msgs = append(msgs, Comment{Author: "someone", Body: fmt.Sprintf("after %d", i)})
+	}
+	for i := 1; i <= conversationTail; i++ {
+		msgs = append(msgs, Comment{Author: "someone", Body: fmt.Sprintf("recent %d", i)})
+	}
+
+	got := FormatConversations([]Conversation{{ID: "1", Author: "reporter", Comments: msgs}})
+
+	for _, want := range []string{"_(4 earlier", "_(3 earlier"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("each elision must state its own count, missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// The boundary in both directions: conversationTail+1 comments are rendered whole,
+// and one more than that elides exactly one and says so.
+func TestTheElisionBoundaryIsExact(t *testing.T) {
+	build := func(n int) []Comment {
+		msgs := make([]Comment, 0, n)
+		for i := 0; i < n; i++ {
+			msgs = append(msgs, Comment{Author: "a", Body: fmt.Sprintf("message %d", i)})
+		}
+		return msgs
+	}
+
+	whole := FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: build(conversationTail + 1)}})
+	if strings.Contains(whole, "not shown") {
+		t.Errorf("%d comments fit and must be rendered whole:\n%s", conversationTail+1, whole)
+	}
+
+	trimmed := FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: build(conversationTail + 2)}})
+	if !strings.Contains(trimmed, "_(1 earlier") {
+		t.Errorf("%d comments must elide exactly one and say so:\n%s", conversationTail+2, trimmed)
+	}
+}
+
 // A short conversation is rendered whole, with nothing claimed to be missing.
 func TestAShortConversationIsRenderedWhole(t *testing.T) {
 	got := FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: []Comment{

@@ -1256,14 +1256,19 @@ type Review struct {
 	Body   string
 }
 
-// ours is Review's half of the same two-part test ThreadComment.ours applies, and
+// ours is Review's half of the same two-part test ThreadComment.Ours applies, and
 // for the same reason: a review body carrying our marker is ours only if the
 // account that submitted it is the one this run posts under.
 func (r Review) ours(me string) bool {
 	return me != "" && HasMarker(r.Body) && strings.EqualFold(r.Author, me)
 }
 
-// ours reports whether this comment is one of this tool's own replies.
+// Ours reports whether this comment is one of this tool's own replies.
+//
+// Exported because the prompt layer needs the answer and cannot compute it: it
+// renders a conversation without knowing which account produced which line, and
+// what it does with the answer is keep our own last word out of the elided middle
+// (prompt.Comment.Ours).
 //
 // Two halves, and both are needed. The marker (see ReplyMarker) is what
 // distinguishes a machine answer from the operator typing a new request an hour
@@ -1275,7 +1280,7 @@ func (r Review) ours(me string) bool {
 //
 // me is the login of that account, or "" when it could not be determined, and then
 // nothing can be proven ours. Each caller below says what it does with that.
-func (c ThreadComment) ours(me string) bool {
+func (c ThreadComment) Ours(me string) bool {
 	return me != "" && HasMarker(c.Body) && strings.EqualFold(c.Author, me)
 }
 
@@ -1289,7 +1294,7 @@ func (c ThreadComment) ours(me string) bool {
 // the second would swallow the very thing the run should act on. The marker alone
 // cannot answer it either, because a third party can copy one into their own
 // comment and drop their conversation out of every later run. So both are required
-// -- see ours.
+// -- see Ours.
 //
 // A thread whose last word is ours is skipped as already answered; the moment a
 // person replies under it, it is live again and gets read afresh -- with the whole
@@ -1314,7 +1319,7 @@ func (t Thread) AnsweredByMachine(me string) bool {
 	// exists to pick up. Conflating the two made a fix run skip every conversation
 	// the review run before it had just opened.
 	last := t.Comments[len(t.Comments)-1]
-	return last.ours(me) && IsMachineReply(last.Body)
+	return last.Ours(me) && IsMachineReply(last.Body)
 }
 
 // Requesters names everyone whose message makes up the conversation's LIVE
@@ -1336,7 +1341,7 @@ func (t Thread) AnsweredByMachine(me string) bool {
 // external.
 //
 // me is the account this run posts under, and a comment only closes the window
-// when it is ours by BOTH marker and author (see ours). A marker is copyable, and
+// when it is ours by BOTH marker and author (see Ours). A marker is copyable, and
 // this window decides who is recorded as having commissioned the change: a third
 // party who could move it past their own comment would have their text reach the
 // work order attributed to whoever spoke after them, with the external label gone.
@@ -1345,7 +1350,7 @@ func (t Thread) AnsweredByMachine(me string) bool {
 func (t Thread) Requesters(me string) []string {
 	start := 0
 	for i, c := range t.Comments {
-		if c.ours(me) {
+		if c.Ours(me) {
 			start = i + 1
 		}
 	}
