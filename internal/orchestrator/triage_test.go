@@ -43,6 +43,13 @@ func (f *fixture) withThreads(login string, threads ...forge.Thread) (*Orchestra
 		f.t.Fatal(err)
 	}
 	o.threads = threads
+	// Set alongside the threads, exactly as readForgeThreads does: it is what
+	// conversations() marks our own comments from, and a fixture that assigned only
+	// the threads left the renderer blind to them while the triage gate -- which asks
+	// the forge for the login itself -- could still see them. The two then disagreed
+	// about what the agent was shown, which is the disagreement these tests exist to
+	// rule out.
+	o.threadsLogin = login
 	var replied []string
 	reader := &fakeReader{threads: threads, replied: &replied, login: login}
 	prev := readerFor
@@ -444,29 +451,65 @@ func TestAcceptanceIsRefusedExactlyWhenTheRenderingElides(t *testing.T) {
 // shown" note anywhere in it. Gating on the count refused that acceptance, left the
 // conversation undecided so it never became work and was never answered, and logged
 // an omitted middle the agent's rendering did not have.
+//
+// Both halves are asserted against the PROMPT that was persisted, not only against
+// the gate: the invariant is that the refusal answers for the rendering the agent
+// actually received, and a test that reads the gate alone passes just as happily
+// when the two have drifted apart. So the thread that stands must carry our answer
+// with no omission note anywhere in it, and its mirror -- the same thread with one
+// more reply above our answer, which puts that reply in the hole -- must say so in
+// the rendering and be refused.
 func TestAnAcceptanceStandsWhenOurAnswerKeptTheThreadWhole(t *testing.T) {
-	f := newFixture(t, config.Loop{MaxIterations: 1})
-	f.triageRole()
-	th := forge.Thread{ID: "100", Path: "a.go", Line: 3, Author: "stranger", Body: "missing guard"}
-	th.Comments = append(th.Comments,
-		forge.ThreadComment{Author: "stranger", Body: "missing guard"},
-		// Ours by both halves: the marker and the account this run posts under.
-		forge.ThreadComment{Author: "dsaiko", Body: "looked at it once\n" + forge.ReplyMarker("20260808-000000")})
-	for i := range 6 {
-		th.Comments = append(th.Comments, forge.ThreadComment{Author: "stranger", Body: fmt.Sprintf("pressing again %d", i)})
-	}
+	// The rendered note, verbatim. Matching "not shown" alone would match the triage
+	// contract, which tells the agent about the note in those words.
+	const omissionNote = "earlier repl(y|ies) in this conversation are not shown"
+	for name, tc := range map[string]struct {
+		bumps  int // stranger replies between the opener and our answer
+		whole  bool
+		wantOK int
+	}{
+		"our answer sits inside the rendered tail": {bumps: 0, whole: true, wantOK: 1},
+		"a reply above our answer falls in a hole": {bumps: 1, whole: false, wantOK: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.triageRole()
+			th := forge.Thread{ID: "100", Path: "a.go", Line: 3, Author: "stranger", Body: "missing guard"}
+			th.Comments = append(th.Comments, forge.ThreadComment{Author: "stranger", Body: "missing guard"})
+			for i := range tc.bumps {
+				th.Comments = append(th.Comments, forge.ThreadComment{Author: "maintainer", Body: fmt.Sprintf("no -- that removes the auth check %d", i)})
+			}
+			// Ours by both halves: the marker and the account this run posts under.
+			th.Comments = append(th.Comments,
+				forge.ThreadComment{Author: "dsaiko", Body: "looked at it once\n" + forge.ReplyMarker("20260808-000000")})
+			for i := range 6 {
+				th.Comments = append(th.Comments, forge.ThreadComment{Author: "stranger", Body: fmt.Sprintf("pressing again %d", i)})
+			}
 
-	o, _, logs := f.withThreads("dsaiko", th)
-	f.respond(1, `<review>{"decisions":[{"thread":"100","verdict":"accept","reason":"r","title":"t",
-		"severity":"medium","category":"bug","file":"a.go","description":"d"}]}</review>`)
+			o, _, logs := f.withThreads("dsaiko", th)
+			f.respond(1, `<review>{"decisions":[{"thread":"100","verdict":"accept","reason":"r","title":"t",
+				"severity":"medium","category":"bug","file":"a.go","description":"d"}]}</review>`)
 
-	o.triageConversations(t.Context())
+			o.triageConversations(t.Context())
 
-	if len(o.commissioned) != 1 {
-		t.Fatalf("commissioned %d from a thread rendered whole, want 1: %s", len(o.commissioned), logs())
-	}
-	if strings.Contains(logs(), "too many to render whole") {
-		t.Errorf("nothing was omitted from this rendering, so the log must not claim one:\n%s", logs())
+			text := f.triagePrompt()
+			// What the agent read, asserted first: every claim below is about this text.
+			if got := !strings.Contains(text, omissionNote); got != tc.whole {
+				t.Fatalf("rendering whole = %v, want %v; the case is not the one it claims to be:\n%s", got, tc.whole, text)
+			}
+			// Retained wherever it sits -- that is the rule the standing acceptance rests
+			// on -- so it is in the rendering either way, hole or no hole.
+			if !strings.Contains(text, "looked at it once") {
+				t.Errorf("our own answer was dropped from the rendering:\n%s", text)
+			}
+			if len(o.commissioned) != tc.wantOK {
+				t.Fatalf("commissioned %d, want %d: %s", len(o.commissioned), tc.wantOK, logs())
+			}
+			if got := strings.Contains(logs(), "too many to render whole"); got == tc.whole {
+				t.Errorf("log claims an omitted middle = %v on a rendering that %s:\n%s",
+					got, map[bool]string{true: "has none", false: "has one"}[tc.whole], logs())
+			}
+		})
 	}
 }
 
