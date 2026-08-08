@@ -8489,6 +8489,7 @@ func TestFindingsAlreadyOnThePullRequestAreLookedUpEvenWhenThisRunIsNotPosting(t
 		pr         int
 		post       bool
 		noLogin    bool
+		noReader   bool
 		threadsErr error
 		wantRead   bool
 		wantIDs    []string
@@ -8498,14 +8499,23 @@ func TestFindingsAlreadyOnThePullRequestAreLookedUpEvenWhenThisRunIsNotPosting(t
 			name: "a run that will publish later still gets the delta",
 			mode: string(config.ModePR), pr: 7, post: false,
 			wantRead: true, wantIDs: []string{"deadbeefcafe"},
+			wantLog: "1 finding(s) are already on this pull request",
 		},
 		{
 			name: "a run posting directly gets the same delta",
 			mode: string(config.ModePR), pr: 7, post: true,
 			wantRead: true, wantIDs: []string{"deadbeefcafe"},
+			wantLog: "1 finding(s) are already on this pull request",
 		},
 		{name: "directory mode never asks", mode: "directory", pr: 0, post: true},
 		{name: "pr mode without a number never asks", mode: string(config.ModePR), pr: 0, post: true},
+		{
+			// A forge this build cannot talk to at all. Nothing is knowable, so nothing
+			// is suppressed -- and unlike the failures below there is nobody to warn:
+			// a target with no forge behind it is a configuration, not an incident.
+			name: "no forge behind the target suppresses nothing",
+			mode: string(config.ModePR), pr: 7, post: true, noReader: true,
+		},
 		{
 			// Nothing can be proven ours without the account, and deciding on the copyable
 			// marker alone would let anybody who can comment suppress a real finding. Empty
@@ -8540,7 +8550,12 @@ func TestFindingsAlreadyOnThePullRequestAreLookedUpEvenWhenThisRunIsNotPosting(t
 			}
 			reader := &fakeReader{threads: []forge.Thread{published}, threadsErr: tc.threadsErr, login: login}
 			prev := readerFor
-			readerFor = func(context.Context, string) forge.Reader { return reader }
+			readerFor = func(context.Context, string) forge.Reader {
+				if tc.noReader {
+					return nil
+				}
+				return reader
+			}
 			defer func() { readerFor = prev }()
 
 			got := o.publishedFindings(t.Context())
