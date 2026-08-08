@@ -479,8 +479,24 @@ func TestFindingIDIsStableAcrossWordingAndUnstableAcrossPlaces(t *testing.T) {
 	if FindingID(a) == FindingID(c) {
 		t.Error("two places must not share an identity")
 	}
-	if id := FindingID(a); len(id) != 12 || strings.ContainsAny(id, "->< ") {
-		t.Errorf("identity %q must be short and safe inside an HTML comment", id)
+	if id := FindingID(a); len(id) != 32 || strings.ContainsAny(id, "->< ") {
+		t.Errorf("identity %q must be safe inside an HTML comment and wide enough to be worth colliding", id)
+	}
+}
+
+// The identity decides whether a finding is withheld, and its pre-image is the
+// path, line and title of code the pull request's author wrote. A width that can
+// be searched offline lets a decoy be built whose identity equals a real finding's,
+// which suppresses that finding under a line claiming the verdict accounted for it.
+// 16 bytes of SHA-256, pinned here because the cheap thing to write is 6.
+func TestTheIdentityIsTooWideToCollideOnPurpose(t *testing.T) {
+	id := FindingID(model.Issue{Title: "a defect", File: "a.go", Line: 7, Fingerprint: "a.go#L7"})
+	if len(id) != 32 {
+		t.Errorf("identity %q is %d hex chars; a suppression key needs 32 (128 bits)", id, len(id))
+	}
+	note := AdvisoryID(model.Finding{Title: "a note", File: "a.go", Line: 7})
+	if len(note) != 32 {
+		t.Errorf("advisory identity %q is %d hex chars; it suppresses too", note, len(note))
 	}
 }
 

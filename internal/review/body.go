@@ -320,7 +320,8 @@ func RenderInline(it model.Issue, signature string) string {
 // The ledger's fingerprint is what makes "have we already reported this?"
 // answerable across runs -- it is derived from the location, or from the title
 // when there is no line -- but it is a path and a sentence, which cannot go inside
-// an HTML comment. Hashed to a short hex string, which can.
+// an HTML comment. Hashed to a hex string, which can -- see findingID for why the
+// digest is not truncated to display size.
 //
 // The fingerprint ALONE is not that identity, though, and using it would be the
 // one failure this whole feature exists to avoid. A located fingerprint is a path
@@ -355,9 +356,22 @@ func AdvisoryID(f model.Finding) string {
 	return findingID(issue.Fingerprint(f), f.Title)
 }
 
+// findingID hashes the pair the ledger calls one defect. 16 bytes of the digest,
+// not the 6 a display id would want: this value is the sole thing that decides
+// whether a finding is WITHHELD from a pull request, and its pre-image -- a path,
+// a line, and a title -- is chosen by whoever opens that pull request. At 48 bits
+// a collision can be searched for offline in hours on commodity hardware, so an
+// attacker could land a padding file whose obvious defect hashes to the identity
+// of a real finding at the line they intend to backdoor; the first review
+// publishes the decoy's marker, and every later review drops the real finding as
+// already reported, counted in a line asserting the verdict accounts for it. A
+// suppression key has to cost more to collide than the thing it suppresses is
+// worth. 128 bits does; the marker is an HTML comment, where the extra 20
+// characters cost nothing and the marker pattern already accepts any non-space
+// run.
 func findingID(fingerprint, title string) string {
 	sum := sha256.Sum256([]byte(fingerprint + "#" + issue.NormalizeTitle(title)))
-	return hex.EncodeToString(sum[:6])
+	return hex.EncodeToString(sum[:16])
 }
 
 // withoutPublished drops the findings this pull request already carries, and
