@@ -1201,10 +1201,14 @@ func gitlabHead(ctx context.Context, dir string, mr int) (string, error) {
 	return strings.TrimSpace(payload.SHA), nil
 }
 
-// Thread is one unresolved review conversation on a pull request.
+// Thread is one review conversation on a pull request.
 //
-// Unresolved only: a resolved thread is a settled question, and handing it to a
-// coder invites it to reopen something a human already closed.
+// Every conversation an AGENT is shown comes from Reader.Threads, which is
+// unresolved only: a resolved thread is a settled question, and handing it to a
+// coder invites it to reopen something a human already closed. Reader.AllThreads
+// keeps the resolved ones for the one caller that must see them -- reading back
+// which findings this pull request already carries -- and its result goes to
+// PublishedFindings, never to a prompt.
 type Thread struct {
 	// ID is what a reply is addressed to. It is the ROOT comment's id, because a
 	// forge threads replies under the comment that started the conversation.
@@ -1339,6 +1343,19 @@ type Reader interface {
 	Provider
 	// Threads lists the UNRESOLVED review conversations on a pull request.
 	Threads(ctx context.Context, dir string, pr int) ([]Thread, error)
+	// AllThreads lists EVERY review conversation on a pull request, resolved ones
+	// included.
+	//
+	// Threads answers "what is still being asked", and resolved conversations are
+	// rightly absent from it. This one answers the opposite question -- "what has
+	// this pull request already been told" -- and there a resolved thread is the
+	// one that matters most: resolving a comment is how a maintainer says handled,
+	// or won't fix. Recognizing findings from unresolved threads alone forgot
+	// exactly those, so the next review posted them again as new, reopening a
+	// question a person had deliberately closed.
+	//
+	// Never the source of the conversations shown to an agent: see Thread.
+	AllThreads(ctx context.Context, dir string, pr int) ([]Thread, error)
 	// Reply posts a response into an existing conversation.
 	Reply(ctx context.Context, dir string, pr int, threadID, body string) error
 	// Login is the account this CLI is authenticated as, or "" when it cannot be
@@ -1481,7 +1498,19 @@ func githubThreadTail(ctx context.Context, dir, nodeID, cursor string) ([]thread
 	return nil, fmt.Errorf("conversation %s is longer than %d pages of comments", nodeID, maxPages)
 }
 
-func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread, error) {
+func (p githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread, error) {
+	return p.threads(ctx, dir, pr, false)
+}
+
+func (p githubProvider) AllThreads(ctx context.Context, dir string, pr int) ([]Thread, error) {
+	return p.threads(ctx, dir, pr, true)
+}
+
+// threads is both reads: one query, one parse, and a single line of difference.
+// withResolved keeps the conversations a human has settled, which only the
+// already-said lookup wants -- everything else must not be handed a closed
+// question.
+func (githubProvider) threads(ctx context.Context, dir string, pr int, withResolved bool) ([]Thread, error) {
 	owner, repo, err := githubSlug(ctx, dir)
 	if err != nil {
 		return nil, err
@@ -1526,7 +1555,7 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 		}
 		rt := payload.Data.Repository.PullRequest.ReviewThreads
 		for _, n := range rt.Nodes {
-			if n.IsResolved || len(n.Comments.Nodes) == 0 {
+			if (n.IsResolved && !withResolved) || len(n.Comments.Nodes) == 0 {
 				continue
 			}
 			comments := n.Comments.Nodes

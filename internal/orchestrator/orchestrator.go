@@ -5409,7 +5409,13 @@ func (o *Orchestrator) publishedFindings(ctx context.Context) map[string]bool {
 		o.logf("WARNING: could not establish which account this run posts as; findings already on this pull request may be posted again")
 		return nil
 	}
-	threads, err := r.Threads(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	// AllThreads, not Threads: a resolved conversation is the strongest form of
+	// "already said" there is -- resolving a review comment is how a maintainer
+	// says handled, or won't fix. Reading the unresolved ones alone made every
+	// finding a human had closed look unreported, and the next review posted it
+	// again as new. These threads feed the published set and nothing else; the
+	// conversations an agent is shown still come from Threads.
+	threads, err := r.AllThreads(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
 	if err != nil {
 		o.logf("WARNING: could not read what this pull request already carries (%v); findings may be posted again", err)
 		return nil

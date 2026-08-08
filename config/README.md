@@ -412,6 +412,12 @@ as a project that has just been cleaned up.
 The verdict still accounts for every surviving finding, including the omitted
 ones. What was already said is still true.
 
+**A finding whose comment somebody resolved counts as said.** Resolving a review
+comment is how a maintainer says handled — or won't fix — so the lookup reads the
+settled conversations too. Only the lookup does: the conversations an agent is
+shown are still the open ones, because handing a coder a question a human already
+closed invites it to reopen exactly what they closed.
+
 Recognition needs both halves — the marker and the authoring account — for the
 same reason answering does: a marker copied into a third party's comment would
 otherwise let anyone suppress a finding from every future review of that pull

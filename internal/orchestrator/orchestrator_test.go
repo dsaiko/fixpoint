@@ -8563,6 +8563,43 @@ func TestFindingsAlreadyOnThePullRequestAreLookedUpEvenWhenThisRunIsNotPosting(t
 	}
 }
 
+// Resolving a review comment is how a maintainer says handled -- or won't fix --
+// so a finding on a settled conversation is the one a later review must be most
+// careful not to say again. Recognizing findings from the open threads alone
+// dropped every closed one out of the published set, and the next review over the
+// same commit posted it as a brand-new thread, reopening the question the person
+// had just closed. That is the duplicate this whole feature exists to prevent, in
+// its rudest form.
+func TestAFindingOnAResolvedConversationIsStillRecognizedAsAlreadySaid(t *testing.T) {
+	settled := forge.Thread{
+		ID: "101", Path: "b.go", Line: 2, Author: "dsaiko", Body: "wont fix",
+		Comments: []forge.ThreadComment{
+			{Author: "dsaiko", Body: "wont fix\n" + forge.FindingMarker("20260101-000000", "5e771edf1d")},
+		},
+	}
+
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	logf, _ := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Only in resolved: a fake that answered both reads the same way would let a
+	// lookup that never asks for the settled conversations pass.
+	reader := &fakeReader{resolved: []forge.Thread{settled}, login: "dsaiko"}
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader { return reader }
+	defer func() { readerFor = prev }()
+
+	if got := o.publishedFindings(t.Context()); !got["5e771edf1d"] {
+		t.Errorf("published = %v, want the finding a human resolved -- it is answered, not unreported", got)
+	}
+}
+
 // A reply is posted under a human's comment with the operator's identity on it,
 // so fixpoint only ever answers a conversation it actually showed the coder. An
 // id the coder invented -- or remembered from a resolved thread -- must not become
@@ -8966,8 +9003,11 @@ func TestReplySignatureTemplateIsConfigurable(t *testing.T) {
 
 type fakeReader struct {
 	threads []forge.Thread
-	replied *[]string
-	login   string
+	// resolved are the conversations a human has settled: absent from Threads,
+	// present in AllThreads, exactly as the forge answers.
+	resolved []forge.Thread
+	replied  *[]string
+	login    string
 	// bodies records what was actually sent, for the tests that assert on the
 	// posted bytes rather than only on which thread was answered.
 	bodies []string
@@ -8996,6 +9036,18 @@ func (r *fakeReader) Threads(context.Context, string, int) ([]forge.Thread, erro
 	}
 	r.threadsRead++
 	return r.threads, nil
+}
+
+// AllThreads is the real thing's superset: the open conversations plus the ones a
+// human has settled. A caller that reads only the open ones is invisible in a
+// fake that answers both the same way, so the resolved ones live in their own
+// field and only this method returns them.
+func (r *fakeReader) AllThreads(context.Context, string, int) ([]forge.Thread, error) {
+	if r.threadsErr != nil {
+		return nil, r.threadsErr
+	}
+	r.threadsRead++
+	return append(append([]forge.Thread(nil), r.threads...), r.resolved...), nil
 }
 
 func (r *fakeReader) Reply(_ context.Context, _ string, _ int, threadID, body string) error {

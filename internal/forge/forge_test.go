@@ -962,6 +962,40 @@ func TestThreadsAreTheUnresolvedConversationsThatStillHaveARoot(t *testing.T) {
 	}
 }
 
+// The same payload read the other way. A resolved conversation is a question a
+// human settled -- and settling one is how a maintainer says handled, or won't
+// fix, so the finding it carries is the one a later review must not repeat.
+// AllThreads is the read that answers "what has this pull request already been
+// told", and dropping the resolved threads from it made every closed finding come
+// back as a brand-new comment. The thread with no root comment stays out of both:
+// it has nothing to read.
+func TestAllThreadsKeepsTheConversationsAHumanHasSettled(t *testing.T) {
+	dir, _, _, _ := stubGHThreads(t, reviewThreadsPayload)
+
+	got, err := (githubProvider{}).AllThreads(t.Context(), dir, 7)
+	if err != nil {
+		t.Fatalf("AllThreads() = %v", err)
+	}
+	want := []Thread{{
+		ID:       "11",
+		Path:     "settled.go",
+		Line:     3,
+		Author:   "dsaiko",
+		Body:     "already handled",
+		Comments: []ThreadComment{{Author: "dsaiko", Body: "already handled"}},
+	}, {
+		ID:       "2147483648",
+		Path:     "internal/forge/forge.go",
+		Line:     42,
+		Author:   "dsaiko",
+		Body:     "why origin only?",
+		Comments: []ThreadComment{{Author: "dsaiko", Body: "why origin only?"}},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AllThreads() = %+v, want %+v -- a resolved conversation is something this pull request has already been told", got, want)
+	}
+}
+
 // A conversation longer than one page of comments, whose last word is this tool's.
 // The first page stops at hasNextPage, and the reply carrying the marker is only on
 // the second -- which is the shape that made AnsweredByMachine read the wrong
