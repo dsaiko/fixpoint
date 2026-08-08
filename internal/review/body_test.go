@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
+	"github.com/dsaiko/fixpoint/internal/issue"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -497,6 +498,37 @@ func TestTheIdentityIsTooWideToCollideOnPurpose(t *testing.T) {
 	note := AdvisoryID(model.Finding{Title: "a note", File: "a.go", Line: 7})
 	if len(note) != 32 {
 		t.Errorf("advisory identity %q is %d hex chars; it suppresses too", note, len(note))
+	}
+}
+
+// Advisory notes and blocking findings are looked up in ONE AlreadyPublished set,
+// so their identities must not collide. Advisory-ness belongs to the lens that
+// found the defect, not to the defect, and the panel is nondeterministic: the same
+// defect can be a note one run and a blocking finding the next. Sharing the key
+// meant that run's finding was dropped and counted under a line saying the verdict
+// accounted for it, while the pull request carried only a note explicitly
+// disclaiming the verdict -- the finding's text, severity and suggestion nowhere
+// at all.
+func TestAnAdvisoryNoteDoesNotSuppressABlockingFindingOnTheSameDefect(t *testing.T) {
+	note := model.Finding{Severity: "high", Title: "secret logged in the request handler", File: "a.go", Line: 7}
+	same := model.Issue{
+		ID: "i1", Severity: "high", Title: "secret logged in the request handler",
+		Description: "the bearer token reaches the access log.",
+		File:        "a.go", Line: 7, Fingerprint: issue.Fingerprint(note),
+	}
+	if AdvisoryID(note) == FindingID(same) {
+		t.Fatal("a note and a blocking finding of one defect share an identity, so the note withholds the finding")
+	}
+	got := RenderBody(BodyInput{
+		Decision:         Decision{Outcome: ChangesRequested, Reasons: []string{"1 unresolved finding"}},
+		Issues:           []model.Issue{same},
+		AlreadyPublished: map[string]bool{AdvisoryID(note): true},
+	})
+	if !strings.Contains(got, "the bearer token reaches the access log") {
+		t.Errorf("a blocking finding was withheld because a previous run reported the defect as an advisory note:\n%s", got)
+	}
+	if strings.Contains(got, "further finding(s) are already reported") {
+		t.Errorf("the finding was counted as already said when nothing on the pull request says it:\n%s", got)
 	}
 }
 

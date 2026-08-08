@@ -342,7 +342,7 @@ func FindingID(it model.Issue) string {
 		// location plus title is what the fingerprint would have been built from.
 		fp = fmt.Sprintf("%s#L%d", it.File, it.Line)
 	}
-	return findingID(fp, it.Title)
+	return findingID("finding", fp, it.Title)
 }
 
 // AdvisoryID is that same identity for an advisory note, which is a Finding and
@@ -352,8 +352,19 @@ func FindingID(it model.Issue) string {
 // It exists because an advisory note is published in the body and nowhere else,
 // so without an identity it was the one part of a review that came back in full
 // every time.
+//
+// A DIFFERENT identity from FindingID's for the same defect, because the two are
+// not the same statement on the pull request. Advisory-ness is a property of the
+// lens that found it (config.Lens.Advisory), not of the defect, and the panel is
+// nondeterministic -- so one defect can be an advisory note this run and a HIGH
+// blocking finding the next. Sharing an identity across the two kinds, in the one
+// AlreadyPublished set both are looked up in, meant that second review dropped
+// the blocking finding and counted it under "the verdict above accounts for
+// them", while all the pull request carried was a one-line note under a heading
+// saying it did not affect the verdict. The finding's text, severity and
+// suggestion existed nowhere. The other way round costs a visible duplicate.
 func AdvisoryID(f model.Finding) string {
-	return findingID(issue.Fingerprint(f), f.Title)
+	return findingID("advisory", issue.Fingerprint(f), f.Title)
 }
 
 // titleKey is the title half of a published identity: what the ledger calls the
@@ -376,7 +387,9 @@ func titleKey(title string) string {
 	return strings.ToLower(strings.TrimSpace(title))
 }
 
-// findingID hashes the pair the ledger calls one defect. 16 bytes of the digest,
+// findingID hashes the pair the ledger calls one defect, under the kind of
+// statement it is published as -- see AdvisoryID for why a note and a finding of
+// one defect must not share a key. 16 bytes of the digest,
 // not the 6 a display id would want: this value is the sole thing that decides
 // whether a finding is WITHHELD from a pull request, and its pre-image -- a path,
 // a line, and a title -- is chosen by whoever opens that pull request. At 48 bits
@@ -389,8 +402,8 @@ func titleKey(title string) string {
 // worth. 128 bits does; the marker is an HTML comment, where the extra 20
 // characters cost nothing and the marker pattern already accepts any non-space
 // run.
-func findingID(fingerprint, title string) string {
-	sum := sha256.Sum256([]byte(fingerprint + "#" + titleKey(title)))
+func findingID(kind, fingerprint, title string) string {
+	sum := sha256.Sum256([]byte(kind + "#" + fingerprint + "#" + titleKey(title)))
 	return hex.EncodeToString(sum[:16])
 }
 
