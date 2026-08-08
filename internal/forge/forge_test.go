@@ -962,6 +962,73 @@ func TestThreadsAreTheUnresolvedConversationsThatStillHaveARoot(t *testing.T) {
 	}
 }
 
+// The same payload read the other way. A resolved conversation is a question a
+// human settled -- and settling one is how a maintainer says handled, or won't
+// fix, so the finding it carries is the one a later review must not repeat.
+// AllThreads is the read that answers "what has this pull request already been
+// told", and dropping the resolved threads from it made every closed finding come
+// back as a brand-new comment. The thread with no root comment stays out of both:
+// it has nothing to read.
+func TestAllThreadsKeepsTheConversationsAHumanHasSettled(t *testing.T) {
+	dir, _, _, _ := stubGHThreads(t, reviewThreadsPayload)
+
+	got, err := (githubProvider{}).AllThreads(t.Context(), dir, 7)
+	if err != nil {
+		t.Fatalf("AllThreads() = %v", err)
+	}
+	want := []Thread{{
+		ID:       "11",
+		Path:     "settled.go",
+		Line:     3,
+		Author:   "dsaiko",
+		Body:     "already handled",
+		Comments: []ThreadComment{{Author: "dsaiko", Body: "already handled"}},
+	}, {
+		ID:       "2147483648",
+		Path:     "internal/forge/forge.go",
+		Line:     42,
+		Author:   "dsaiko",
+		Body:     "why origin only?",
+		Comments: []ThreadComment{{Author: "dsaiko", Body: "why origin only?"}},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AllThreads() = %+v, want %+v -- a resolved conversation is something this pull request has already been told", got, want)
+	}
+}
+
+// The review SUMMARIES, which is where most findings live: an anchor has to fall
+// inside the pull request's own diff, and most findings point at code the change
+// did not touch. This parse fails the same quiet way the thread one does -- a
+// renamed field still unmarshals, yields no reviews, and every body-only finding
+// of every earlier review is then reported as new.
+func TestReviewsAreTheSummariesAlreadySubmitted(t *testing.T) {
+	payload := `{"data":{"repository":{"pullRequest":{"reviews":{"nodes":[
+	  {"body":"## Changes requested\n\n<!-- ai-panel run 20260101-000000 finding deadbeefcafe -->","author":{"login":"dsaiko"}},
+	  {"body":"looks good","author":{"login":"stranger"}}
+	]}}}}}`
+	dir, query, _, _ := stubGHThreads(t, payload)
+
+	got, err := (githubProvider{}).Reviews(t.Context(), dir, 7)
+	if err != nil {
+		t.Fatalf("Reviews() = %v", err)
+	}
+	want := []Review{
+		{Author: "dsaiko", Body: "## Changes requested\n\n<!-- ai-panel run 20260101-000000 finding deadbeefcafe -->"},
+		{Author: "stranger", Body: "looks good"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Reviews() = %+v, want %+v", got, want)
+	}
+	// Everyone's reviews are read and the author filtering happens in Go, so the
+	// body of a stranger's review must arrive here rather than be filtered away by
+	// the server: what makes a review ours is the marker AND the account.
+	for _, field := range []string{"owner=dsaiko", "repo=fixpoint", "pr=7", "reviews", "body", "login"} {
+		if !strings.Contains(query(), field) {
+			t.Errorf("the graphql call does not carry %q: %s", field, query())
+		}
+	}
+}
+
 // A conversation longer than one page of comments, whose last word is this tool's.
 // The first page stops at hasNextPage, and the reply carrying the marker is only on
 // the second -- which is the shape that made AnsweredByMachine read the wrong
@@ -1093,6 +1160,99 @@ func TestAConversationThatNeverStopsPagingIsAnErrorNotAPartialRead(t *testing.T)
 				t.Errorf("Threads() = %v, want an error naming %q and the %d-page bound", err, tc.wantErr, maxPages)
 			}
 		})
+	}
+}
+
+// The review summaries page too, and past the hundredth review the first page is no
+// longer the whole story. The first page stops at hasNextPage; the review carrying
+// this tool's marker is only on the second.
+const reviewsFirstPage = `{"data":{"repository":{"pullRequest":{"reviews":{
+  "pageInfo":{"hasNextPage":true,"endCursor":"r100"},
+  "nodes":[{"body":"looks good","author":{"login":"stranger"}}]}}}}}`
+
+const reviewsLastPage = `{"data":{"repository":{"pullRequest":{"reviews":{
+  "pageInfo":{"hasNextPage":false,"endCursor":""},
+  "nodes":[{"body":"## Changes requested\n\n<!-- ai-panel run 20260101-000000 finding deadbeefcafe -->","author":{"login":"dsaiko"}}]}}}}}`
+
+// A reviews page that never clears hasNextPage: the same non-termination the thread
+// list has, one query over.
+const endlessReviewsPage = `{"data":{"repository":{"pullRequest":{"reviews":{
+  "pageInfo":{"hasNextPage":true,"endCursor":"r100"},
+  "nodes":[{"body":"still reviewing","author":{"login":"dsaiko"}}]}}}}}`
+
+// stubGHReviews answers the first reviews query with first and every query carrying
+// an after argument with next, recording the last such argv. Dispatching on after=
+// rather than on call order is what makes the cursor itself the thing under test: a
+// Reviews that forgets to thread endCursor through never reaches next.
+func stubGHReviews(t *testing.T, first, next string) (dir string, afterArgv func() string) {
+	t.Helper()
+	bin := t.TempDir()
+	firstFile, nextFile := filepath.Join(bin, "first.json"), filepath.Join(bin, "next.json")
+	for path, body := range map[string]string{firstFile: first, nextFile: next} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	argvFile := filepath.Join(bin, "argv.txt")
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"'repo view --json owner,name') printf '%s' '{\"owner\":{\"login\":\"dsaiko\"},\"name\":\"fixpoint\"}' ;;\n" +
+		"*after=*) printf '%s' \"$*\" > " + argvFile + "; cat " + nextFile + " ;;\n" +
+		"'api graphql'*) cat " + firstFile + " ;;\n" +
+		"*) echo \"unexpected: $*\" >&2; exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return t.TempDir(), func() string {
+		raw, err := os.ReadFile(argvFile)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+}
+
+// A pull request reviewed more than a hundred times, whose earliest review is this
+// tool's own. Losing a page here is the quiet failure the pagination exists to stop:
+// a review that was never read looks exactly like one that never happened, and every
+// body-only finding it carried -- the majority of a review -- is reprinted as new.
+func TestReviewsAreReadPastTheirFirstPage(t *testing.T) {
+	dir, afterArgv := stubGHReviews(t, reviewsFirstPage, reviewsLastPage)
+
+	got, err := (githubProvider{}).Reviews(t.Context(), dir, 7)
+	if err != nil {
+		t.Fatalf("Reviews() = %v", err)
+	}
+	want := []Review{
+		{Author: "stranger", Body: "looks good"},
+		{Author: "dsaiko", Body: "## Changes requested\n\n<!-- ai-panel run 20260101-000000 finding deadbeefcafe -->"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Reviews() = %+v, want %+v -- the second page was dropped", got, want)
+	}
+	// The cursor the first page handed back is what asks for the second one, so a
+	// call that omits it or sends the wrong value reads the first page forever.
+	if !strings.Contains(afterArgv(), "after=r100") {
+		t.Errorf("the second graphql call does not carry the first page's cursor: %s", afterArgv())
+	}
+}
+
+// The reviews loop stops at maxPages, and stopping is an ERROR rather than the pages
+// read so far -- for the reason the thread loops refuse: a partial read of what this
+// pull request has already been told is indistinguishable from a quiet one, and every
+// finding on the pages that were missed comes back as new under the operator's name.
+func TestReviewsThatNeverStopPagingAreAnErrorNotAPartialRead(t *testing.T) {
+	dir, _ := stubGHReviews(t, endlessReviewsPage, endlessReviewsPage)
+
+	got, err := (githubProvider{}).Reviews(t.Context(), dir, 7)
+	if err == nil {
+		t.Fatalf("Reviews() = %d reviews, nil; a read that never reached the end must not read as every review submitted", len(got))
+	}
+	if got != nil {
+		t.Errorf("Reviews() = %d reviews alongside the error; the pages read so far are a partial history, not an answer", len(got))
+	}
+	if !strings.Contains(err.Error(), "pages of reviews") || !strings.Contains(err.Error(), "100") {
+		t.Errorf("Reviews() = %v, want an error naming %q and the %d-page bound", err, "pages of reviews", maxPages)
 	}
 }
 

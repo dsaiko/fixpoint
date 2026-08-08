@@ -1201,10 +1201,14 @@ func gitlabHead(ctx context.Context, dir string, mr int) (string, error) {
 	return strings.TrimSpace(payload.SHA), nil
 }
 
-// Thread is one unresolved review conversation on a pull request.
+// Thread is one review conversation on a pull request.
 //
-// Unresolved only: a resolved thread is a settled question, and handing it to a
-// coder invites it to reopen something a human already closed.
+// Every conversation an AGENT is shown comes from Reader.Threads, which is
+// unresolved only: a resolved thread is a settled question, and handing it to a
+// coder invites it to reopen something a human already closed. Reader.AllThreads
+// keeps the resolved ones for the one caller that must see them -- reading back
+// which findings this pull request already carries -- and its result goes to
+// PublishedFindings, never to a prompt.
 type Thread struct {
 	// ID is what a reply is addressed to. It is the ROOT comment's id, because a
 	// forge threads replies under the comment that started the conversation.
@@ -1233,7 +1237,38 @@ type ThreadComment struct {
 	Body   string
 }
 
-// ours reports whether this comment is one of this tool's own replies.
+// Review is one SUBMITTED review on a pull request: its summary body and the
+// account that submitted it.
+//
+// It exists for one question -- what has this pull request already been told --
+// and it answers the half a Thread cannot. Most findings never become an inline
+// comment: a forge accepts an anchor only inside the pull request's own diff, and
+// most findings point at code the change did not touch, so they are published in
+// the review body alone. A finding that lives only there has no conversation to
+// read it back from, and reading threads alone therefore reported the majority of
+// an earlier review's findings as brand new.
+//
+// Author, like a comment's, because a marker on its own proves nothing: anybody
+// who can review a pull request can copy one into their own review body. See
+// ours.
+type Review struct {
+	Author string
+	Body   string
+}
+
+// ours is Review's half of the same two-part test ThreadComment.Ours applies, and
+// for the same reason: a review body carrying our marker is ours only if the
+// account that submitted it is the one this run posts under.
+func (r Review) ours(me string) bool {
+	return me != "" && HasMarker(r.Body) && strings.EqualFold(r.Author, me)
+}
+
+// Ours reports whether this comment is one of this tool's own replies.
+//
+// Exported because the prompt layer needs the answer and cannot compute it: it
+// renders a conversation without knowing which account produced which line, and
+// what it does with the answer is keep our own last word out of the elided middle
+// (prompt.Comment.Ours).
 //
 // Two halves, and both are needed. The marker (see ReplyMarker) is what
 // distinguishes a machine answer from the operator typing a new request an hour
@@ -1245,8 +1280,8 @@ type ThreadComment struct {
 //
 // me is the login of that account, or "" when it could not be determined, and then
 // nothing can be proven ours. Each caller below says what it does with that.
-func (c ThreadComment) ours(me string) bool {
-	return me != "" && HasReplyMarker(c.Body) && strings.EqualFold(c.Author, me)
+func (c ThreadComment) Ours(me string) bool {
+	return me != "" && HasMarker(c.Body) && strings.EqualFold(c.Author, me)
 }
 
 // AnsweredByMachine reports whether the LAST thing said in this conversation was
@@ -1259,7 +1294,7 @@ func (c ThreadComment) ours(me string) bool {
 // the second would swallow the very thing the run should act on. The marker alone
 // cannot answer it either, because a third party can copy one into their own
 // comment and drop their conversation out of every later run. So both are required
-// -- see ours.
+// -- see Ours.
 //
 // A thread whose last word is ours is skipped as already answered; the moment a
 // person replies under it, it is live again and gets read afresh -- with the whole
@@ -1278,7 +1313,13 @@ func (t Thread) AnsweredByMachine(me string) bool {
 	if len(t.Comments) == 0 {
 		return false
 	}
-	return t.Comments[len(t.Comments)-1].ours(me)
+	// Our REPLY, not our finding. An inline review comment is a question this tool
+	// asked -- it sits in a thread nobody has answered -- so a thread whose last word
+	// is one of those is the opposite of settled: it is exactly the work a fix run
+	// exists to pick up. Conflating the two made a fix run skip every conversation
+	// the review run before it had just opened.
+	last := t.Comments[len(t.Comments)-1]
+	return last.Ours(me) && IsMachineReply(last.Body)
 }
 
 // Requesters names everyone whose message makes up the conversation's LIVE
@@ -1300,7 +1341,7 @@ func (t Thread) AnsweredByMachine(me string) bool {
 // external.
 //
 // me is the account this run posts under, and a comment only closes the window
-// when it is ours by BOTH marker and author (see ours). A marker is copyable, and
+// when it is ours by BOTH marker and author (see Ours). A marker is copyable, and
 // this window decides who is recorded as having commissioned the change: a third
 // party who could move it past their own comment would have their text reach the
 // work order attributed to whoever spoke after them, with the external label gone.
@@ -1309,7 +1350,7 @@ func (t Thread) AnsweredByMachine(me string) bool {
 func (t Thread) Requesters(me string) []string {
 	start := 0
 	for i, c := range t.Comments {
-		if c.ours(me) {
+		if c.Ours(me) {
 			start = i + 1
 		}
 	}
@@ -1333,6 +1374,26 @@ type Reader interface {
 	Provider
 	// Threads lists the UNRESOLVED review conversations on a pull request.
 	Threads(ctx context.Context, dir string, pr int) ([]Thread, error)
+	// AllThreads lists EVERY review conversation on a pull request, resolved ones
+	// included.
+	//
+	// Threads answers "what is still being asked", and resolved conversations are
+	// rightly absent from it. This one answers the opposite question -- "what has
+	// this pull request already been told" -- and there a resolved thread is the
+	// one that matters most: resolving a comment is how a maintainer says handled,
+	// or won't fix. Recognizing findings from unresolved threads alone forgot
+	// exactly those, so the next review posted them again as new, reopening a
+	// question a person had deliberately closed.
+	//
+	// Never the source of the conversations shown to an agent: see Thread.
+	AllThreads(ctx context.Context, dir string, pr int) ([]Thread, error)
+	// Reviews lists the review SUMMARIES already submitted on a pull request.
+	//
+	// The other half of "what has this pull request already been told": a finding
+	// with no addressable line -- which is most of them -- is published in the
+	// review body and nowhere else, so no thread carries it. Never the source of
+	// anything shown to an agent; like AllThreads it feeds PublishedFindings alone.
+	Reviews(ctx context.Context, dir string, pr int) ([]Review, error)
 	// Reply posts a response into an existing conversation.
 	Reply(ctx context.Context, dir string, pr int, threadID, body string) error
 	// Login is the account this CLI is authenticated as, or "" when it cannot be
@@ -1475,7 +1536,19 @@ func githubThreadTail(ctx context.Context, dir, nodeID, cursor string) ([]thread
 	return nil, fmt.Errorf("conversation %s is longer than %d pages of comments", nodeID, maxPages)
 }
 
-func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread, error) {
+func (p githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread, error) {
+	return p.threads(ctx, dir, pr, false)
+}
+
+func (p githubProvider) AllThreads(ctx context.Context, dir string, pr int) ([]Thread, error) {
+	return p.threads(ctx, dir, pr, true)
+}
+
+// threads is both reads: one query, one parse, and a single line of difference.
+// withResolved keeps the conversations a human has settled, which only the
+// already-said lookup wants -- everything else must not be handed a closed
+// question.
+func (githubProvider) threads(ctx context.Context, dir string, pr int, withResolved bool) ([]Thread, error) {
 	owner, repo, err := githubSlug(ctx, dir)
 	if err != nil {
 		return nil, err
@@ -1520,7 +1593,7 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 		}
 		rt := payload.Data.Repository.PullRequest.ReviewThreads
 		for _, n := range rt.Nodes {
-			if n.IsResolved || len(n.Comments.Nodes) == 0 {
+			if (n.IsResolved && !withResolved) || len(n.Comments.Nodes) == 0 {
 				continue
 			}
 			comments := n.Comments.Nodes
@@ -1552,6 +1625,81 @@ func (githubProvider) Threads(ctx context.Context, dir string, pr int) ([]Thread
 		cursor = rt.PageInfo.EndCursor
 	}
 	return nil, fmt.Errorf("pull request %d has more than %d pages of review threads", pr, maxPages)
+}
+
+// reviewQuery reads a page of submitted review summaries.
+//
+// Every review, not just this account's: filtering by author is done here in Go,
+// where the login is already known, and asking the server for one author's
+// reviews would still need the same test applied to the marker afterwards.
+//
+// Paginated for the reason threadQuery is -- a pull request that has been
+// reviewed more than a hundred times would otherwise lose its earliest reviews,
+// and a lost review looks exactly like one that never happened: its findings come
+// back as new.
+const reviewQuery = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$pr){
+      reviews(first:100,after:$after){
+        pageInfo{hasNextPage endCursor}
+        nodes{body author{login}}
+      }
+    }
+  }
+}`
+
+func (githubProvider) Reviews(ctx context.Context, dir string, pr int) ([]Review, error) {
+	owner, repo, err := githubSlug(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	var reviews []Review
+	cursor := ""
+	for range maxPages {
+		// -f for owner and repo, -F only for pr: see threads for why a typed flag
+		// cannot carry a repository named like a number.
+		args := []string{"api", "graphql", "-f", "query=" + reviewQuery,
+			"-f", "owner=" + owner, "-f", "repo=" + repo, fmt.Sprintf("-Fpr=%d", pr)}
+		if cursor != "" {
+			args = append(args, "-f", "after="+cursor)
+		}
+		out, err := run(ctx, dir, "gh", args...)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			Data struct {
+				Repository struct {
+					PullRequest struct {
+						Reviews struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []struct {
+								Body   string `json:"body"`
+								Author struct {
+									Login string `json:"login"`
+								} `json:"author"`
+							} `json:"nodes"`
+						} `json:"reviews"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(out), &payload); err != nil {
+			return nil, fmt.Errorf("parse reviews: %w", err)
+		}
+		rv := payload.Data.Repository.PullRequest.Reviews
+		for _, n := range rv.Nodes {
+			reviews = append(reviews, Review{Author: n.Author.Login, Body: n.Body})
+		}
+		if !rv.PageInfo.HasNextPage || rv.PageInfo.EndCursor == "" {
+			return reviews, nil
+		}
+		cursor = rv.PageInfo.EndCursor
+	}
+	return nil, fmt.Errorf("pull request %d has more than %d pages of reviews", pr, maxPages)
 }
 
 // Login asks gh who it is authenticated as.

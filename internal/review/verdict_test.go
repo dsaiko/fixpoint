@@ -7,7 +7,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
-func issue(id, severity, status string) model.Issue {
+func anIssue(id, severity, status string) model.Issue {
 	return model.Issue{ID: id, Severity: severity, Status: status, Title: id}
 }
 
@@ -26,29 +26,29 @@ func TestDecide(t *testing.T) {
 	}{
 		{
 			"clean and complete approves",
-			Input{Issues: []model.Issue{issue("i1", "low", ""), issue("i2", "medium", "")}, Quorum: full(3)},
+			Input{Issues: []model.Issue{anIssue("i1", "low", ""), anIssue("i2", "medium", "")}, Quorum: full(3)},
 			Approve,
 		},
 		{
 			"a high blocks",
-			Input{Issues: []model.Issue{issue("i1", "high", "")}, Quorum: full(3)},
+			Input{Issues: []model.Issue{anIssue("i1", "high", "")}, Quorum: full(3)},
 			ChangesRequested,
 		},
 		{
 			"a critical blocks",
-			Input{Issues: []model.Issue{issue("i1", "critical", "")}, Quorum: full(3)},
+			Input{Issues: []model.Issue{anIssue("i1", "critical", "")}, Quorum: full(3)},
 			ChangesRequested,
 		},
 		{
 			// The panel being incomplete is a reason to doubt SILENCE, never a reason
 			// to doubt a finding that was actually made.
 			"a high blocks even without quorum",
-			Input{Issues: []model.Issue{issue("i1", "high", "")}, Quorum: Quorum{Panel: 3, Present: 1, Required: 2, Missing: []string{"kimi", "deepseek"}}},
+			Input{Issues: []model.Issue{anIssue("i1", "high", "")}, Quorum: Quorum{Panel: 3, Present: 1, Required: 2, Missing: []string{"kimi", "deepseek"}}},
 			ChangesRequested,
 		},
 		{
 			"clean but no quorum is inconclusive, never an approval",
-			Input{Issues: []model.Issue{issue("i1", "low", "")}, Quorum: Quorum{Panel: 3, Present: 1, Required: 2, Missing: []string{"kimi", "deepseek"}}},
+			Input{Issues: []model.Issue{anIssue("i1", "low", "")}, Quorum: Quorum{Panel: 3, Present: 1, Required: 2, Missing: []string{"kimi", "deepseek"}}},
 			Inconclusive,
 		},
 		{
@@ -72,19 +72,19 @@ func TestDecide(t *testing.T) {
 			// A judge or a refutation round decided these; they are not outstanding work.
 			"rejected and fixed findings do not block",
 			Input{Issues: []model.Issue{
-				issue("i1", "critical", model.VerdictRejected),
-				issue("i2", "high", model.VerdictFixed),
+				anIssue("i1", "critical", model.VerdictRejected),
+				anIssue("i2", "high", model.VerdictFixed),
 			}, Quorum: full(3)},
 			Approve,
 		},
 		{
 			"a lowered floor blocks on medium",
-			Input{Issues: []model.Issue{issue("i1", "medium", "")}, Quorum: full(3), BlockAt: "medium"},
+			Input{Issues: []model.Issue{anIssue("i1", "medium", "")}, Quorum: full(3), BlockAt: "medium"},
 			ChangesRequested,
 		},
 		{
 			"a lowered floor still ignores low",
-			Input{Issues: []model.Issue{issue("i1", "low", "")}, Quorum: full(3), BlockAt: "medium"},
+			Input{Issues: []model.Issue{anIssue("i1", "low", "")}, Quorum: full(3), BlockAt: "medium"},
 			Approve,
 		},
 	} {
@@ -167,7 +167,7 @@ func TestQuorumExcludesAdvisoryAssignments(t *testing.T) {
 // name the evidence rather than assert a conclusion.
 func TestDecisionReasonsNameTheEvidence(t *testing.T) {
 	d := Decide(Input{
-		Issues: []model.Issue{issue("i7", "high", ""), issue("i9", "low", "")},
+		Issues: []model.Issue{anIssue("i7", "high", ""), anIssue("i9", "low", "")},
 		Quorum: Quorum{Panel: 3, Present: 2, Required: 2, Missing: []string{"deepseek"}},
 		CI:     CI{Known: true, Failing: []string{"test", "lint"}},
 	})
@@ -204,7 +204,7 @@ func TestApprovalSaysWhenNoCIWasAvailable(t *testing.T) {
 // be the one that matters most.
 func TestBlockingFindingsAreOrderedWorstFirst(t *testing.T) {
 	d := Decide(Input{Issues: []model.Issue{
-		issue("i1", "high", ""), issue("i2", "critical", ""), issue("i3", "high", ""),
+		anIssue("i1", "high", ""), anIssue("i2", "critical", ""), anIssue("i3", "high", ""),
 	}, Quorum: full(3)})
 	got := issueIDs(d.Blocking)
 	if len(got) != 3 || got[0] != "i2" {
@@ -226,7 +226,7 @@ func TestSummaryOutcomeStringsMatchTheModelConstants(t *testing.T) {
 			t.Errorf("review.%s = %q, model constant = %q", outcome, string(outcome), want)
 		}
 	}
-	d := Decide(Input{Issues: []model.Issue{issue("i1", "high", "")}, Quorum: full(3)})
+	d := Decide(Input{Issues: []model.Issue{anIssue("i1", "high", "")}, Quorum: full(3)})
 	sum := d.Summary()
 	if sum.Outcome != model.VerdictChangesRequested {
 		t.Errorf("Summary().Outcome = %q, want %q", sum.Outcome, model.VerdictChangesRequested)

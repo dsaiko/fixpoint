@@ -61,3 +61,6 @@ env:
   pass:
   # See kimi-ollama.yaml.
     - OLLAMA_HOST
+
+# 400 kB, matching the other ollama-served agents: same route, same failure mode.
+prompt_budget: 400000

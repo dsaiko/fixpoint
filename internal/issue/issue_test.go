@@ -586,6 +586,50 @@ func TestAbsorbKeepsTitlesThatOnlyOpenAlikeApart(t *testing.T) {
 	}
 }
 
+// The same coincidence, in a script whose characters are three bytes each. A CJK
+// title is one token, so a loose stem match IS the whole title on both sides and
+// takes the same-words exception -- bypassing minSharedWords, which exists to stop
+// a shared topic from counting as evidence. Measuring the shared opening in bytes
+// divided the letter bar by the encoding's width, so agreeing on 空指针 (three
+// characters, nine bytes) merged two unrelated defects in one file into one issue.
+func TestAbsorbKeepsNonASCIITitlesSharingATopicApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "high", "main.go", 40, "空指针解引用"),
+		obs("b", "y", "tests", "high", "main.go", 120, "空指针检查缺失"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: three shared characters is a topic, not one defect", len(got))
+	}
+}
+
+// Cyrillic, where the words are letter-by-letter like the ASCII case but each
+// letter is two bytes: проблема and проверка agree on про, three letters, and are
+// unrelated words -- the severity/several coincidence one script over.
+func TestAbsorbKeepsCyrillicTitlesThatOnlyOpenAlikeApart(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "high", "main.go", 40, "проблема"),
+		obs("b", "y", "tests", "high", "main.go", 120, "проверка"),
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d issues, want 2: проблема and проверка are not the same word", len(got))
+	}
+}
+
+// ...while the fold itself still works in those scripts: a shared stem of enough
+// CHARACTERS is one word, so the inflected re-report joins its issue.
+func TestAbsorbMergesNonASCIITitlesThatDifferOnlyByInflection(t *testing.T) {
+	l := NewLedger()
+	got := l.Absorb(1, []model.Finding{
+		obs("a", "x", "bug", "high", "main.go", 40, "блокировка планировщика"),
+		obs("b", "y", "tests", "high", "main.go", 120, "блокировки планировщик"),
+	})
+	if len(got) != 1 {
+		t.Fatalf("got %d issues, want 1: блокировка/блокировки is one word in two forms", len(got))
+	}
+}
+
 // ...but the line alone is not identity. One statement holds two defects often
 // enough that this is the ordinary case: the nil deref and the unchecked error it
 // came from, cited at the same line by two lenses. Merging them gives the coder one

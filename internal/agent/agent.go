@@ -245,6 +245,15 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	if a.PromptVia != config.PromptViaArg && a.PromptVia != config.PromptViaStdin {
 		return Result{Err: fmt.Errorf("agent prompt_via %q is not supported (want \"arg\" or \"stdin\"); refusing to run with no prompt delivered", a.PromptVia)}
 	}
+	// Checked before the process starts, so an over-budget prompt costs nothing:
+	// no session, no tokens, no wall clock. See config.Agent.PromptBudget for why
+	// refusing beats both sending it (a context-limit refusal after a full round,
+	// indistinguishable from a broken agent) and trimming it (a reviewer shown part
+	// of the material reports nothing about the rest, which reads as clean).
+	if a.PromptBudget > 0 && len(prompt) > a.PromptBudget {
+		return Result{Err: fmt.Errorf("prompt is %d bytes, over this agent's prompt_budget of %d: refusing to start the invocation (raise prompt_budget, narrow the target, or drop this agent from the panel)",
+			len(prompt), a.PromptBudget)}
+	}
 	if a.PromptVia == config.PromptViaArg {
 		argv = append(argv, prompt)
 	}

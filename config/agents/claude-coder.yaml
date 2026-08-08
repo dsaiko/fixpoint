@@ -58,3 +58,8 @@ env:
   # claude authenticates from ~/.claude when you have logged in, so this is only
   # needed if you use an API key instead. An unset name is simply not passed.
     - ANTHROPIC_API_KEY
+
+# Same ceiling as claude.yaml, and for the same reason -- a coder prompt is far
+# smaller in practice (25 kB measured here, since it carries one issue rather than
+# the whole diff), so this only ever fires on something that has gone wrong.
+prompt_budget: 900000

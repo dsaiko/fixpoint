@@ -46,3 +46,6 @@ env:
   # codex reads ~/.codex when logged in; these cover API-key auth.
     - OPENAI_API_KEY
     - CODEX_API_KEY
+
+# Same ceiling as claude.yaml; measured maximum on this project is 314 kB.
+prompt_budget: 900000

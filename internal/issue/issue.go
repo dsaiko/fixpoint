@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/dsaiko/fixpoint/internal/model"
 )
@@ -370,8 +372,8 @@ func hasInflection(set map[string]bool, w string) bool {
 // is the shorter one plus a suffix, as in deref/dereferenced and
 // config/configuration -- and nothing has diverged, so stemRoot is enough.
 func sameStem(a, b string) bool {
-	n := commonPrefixLen(a, b)
-	if n == len(a) || n == len(b) {
+	n := commonPrefixRunes(a, b)
+	if strings.HasPrefix(a, b) || strings.HasPrefix(b, a) {
 		return n >= stemRoot
 	}
 	return n >= stemPrefix
@@ -386,12 +388,27 @@ const (
 	stemPrefix = 6
 )
 
-// commonPrefixLen counts the leading bytes two words share. Tokens are lowercase
-// ASCII letters and digits by construction -- notAlphanumeric drops everything
-// else -- so bytes are characters here.
-func commonPrefixLen(a, b string) int {
+// commonPrefixRunes counts the leading CHARACTERS two words share, not bytes.
+//
+// stemRoot and stemPrefix are counts of letters, tuned on ASCII titles where the
+// two are the same number. Since notWordRune keeps the letters of every script, a
+// title written in Chinese or Cyrillic reaches here as real tokens -- and counting
+// bytes there divides the bar by the encoding's width: three CJK characters are
+// nine bytes, so 空指针解引用 and 空指针检查缺失 cleared stemPrefix on a shared
+// TOPIC. Each is also a single token, so that one loose stem match was the whole
+// title on both sides, taking the same-words exception in titlesAgree and merging
+// two distinct defects in one file into one issue -- the outcome this file prices
+// as strictly worse than a duplicate. Runes hold the bar at the letter count the
+// thresholds name, in every script.
+func commonPrefixRunes(a, b string) int {
 	n := 0
-	for n < len(a) && n < len(b) && a[n] == b[n] {
+	for a != "" && b != "" {
+		ra, wa := utf8.DecodeRuneInString(a)
+		rb, wb := utf8.DecodeRuneInString(b)
+		if ra != rb {
+			break
+		}
+		a, b = a[wa:], b[wb:]
 		n++
 	}
 	return n
@@ -399,7 +416,7 @@ func commonPrefixLen(a, b string) int {
 
 func titleTokens(t string) map[string]bool {
 	out := map[string]bool{}
-	for _, w := range strings.FieldsFunc(strings.ToLower(t), notAlphanumeric) {
+	for _, w := range strings.FieldsFunc(strings.ToLower(t), notWordRune) {
 		if !stopwords[w] {
 			out[w] = true
 		}
@@ -596,7 +613,7 @@ func Fingerprint(f model.Finding) string {
 	if locationKeyed(f) {
 		return fmt.Sprintf("%s#L%d", path, f.Line)
 	}
-	title := normalizeTitle(f.Title)
+	title := NormalizeTitle(f.Title)
 	if title == "" {
 		// Nothing distinctive survived normalization -- a title of only filler
 		// words or punctuation. Fall back to the raw text so two differently
@@ -622,15 +639,19 @@ func normalizePath(p string) string {
 	return strings.Trim(p, "/")
 }
 
-// normalizeTitle reduces a title to a comparable key: lowercased, punctuation
+// NormalizeTitle reduces a title to a comparable key: lowercased, punctuation
 // dropped, common filler words removed, remaining words sorted so word order does
 // not matter. This only has to catch two reviewers phrasing the SAME sentence
 // slightly differently -- recognizing a genuine reword across rounds is the
 // reviewer's job via ReviewFinding.Issue, because no lexical rule gets from
 // "has two independent declarations" to "duplicated severity vocabulary".
-func normalizeTitle(t string) string {
+//
+// Exported because the identity published on a pull request has to mean what this
+// package means by "the same defect": a location alone does not, so review.FindingID
+// pairs the fingerprint with this key.
+func NormalizeTitle(t string) string {
 	var words []string
-	for _, w := range strings.FieldsFunc(strings.ToLower(t), notAlphanumeric) {
+	for _, w := range strings.FieldsFunc(strings.ToLower(t), notWordRune) {
 		if !stopwords[w] {
 			words = append(words, w)
 		}
@@ -639,11 +660,19 @@ func normalizeTitle(t string) string {
 	return strings.Join(words, "-")
 }
 
-// notAlphanumeric is the word separator for title tokenizing: anything that is
-// not a lowercase letter or digit. Titles arrive with punctuation, backticks, and
-// code identifiers, none of which should split a word differently per reviewer.
-func notAlphanumeric(r rune) bool {
-	return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+// notWordRune is the word separator for title tokenizing: anything that is not a
+// letter or a digit. Titles arrive with punctuation, backticks, and code
+// identifiers, none of which should split a word differently per reviewer.
+//
+// unicode, not ASCII. An ASCII-only rule treated every other script as
+// punctuation, so a title written in Chinese or Cyrillic tokenized to NOTHING and
+// two unrelated defects reduced to the same empty key -- which review.FindingID
+// hashes into the identity that decides whether a finding is withheld from a pull
+// request. Keeping the letters costs nothing for ASCII titles, whose tokens are
+// unchanged, and keeps two findings distinct in the scripts most of the world
+// reviews in.
+func notWordRune(r rune) bool {
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 }
 
 // stopwords are words that carry no identity, so a title differing only in them

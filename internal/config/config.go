@@ -289,6 +289,30 @@ type Agent struct {
 	// Prefer "stdin" for any material that may contain secrets.
 	PromptVia string   `yaml:"prompt_via"` // stdin | arg
 	Timeout   Duration `yaml:"timeout"`
+
+	// PromptBudget is the largest prompt, in bytes, this agent will be handed
+	// (0 = no limit, the default). Over it, the invocation is refused BEFORE the
+	// process starts and the step is recorded as failed.
+	//
+	// It exists because the alternative is worse in both directions. Sending the
+	// prompt anyway is what happens today: one reviewer came back with
+	// `exit status 1: Prompt is too long` after a full round of wall clock, and a
+	// context-limit refusal is indistinguishable from a broken agent in the run
+	// summary. Silently trimming the material is worse still -- a reviewer shown
+	// two thirds of a diff reports nothing about the rest, which reads exactly like
+	// a clean bill of health, and the run can then converge over code nobody saw.
+	//
+	// So the budget refuses LOUDLY and early: no tokens are spent, the reason names
+	// both sizes, and because a failed reviewer resets the clean-round streak, a
+	// round that lost a reviewer this way cannot be mistaken for a clean one.
+	//
+	// Sizing it is per-agent and empirical, which is why there is no default: a
+	// model's advertised context window is in tokens, this is bytes, and the
+	// agentic session adds file reads and tool results on top of whatever fixpoint
+	// sends. Set it below where that CLI actually refuses, not at its nominal
+	// limit. target's own material cap is a separate, global bound on the collected
+	// diff or listing; this one bounds the whole rendered prompt.
+	PromptBudget int `yaml:"prompt_budget"`
 	// CanEdit is a claim about what the COMMAND permits, and everything
 	// downstream believes it: Validate keeps write-capable agents out of the
 	// reviewer pool, and the fix-round trust gate exists precisely because the
@@ -1464,6 +1488,9 @@ func (c *Config) Validate() error {
 		}
 		if err := validCommandValue(name, "model", a.Model); err != nil {
 			return err
+		}
+		if a.PromptBudget < 0 {
+			return fmt.Errorf("agents.%s: prompt_budget must not be negative, got %d (0 means no limit)", name, a.PromptBudget)
 		}
 		if err := validCommandValue(name, "effort", a.Effort); err != nil {
 			return err
