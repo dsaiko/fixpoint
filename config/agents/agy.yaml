@@ -21,6 +21,12 @@ command:
 # writing; check whether your version can take the prompt on stdin, and switch to
 # prompt_via: stdin the moment it can.
 prompt_via: arg
+# Lower than every other agent's ceiling because of prompt_via: arg. Linux caps a
+# single argv element at 128 KiB (MAX_ARG_STRLEN), so a larger prompt cannot be
+# delivered at all -- exec fails with "argument list too long", which reads like a
+# broken agent. 128 kB refuses before the process starts, with a message that says
+# what happened. See config/README.md, "Bounding what an agent is handed".
+prompt_budget: 128000
 timeout: 10m
 # can_edit: true, even though this agent was written for reviewer duty. Its
 # --dangerously-skip-permissions auto-approves EVERY tool request, writes

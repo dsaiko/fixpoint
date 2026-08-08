@@ -372,8 +372,11 @@ its budget cannot be mistaken for a clean round.
 The shipped agents set one, sized from measurement rather than from a model's
 advertised window: 900 kB for the in-house CLIs against a 434 kB observed maximum,
 400 kB for the ollama- and OpenRouter-served ones, whose route produced the
-failure this exists for. Those are runaway guards, not context limits — they fire
-where a prompt has clearly stopped being one a review can use.
+failure this exists for, and 128 kB for `agy`, whose `prompt_via: arg` cannot
+deliver more than Linux's per-argument limit anyway. Those are runaway guards, not
+context limits — they fire where a prompt has clearly stopped being one a review
+can use. A test pins every bundled agent's value, so one cannot quietly go missing
+or widen.
 
 There is deliberately **no default in the code**, because sizing it is per-agent
 and empirical: a model's advertised context window is in tokens, this is in bytes, and

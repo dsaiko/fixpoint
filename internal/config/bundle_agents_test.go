@@ -92,3 +92,61 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 		t.Errorf("checked %d claude-backed agents, want %d -- update this test if the bundle gained or lost one", checked, want)
 	}
 }
+
+// Every shipped agent must carry a prompt_budget, and carry the one its own
+// comment justifies.
+//
+// 0 is the documented "no limit" default, so dropping or emptying the key is
+// neither a parse error nor a validation error: it silently restores the
+// behaviour the budget exists to prevent -- the agent runs a full round of wall
+// clock and returns "Prompt is too long", which looks like a crashed agent in the
+// summary rather than a prompt fixpoint should never have built. Pinning the
+// values (rather than only asserting > 0) makes a widening visible in the diff
+// that does it.
+func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
+	const (
+		// In-house CLIs, run against a first-party endpoint: 900 kB against a
+		// measured 434 kB maximum on this project. See claude.yaml.
+		local = 900_000
+		// Agents served over someone else's HTTP endpoint, where a huge prompt is
+		// also someone else's bill and rate limit. See kimi-ollama.yaml.
+		remote = 400_000
+		// prompt_via: arg cannot deliver more than Linux's 128 KiB per-argument
+		// limit in the first place. See agy.yaml.
+		onArgv = 128_000
+	)
+	// Keyed by file name, so a new agent file has to be added here -- the same
+	// guard the claude-backed count above provides.
+	want := map[string]int{
+		"claude":          local,
+		"claude-coder":    local,
+		"codex":           local,
+		"agy":             onArgv,
+		"deepseek-ollama": remote,
+		"gemma4-ollama":   remote,
+		"glm-ollama":      remote,
+		"kimi-ollama":     remote,
+		"glm-openrouter":  remote,
+		"kimi-openrouter": remote,
+		"qwen-openrouter": remote,
+	}
+	agents := shippedAgents(t)
+	for name, a := range agents {
+		w, ok := want[name]
+		if !ok {
+			t.Errorf("agents/%s%s: no expected prompt_budget for this agent -- add it to this test, and give the file a prompt_budget if it has none", name, configExt)
+			continue
+		}
+		if a.PromptBudget != w {
+			t.Errorf("agents/%s%s: prompt_budget is %d, want %d", name, configExt, a.PromptBudget, w)
+		}
+		if a.PromptBudget <= 0 {
+			t.Errorf("agents/%s%s: prompt_budget is %d, which means no limit -- the runaway guard is off for this agent", name, configExt, a.PromptBudget)
+		}
+	}
+	for name := range want {
+		if _, ok := agents[name]; !ok {
+			t.Errorf("agents/%s%s: expected by this test but not in the bundle -- drop it here if the agent was removed", name, configExt)
+		}
+	}
+}
