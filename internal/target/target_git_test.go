@@ -4518,3 +4518,79 @@ func TestHideRunEditsAppliesToTheGitDiffPathspec(t *testing.T) {
 		t.Errorf("the diff lost the non-test file this run wrote, which stays in scope:\n%s", material)
 	}
 }
+
+// A diff answers "is this internally consistent"; it cannot answer "does this do
+// what it was for", because the intent is not in it. Commit messages carry the
+// author's reasoning per step, which for many projects is the only place a
+// decision is written down at all -- and every review before this was blind to it.
+func TestCollectCarriesTheCommitMessagesOfTheChangesUnderReview(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: "HEAD"})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "main.go", "package main\n\nfunc changed() {}\n")
+	git(t, repo, "commit", "-aqm", "guard the nil deref\n\nThe caller can pass nil once the retry lands, and the guard\nis cheaper than the branch it replaces.")
+
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Commit messages of the changes under review",
+		"guard the nil deref",
+		"cheaper than the branch it replaces", // the BODY, where the reason lives
+	} {
+		if !strings.Contains(material, want) {
+			t.Errorf("Collect() is missing %q:\n%s", want, material)
+		}
+	}
+	// The diff is still the material; the context sits ahead of it.
+	if i, j := strings.Index(material, "Commit messages"), strings.Index(material, "Diff against pinned base"); i < 0 || j < 0 || i > j {
+		t.Errorf("intent should precede the diff (at %d and %d)", i, j)
+	}
+}
+
+// Nothing to say is not a failure. A repository with no commits since the base,
+// no gh, or no network simply has no context to add -- which is the state every
+// run before this was in, and a round must still work there.
+func TestCollectWithoutAnyIntentIsJustTheDiff(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: "HEAD"})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "main.go", "package main\n\nfunc changed() {}\n")
+
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(material, "Commit messages") {
+		t.Errorf("no commits were made, so nothing should claim to quote them:\n%s", material)
+	}
+	if !strings.Contains(material, "func changed()") {
+		t.Errorf("the diff itself is missing:\n%s", material)
+	}
+}
+
+// A description is free text somebody else writes and a branch can carry hundreds
+// of commits; neither may crowd out the diff, which is the thing being reviewed.
+// The cap is STATED, because a reader who cannot tell a truncated description from
+// a short one reads the missing half as absent.
+func TestClampLinesSaysWhatItDropped(t *testing.T) {
+	var b strings.Builder
+	for i := range 500 {
+		fmt.Fprintf(&b, "line %d\n", i)
+	}
+	got := clampLines(b.String(), intentLines)
+	if strings.Contains(got, "line 450") {
+		t.Error("the clamp did not apply")
+	}
+	if !strings.Contains(got, "not shown") {
+		t.Errorf("a silent truncation reads as a short description:\n%s", got[len(got)-200:])
+	}
+	if short := "one\ntwo\n"; clampLines(short, intentLines) != short {
+		t.Error("a short text must pass through untouched, with nothing claimed to be missing")
+	}
+}

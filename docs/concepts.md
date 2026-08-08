@@ -189,6 +189,28 @@ are rendered by fixpoint from fixpoint's own facts, and both are placed outside
 every region carrying agent text — a signature composed from a finding's prose
 could be forged by whatever wrote that prose.
 
+### What the change says it is
+
+The material is not only the diff. In `pr` mode it opens with the pull request's
+**title and description**, and in both git modes with the **commit messages** of
+the changes under review.
+
+A diff can only answer "is this internally consistent". It cannot answer "does
+this do what it was for", because the intent is not in it — and a reviewer that
+never sees the description also never sees the ticket the description references.
+Commit messages carry the reasoning per step, which for many projects is the only
+place a decision is written down at all.
+
+All of it is the SUBJECT of the review, fenced and defanged exactly like the diff:
+whoever opened the pull request wrote it, which on a public repository is anyone.
+Each half is capped at 400 lines and says how many it dropped, so neither can crowd
+out the code. Anything that cannot be read — no `gh`, no network, no commits since
+the base — is simply absent, which is the state every run before this was in.
+
+Following a link the description contains is a different question, and not one this
+answers: reaching an internal tracker means credentials, network, and a decision
+that its contents may travel to a model provider.
+
 ## Observations and issues
 
 A reviewer's report is an **observation**. What the coder works from is an

@@ -360,6 +360,20 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("list untracked files: %w", err)
 		}
 		var sb strings.Builder
+		// What the change SAYS it is, ahead of what it does.
+		//
+		// A diff answers "is this internally consistent"; it cannot answer "does this
+		// do what it was for", because the intent is not in it. The pull request's
+		// title and description carry that -- and the ticket references, so a reviewer
+		// at least knows PROJ-1234 was named even when it cannot read it. Commit
+		// messages carry the author's reasoning per step, which for many projects is
+		// the only place a decision is written down at all.
+		//
+		// It is the SUBJECT of the review like everything else here: whoever opened the
+		// pull request wrote it, which on a public repository is anyone.
+		if intent := c.intent(ctx); intent != "" {
+			sb.WriteString(intent)
+		}
 		if c.baseSHA != "" {
 			fmt.Fprintf(&sb, "Diff against pinned base %s:\n\n", shortSHA(c.baseSHA))
 		} else {
@@ -2576,4 +2590,65 @@ func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 		res = append(res, re)
 	}
 	return res, nil
+}
+
+// intent is what the change says about itself: the pull request's title and
+// description, and the messages of the commits under review.
+//
+// Best effort by design. Every source here is a separate command that can fail --
+// no `gh`, no network, a repository that does not expose one -- and none of it is
+// worth failing a round over: the diff is the material, this is context on top of
+// it. What cannot be read is simply absent, which is exactly the state every run
+// before this was in.
+//
+// Bounded, because a description is free text somebody else writes and a branch can
+// carry hundreds of commits. The cap is stated in the output rather than applied
+// silently, for the same reason the conversation elision states its own.
+func (c *Collector) intent(ctx context.Context) string {
+	var sb strings.Builder
+	if c.cfg.Mode == config.ModePR && c.cfg.PR > 0 {
+		if out, err := c.run(ctx, "gh", "pr", "view", strconv.Itoa(c.cfg.PR), "--json", "title,body", "--jq", `.title + "\n\n" + .body`); err == nil {
+			if t := strings.TrimSpace(out); t != "" {
+				sb.WriteString("What this pull request says it is:\n\n")
+				sb.WriteString(clampLines(t, intentLines))
+				sb.WriteString("\n\n")
+			}
+		}
+	}
+	if c.baseSHA != "" {
+		// %B is the whole message, subject and body: the body is where a reason is
+		// written, and a subject line alone is a label rather than an explanation.
+		if out, err := c.git(ctx, "log", "--no-merges", "--format=%h %s%n%n%b%n---", c.baseSHA+"..HEAD"); err == nil {
+			if t := strings.TrimSpace(out); t != "" {
+				sb.WriteString("Commit messages of the changes under review:\n\n")
+				sb.WriteString(clampLines(t, intentLines))
+				sb.WriteString("\n\n")
+			}
+		}
+	}
+	return sb.String()
+}
+
+// intentLines bounds each half of the context above. Generous enough for a real
+// description and a branch's worth of commit messages, small enough that neither
+// can crowd out the diff -- which is the thing being reviewed.
+const intentLines = 400
+
+// clampLines keeps the first n lines and says how many it dropped.
+//
+// stated at the call site rather than buried, and so a test can pin the boundary
+// without a 400-line fixture.
+//
+// Stated rather than silent: a reader that cannot tell a truncated description
+// from a short one will read the missing half as absent, and the whole reason this
+// material is here is to say what the change is for.
+//
+//nolint:unparam // n is always intentLines today; it is a parameter so the cap is
+func clampLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n") +
+		fmt.Sprintf("\n\n[%d further line(s) not shown]", len(lines)-n)
 }
