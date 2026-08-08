@@ -446,29 +446,45 @@ func TestBoundedBufferConcurrentWriteString(t *testing.T) {
 // The budget is checked BEFORE the process starts: an over-budget prompt must
 // cost no session, no tokens and no wall clock. Proven by pointing the agent at a
 // command that would fail loudly if it ever ran.
+//
+// The multibyte case pins the unit: the budget is bytes, because that is what the
+// provider's encoder sees. A prompt of 6 two-byte runes is under any rune-counting
+// bound and over a 10-byte one, so an implementation that counted runes would let
+// it through and hit the delayed context-limit failure this guard exists to avoid.
 func TestRunRefusesAnOverBudgetPromptWithoutStartingTheAgent(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "ran")
-	script := filepath.Join(t.TempDir(), "agent.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\necho '<review>{\"findings\":[]}</review>'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	a := config.Agent{
-		Command:      []string{script},
-		PromptVia:    config.PromptViaStdin,
-		Timeout:      config.Duration(time.Minute),
-		PromptBudget: 10,
-	}
-	res := Run(t.Context(), a, strings.Repeat("x", 11), t.TempDir())
-	if res.Err == nil {
-		t.Fatal("Run() err = nil, want a refusal for a prompt over the budget")
-	}
-	for _, want := range []string{"11", "10", "prompt_budget"} {
-		if !strings.Contains(res.Err.Error(), want) {
-			t.Errorf("error %q should name %q so the operator can act on it", res.Err, want)
-		}
-	}
-	if _, err := os.Stat(marker); err == nil {
-		t.Error("the agent process ran; the budget must be checked before anything is spent")
+	for _, tc := range []struct {
+		name      string
+		prompt    string
+		wantBytes string
+	}{
+		{"ascii over the budget", strings.Repeat("x", 11), "11"},
+		{"multibyte under the budget in runes but over it in bytes", strings.Repeat("é", 6), "12"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "ran")
+			script := filepath.Join(t.TempDir(), "agent.sh")
+			if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\necho '<review>{\"findings\":[]}</review>'\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			a := config.Agent{
+				Command:      []string{script},
+				PromptVia:    config.PromptViaStdin,
+				Timeout:      config.Duration(time.Minute),
+				PromptBudget: 10,
+			}
+			res := Run(t.Context(), a, tc.prompt, t.TempDir())
+			if res.Err == nil {
+				t.Fatalf("Run() err = nil, want a refusal for a %d-byte prompt over the 10-byte budget", len(tc.prompt))
+			}
+			for _, want := range []string{tc.wantBytes, "10", "prompt_budget"} {
+				if !strings.Contains(res.Err.Error(), want) {
+					t.Errorf("error %q should name %q so the operator can act on it", res.Err, want)
+				}
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Error("the agent process ran; the budget must be checked before anything is spent")
+			}
+		})
 	}
 }
 
@@ -486,6 +502,7 @@ func TestRunAllowsAPromptAtOrUnderTheBudgetAndIgnoresAZeroBudget(t *testing.T) {
 		prompt string
 	}{
 		{"exactly at the budget", 10, strings.Repeat("x", 10)},
+		{"multibyte exactly at the budget in bytes", 10, strings.Repeat("é", 5)},
 		{"under the budget", 10, "xx"},
 		{"zero means unlimited", 0, strings.Repeat("x", 5000)},
 	} {
