@@ -11,7 +11,7 @@ import (
 func TestAMachineReplyIsRecognizedAndAHumanOneIsNot(t *testing.T) {
 	machine := "Fixed in a.go:7.\n\n🤖 Answered by AI panel · claude-coder · run 20260807-153512\n" +
 		ReplyMarker("20260807-153512")
-	if !HasReplyMarker(machine) {
+	if !IsMachineReply(machine) {
 		t.Errorf("a reply this tool posted was not recognized:\n%s", machine)
 	}
 	for name, human := range map[string]string{
@@ -21,7 +21,7 @@ func TestAMachineReplyIsRecognizedAndAHumanOneIsNot(t *testing.T) {
 		"the words without a tag": "ai-panel run 20260807-153512",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if HasReplyMarker(human) {
+			if IsMachineReply(human) {
 				t.Errorf("a person's comment was mistaken for ours, so their question would go unanswered:\n%s", human)
 			}
 		})
@@ -33,7 +33,7 @@ func TestAMachineReplyIsRecognizedAndAHumanOneIsNot(t *testing.T) {
 // reason this is a pattern and not a string comparison.
 func TestAnyRunsMarkerIsRecognized(t *testing.T) {
 	for _, id := range []string{"20260101-000000", "20991231-235959", ""} {
-		if !HasReplyMarker("answer\n" + ReplyMarker(id)) {
+		if !IsMachineReply("answer\n" + ReplyMarker(id)) {
 			t.Errorf("a marker from run %q was not recognized", id)
 		}
 	}
@@ -98,10 +98,30 @@ func TestPublishedFindingsReadsOurOwnMarkersOnly(t *testing.T) {
 	}
 }
 
-// The finding marker must still read as a reply marker: both say "this message is
-// ours", and the conversation skip rule depends on recognizing either.
-func TestAFindingMarkerIsAlsoAMachineMarker(t *testing.T) {
-	if !HasReplyMarker("x\n" + FindingMarker("20260808-120000", "abc123")) {
-		t.Error("a finding marker is not recognized as one of ours")
+// Both markers say "this message is ours", but only one says "we answered".
+//
+// An inline review comment is a question this tool ASKED, sitting in a thread
+// nobody has replied to. Reading it as an answer made a fix run skip every
+// conversation the review run before it had just opened -- measured on a real
+// pull request: 12 published findings, all skipped, none fixed, none answered.
+func TestAPublishedFindingIsOursButIsNotAnAnswer(t *testing.T) {
+	finding := "**HIGH** — a defect\n" + FindingMarker("20260808-120000", "abc123")
+	if !HasMarker(finding) {
+		t.Error("a published finding is not recognized as written by this tool")
+	}
+	if IsMachineReply(finding) {
+		t.Error("a finding we published is a question, not an answer: a fix run must still pick it up")
+	}
+	reply := "Fixed in a.go:7.\n" + ReplyMarker("20260808-120000")
+	if !IsMachineReply(reply) || !HasMarker(reply) {
+		t.Error("an answer must read as both ours and an answer")
+	}
+}
+
+// Every reply posted before findings carried markers has no finding field, so the
+// rule has to read those pull requests correctly without re-posting anything.
+func TestAMarkerWithNoKindIsAReply(t *testing.T) {
+	if !IsMachineReply("answered\n<!-- ai-panel run 20260807-153512 -->") {
+		t.Error("a marker written before findings were marked must still read as a reply")
 	}
 }

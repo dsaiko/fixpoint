@@ -1246,7 +1246,7 @@ type ThreadComment struct {
 // me is the login of that account, or "" when it could not be determined, and then
 // nothing can be proven ours. Each caller below says what it does with that.
 func (c ThreadComment) ours(me string) bool {
-	return me != "" && HasReplyMarker(c.Body) && strings.EqualFold(c.Author, me)
+	return me != "" && HasMarker(c.Body) && strings.EqualFold(c.Author, me)
 }
 
 // AnsweredByMachine reports whether the LAST thing said in this conversation was
@@ -1278,7 +1278,13 @@ func (t Thread) AnsweredByMachine(me string) bool {
 	if len(t.Comments) == 0 {
 		return false
 	}
-	return t.Comments[len(t.Comments)-1].ours(me)
+	// Our REPLY, not our finding. An inline review comment is a question this tool
+	// asked -- it sits in a thread nobody has answered -- so a thread whose last word
+	// is one of those is the opposite of settled: it is exactly the work a fix run
+	// exists to pick up. Conflating the two made a fix run skip every conversation
+	// the review run before it had just opened.
+	last := t.Comments[len(t.Comments)-1]
+	return last.ours(me) && IsMachineReply(last.Body)
 }
 
 // Requesters names everyone whose message makes up the conversation's LIVE

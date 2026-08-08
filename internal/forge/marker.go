@@ -73,8 +73,25 @@ var markerPattern = regexp.MustCompile(`(?i)<!--\s*ai-panel run [^>]*-->`)
 // findingPattern pulls the finding identity out of a marker that carries one.
 var findingPattern = regexp.MustCompile(`(?i)<!--\s*ai-panel run [^>]*\bfinding ([^\s>]+)\s*-->`)
 
-// HasReplyMarker reports whether a comment body carries a machine-reply marker.
-func HasReplyMarker(body string) bool { return markerPattern.MatchString(body) }
+// HasMarker reports whether a comment was written by this tool -- a reply or a
+// published finding.
+func HasMarker(body string) bool { return markerPattern.MatchString(body) }
+
+// IsMachineReply reports whether a comment is one of this tool's ANSWERS, as
+// opposed to a finding it published.
+//
+// The distinction is the whole point, and conflating them was a real defect: an
+// inline review comment is a question this tool ASKED, sitting in a thread nobody
+// has answered yet, and treating it as an answer made a fix run skip the very
+// conversations a review run had just opened for it. What the two mean for "is
+// anybody waiting on us?" is opposite.
+//
+// A marker with no finding field is a reply. That is what every reply posted
+// before findings were marked at all looks like, so the rule reads existing pull
+// requests correctly rather than needing them re-posted.
+func IsMachineReply(body string) bool {
+	return markerPattern.MatchString(body) && !findingPattern.MatchString(body)
+}
 
 // PublishedFindings lists the finding identities already posted on these
 // conversations by this tool, from comments that are ours by BOTH halves --

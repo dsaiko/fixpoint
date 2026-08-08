@@ -283,7 +283,17 @@ the thread is live again and is read afresh, with the whole exchange including w
 was said last time; the triage prompt tells the agent it may hold its ground or
 change its mind, but not reply as though the earlier exchange never happened.
 
-"Ours" is a property of the MESSAGE, not of the author. Replies go out under the
+"Ours" is not the same as "answered". This tool writes two kinds of comment: a
+**reply**, which answers somebody, and a published **finding**, which is a
+question it asked and nobody has responded to yet. Only a reply as the last word
+means nothing is waiting — a thread whose last word is a finding is precisely the
+work a fix run exists to pick up, which is how a `review-pr` run hands its
+findings to the `fix-pr` run that follows.
+
+Both kinds carry a marker, and a marker with no finding field is a reply, so pull
+requests answered before findings were marked read correctly without re-posting.
+
+"Ours" is also a property of the MESSAGE, not of the author. Replies go out under the
 operator's account, so "the last comment is mine" is equally true of a machine
 answer and of the operator typing a new request an hour later — and skipping the
 second would swallow exactly what the run should act on. So every machine reply

@@ -9505,7 +9505,7 @@ func TestInlineCommentsSkipWhatIsAlreadyOnThePullRequest(t *testing.T) {
 	if got[0].Line != 3 {
 		t.Errorf("anchored at line %d, want the new finding at 3", got[0].Line)
 	}
-	if !forge.HasReplyMarker(got[0].Body) {
+	if !forge.HasMarker(got[0].Body) {
 		t.Errorf("a published finding must carry its identity, or the next review repeats it:\n%s", got[0].Body)
 	}
 	if n := len(forge.PublishedFindings(

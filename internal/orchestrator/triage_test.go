@@ -889,3 +889,46 @@ func TestAConversationAlreadyAnsweredIsLeftAlone(t *testing.T) {
 		t.Errorf("the skip must be reported, or a quiet pull request and a fully answered one look alike:\n%s", logs())
 	}
 }
+
+// A conversation a REVIEW run opened is work a FIX run must pick up.
+//
+// This was a real failure, not a hypothetical: review-pr posted 12 findings as
+// inline comments, each starting a thread, and the fix-pr run launched to act on
+// them reported "0 open conversation(s); 12 already carry this tool's answer as
+// the last word" and skipped every one. An inline comment is a question this tool
+// asked; only a reply is an answer, and only an answer means nobody is waiting.
+func TestAConversationOpenedByOurOwnFindingIsStillWork(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	published := forge.Thread{ID: "100", Author: "dsaiko", Path: "a.go", Line: 3,
+		Body: "**HIGH** — a defect",
+		Comments: []forge.ThreadComment{{Author: "dsaiko",
+			Body: "**HIGH** — a defect\n" + forge.FindingMarker("20260808-114113", "71f40f30f9f9")}}}
+	answered := forge.Thread{ID: "200", Author: "dsaiko", Comments: []forge.ThreadComment{
+		{Author: "dsaiko", Body: "why?"},
+		{Author: "dsaiko", Body: "Because of the guard.\n" + forge.ReplyMarker("20260808-114113")}}}
+
+	logf, _ := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replied []string
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader {
+		return &fakeReader{threads: []forge.Thread{published, answered}, replied: &replied, login: "dsaiko"}
+	}
+	defer func() { readerFor = prev }()
+
+	o.readForgeThreads(t.Context())
+
+	if len(o.threads) != 1 || o.threads[0].ID != "100" {
+		var ids []string
+		for _, th := range o.threads {
+			ids = append(ids, th.ID)
+		}
+		t.Errorf("threads = %v, want the finding we published and not the one we answered", ids)
+	}
+}
