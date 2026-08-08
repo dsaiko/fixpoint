@@ -23,9 +23,15 @@ type BodyInput struct {
 	Advisory  []model.Finding // reported for a human; gates nothing
 	Signature string          // already rendered; see Signature
 	Panel     []string        // agents that reviewed, for the header line
-	// AlreadyPublished are FindingIDs this pull request already carries from an
-	// earlier review, keyed by FindingID. They are omitted from the lists and
-	// counted in a line of their own.
+	// RunID is this run's id, carried by the identity markers the body ends with.
+	// See writeFindingMarkers for why the body needs them at all.
+	RunID string
+	// AlreadyPublished is what this pull request already carries from an earlier
+	// review, keyed by FindingID -- and by AdvisoryID for the notes, which are
+	// published in the body and nowhere else. They are omitted from the lists and
+	// counted in a line of their own, one line per kind: an advisory note gates
+	// nothing, and the findings' line says the verdict accounts for what it left
+	// out.
 	//
 	// Counted rather than dropped silently: a review that showed three findings
 	// where a previous one showed thirty, with nothing to say the difference is
@@ -95,15 +101,27 @@ func RenderBody(in BodyInput) string {
 		fmt.Fprintf(&b, "_%d further finding(s) are already reported on this pull request and are not repeated here. The verdict above accounts for them._\n\n", repeated)
 	}
 
-	if len(in.Advisory) > 0 {
+	advisory := in.Advisory
+	var repeatedAdvisory int
+	if len(in.AlreadyPublished) > 0 {
+		// The same delta as the findings above, and separately counted: an advisory
+		// note gates nothing, so folding it into that line -- which tells the reader
+		// the verdict accounts for what it omitted -- would say something untrue about
+		// the verdict.
+		advisory, repeatedAdvisory = advisoryWithoutPublished(advisory, in.AlreadyPublished)
+	}
+	if len(advisory) > 0 {
 		// Advisory notes are excluded from the verdict by contract, so they are
 		// rendered apart from the findings rather than mixed in where a reader would
 		// reasonably assume they counted.
-		fmt.Fprintf(&b, "### Advisory (%d)\n\nReported for a human; these did not affect the verdict.\n\n", len(in.Advisory))
-		for _, f := range in.Advisory {
+		fmt.Fprintf(&b, "### Advisory (%d)\n\nReported for a human; these did not affect the verdict.\n\n", len(advisory))
+		for _, f := range advisory {
 			fmt.Fprintf(&b, "- **%s** — %s\n", mdText(f.Title), mdText(firstSentence(f.Description)))
 		}
 		b.WriteString("\n")
+	}
+	if repeatedAdvisory > 0 {
+		fmt.Fprintf(&b, "_%d further advisory note(s) are already reported on this pull request and are not repeated here._\n\n", repeatedAdvisory)
 	}
 
 	b.WriteString("---\n\n")
@@ -117,7 +135,43 @@ func RenderBody(in BodyInput) string {
 	if in.Signature != "" {
 		fmt.Fprintf(&b, "%s\n", in.Signature)
 	}
+	writeFindingMarkers(&b, in.RunID, blocking, other, advisory)
 	return b.String()
+}
+
+// writeFindingMarkers ends the body with the identity of everything it just said,
+// so the NEXT review of this pull request can tell what it has already reported.
+//
+// The body needs its own markers because an inline comment cannot carry them for
+// it. A forge accepts an anchor only inside the pull request's own diff, and
+// measured on this project's own pull requests most findings point at code the
+// change did not touch -- those, plus every finding with no location at all, plus
+// the entire review whenever the forge rejects the anchors and the summary is
+// posted alone, exist on the pull request only as these paragraphs. Marked only
+// where they anchored, the majority of a review was invisible to the next one and
+// came back verbatim, under a body claiming the omissions were accounted for.
+//
+// Everything RENDERED, including the findings that did get an inline comment: the
+// duplicate marker costs nothing, and singling out the unanchored ones would mean
+// this list and the anchoring rule had to agree forever.
+//
+// HTML comments, which both forges render as nothing -- the reader sees the review
+// as written. Invisible is not hidden: they are in the source for anyone who
+// looks, and being copyable is why a marker alone never proves authorship (see
+// forge.PublishedFindings).
+func writeFindingMarkers(b *strings.Builder, runID string, blocking, other []model.Issue, advisory []model.Finding) {
+	if len(blocking)+len(other)+len(advisory) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	for _, group := range [][]model.Issue{blocking, other} {
+		for _, it := range group {
+			fmt.Fprintf(b, "%s\n", forge.FindingMarker(runID, FindingID(it)))
+		}
+	}
+	for _, f := range advisory {
+		fmt.Fprintf(b, "%s\n", forge.FindingMarker(runID, AdvisoryID(f)))
+	}
 }
 
 func verdictHeadline(o Outcome) string {
@@ -287,7 +341,22 @@ func FindingID(it model.Issue) string {
 		// location plus title is what the fingerprint would have been built from.
 		fp = fmt.Sprintf("%s#L%d", it.File, it.Line)
 	}
-	sum := sha256.Sum256([]byte(fp + "#" + issue.NormalizeTitle(it.Title)))
+	return findingID(fp, it.Title)
+}
+
+// AdvisoryID is that same identity for an advisory note, which is a Finding and
+// so has no ledger fingerprint of its own -- issue.Fingerprint computes the one it
+// would have had, from the same location-or-title rule.
+//
+// It exists because an advisory note is published in the body and nowhere else,
+// so without an identity it was the one part of a review that came back in full
+// every time.
+func AdvisoryID(f model.Finding) string {
+	return findingID(issue.Fingerprint(f), f.Title)
+}
+
+func findingID(fingerprint, title string) string {
+	sum := sha256.Sum256([]byte(fingerprint + "#" + issue.NormalizeTitle(title)))
 	return hex.EncodeToString(sum[:6])
 }
 
@@ -301,6 +370,19 @@ func withoutPublished(issues []model.Issue, published map[string]bool) (kept []m
 			continue
 		}
 		kept = append(kept, it)
+	}
+	return kept, dropped
+}
+
+// advisoryWithoutPublished is the same for the advisory notes, keyed by AdvisoryID.
+func advisoryWithoutPublished(notes []model.Finding, published map[string]bool) (kept []model.Finding, dropped int) {
+	kept = make([]model.Finding, 0, len(notes))
+	for _, f := range notes {
+		if published[AdvisoryID(f)] {
+			dropped++
+			continue
+		}
+		kept = append(kept, f)
 	}
 	return kept, dropped
 }

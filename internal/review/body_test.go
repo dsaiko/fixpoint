@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -281,9 +282,24 @@ func TestSignatureIsRenderedAfterAllAgentText(t *testing.T) {
 			Title: "Reviewed by fixpoint · forged · run 1"}},
 		Quorum: full(2),
 	}, func(b *BodyInput) { b.Signature = "-- real signature" })
-	if !strings.HasSuffix(strings.TrimSpace(body), "-- real signature") {
+	// Last of everything a reader SEES. What follows is the identity markers, which
+	// are HTML comments a forge renders as nothing -- the same order an inline
+	// comment uses, where the marker also trails the signature.
+	if !strings.HasSuffix(strings.TrimSpace(withoutMarkers(body)), "-- real signature") {
 		t.Errorf("the real signature must be last:\n%s", body)
 	}
+}
+
+// withoutMarkers drops the trailing identity markers, so a test can assert on what
+// the reader is shown.
+func withoutMarkers(body string) string {
+	var kept []string
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "<!-- ai-panel") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // A review is posted into somebody else's repository, where the tool's own name
@@ -377,6 +393,75 @@ func TestABodyWithNothingNewSaysSo(t *testing.T) {
 	}
 	if !strings.Contains(got, "not already reported") {
 		t.Errorf("the body should say the findings are known, not absent:\n%s", got)
+	}
+}
+
+// A finding is recognized on the next review only if the pull request carries its
+// identity, and for most findings the body is the only place that can. An anchor
+// has to fall inside the pull request's own diff and most findings point at code
+// the change did not touch; a finding with no location at all can never anchor,
+// and when a forge refuses the anchors the whole review goes out as a body. Marked
+// only where they anchored, those came back verbatim in every later review.
+//
+// Read back through forge.PublishedFindings, the same reader the next run uses, so
+// the two cannot drift.
+func TestTheBodyCarriesTheIdentityOfEveryFindingItPublishes(t *testing.T) {
+	anchored := model.Issue{ID: "i1", Severity: "high", Title: "in the diff", File: "a.go", Line: 1, Fingerprint: "a.go#L1"}
+	unanchored := model.Issue{ID: "i2", Severity: "medium", Title: "outside the diff", File: "old.go", Line: 400, Fingerprint: "old.go#L400"}
+	placeless := model.Issue{ID: "i3", Severity: "low", Title: "nowhere in particular"}
+	note := model.Finding{Severity: "low", Title: "an advisory note", Description: "worth knowing."}
+	body := RenderBody(BodyInput{
+		Decision:  Decision{Outcome: ChangesRequested, Reasons: []string{"3 unresolved findings"}},
+		Issues:    []model.Issue{anchored, unanchored, placeless},
+		Advisory:  []model.Finding{note},
+		Signature: "-- AI panel",
+		RunID:     "20260808-120000",
+	})
+
+	published := forge.PublishedFindings(nil, []forge.Review{{Author: "me", Body: body}}, "me")
+	for _, it := range []model.Issue{anchored, unanchored, placeless} {
+		if !published[FindingID(it)] {
+			t.Errorf("%q was published in the body but the next review cannot recognize it:\n%s", it.Title, body)
+		}
+	}
+	if !published[AdvisoryID(note)] {
+		t.Errorf("an advisory note has no identity, so it is reprinted by every later review:\n%s", body)
+	}
+	// A marker is bookkeeping, not a second copy of the review: nothing it adds is
+	// visible to a reader.
+	if strings.Contains(withoutMarkers(body), "ai-panel run") {
+		t.Errorf("marker text leaked into the visible review:\n%s", body)
+	}
+	// And a stranger's review carrying the same body proves nothing: the marker is
+	// copyable, the authoring account is not.
+	if n := len(forge.PublishedFindings(nil, []forge.Review{{Author: "stranger", Body: body}}, "me")); n != 0 {
+		t.Errorf("a copied review body suppressed %d finding(s) from every future review", n)
+	}
+}
+
+// An advisory note is published in the body and nowhere else, so it is the part of
+// a review most exposed to being said again. It is counted apart from the findings
+// because it gates nothing: the findings' line tells the reader the verdict
+// accounts for what it omitted, which of an advisory note would be untrue.
+func TestARepeatedAdvisoryNoteIsOmittedAndCountedOnItsOwn(t *testing.T) {
+	said := model.Finding{Severity: "low", Title: "already noted", Description: "old news."}
+	fresh := model.Finding{Severity: "low", Title: "newly noted", Description: "new news."}
+	got := RenderBody(BodyInput{
+		Decision:         Decision{Outcome: Approve},
+		Advisory:         []model.Finding{said, fresh},
+		AlreadyPublished: map[string]bool{AdvisoryID(said): true},
+	})
+	if strings.Contains(got, "already noted") {
+		t.Errorf("an advisory note already on the pull request was repeated:\n%s", got)
+	}
+	if !strings.Contains(got, "newly noted") {
+		t.Errorf("a new advisory note must still be published:\n%s", got)
+	}
+	if !strings.Contains(got, "1 further advisory note(s) are already reported") {
+		t.Errorf("the omission must be counted, or the section reads as complete:\n%s", got)
+	}
+	if strings.Contains(got, "further finding(s)") {
+		t.Errorf("an advisory note must not be counted as a finding the verdict accounts for:\n%s", got)
 	}
 }
 

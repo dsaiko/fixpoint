@@ -398,9 +398,17 @@ reads itself.
 Running a review twice over one commit is a reasonable thing to want: a second
 panel sees what the first missed. What it must not do is say everything again.
 
-Every inline comment fixpoint posts carries an invisible marker holding that
-finding's identity — the issue ledger's fingerprint and the finding's title,
-hashed — so a later review can read back what this pull request already carries.
+Every finding fixpoint publishes carries an invisible marker holding its identity
+— the issue ledger's fingerprint and the finding's title, hashed — so a later
+review can read back what this pull request already carries. The marker is on the
+finding's inline comment when it has one, and in the review body either way. The
+body's copy is what makes this work at all: a forge accepts an anchor only inside
+the pull request's own diff, most findings point at code the change did not touch,
+and a review whose anchors the forge refuses is posted as a summary alone — so
+most findings exist on the pull request as body text and nothing else. Advisory
+notes are marked too, and counted on a line of their own, since they gate nothing
+and the findings' count says the verdict accounts for what it omitted.
+
 That identity is the pair the ledger itself calls one defect, not the location
 alone: one statement routinely holds two problems, and a new finding on a line
 that already carries a comment must still be published. Those findings are dropped
@@ -423,7 +431,9 @@ same reason answering does: a marker copied into a third party's comment would
 otherwise let anyone suppress a finding from every future review of that pull
 request, which is quieter and worse than a duplicate. Every path that cannot
 establish the account, or cannot read the conversations, publishes everything and
-says so: a duplicate is visible, a silently withheld finding is not.
+says so — and a run whose earlier reviews could not be read still recognizes what
+the conversations carry. A duplicate is visible; a silently withheld finding is
+not.
 
 ## Reporting what a run cost
 

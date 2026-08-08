@@ -8600,6 +8600,58 @@ func TestAFindingOnAResolvedConversationIsStillRecognizedAsAlreadySaid(t *testin
 	}
 }
 
+// Most findings never become an inline comment: an anchor has to fall inside the
+// pull request's own diff and most findings point at code the change did not
+// touch, so they are published in the review summary and nowhere else -- as is
+// every finding of a review whose anchors the forge refused. Reading the
+// conversations alone recognized the anchored minority and let the next review
+// reprint the rest in full, under a body claiming its omissions were accounted
+// for.
+func TestFindingsPublishedInAReviewSummaryAreRecognizedToo(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No conversations at all: a body-only finding leaves none behind, which is
+	// exactly the state the old lookup could not see.
+	reader := &fakeReader{
+		reviews: []forge.Review{{Author: "dsaiko", Body: "## Changes requested\n\n" +
+			forge.FindingMarker("20260101-000000", "b0d1600d1e55")}},
+		login: "dsaiko",
+	}
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader { return reader }
+	defer func() { readerFor = prev }()
+
+	if got := o.publishedFindings(t.Context()); !got["b0d1600d1e55"] {
+		t.Errorf("published = %v, want the finding published in an earlier review body", got)
+	}
+
+	// And summaries that cannot be read cost only what they carry: the
+	// conversations were read, and recognizing those is better than recognizing
+	// nothing. Every failure on this path errs toward repeating a finding.
+	reader = &fakeReader{
+		threads: []forge.Thread{{ID: "1", Author: "dsaiko", Comments: []forge.ThreadComment{
+			{Author: "dsaiko", Body: "anchored\n" + forge.FindingMarker("20260101-000000", "a11c40red00")},
+		}}},
+		reviewsErr: errors.New("gh: 502"),
+		login:      "dsaiko",
+	}
+	got := o.publishedFindings(t.Context())
+	if !got["a11c40red00"] {
+		t.Errorf("published = %v, want the anchored finding the conversations still carry", got)
+	}
+	if !strings.Contains(logs(), "could not read this pull request's earlier reviews") {
+		t.Errorf("an unreadable set of summaries must be said out loud:\n%s", logs())
+	}
+}
+
 // A reply is posted under a human's comment with the operator's identity on it,
 // so fixpoint only ever answers a conversation it actually showed the coder. An
 // id the coder invented -- or remembered from a resolved thread -- must not become
@@ -9020,6 +9072,12 @@ type fakeReader struct {
 	// threadsRead counts the successful reads, so a test can tell "no
 	// conversations on this PR" apart from "never asked".
 	threadsRead int
+	// reviews are the summaries already submitted on the pull request, and
+	// reviewsErr makes reading them fail. Body-only findings live here and nowhere
+	// else, so they are kept apart from the conversations rather than folded in.
+	reviews     []forge.Review
+	reviewsErr  error
+	reviewsRead int
 }
 
 func (*fakeReader) Kind() forge.Kind { return forge.GitHub }
@@ -9048,6 +9106,17 @@ func (r *fakeReader) AllThreads(context.Context, string, int) ([]forge.Thread, e
 	}
 	r.threadsRead++
 	return append(append([]forge.Thread(nil), r.threads...), r.resolved...), nil
+}
+
+// Reviews are the summaries already submitted, which is where a finding with no
+// addressable line -- most of them -- is published. Own error field, so a test can
+// make the summaries unreadable while the conversations still answer.
+func (r *fakeReader) Reviews(context.Context, string, int) ([]forge.Review, error) {
+	if r.reviewsErr != nil {
+		return nil, r.reviewsErr
+	}
+	r.reviewsRead++
+	return r.reviews, nil
 }
 
 func (r *fakeReader) Reply(_ context.Context, _ string, _ int, threadID, body string) error {
@@ -9659,7 +9728,7 @@ func TestInlineCommentsSkipWhatIsAlreadyOnThePullRequest(t *testing.T) {
 		t.Errorf("a published finding must carry its identity, or the next review repeats it:\n%s", got[0].Body)
 	}
 	if n := len(forge.PublishedFindings(
-		[]forge.Thread{{Comments: []forge.ThreadComment{{Author: "me", Body: got[0].Body}}}}, "me")); n != 1 {
+		[]forge.Thread{{Comments: []forge.ThreadComment{{Author: "me", Body: got[0].Body}}}}, nil, "me")); n != 1 {
 		t.Errorf("the identity in a posted comment is not readable back out: %s", got[0].Body)
 	}
 }

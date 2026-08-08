@@ -93,25 +93,43 @@ func IsMachineReply(body string) bool {
 	return markerPattern.MatchString(body) && !findingPattern.MatchString(body)
 }
 
-// PublishedFindings lists the finding identities already posted on these
-// conversations by this tool, from comments that are ours by BOTH halves --
-// marker and authoring account.
+// PublishedFindings lists the finding identities already posted on this pull
+// request by this tool, from conversations and review summaries alike, taking
+// only what is ours by BOTH halves -- marker and authoring account.
 //
 // Both halves for the same reason AnsweredByMachine needs both: a marker copied
 // into somebody else's comment would otherwise let a third party suppress a
 // finding from every future review of this pull request, which is a quieter and
 // worse outcome than a duplicate.
-func PublishedFindings(threads []Thread, me string) map[string]bool {
+//
+// Both SOURCES because a finding usually has only one of them. An inline comment
+// needs a line inside the pull request's own diff, and most findings point at
+// code the change did not touch; those are published in the review body alone, as
+// is every finding when the forge rejects the anchors and the summary goes out on
+// its own. Reading conversations alone recognized the anchored minority and let
+// the rest be reprinted in full by every later review.
+func PublishedFindings(threads []Thread, reviews []Review, me string) map[string]bool {
 	out := map[string]bool{}
 	for _, t := range threads {
 		for _, c := range t.Comments {
-			if !c.ours(me) {
-				continue
-			}
-			if m := findingPattern.FindStringSubmatch(c.Body); m != nil {
-				out[m[1]] = true
+			if c.ours(me) {
+				collectFindings(c.Body, out)
 			}
 		}
 	}
+	for _, r := range reviews {
+		if r.ours(me) {
+			collectFindings(r.Body, out)
+		}
+	}
 	return out
+}
+
+// collectFindings adds every identity a body carries. Every one, not the first: a
+// review summary lists the whole review, so its markers come as a block, and
+// reading one of them would have recognized one finding per earlier review.
+func collectFindings(body string, out map[string]bool) {
+	for _, m := range findingPattern.FindAllStringSubmatch(body, -1) {
+		out[m[1]] = true
+	}
 }

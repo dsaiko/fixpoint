@@ -81,7 +81,7 @@ func TestPublishedFindingsReadsOurOwnMarkersOnly(t *testing.T) {
 	unmarked := ThreadComment{Author: "dsaiko", Body: "just a comment"}
 	threads := []Thread{{ID: "1", Comments: []ThreadComment{ours, forged, unmarked}}}
 
-	got := PublishedFindings(threads, "dsaiko")
+	got := PublishedFindings(threads, nil, "dsaiko")
 	if !got["abc123def456"] {
 		t.Error("our own published finding was not recognized, so it will be posted again")
 	}
@@ -93,8 +93,41 @@ func TestPublishedFindingsReadsOurOwnMarkersOnly(t *testing.T) {
 	}
 	// And with no login established, nothing is claimed to be published: a duplicate
 	// is visible, a silently suppressed finding is not.
-	if n := len(PublishedFindings(threads, "")); n != 0 {
+	if n := len(PublishedFindings(threads, nil, "")); n != 0 {
 		t.Errorf("published %d finding(s) with no authenticated account, want 0", n)
+	}
+}
+
+// Most findings never get an inline comment -- a forge anchors only inside the
+// pull request's own diff -- so they exist on the pull request as paragraphs of a
+// review summary and nothing else. Recognizing only the anchored ones let the
+// majority of a review come back verbatim in the next one.
+func TestPublishedFindingsReadsTheReviewSummariesToo(t *testing.T) {
+	body := "## Changes requested\n\nA finding with no addressable line.\n\n" +
+		FindingMarker("20260808-120000", "bod1600d1e55") + "\n" +
+		FindingMarker("20260808-120000", "bod200000002") + "\n"
+	reviews := []Review{
+		{Author: "dsaiko", Body: body},
+		{Author: "stranger", Body: "looks fine\n" + FindingMarker("20260808-120000", "f0r6ed00")},
+		{Author: "reviewer", Body: "no marker at all"},
+	}
+
+	got := PublishedFindings(nil, reviews, "dsaiko")
+	// Every marker in the body, not the first: a summary lists the whole review, so
+	// reading one would recognize one finding per earlier review.
+	for _, id := range []string{"bod1600d1e55", "bod200000002"} {
+		if !got[id] {
+			t.Errorf("finding %s was published in the review body but is not recognized: %v", id, got)
+		}
+	}
+	if got["f0r6ed00"] {
+		t.Error("a marker in a stranger's review suppressed a finding from every future review")
+	}
+	if len(got) != 2 {
+		t.Errorf("published = %v, want exactly the two in our own review", got)
+	}
+	if n := len(PublishedFindings(nil, reviews, "")); n != 0 {
+		t.Errorf("published %d finding(s) from review bodies with no authenticated account, want 0", n)
 	}
 }
 

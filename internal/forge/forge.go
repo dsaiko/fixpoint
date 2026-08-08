@@ -1237,6 +1237,32 @@ type ThreadComment struct {
 	Body   string
 }
 
+// Review is one SUBMITTED review on a pull request: its summary body and the
+// account that submitted it.
+//
+// It exists for one question -- what has this pull request already been told --
+// and it answers the half a Thread cannot. Most findings never become an inline
+// comment: a forge accepts an anchor only inside the pull request's own diff, and
+// most findings point at code the change did not touch, so they are published in
+// the review body alone. A finding that lives only there has no conversation to
+// read it back from, and reading threads alone therefore reported the majority of
+// an earlier review's findings as brand new.
+//
+// Author, like a comment's, because a marker on its own proves nothing: anybody
+// who can review a pull request can copy one into their own review body. See
+// ours.
+type Review struct {
+	Author string
+	Body   string
+}
+
+// ours is Review's half of the same two-part test ThreadComment.ours applies, and
+// for the same reason: a review body carrying our marker is ours only if the
+// account that submitted it is the one this run posts under.
+func (r Review) ours(me string) bool {
+	return me != "" && HasMarker(r.Body) && strings.EqualFold(r.Author, me)
+}
+
 // ours reports whether this comment is one of this tool's own replies.
 //
 // Two halves, and both are needed. The marker (see ReplyMarker) is what
@@ -1356,6 +1382,13 @@ type Reader interface {
 	//
 	// Never the source of the conversations shown to an agent: see Thread.
 	AllThreads(ctx context.Context, dir string, pr int) ([]Thread, error)
+	// Reviews lists the review SUMMARIES already submitted on a pull request.
+	//
+	// The other half of "what has this pull request already been told": a finding
+	// with no addressable line -- which is most of them -- is published in the
+	// review body and nowhere else, so no thread carries it. Never the source of
+	// anything shown to an agent; like AllThreads it feeds PublishedFindings alone.
+	Reviews(ctx context.Context, dir string, pr int) ([]Review, error)
 	// Reply posts a response into an existing conversation.
 	Reply(ctx context.Context, dir string, pr int, threadID, body string) error
 	// Login is the account this CLI is authenticated as, or "" when it cannot be
@@ -1587,6 +1620,81 @@ func (githubProvider) threads(ctx context.Context, dir string, pr int, withResol
 		cursor = rt.PageInfo.EndCursor
 	}
 	return nil, fmt.Errorf("pull request %d has more than %d pages of review threads", pr, maxPages)
+}
+
+// reviewQuery reads a page of submitted review summaries.
+//
+// Every review, not just this account's: filtering by author is done here in Go,
+// where the login is already known, and asking the server for one author's
+// reviews would still need the same test applied to the marker afterwards.
+//
+// Paginated for the reason threadQuery is -- a pull request that has been
+// reviewed more than a hundred times would otherwise lose its earliest reviews,
+// and a lost review looks exactly like one that never happened: its findings come
+// back as new.
+const reviewQuery = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$pr){
+      reviews(first:100,after:$after){
+        pageInfo{hasNextPage endCursor}
+        nodes{body author{login}}
+      }
+    }
+  }
+}`
+
+func (githubProvider) Reviews(ctx context.Context, dir string, pr int) ([]Review, error) {
+	owner, repo, err := githubSlug(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	var reviews []Review
+	cursor := ""
+	for range maxPages {
+		// -f for owner and repo, -F only for pr: see threads for why a typed flag
+		// cannot carry a repository named like a number.
+		args := []string{"api", "graphql", "-f", "query=" + reviewQuery,
+			"-f", "owner=" + owner, "-f", "repo=" + repo, fmt.Sprintf("-Fpr=%d", pr)}
+		if cursor != "" {
+			args = append(args, "-f", "after="+cursor)
+		}
+		out, err := run(ctx, dir, "gh", args...)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			Data struct {
+				Repository struct {
+					PullRequest struct {
+						Reviews struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []struct {
+								Body   string `json:"body"`
+								Author struct {
+									Login string `json:"login"`
+								} `json:"author"`
+							} `json:"nodes"`
+						} `json:"reviews"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(out), &payload); err != nil {
+			return nil, fmt.Errorf("parse reviews: %w", err)
+		}
+		rv := payload.Data.Repository.PullRequest.Reviews
+		for _, n := range rv.Nodes {
+			reviews = append(reviews, Review{Author: n.Author.Login, Body: n.Body})
+		}
+		if !rv.PageInfo.HasNextPage || rv.PageInfo.EndCursor == "" {
+			return reviews, nil
+		}
+		cursor = rv.PageInfo.EndCursor
+	}
+	return nil, fmt.Errorf("pull request %d has more than %d pages of reviews", pr, maxPages)
 }
 
 // Login asks gh who it is authenticated as.

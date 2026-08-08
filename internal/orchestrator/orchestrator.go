@@ -4293,6 +4293,10 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 		Advisory:  rec.Advisory,
 		Panel:     agents,
 		Signature: signature,
+		// Carried by the identity marker the body ends each finding with, which is how
+		// the next review of this pull request recognizes what this one already said --
+		// including the findings that never anchor to a line and live in the body alone.
+		RunID: o.logs.RunID(),
 		// Findings this pull request already carries. The body states how many it left
 		// out rather than dropping them silently -- the count is what tells a reader
 		// that the short list is a delta, not a clean bill of health.
@@ -5420,7 +5424,21 @@ func (o *Orchestrator) publishedFindings(ctx context.Context) map[string]bool {
 		o.logf("WARNING: could not read what this pull request already carries (%v); findings may be posted again", err)
 		return nil
 	}
-	published := forge.PublishedFindings(threads, me)
+	// The review SUMMARIES too, because most findings are only ever in one. An
+	// anchor has to fall inside the pull request's own diff and most findings do
+	// not, so they are published in the body -- as is every finding of a review
+	// whose anchors the forge refused. Threads alone recognized the anchored
+	// minority.
+	//
+	// A failed read here is a warning and not a return: the conversations were read,
+	// and recognizing the findings they carry is strictly better than recognizing
+	// none. Like every other failure on this path it errs toward repeating a
+	// finding, never toward withholding one.
+	reviews, err := r.Reviews(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	if err != nil {
+		o.logf("WARNING: could not read this pull request's earlier reviews (%v); findings that carry no line may be posted again", err)
+	}
+	published := forge.PublishedFindings(threads, reviews, me)
 	if len(published) > 0 {
 		o.logf("%d finding(s) are already on this pull request from an earlier review and will not be repeated", len(published))
 	}

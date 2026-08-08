@@ -996,6 +996,39 @@ func TestAllThreadsKeepsTheConversationsAHumanHasSettled(t *testing.T) {
 	}
 }
 
+// The review SUMMARIES, which is where most findings live: an anchor has to fall
+// inside the pull request's own diff, and most findings point at code the change
+// did not touch. This parse fails the same quiet way the thread one does -- a
+// renamed field still unmarshals, yields no reviews, and every body-only finding
+// of every earlier review is then reported as new.
+func TestReviewsAreTheSummariesAlreadySubmitted(t *testing.T) {
+	payload := `{"data":{"repository":{"pullRequest":{"reviews":{"nodes":[
+	  {"body":"## Changes requested\n\n<!-- ai-panel run 20260101-000000 finding deadbeefcafe -->","author":{"login":"dsaiko"}},
+	  {"body":"looks good","author":{"login":"stranger"}}
+	]}}}}}`
+	dir, query, _, _ := stubGHThreads(t, payload)
+
+	got, err := (githubProvider{}).Reviews(t.Context(), dir, 7)
+	if err != nil {
+		t.Fatalf("Reviews() = %v", err)
+	}
+	want := []Review{
+		{Author: "dsaiko", Body: "## Changes requested\n\n<!-- ai-panel run 20260101-000000 finding deadbeefcafe -->"},
+		{Author: "stranger", Body: "looks good"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Reviews() = %+v, want %+v", got, want)
+	}
+	// Everyone's reviews are read and the author filtering happens in Go, so the
+	// body of a stranger's review must arrive here rather than be filtered away by
+	// the server: what makes a review ours is the marker AND the account.
+	for _, field := range []string{"owner=dsaiko", "repo=fixpoint", "pr=7", "reviews", "body", "login"} {
+		if !strings.Contains(query(), field) {
+			t.Errorf("the graphql call does not carry %q: %s", field, query())
+		}
+	}
+}
+
 // A conversation longer than one page of comments, whose last word is this tool's.
 // The first page stops at hasNextPage, and the reply carrying the marker is only on
 // the second -- which is the shape that made AnsweredByMachine read the wrong
