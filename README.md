@@ -262,6 +262,13 @@ somebody's change or formally blocks it. None of them can be set from a config
 file — the first bundle on the search path belongs to the target, so a YAML key
 would let reviewed code arrange to have a review posted under your identity.
 
+Reviewing the same pull request twice is fine: findings it already carries are
+recognized and not repeated, the new ones are published, and the body says how
+many it left out. Recognition is bound to the commit each finding was published
+about, so one whose code has been pushed to since is published again in full rather
+than counted as old news — see
+[config/README.md](config/README.md#reviewing-the-same-pull-request-twice).
+
 Findings that name a file and a line are also posted as **inline comments**, so a
 reader meets each one beside the code instead of in a list at the bottom. Each one
 carries the same signature as the body, because it is read in the Files tab with no
@@ -355,7 +362,10 @@ The main sections of a task config:
   inherited, so changing who reviews is one edit rather than one per config; a
   config that sets `roles.review.agents` replaces that pool instead of adding to
   it.
-- **`agents`** — the command templates described above.
+- **`agents`** — the command templates described above, each optionally carrying
+  `prompt_budget` (bytes; over it the invocation is refused before the process
+  starts, and the step is recorded as failed rather than sent and rejected by the
+  provider — see [config/README.md](config/README.md)).
 - **`loop`** — `max_iterations`, `max_final_passes` (how many times the closing
   round may repeat, default 1), `final_skip_run_edits` (globs the closing round is
   not shown when this run wrote the file), `commit_policy` (see

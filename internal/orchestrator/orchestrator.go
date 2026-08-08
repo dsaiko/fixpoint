@@ -70,6 +70,10 @@ type Orchestrator struct {
 	// list into every coder prompt and postReplies refuses an id that is not in it,
 	// so a thread still here after N sessions is one no session has answered.
 	threads []forge.Thread
+	// threadsLogin is the account this run posts under, as read when threads were.
+	// Empty when no conversations were read, and then nothing in them is ours --
+	// the same answer forge gives for an unknown account.
+	threadsLogin string
 	// commissionedThreads are the threads triage turned into issues, so a reply can
 	// be matched against the session that owes it. Each such thread is answered by
 	// the ONE session fixing its issue; another session naming it is answering a
@@ -4261,6 +4265,19 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	}
 	sort.Strings(agents)
 
+	// What this pull request has ALREADY been told by an earlier review of it.
+	//
+	// Running a review twice over one commit is legitimate -- a second panel sees
+	// what the first missed -- but repeating what is already posted is not. Since the
+	// panel is not deterministic the repeat would not even read as a copy: it
+	// overlaps, differs in wording, and a reader cannot tell it is one finding
+	// described twice. So the new findings are published and the rest are counted.
+	//
+	// Read from the forge rather than from the previous run's summary, because the
+	// pull request is the record that matters and the earlier run may have been on
+	// another machine.
+	alreadySaid := o.publishedFindings(ctx)
+
 	// One signature for the whole review, used by the summary AND by every inline
 	// comment: an inline comment is read on its own in the Files tab, with no sight
 	// of the review it belongs to, so an unsigned one is an unattributed assertion
@@ -4280,6 +4297,17 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 		Advisory:  rec.Advisory,
 		Panel:     agents,
 		Signature: signature,
+		// Carried by the identity marker the body ends each finding with, which is how
+		// the next review of this pull request recognizes what this one already said --
+		// including the findings that never anchor to a line and live in the body alone.
+		RunID: o.logs.RunID(),
+		// And WHICH COMMIT it was said about, so the next review can tell an omission
+		// that still describes the code from one whose code has been pushed over since.
+		ReviewedHead: sum.ReviewedHead,
+		// Findings this pull request already carries. The body states how many it left
+		// out rather than dropping them silently -- the count is what tells a reader
+		// that the short list is a delta, not a clean bill of health.
+		AlreadyPublished: alreadySaid,
 	})
 	// The PUBLISHED bytes, computed once and used for both the file and the post.
 	//
@@ -4316,7 +4344,7 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	// Recorded before any posting, so `-post-run` can publish exactly this review
 	// later without re-running the panel -- and so an operator who reads the file
 	// first is reading the bytes that will actually go out.
-	for _, c := range inlineComments(rec, o.material, signature) {
+	for _, c := range inlineComments(rec, o.material, signature, o.logs.RunID(), sum.ReviewedHead, alreadySaid) {
 		sum.ReviewInline = append(sum.ReviewInline, model.ReviewAnchor{Path: c.Path, Line: c.Line, Body: c.Body})
 	}
 	return o.postReview(ctx, sum, published)
@@ -5139,7 +5167,7 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 // The text is the finding's own, already sanitized by the body renderer's rules,
 // with the severity leading so a reader skimming the Files tab can tell a blocker
 // from a note without opening anything.
-func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.InlineComment {
+func inlineComments(rec *model.RoundRecord, diff, signature, runID, head string, published review.Published) []forge.InlineComment {
 	// A forge accepts an anchor only inside the pull request's own diff, and it
 	// rejects the WHOLE review when one falls outside -- with a 422 that names
 	// nothing. Measured on this project's own pull request: without this filter
@@ -5155,6 +5183,16 @@ func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.Inli
 		if it.File == "" || it.Line <= 0 || !addressable[it.File][it.Line] {
 			continue
 		}
+		id := review.FindingID(it)
+		if published.Carries(id, it.File) {
+			// Already on this pull request from an earlier review of it, AS A STATEMENT
+			// ABOUT THIS CODE. Posting it again would start a SECOND thread saying the same
+			// thing -- and since the panel is not deterministic, the two would be worded
+			// differently enough that a reader could not tell they were one finding. An
+			// earlier review of a file that has moved since is not that; see
+			// review.Published.
+			continue
+		}
 		out = append(out, forge.InlineComment{
 			Path: it.File,
 			Line: it.Line,
@@ -5162,7 +5200,11 @@ func inlineComments(rec *model.RoundRecord, diff, signature string) []forge.Inli
 			// second way agent text reaches the pull request, and a finding about a
 			// hardcoded credential quotes that credential on a line the diff contains,
 			// which is precisely the case that anchors.
-			Body: publishedText(review.RenderInline(it, signature)),
+			//
+			// The marker carries this finding's identity AND the commit it is being said
+			// about, which is how the NEXT review of this pull request knows it has already
+			// been said -- and whether it was said about the code that is still there.
+			Body: publishedText(review.RenderInline(it, signature) + "\n" + forge.FindingMarker(runID, head, id)),
 		})
 	}
 	return out
@@ -5225,6 +5267,9 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 		live = append(live, t)
 	}
 	o.threads = live
+	// Kept for conversations(), which has to mark our own comments and cannot ask
+	// the forge again: it renders from o.threads long after this read.
+	o.threadsLogin = me
 	switch {
 	case answered > 0:
 		o.logf("%d open conversation(s) on this pull request; %d already carry this tool's answer as the last word and are left alone",
@@ -5235,6 +5280,11 @@ func (o *Orchestrator) readForgeThreads(ctx context.Context) {
 }
 
 // conversations renders the open threads for the coder prompt.
+//
+// Each comment is marked ours or not here, because this is the layer that can
+// prove it -- the marker plus the account this run posts under (forge's
+// ThreadComment.Ours). A long thread drops its middle when it is rendered, and
+// that flag is what keeps this tool's own answer out of the part that is dropped.
 func (o *Orchestrator) conversations() string {
 	if len(o.threads) == 0 {
 		return ""
@@ -5242,12 +5292,25 @@ func (o *Orchestrator) conversations() string {
 	out := make([]prompt.Conversation, 0, len(o.threads))
 	for _, t := range o.threads {
 		c := prompt.Conversation{ID: t.ID, Path: t.Path, Line: t.Line, Author: t.Author, Body: t.Body}
-		for _, m := range t.Comments {
-			c.Comments = append(c.Comments, prompt.Comment{Author: m.Author, Body: m.Body})
-		}
+		c.Comments = promptComments(t, o.threadsLogin)
 		out = append(out, c)
 	}
 	return prompt.FormatConversations(out)
+}
+
+// promptComments is one thread's exchange as the renderer takes it, each message
+// marked ours or not, where me is the account this run posts under.
+//
+// Shared with the triage gate on purpose: that gate asks what the rendering
+// dropped, and it can only get the same answer the renderer would if it asks over
+// the same comments -- the Ours flags are what decide whether anything is dropped
+// at all.
+func promptComments(t forge.Thread, me string) []prompt.Comment {
+	msgs := make([]prompt.Comment, 0, len(t.Comments))
+	for _, m := range t.Comments {
+		msgs = append(msgs, prompt.Comment{Author: m.Author, Body: m.Body, Ours: m.Ours(me)})
+	}
+	return msgs
 }
 
 // postReplies answers the conversations the coder said its work addressed.
@@ -5350,4 +5413,119 @@ func (o *Orchestrator) closeThread(id string) {
 			return
 		}
 	}
+}
+
+// publishedFindings asks the forge which of this tool's findings are already on
+// the pull request.
+//
+// Empty on every path that cannot answer -- not a pull request, no forge, an
+// unreadable login, a failed read -- which fails toward saying something twice
+// rather than staying quiet about something new. A duplicate is visible and
+// annoying; a finding suppressed because a lookup failed is invisible.
+//
+// Deliberately NOT gated on Review.Post. The delta belongs to the RENDERED
+// review, not to this process: a run without -post still writes review-body.md
+// and sum.ReviewInline, and `fixpoint -post-run <dir>` publishes exactly those
+// recorded bytes later. Gating on Review.Post made the inspect-then-publish
+// workflow -- the one the README tells operators to prefer -- post a second
+// thread for every finding the pull request already carried. The read is
+// read-only, so the cost of doing it in a run that never publishes is one
+// forge query.
+func (o *Orchestrator) publishedFindings(ctx context.Context) review.Published {
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
+		return review.Published{}
+	}
+	r := readerFor(ctx, o.cfg.Target.Path)
+	if r == nil {
+		return review.Published{}
+	}
+	me := r.Login(ctx, o.cfg.Target.Path)
+	if me == "" {
+		o.logf("WARNING: could not establish which account this run posts as; findings already on this pull request may be posted again")
+		return review.Published{}
+	}
+	// AllThreads, not Threads: a resolved conversation is the strongest form of
+	// "already said" there is -- resolving a review comment is how a maintainer
+	// says handled, or won't fix. Reading the unresolved ones alone made every
+	// finding a human had closed look unreported, and the next review posted it
+	// again as new. These threads feed the published set and nothing else; the
+	// conversations an agent is shown still come from Threads.
+	threads, err := r.AllThreads(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	if err != nil {
+		o.logf("WARNING: could not read what this pull request already carries (%v); findings may be posted again", err)
+		return review.Published{}
+	}
+	// The review SUMMARIES too, because most findings are only ever in one. An
+	// anchor has to fall inside the pull request's own diff and most findings do
+	// not, so they are published in the body -- as is every finding of a review
+	// whose anchors the forge refused. Threads alone recognized the anchored
+	// minority.
+	//
+	// A failed read here is a warning and not a return: the conversations were read,
+	// and recognizing the findings they carry is strictly better than recognizing
+	// none. Like every other failure on this path it errs toward repeating a
+	// finding, never toward withholding one.
+	reviews, err := r.Reviews(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
+	if err != nil {
+		o.logf("WARNING: could not read this pull request's earlier reviews (%v); findings that carry no line may be posted again", err)
+	}
+	published := review.Published{At: forge.PublishedFindings(threads, reviews, me)}
+	if published.Len() > 0 {
+		published.Moved = o.movedSincePublished(ctx, published.At)
+		o.logf("%d finding(s) are already on this pull request from an earlier review; the ones whose code has not moved since will not be repeated", published.Len())
+	}
+	return published
+}
+
+// movedSincePublished asks, for every commit an earlier review published a finding
+// about, which paths have changed between it and the commit under review. It is
+// what turns "this was said once" into "this is still a statement about the code a
+// reader is looking at" -- see review.Published, which does the weighing.
+//
+// Best-effort per commit, and the failure direction is the one the whole path uses.
+// A head that cannot be diffed -- force-pushed away, never fetched, git unavailable
+// -- is left out of the map, and everything published against it is published
+// again rather than withheld on a claim nothing can check.
+func (o *Orchestrator) movedSincePublished(ctx context.Context, at map[string][]string) map[string]map[string]bool {
+	moved := make(map[string]map[string]bool, len(at))
+	for _, heads := range at {
+		for _, head := range heads {
+			if _, done := moved[head]; done {
+				continue
+			}
+			if !looksLikeCommit(head) {
+				// Not spelled like a commit, so it is not asked about. An empty one especially:
+				// ChangedSince reads "" as an unborn branch and answers "nothing moved", which is
+				// the claim this whole binding exists to stop being made on nothing.
+				continue
+			}
+			changed, err := o.collector.ChangedSince(ctx, head)
+			if err != nil {
+				o.logf("WARNING: could not tell what has changed since %s, a commit an earlier review was published against (%v); the findings it carried may be posted again", head, err)
+				continue
+			}
+			moved[head] = changed
+		}
+	}
+	return moved
+}
+
+// looksLikeCommit reports whether a string read back out of a marker is spelled
+// like a git object id: hex digits and nothing else.
+//
+// It is there because that string reaches a git argument list, ahead of the
+// revisions in `git diff`, and git has options a value beginning with a dash could
+// impersonate -- `--output=<file>` writes one. Only comments from the account this
+// tool posts under are read at all, so this is a second lock on a door that is
+// already shut, and it costs one pass over forty characters.
+func looksLikeCommit(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }

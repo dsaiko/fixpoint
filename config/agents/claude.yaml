@@ -56,3 +56,14 @@ env:
   pass:
   # See claude-coder.yaml: only needed when authenticating by API key.
     - ANTHROPIC_API_KEY
+
+# Largest prompt this agent will be handed, in bytes. Over it the invocation is
+# refused before the process starts -- see config/README.md, "Bounding what an
+# agent is handed".
+#
+# 900 kB against a measured 434 kB maximum on this project (a triage pass over 39
+# open conversations, the largest prompt this tool has ever built; the biggest
+# review prompt was 314 kB). This is a RUNAWAY GUARD, not this model's context
+# limit: it is set where a prompt has clearly stopped being one a review can use,
+# with room for a project several times this size.
+prompt_budget: 900000

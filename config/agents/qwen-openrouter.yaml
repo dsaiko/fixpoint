@@ -72,3 +72,6 @@ env:
   set:
   # No /v1 suffix; the harness adds it.
     ANTHROPIC_BASE_URL: https://openrouter.ai/api
+
+# 400 kB, matching the other remote-served agents.
+prompt_budget: 400000

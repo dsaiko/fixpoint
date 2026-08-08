@@ -255,6 +255,18 @@ func TestValidate(t *testing.T) {
 		{"negative max findings", func(c *Config) { c.Loop.MaxFindingsPerRound = -1 }, "must not be negative"},
 		{"negative max iterations", func(c *Config) { c.Loop.MaxIterations = -1 }, "must not be negative"},
 		{"negative clean rounds", func(c *Config) { c.Loop.CleanRoundsToStop = -1 }, "must not be negative"},
+		// 0 already means "no limit", so a negative value is a typo that would
+		// otherwise disable the budget the operator thought they were setting.
+		{"negative prompt budget", func(c *Config) {
+			a := c.Agents["rev"]
+			a.PromptBudget = -1
+			c.Agents["rev"] = a
+		}, "prompt_budget must not be negative"},
+		{"prompt budget accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.PromptBudget = 400_000
+			c.Agents["rev"] = a
+		}, ""},
 		// An empty glob compiles to ^$ and matches no real path, so it would sit in
 		// the config looking like an active rule while hiding nothing -- and the
 		// closing round would review the run's own output with the operator believing
@@ -1087,7 +1099,7 @@ roles:
     prompts: [` + promptPath + `]
 agents:
   coder: {command: [echo], can_edit: true, timeout: 5m}
-  rev: {command: [echo]}
+  rev: {command: [echo], prompt_budget: 250000}
 `
 
 	t.Run("valid file with defaults applied", func(t *testing.T) {
@@ -1122,6 +1134,15 @@ agents:
 		}
 		if cfg.Agents["coder"].Timeout.Std() != 5*time.Minute {
 			t.Errorf("explicit timeout = %s, want 5m", cfg.Agents["coder"].Timeout.Std())
+		}
+		// prompt_budget has no default, so a decoder-tag or defaulting regression
+		// would leave every agent at 0 -- the documented "no limit" value, which
+		// disables the guard without failing anything else.
+		if got := cfg.Agents["rev"].PromptBudget; got != 250_000 {
+			t.Errorf("PromptBudget = %d, want the configured 250000 to survive loading", got)
+		}
+		if got := cfg.Agents["coder"].PromptBudget; got != 0 {
+			t.Errorf("PromptBudget = %d for an agent that set none, want 0 (no limit)", got)
 		}
 		if !cfg.Ping() {
 			t.Error("Ping() default = false, want true")

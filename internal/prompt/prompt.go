@@ -759,6 +759,12 @@ Return exactly one decision for every conversation above, and no others.
 - reject: reason is REQUIRED and is posted verbatim as your reply to that comment.
   Write it to the person, not about them.
 
+A conversation whose rendering says earlier replies are not shown cannot be
+accepted, and an accept on one is refused and left undecided. You are reading part
+of that thread, and the part you cannot see is where an objection to the request
+would be. Reject it if what you CAN see answers it; otherwise leave it out, and it
+stays context for a human to decide.
+
 The reason field is required either way. A decision with no reason is not a
 decision; it is kept as unresolved and reported as a triage failure.
 
@@ -834,15 +840,19 @@ func FormatConversations(threads []Conversation) string {
 			loc = fmt.Sprintf("%s:%d", loc, t.Line)
 		}
 		fmt.Fprintf(&sb, "### thread %s -- %s (%s)\n", Flatten(t.ID), loc, Flatten(t.Author))
-		// The WHOLE exchange, root first. What was said after the question is what
-		// decides whether anything is still being asked: a clarification, somebody
-		// disagreeing, or this tool's own earlier answer -- which the reader needs in
-		// order to hold its ground rather than start over.
+		// The exchange, root first. What was said after the question is what decides
+		// whether anything is still being asked: a clarification, somebody disagreeing,
+		// or this tool's own earlier answer -- which the reader needs in order to hold
+		// its ground rather than start over.
 		msgs := t.Comments
 		if len(msgs) == 0 {
 			msgs = []Comment{{Author: t.Author, Body: t.Body}}
 		}
-		for i, c := range msgs {
+		for i, c := range elideMiddle(msgs) {
+			if c.elidedBefore > 0 {
+				fmt.Fprintf(&sb, "\n_(%d earlier repl(y|ies) in this conversation are not shown)_\n",
+					c.elidedBefore)
+			}
 			if i > 0 {
 				fmt.Fprintf(&sb, "\n%s replied:\n", Flatten(c.Author))
 			}
@@ -871,6 +881,11 @@ type Conversation struct {
 type Comment struct {
 	Author string
 	Body   string
+	// Ours marks a message this tool posted itself. Set by the caller, which is the
+	// only layer that can decide it: proving a comment ours takes the reply marker
+	// AND the account this run posts under, and prompt renders text without knowing
+	// where it came from. It exists so elideMiddle can keep our own last word.
+	Ours bool
 }
 
 // commissionNote states that an issue came from a conversation rather than from
@@ -910,3 +925,122 @@ func commissionNote(it model.Issue) string {
 		" — all about the same defect. Answer every one of them once your fix is committed:" +
 		" a fixed verdict on this issue is not accepted without a reply to each."
 }
+
+// conversationTail is how many of a thread's most recent comments are rendered
+// alongside the one that opened it.
+//
+// A long thread is the middle of an argument, and the middle is the part that has
+// been settled: what matters is the QUESTION and the CURRENT state. Six is enough
+// to carry a disagreement and this tool's answer to it.
+const conversationTail = 6
+
+// elideMiddle keeps a conversation's opening comment and its most recent ones,
+// each carrying the number of comments dropped just before it.
+//
+// This is the one place fixpoint truncates material on purpose, and it is bounded
+// by two things that make it different from trimming a diff. The omission is
+// STATED in the rendered text, so a reader knows it is looking at part of a
+// thread rather than all of it -- unlike a shortened diff, which reads exactly
+// like a complete one. And nothing is decided from what is dropped: the decision
+// is about the code, which the agent reads itself.
+//
+// Without it the block grows without limit. Every run adds a reply to every open
+// thread, so a pull request that stays open long enough eventually renders a
+// prompt no model will take -- measured on this project's own: 54 KB when only
+// the opening comments were shown, 434 KB once whole threads were, which is
+// larger than the biggest review prompt this tool has ever built.
+//
+// Our own most recent message survives too, wherever it sits. The tail rule alone
+// dropped it as soon as conversationTail comments followed it, and that is the one
+// message the reader cannot do without: it is fixpoint's answer to the request, and
+// without it the block reads as the request plus a queue of people pressing for it,
+// with no record that the question was already examined. Anyone who can write on
+// the pull request can arrange that for the price of six replies -- so what would
+// be elided is not a settled middle, it is the tool's own position, removed by
+// whoever disagrees with it.
+//
+// "Nothing is decided from what is dropped" is a claim the caller has to keep,
+// not a property of this function: see ElidesComments.
+func elideMiddle(msgs []Comment) []keptComment {
+	if !mayElide(len(msgs)) {
+		return withGaps(msgs, allOf(len(msgs)))
+	}
+	tail := len(msgs) - conversationTail
+	idx := []int{0}
+	for i := tail - 1; i >= 1; i-- {
+		if msgs[i].Ours {
+			idx = append(idx, i)
+			break
+		}
+	}
+	for i := tail; i < len(msgs); i++ {
+		idx = append(idx, i)
+	}
+	return withGaps(msgs, idx)
+}
+
+// keptComment is one comment elideMiddle chose to render and how many comments
+// were dropped immediately before it.
+//
+// Per gap rather than one total for the thread, because a retained answer of ours
+// sits BETWEEN two gaps, and a single count printed at the first of them would
+// claim the rest of the thread followed unbroken.
+type keptComment struct {
+	Comment
+	elidedBefore int
+}
+
+// allOf is the index list that keeps everything.
+func allOf(n int) []int {
+	idx := make([]int, n)
+	for i := range idx {
+		idx[i] = i
+	}
+	return idx
+}
+
+// withGaps pairs the chosen comments with the size of the hole before each.
+func withGaps(msgs []Comment, idx []int) []keptComment {
+	kept := make([]keptComment, 0, len(idx))
+	prev := -1
+	for _, i := range idx {
+		kept = append(kept, keptComment{Comment: msgs[i], elidedBefore: i - prev - 1})
+		prev = i
+	}
+	return kept
+}
+
+// ElidesComments reports whether this conversation loses any of its comments when
+// it is rendered.
+//
+// Exported because a caller that DECIDES something from a conversation needs to
+// know it is looking at part of one. elideMiddle is safe for a reader that argues
+// with the code itself, which is why it exists; it is not safe for triage, the one
+// pass that turns a comment into a work order. Anyone who can write on the pull
+// request -- on a public repository, anyone -- can post conversationTail short
+// replies after a maintainer's "no, this opens a hole" and push that message into
+// the omitted middle, leaving the request and their own tail in view. Stating that
+// replies were dropped does not help: an agent cannot weigh an objection it was
+// not shown, however clearly it is told that one may exist. So the gate is in the
+// code that reads the decision, not in the prompt (triageConversations).
+//
+// Answered from what the renderer actually dropped, over the same comments -- Ours
+// flags and all -- that FormatConversations is given, not from the count alone.
+// elideMiddle also retains our own last word wherever it sits, so a thread can be
+// over the count and still render every comment: the opener, our single reply, and
+// conversationTail newer ones is exactly the shape of a thread fixpoint answered
+// once and that then collected replies. Refusing that on the count would withhold a
+// decision the agent made on a complete rendering, and log an omission that never
+// happened.
+func ElidesComments(msgs []Comment) bool {
+	for _, c := range elideMiddle(msgs) {
+		if c.elidedBefore > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// mayElide reports whether a conversation of n comments is long enough for
+// elideMiddle to consider dropping anything. Whether it does is ElidesComments.
+func mayElide(n int) bool { return n > conversationTail+1 }

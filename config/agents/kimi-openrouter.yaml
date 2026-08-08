@@ -81,3 +81,6 @@ env:
   # model may not exist or you may not have access to it", which reads like a
   # model or entitlement problem and is neither.
     ANTHROPIC_BASE_URL: https://openrouter.ai/api
+
+# 400 kB, matching the other remote-served agents.
+prompt_budget: 400000

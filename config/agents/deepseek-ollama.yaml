@@ -74,3 +74,7 @@ env:
   pass:
   # ollama needs to find its server; the wrapped claude harness needs nothing more.
     - OLLAMA_HOST
+
+# 400 kB, matching kimi-ollama: same route, same failure mode, measured maximum
+# here 74 kB.
+prompt_budget: 400000

@@ -65,3 +65,10 @@ env:
   pass:
   # ollama needs to find its server; the wrapped claude harness needs nothing more.
     - OLLAMA_HOST
+
+# 400 kB, lower than the in-house agents on purpose: this is the route that
+# produced the failure the budget exists for -- `exit status 1: Prompt is too
+# long`, returned after a full round of wall clock and indistinguishable in the
+# summary from a crashed agent. Measured maximum here is 74 kB, so the ceiling is
+# five times the observed load and still well under where the provider refused.
+prompt_budget: 400000

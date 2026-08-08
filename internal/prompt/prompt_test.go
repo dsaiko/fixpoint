@@ -562,3 +562,171 @@ func TestReviewContractMatchesSeverityVocabulary(t *testing.T) {
 		}
 	}
 }
+
+// Every run adds a reply to every open thread, so the conversation block grows
+// without limit as a pull request stays open -- measured on this project's own:
+// 54 KB when only opening comments were rendered, 434 KB once whole threads were,
+// which is larger than the biggest review prompt this tool has ever built.
+//
+// The opening comment is the question and the recent ones are the current state;
+// the middle is the part that has been settled. What is dropped must be SAID,
+// which is what separates this from trimming a diff: a shortened diff reads
+// exactly like a complete one.
+func TestALongConversationKeepsTheQuestionTheEndAndSaysWhatItDropped(t *testing.T) {
+	msgs := make([]Comment, 0, 20)
+	msgs = append(msgs, Comment{Author: "reporter", Body: "the original question"})
+	for i := 1; i < 19; i++ {
+		msgs = append(msgs, Comment{Author: "someone", Body: fmt.Sprintf("middle message %d", i)})
+	}
+	msgs = append(msgs, Comment{Author: "reporter", Body: "the latest word"})
+
+	got := FormatConversations([]Conversation{{ID: "1", Path: "a.go", Line: 2, Author: "reporter", Comments: msgs}})
+
+	if !strings.Contains(got, "the original question") {
+		t.Error("the comment that opened the conversation must survive: it is the question")
+	}
+	if !strings.Contains(got, "the latest word") {
+		t.Error("the most recent comment must survive: it is the current state")
+	}
+	if strings.Contains(got, "middle message 1\n") {
+		t.Error("a settled middle should be elided in a long thread")
+	}
+	// The exact number, not merely that something was said: 20 comments keep the
+	// opener and the last six, so 13 went. A count that read 0 or 14 would still
+	// satisfy "not shown" while telling the reader something false about how much
+	// of the thread it is missing, which is the whole warrant for eliding at all.
+	if !strings.Contains(got, "_(13 earlier repl(y|ies) in this conversation are not shown)_") {
+		t.Errorf("the elision must state the true count, 13 of 20:\n%s", got)
+	}
+}
+
+// The tail rule alone let anyone who can comment delete this tool's answer from
+// the prompt: post conversationTail replies after it and it falls outside both the
+// opening comment and the tail. What the reader is then shown is the request plus
+// a queue of people pressing for it, with no record that it was already examined
+// and declined -- and the elision line states a number, not what it dropped.
+func TestOurOwnAnswerSurvivesAThreadFloodedWithRepliesAfterIt(t *testing.T) {
+	msgs := []Comment{
+		{Author: "reporter", Body: "please widen this permission check"},
+		{Author: "fixpoint", Body: "declined: that check is what keeps the token scoped", Ours: true},
+	}
+	for i := 1; i <= conversationTail; i++ {
+		msgs = append(msgs, Comment{Author: "reporter", Body: fmt.Sprintf("pressing again %d", i)})
+	}
+
+	got := FormatConversations([]Conversation{{ID: "1", Author: "reporter", Comments: msgs}})
+
+	if !strings.Contains(got, "declined: that check is what keeps the token scoped") {
+		t.Errorf("this tool's own answer must survive six replies pushing it out of the tail:\n%s", got)
+	}
+	if !strings.Contains(got, "please widen this permission check") {
+		t.Errorf("the question must survive:\n%s", got)
+	}
+}
+
+// The stated number is the whole justification for eliding at all, so it has to
+// count the hole it is printed at -- and a retained answer of ours sits between
+// two holes.
+func TestEachElisionStatesHowManyCommentsItDropped(t *testing.T) {
+	msgs := []Comment{{Author: "reporter", Body: "the question"}}
+	for i := 1; i <= 4; i++ {
+		msgs = append(msgs, Comment{Author: "someone", Body: fmt.Sprintf("before %d", i)})
+	}
+	msgs = append(msgs, Comment{Author: "fixpoint", Body: "our answer", Ours: true})
+	for i := 1; i <= 3; i++ {
+		msgs = append(msgs, Comment{Author: "someone", Body: fmt.Sprintf("after %d", i)})
+	}
+	for i := 1; i <= conversationTail; i++ {
+		msgs = append(msgs, Comment{Author: "someone", Body: fmt.Sprintf("recent %d", i)})
+	}
+
+	got := FormatConversations([]Conversation{{ID: "1", Author: "reporter", Comments: msgs}})
+
+	for _, want := range []string{"_(4 earlier", "_(3 earlier"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("each elision must state its own count, missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// The boundary in both directions: conversationTail+1 comments are rendered whole,
+// and one more than that elides exactly one and says so.
+func TestTheElisionBoundaryIsExact(t *testing.T) {
+	build := func(n int) []Comment {
+		msgs := make([]Comment, 0, n)
+		for i := range n {
+			msgs = append(msgs, Comment{Author: "a", Body: fmt.Sprintf("message %d", i)})
+		}
+		return msgs
+	}
+
+	whole := FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: build(conversationTail + 1)}})
+	if strings.Contains(whole, "not shown") {
+		t.Errorf("%d comments fit and must be rendered whole:\n%s", conversationTail+1, whole)
+	}
+
+	trimmed := FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: build(conversationTail + 2)}})
+	if !strings.Contains(trimmed, "_(1 earlier") {
+		t.Errorf("%d comments must elide exactly one and say so:\n%s", conversationTail+2, trimmed)
+	}
+}
+
+// The predicate the triage gate refuses acceptances on has to answer for the
+// rendering the agent was actually given, not for the comment count. elideMiddle
+// retains our own last word wherever it sits, so a thread one over the count --
+// the opener, our single reply, and conversationTail newer comments, which is the
+// shape of every thread fixpoint answered once and that then collected replies --
+// renders whole. A count-only predicate calls that elided, and the gate then
+// withholds a decision made on the complete exchange and logs an omission the
+// reader never saw.
+func TestElidesCommentsAnswersForWhatTheRenderingDropped(t *testing.T) {
+	answeredThenFlooded := []Comment{
+		{Author: "reporter", Body: "please widen this permission check"},
+		{Author: "fixpoint", Body: "declined: that check is what keeps the token scoped", Ours: true},
+	}
+	for i := 1; i <= conversationTail; i++ {
+		answeredThenFlooded = append(answeredThenFlooded, Comment{Author: "reporter", Body: fmt.Sprintf("pressing again %d", i)})
+	}
+	plain := func(n int) []Comment {
+		msgs := make([]Comment, 0, n)
+		for i := range n {
+			msgs = append(msgs, Comment{Author: "a", Body: fmt.Sprintf("message %d", i)})
+		}
+		return msgs
+	}
+	// Our answer one comment earlier: now a comment does fall between it and the
+	// tail, so the rendering has a hole and the gate must see one.
+	answeredEarlier := append([]Comment{{Author: "reporter", Body: "the question"}}, answeredThenFlooded[1:]...)
+	answeredEarlier = append(answeredEarlier, Comment{Author: "reporter", Body: "one more"})
+
+	for name, msgs := range map[string][]Comment{
+		"fits":                     plain(conversationTail + 1),
+		"one too many":             plain(conversationTail + 2),
+		"answered then flooded":    answeredThenFlooded,
+		"answered and then elided": answeredEarlier,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rendered := strings.Contains(
+				FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: msgs}}), "not shown")
+			if got := ElidesComments(msgs); got != rendered {
+				t.Errorf("ElidesComments = %v over %d comments, but the rendering says %v; the refusal and the note must not disagree",
+					got, len(msgs), rendered)
+			}
+		})
+	}
+}
+
+// A short conversation is rendered whole, with nothing claimed to be missing.
+func TestAShortConversationIsRenderedWhole(t *testing.T) {
+	got := FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: []Comment{
+		{Author: "a", Body: "one"}, {Author: "b", Body: "two"}, {Author: "a", Body: "three"},
+	}}})
+	for _, want := range []string{"one", "two", "three"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q is missing from a short conversation:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "not shown") {
+		t.Errorf("nothing was dropped, so nothing should claim it was:\n%s", got)
+	}
+}
