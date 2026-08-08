@@ -8465,6 +8465,77 @@ func TestConversationsAreReadOnlyForAFixRunOnAPullRequest(t *testing.T) {
 	}
 }
 
+// The anti-flood guard is wired end to end here or it is not wired at all.
+// prompt.elideMiddle keeps this tool's own last word out of a long thread's
+// dropped middle only when Comment.Ours is set, and the only thing that ever sets
+// it is the login readForgeThreads records for conversations() to mark comments
+// with. Take that one assignment away -- or hand promptComments the wrong account
+// -- and every comment renders as not-ours while the prompt package's own tests
+// still pass, because they build Comment{Ours: true} by hand. The defect that
+// returns is the whole one: anyone who can write on the pull request posts
+// conversationTail replies and deletes fixpoint's answer from every prompt after.
+//
+// The copied-marker half is asserted with it, since one login check answers both:
+// a stranger who pastes our marker into their own message is not us, so their
+// message is elided like any other. That the account cannot be read at all is a
+// third case, and TestConversationsAreReadOnlyForAFixRunOnAPullRequest has it --
+// the run then reads no conversations rather than trusting the marker alone.
+func TestOurOwnAnswerSurvivesAFloodedThreadOnlyUnderOurOwnAccount(t *testing.T) {
+	const ours = "no -- that guard is what stops the panic"
+
+	// Shaped exactly like the attack: the question, our answer, then enough newer
+	// replies (prompt's conversationTail) to push it into the elided middle. The
+	// last word is a stranger's, so the thread is still open work.
+	thread := func(answeredBy string) forge.Thread {
+		msgs := []forge.ThreadComment{
+			{Author: "human", Body: "drop the nil guard"},
+			{Author: answeredBy, Body: ours + "\n" + forge.ReplyMarker("20260101-000000")},
+		}
+		for i := range 6 {
+			msgs = append(msgs, forge.ThreadComment{Author: "stranger", Body: fmt.Sprintf("bump %d", i)})
+		}
+		return forge.Thread{ID: "100", Path: "a.go", Line: 1, Author: "human", Body: msgs[0].Body, Comments: msgs}
+	}
+
+	for _, tc := range []struct {
+		name       string
+		answeredBy string
+		wantKept   bool
+	}{
+		{name: "our account's answer is kept wherever it sits", answeredBy: "dsaiko", wantKept: true},
+		{name: "a stranger who copied the marker is not us", answeredBy: "impostor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 7
+
+			logf, _ := captureLog()
+			o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prev := readerFor
+			readerFor = func(context.Context, string) forge.Reader {
+				return &fakeReader{threads: []forge.Thread{thread(tc.answeredBy)}, login: "dsaiko"}
+			}
+			defer func() { readerFor = prev }()
+
+			// Through the read, not around it: the login the renderer marks comments with
+			// is the one this call recorded.
+			o.readForgeThreads(t.Context())
+			convs := o.conversations()
+
+			if got := strings.Contains(convs, ours); got != tc.wantKept {
+				t.Errorf("the marker-bearing answer rendered = %v, want %v:\n%s", got, tc.wantKept, convs)
+			}
+			if got := strings.Contains(convs, "are not shown"); got == tc.wantKept {
+				t.Errorf("elision note present = %v, want %v:\n%s", got, !tc.wantKept, convs)
+			}
+		})
+	}
+}
+
 // publishedHead stands in for the commit an earlier review said its findings
 // about. The tests below are about what the lookup RECOGNIZES; whether a commit
 // still vouches for the code a finding described is a separate question, and
