@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
+	"github.com/dsaiko/fixpoint/internal/issue"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -265,16 +266,28 @@ func RenderInline(it model.Issue, signature string) string {
 // The ledger's fingerprint is what makes "have we already reported this?"
 // answerable across runs -- it is derived from the location, or from the title
 // when there is no line -- but it is a path and a sentence, which cannot go inside
-// an HTML comment. Hashed to a short hex string, which can, and which stays the
-// same for the same defect however the two runs worded it.
+// an HTML comment. Hashed to a short hex string, which can.
+//
+// The fingerprint ALONE is not that identity, though, and using it would be the
+// one failure this whole feature exists to avoid. A located fingerprint is a path
+// and a line, and issue.fingerprintMatch pairs it with title agreement precisely
+// because one statement routinely holds two defects -- the nil deref and the
+// unchecked error it came from. Keyed on the location alone, a second panel's NEW
+// finding at a line the first panel already commented on would be dropped from the
+// body and from the inline comments, and counted in the "already reported" line:
+// the reader told a finding was repeated when in fact it was withheld, on exactly
+// the case a second review is run for. So the hash covers the normalized title
+// too, the same pair the ledger calls one defect. Two wordings that normalize
+// alike still collide; two defects on one line do not, and the worst that costs is
+// a visible duplicate.
 func FindingID(it model.Issue) string {
 	fp := it.Fingerprint
 	if fp == "" {
 		// An issue that reached here without one still needs an identity, and its
 		// location plus title is what the fingerprint would have been built from.
-		fp = fmt.Sprintf("%s#L%d#%s", it.File, it.Line, it.Title)
+		fp = fmt.Sprintf("%s#L%d", it.File, it.Line)
 	}
-	sum := sha256.Sum256([]byte(fp))
+	sum := sha256.Sum256([]byte(fp + "#" + issue.NormalizeTitle(it.Title)))
 	return hex.EncodeToString(sum[:6])
 }
 

@@ -381,11 +381,13 @@ func TestABodyWithNothingNewSaysSo(t *testing.T) {
 }
 
 // The identity has to survive rewording, or a second run reports the same defect
-// again just because two models described it differently.
+// again just because two models described it differently -- and it has to survive
+// only rewording, or a second run withholds a defect nobody has ever seen because
+// an unrelated one was already reported on that line.
 func TestFindingIDIsStableAcrossWordingAndUnstableAcrossPlaces(t *testing.T) {
-	a := model.Issue{Title: "nil deref", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
-	b := model.Issue{Title: "dereference before the guard", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
-	c := model.Issue{Title: "nil deref", File: "a.go", Line: 8, Fingerprint: "a.go#L8"}
+	a := model.Issue{Title: "nil deref on the config pointer", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+	b := model.Issue{Title: "Config pointer, nil deref!", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+	c := model.Issue{Title: "nil deref on the config pointer", File: "a.go", Line: 8, Fingerprint: "a.go#L8"}
 	if FindingID(a) != FindingID(b) {
 		t.Error("two wordings of one finding must share an identity")
 	}
@@ -394,5 +396,30 @@ func TestFindingIDIsStableAcrossWordingAndUnstableAcrossPlaces(t *testing.T) {
 	}
 	if id := FindingID(a); len(id) != 12 || strings.ContainsAny(id, "->< ") {
 		t.Errorf("identity %q must be short and safe inside an HTML comment", id)
+	}
+}
+
+// One statement routinely holds two defects -- the nil deref and the unchecked
+// error it came from -- which is why the ledger refuses to call a shared location
+// identity on its own. The published identity has to refuse it too: a second panel
+// finding something NEW on a line the first already commented on is the case this
+// whole feature is run for, and suppressing it would be reported as "already
+// reported", which is the opposite of the truth.
+func TestADifferentDefectOnAnAlreadyReportedLineIsStillPublished(t *testing.T) {
+	said := model.Issue{ID: "i1", Severity: "high", Title: "nil deref on the config pointer", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+	other := model.Issue{ID: "i2", Severity: "high", Title: "error return ignored", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+	if FindingID(said) == FindingID(other) {
+		t.Fatal("two defects on one line must not share an identity")
+	}
+	got := RenderBody(BodyInput{
+		Decision:         Decision{Outcome: ChangesRequested, Reasons: []string{"1 unresolved finding"}},
+		Issues:           []model.Issue{said, other},
+		AlreadyPublished: map[string]bool{FindingID(said): true},
+	})
+	if strings.Contains(got, "nil deref") {
+		t.Errorf("the finding already on the pull request was repeated:\n%s", got)
+	}
+	if !strings.Contains(got, "error return ignored") {
+		t.Errorf("a defect nobody has reported must reach the body, not the omitted count:\n%s", got)
 	}
 }

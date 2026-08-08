@@ -399,8 +399,11 @@ Running a review twice over one commit is a reasonable thing to want: a second
 panel sees what the first missed. What it must not do is say everything again.
 
 Every inline comment fixpoint posts carries an invisible marker holding that
-finding's identity — the issue ledger's fingerprint, hashed — so a later review
-can read back what this pull request already carries. Those findings are dropped
+finding's identity — the issue ledger's fingerprint and the finding's title,
+hashed — so a later review can read back what this pull request already carries.
+That identity is the pair the ledger itself calls one defect, not the location
+alone: one statement routinely holds two problems, and a new finding on a line
+that already carries a comment must still be published. Those findings are dropped
 from the inline comments and omitted from the body, and the body states **how many
 it left out**. The count is not decoration: a review showing three findings where
 an earlier one showed thirty, with nothing saying the difference is history, reads

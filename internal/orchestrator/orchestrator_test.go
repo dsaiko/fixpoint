@@ -9513,3 +9513,24 @@ func TestInlineCommentsSkipWhatIsAlreadyOnThePullRequest(t *testing.T) {
 		t.Errorf("the identity in a posted comment is not readable back out: %s", got[0].Body)
 	}
 }
+
+// A line that already carries one comment is where a second panel is most likely to
+// find something the first missed -- one statement holds the nil deref and the
+// unchecked error it came from. That second defect must still get its own anchor,
+// or it is dropped without ever being seen.
+func TestInlineCommentsStillAnchorADifferentDefectOnACommentedLine(t *testing.T) {
+	known := model.Issue{ID: "i1", Severity: "high", Title: "nil deref on the config pointer", File: "a.go", Line: 2, Fingerprint: "a.go#L2"}
+	other := model.Issue{ID: "i2", Severity: "high", Title: "error return ignored", File: "a.go", Line: 2, Fingerprint: "a.go#L2"}
+	rec := &model.RoundRecord{Round: 1, Issues: []model.Issue{known, other}}
+	diff := "+++ b/a.go\n@@ -1,3 +1,3 @@\n line one\n line two\n line three\n"
+
+	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000",
+		map[string]bool{review.FindingID(known): true})
+
+	if len(got) != 1 {
+		t.Fatalf("posted %d inline comment(s), want only the unreported defect: %+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Body, "error return ignored") {
+		t.Errorf("a distinct defect on an already-commented line was suppressed:\n%s", got[0].Body)
+	}
+}

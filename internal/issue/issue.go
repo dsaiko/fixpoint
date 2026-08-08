@@ -596,7 +596,7 @@ func Fingerprint(f model.Finding) string {
 	if locationKeyed(f) {
 		return fmt.Sprintf("%s#L%d", path, f.Line)
 	}
-	title := normalizeTitle(f.Title)
+	title := NormalizeTitle(f.Title)
 	if title == "" {
 		// Nothing distinctive survived normalization -- a title of only filler
 		// words or punctuation. Fall back to the raw text so two differently
@@ -622,13 +622,17 @@ func normalizePath(p string) string {
 	return strings.Trim(p, "/")
 }
 
-// normalizeTitle reduces a title to a comparable key: lowercased, punctuation
+// NormalizeTitle reduces a title to a comparable key: lowercased, punctuation
 // dropped, common filler words removed, remaining words sorted so word order does
 // not matter. This only has to catch two reviewers phrasing the SAME sentence
 // slightly differently -- recognizing a genuine reword across rounds is the
 // reviewer's job via ReviewFinding.Issue, because no lexical rule gets from
 // "has two independent declarations" to "duplicated severity vocabulary".
-func normalizeTitle(t string) string {
+//
+// Exported because the identity published on a pull request has to mean what this
+// package means by "the same defect": a location alone does not, so review.FindingID
+// pairs the fingerprint with this key.
+func NormalizeTitle(t string) string {
 	var words []string
 	for _, w := range strings.FieldsFunc(strings.ToLower(t), notAlphanumeric) {
 		if !stopwords[w] {
