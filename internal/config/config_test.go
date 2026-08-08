@@ -1099,7 +1099,7 @@ roles:
     prompts: [` + promptPath + `]
 agents:
   coder: {command: [echo], can_edit: true, timeout: 5m}
-  rev: {command: [echo]}
+  rev: {command: [echo], prompt_budget: 250000}
 `
 
 	t.Run("valid file with defaults applied", func(t *testing.T) {
@@ -1134,6 +1134,15 @@ agents:
 		}
 		if cfg.Agents["coder"].Timeout.Std() != 5*time.Minute {
 			t.Errorf("explicit timeout = %s, want 5m", cfg.Agents["coder"].Timeout.Std())
+		}
+		// prompt_budget has no default, so a decoder-tag or defaulting regression
+		// would leave every agent at 0 -- the documented "no limit" value, which
+		// disables the guard without failing anything else.
+		if got := cfg.Agents["rev"].PromptBudget; got != 250_000 {
+			t.Errorf("PromptBudget = %d, want the configured 250000 to survive loading", got)
+		}
+		if got := cfg.Agents["coder"].PromptBudget; got != 0 {
+			t.Errorf("PromptBudget = %d for an agent that set none, want 0 (no limit)", got)
 		}
 		if !cfg.Ping() {
 			t.Error("Ping() default = false, want true")

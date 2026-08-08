@@ -785,6 +785,13 @@ func TestLoadBundleResolvesAgentsFromFiles(t *testing.T) {
 		"task": "target: {mode: directory}\n" + taskBody,
 	}, []string{"fix", "review-bugs"}, []string{"mock"})
 
+	// Written over the helper's body so this test also covers a field the agent
+	// file is the only place to set.
+	if err := os.WriteFile(filepath.Join(dir, agentsDir, "mock"+configExt),
+		[]byte("command: [true]\ncan_edit: true\nprompt_budget: 250000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
 	if err != nil {
 		t.Fatal(err)
@@ -792,6 +799,11 @@ func TestLoadBundleResolvesAgentsFromFiles(t *testing.T) {
 	a, ok := l.Config.Agents["mock"]
 	if !ok {
 		t.Fatal("agent mock was not loaded from agents/mock.yaml")
+	}
+	// prompt_budget has no default: if the file-to-Agent merge dropped it, every
+	// agent would silently come back at 0, which is the documented "no limit".
+	if a.PromptBudget != 250_000 {
+		t.Errorf("PromptBudget = %d, want the file's 250000 to survive bundle loading", a.PromptBudget)
 	}
 	if a.PromptVia != PromptViaStdin {
 		t.Errorf("PromptVia = %q, want the default %q applied to file-loaded agents too", a.PromptVia, PromptViaStdin)
