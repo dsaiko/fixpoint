@@ -437,6 +437,39 @@ func TestAcceptanceIsRefusedExactlyWhenTheRenderingElides(t *testing.T) {
 	}
 }
 
+// The refusal has to be drawn where the renderer actually drops something, not at
+// the comment count. elideMiddle retains this tool's own last word wherever it
+// sits, so the ordinary shape of a thread fixpoint answered once and that then
+// collected six more replies -- one over the count -- renders whole, with no "not
+// shown" note anywhere in it. Gating on the count refused that acceptance, left the
+// conversation undecided so it never became work and was never answered, and logged
+// an omitted middle the agent's rendering did not have.
+func TestAnAcceptanceStandsWhenOurAnswerKeptTheThreadWhole(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.triageRole()
+	th := forge.Thread{ID: "100", Path: "a.go", Line: 3, Author: "stranger", Body: "missing guard"}
+	th.Comments = append(th.Comments,
+		forge.ThreadComment{Author: "stranger", Body: "missing guard"},
+		// Ours by both halves: the marker and the account this run posts under.
+		forge.ThreadComment{Author: "dsaiko", Body: "looked at it once\n" + forge.ReplyMarker("20260808-000000")})
+	for i := range 6 {
+		th.Comments = append(th.Comments, forge.ThreadComment{Author: "stranger", Body: fmt.Sprintf("pressing again %d", i)})
+	}
+
+	o, _, logs := f.withThreads("dsaiko", th)
+	f.respond(1, `<review>{"decisions":[{"thread":"100","verdict":"accept","reason":"r","title":"t",
+		"severity":"medium","category":"bug","file":"a.go","description":"d"}]}</review>`)
+
+	o.triageConversations(t.Context())
+
+	if len(o.commissioned) != 1 {
+		t.Fatalf("commissioned %d from a thread rendered whole, want 1: %s", len(o.commissioned), logs())
+	}
+	if strings.Contains(logs(), "too many to render whole") {
+		t.Errorf("nothing was omitted from this rendering, so the log must not claim one:\n%s", logs())
+	}
+}
+
 // A review comment is anchored to a file, so an acceptance that omits one still has
 // its location in front of it. Taking it from the conversation keeps the issue
 // locatable instead of refusing work over a field the thread already answers.

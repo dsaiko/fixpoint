@@ -5286,14 +5286,25 @@ func (o *Orchestrator) conversations() string {
 	out := make([]prompt.Conversation, 0, len(o.threads))
 	for _, t := range o.threads {
 		c := prompt.Conversation{ID: t.ID, Path: t.Path, Line: t.Line, Author: t.Author, Body: t.Body}
-		for _, m := range t.Comments {
-			c.Comments = append(c.Comments, prompt.Comment{
-				Author: m.Author, Body: m.Body, Ours: m.Ours(o.threadsLogin),
-			})
-		}
+		c.Comments = promptComments(t, o.threadsLogin)
 		out = append(out, c)
 	}
 	return prompt.FormatConversations(out)
+}
+
+// promptComments is one thread's exchange as the renderer takes it, each message
+// marked ours or not, where me is the account this run posts under.
+//
+// Shared with the triage gate on purpose: that gate asks what the rendering
+// dropped, and it can only get the same answer the renderer would if it asks over
+// the same comments -- the Ours flags are what decide whether anything is dropped
+// at all.
+func promptComments(t forge.Thread, me string) []prompt.Comment {
+	msgs := make([]prompt.Comment, 0, len(t.Comments))
+	for _, m := range t.Comments {
+		msgs = append(msgs, prompt.Comment{Author: m.Author, Body: m.Body, Ours: m.Ours(me)})
+	}
+	return msgs
 }
 
 // postReplies answers the conversations the coder said its work addressed.

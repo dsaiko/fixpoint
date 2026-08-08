@@ -962,7 +962,7 @@ const conversationTail = 6
 // "Nothing is decided from what is dropped" is a claim the caller has to keep,
 // not a property of this function: see ElidesComments.
 func elideMiddle(msgs []Comment) []keptComment {
-	if !ElidesComments(len(msgs)) {
+	if !mayElide(len(msgs)) {
 		return withGaps(msgs, allOf(len(msgs)))
 	}
 	tail := len(msgs) - conversationTail
@@ -1010,8 +1010,8 @@ func withGaps(msgs []Comment, idx []int) []keptComment {
 	return kept
 }
 
-// ElidesComments reports whether a conversation of n comments loses its middle
-// when it is rendered.
+// ElidesComments reports whether this conversation loses any of its comments when
+// it is rendered.
 //
 // Exported because a caller that DECIDES something from a conversation needs to
 // know it is looking at part of one. elideMiddle is safe for a reader that argues
@@ -1023,4 +1023,24 @@ func withGaps(msgs []Comment, idx []int) []keptComment {
 // replies were dropped does not help: an agent cannot weigh an objection it was
 // not shown, however clearly it is told that one may exist. So the gate is in the
 // code that reads the decision, not in the prompt (triageConversations).
-func ElidesComments(n int) bool { return n > conversationTail+1 }
+//
+// Answered from what the renderer actually dropped, over the same comments -- Ours
+// flags and all -- that FormatConversations is given, not from the count alone.
+// elideMiddle also retains our own last word wherever it sits, so a thread can be
+// over the count and still render every comment: the opener, our single reply, and
+// conversationTail newer ones is exactly the shape of a thread fixpoint answered
+// once and that then collected replies. Refusing that on the count would withhold a
+// decision the agent made on a complete rendering, and log an omission that never
+// happened.
+func ElidesComments(msgs []Comment) bool {
+	for _, c := range elideMiddle(msgs) {
+		if c.elidedBefore > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// mayElide reports whether a conversation of n comments is long enough for
+// elideMiddle to consider dropping anything. Whether it does is ElidesComments.
+func mayElide(n int) bool { return n > conversationTail+1 }

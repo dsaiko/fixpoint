@@ -671,6 +671,51 @@ func TestTheElisionBoundaryIsExact(t *testing.T) {
 	}
 }
 
+// The predicate the triage gate refuses acceptances on has to answer for the
+// rendering the agent was actually given, not for the comment count. elideMiddle
+// retains our own last word wherever it sits, so a thread one over the count --
+// the opener, our single reply, and conversationTail newer comments, which is the
+// shape of every thread fixpoint answered once and that then collected replies --
+// renders whole. A count-only predicate calls that elided, and the gate then
+// withholds a decision made on the complete exchange and logs an omission the
+// reader never saw.
+func TestElidesCommentsAnswersForWhatTheRenderingDropped(t *testing.T) {
+	answeredThenFlooded := []Comment{
+		{Author: "reporter", Body: "please widen this permission check"},
+		{Author: "fixpoint", Body: "declined: that check is what keeps the token scoped", Ours: true},
+	}
+	for i := 1; i <= conversationTail; i++ {
+		answeredThenFlooded = append(answeredThenFlooded, Comment{Author: "reporter", Body: fmt.Sprintf("pressing again %d", i)})
+	}
+	plain := func(n int) []Comment {
+		msgs := make([]Comment, 0, n)
+		for i := range n {
+			msgs = append(msgs, Comment{Author: "a", Body: fmt.Sprintf("message %d", i)})
+		}
+		return msgs
+	}
+	// Our answer one comment earlier: now a comment does fall between it and the
+	// tail, so the rendering has a hole and the gate must see one.
+	answeredEarlier := append([]Comment{{Author: "reporter", Body: "the question"}}, answeredThenFlooded[1:]...)
+	answeredEarlier = append(answeredEarlier, Comment{Author: "reporter", Body: "one more"})
+
+	for name, msgs := range map[string][]Comment{
+		"fits":                     plain(conversationTail + 1),
+		"one too many":             plain(conversationTail + 2),
+		"answered then flooded":    answeredThenFlooded,
+		"answered and then elided": answeredEarlier,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rendered := strings.Contains(
+				FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: msgs}}), "not shown")
+			if got := ElidesComments(msgs); got != rendered {
+				t.Errorf("ElidesComments = %v over %d comments, but the rendering says %v; the refusal and the note must not disagree",
+					got, len(msgs), rendered)
+			}
+		})
+	}
+}
+
 // A short conversation is rendered whole, with nothing claimed to be missing.
 func TestAShortConversationIsRenderedWhole(t *testing.T) {
 	got := FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: []Comment{

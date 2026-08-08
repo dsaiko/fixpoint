@@ -77,7 +77,7 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 		known[th.ID] = th
 	}
 	for _, d := range decisions {
-		if why := unusableDecision(d, known[d.Thread], byThread[d.Thread].Thread != ""); why != "" {
+		if why := unusableDecision(d, known[d.Thread], me, byThread[d.Thread].Thread != ""); why != "" {
 			o.logf("WARNING: %s", why)
 			continue
 		}
@@ -207,14 +207,15 @@ func missingAcceptFields(d model.TriageDecision) string {
 }
 
 // unusableDecision says why a triage decision cannot be acted on, or "" when it
-// can. th is the conversation it names -- zero when it names none -- and decided
-// says whether an earlier decision already claimed that thread.
+// can. th is the conversation it names -- zero when it names none -- me is the
+// account this run posts under, and decided says whether an earlier decision
+// already claimed that thread.
 //
 // Every answer here leaves the conversation undecided, which is the state it would
 // have been in without this pass at all: it stays in the list as context and a
 // human still sees it. The sentence returned is logged verbatim, because a
 // decision that quietly evaporates is indistinguishable from one nobody made.
-func unusableDecision(d model.TriageDecision, th forge.Thread, decided bool) string {
+func unusableDecision(d model.TriageDecision, th forge.Thread, me string, decided bool) string {
 	accept := model.NormalizeTriageVerdict(d.Verdict) == model.TriageAccept
 	switch {
 	case !model.ValidTriageVerdict(d.Verdict):
@@ -236,7 +237,7 @@ func unusableDecision(d model.TriageDecision, th forge.Thread, decided bool) str
 		// subject on it. Left undecided instead: the conversation stays context,
 		// exactly as it would have without this step.
 		return fmt.Sprintf("triage accepted conversation %s with no %s; it is left undecided", d.Thread, missingAcceptFields(d))
-	case accept && prompt.ElidesComments(len(th.Comments)):
+	case accept && prompt.ElidesComments(promptComments(th, me)):
 		// A thread too long to render whole is not decided from. Accepting is the one
 		// verdict that turns a comment into a commit, and the middle of the thread is
 		// where the objection to it lives -- a maintainer's "no, that opens a hole" is
@@ -246,6 +247,12 @@ func unusableDecision(d model.TriageDecision, th forge.Thread, decided bool) str
 		// the agent cannot weigh an objection it was never shown, so the refusal has to
 		// live here. A rejection is still allowed -- it writes an answer and no code --
 		// and leaving one refused too would answer the person with silence.
+		//
+		// Asked of the comments AS RENDERED, not of their count: elideMiddle keeps our
+		// own last word wherever it sits, so a thread over the count can still render
+		// whole. Refusing that would withhold a decision made on the complete exchange
+		// and log a hole the reader never saw -- the person who commented gets silence
+		// for a reason that is not true of what the agent read.
 		return fmt.Sprintf("triage accepted conversation %s, but %d comments is too many to render whole and the omitted middle was not read; it is left undecided",
 			d.Thread, len(th.Comments))
 	case decided:
