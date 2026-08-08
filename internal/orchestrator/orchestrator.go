@@ -923,78 +923,133 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 	if err != nil {
 		return false, committed, err
 	}
-	for _, it := range batch {
-		if ctx.Err() != nil {
-			// The operator asked to stop between sessions, so do not spend another one.
-			// Nothing is half-done at this point -- every fix so far is verified and
-			// committed and the tree is clean -- so there is nothing to stash, and Run
-			// softens a bare cancellation into a clean interruption.
-			return false, committed, ctx.Err()
+	for _, group := range batchByFile(batch, o.parallelFixes()) {
+		// The coder half of a batch runs concurrently in worktrees; everything below
+		// -- the clean check, the gate, the commit, the replies -- stays exactly as
+		// sequential as it was. See internal/worktree for why the division falls here.
+		var produced []session
+		if len(group) > 1 {
+			o.logf("round %d: %d fix session(s) in parallel on %s", rec.Round, len(group), issueIDsOf(group))
+			produced = o.runBatch(ctx, rec, history, reviewedAt, group)
 		}
-		fixedBefore := rec.Fixed
-		salvaged, replies, err := o.fix(ctx, rec, history, allowSalvage, []model.Issue{it}, o.staleFiles(ctx, reviewedAt, it))
-		if err != nil {
-			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
-		}
-		if salvaged {
-			// The coder died and its partial work was committed as a salvage round;
-			// verdicts for the rest are unknown, so stop and let the next round
-			// re-review everything.
-			return true, committed, nil
-		}
-		// A cancellation between the coder finishing and this commit must not leave a
-		// committed fix (or a dirty tree) sitting on top of a stop request. Recheck
-		// immediately before touching the tree and route the cancellation through the
-		// same stash-and-interrupt reconciliation, on a fresh context.
-		if ctx.Err() != nil {
-			return false, committed, o.withdrawUncommittedFix(rec, it.ID, o.reconcileInterrupt(rec.Round, ctx.Err())) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
-		}
-		// Reconcile the verdict against the TREE before trusting it. The coder's
-		// report is a model's claim about its work, and one issue per session makes
-		// the claim checkable: whether these edits exist is not a question about the
-		// round as a whole any more, it is a question about this fix.
-		clean, err := o.collector.GitClean(ctx, o.gitExclude...)
-		if err != nil {
-			if ctx.Err() != nil {
-				return false, committed, o.withdrawUncommittedFix(rec, it.ID, o.reconcileInterrupt(rec.Round, err)) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+		for gi, it := range group {
+			stop, did, ferr := o.applyOneFix(ctx, rec, history, allowSalvage, reviewedAt, produced, gi, it)
+			if ferr != nil {
+				return false, committed, ferr
 			}
-			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
-		}
-		if rec.Fixed == fixedBefore {
-			// Rejected. The verdict is recorded; edits, if any, belong to no verdict
-			// and must not reach a commit -- but they are this session's alone (the
-			// tree was clean when it started), so they are stashed and the loop moves
-			// to the next issue rather than ending the run with the remaining issues
-			// unheard. Only a stash failure aborts.
-			//
-			// The replies go through the same gate as a committed session's, which
-			// drops them and logs the skip: this is the case the gate was written for,
-			// and it is recorded before the stash so an abort there does not swallow it.
-			o.answerConversations(ctx, it, false, replies)
-			if !clean {
-				if err := o.reconcileRejectedSession(ctx, rec, it); err != nil {
-					return false, committed, err
-				}
+			if stop {
+				return true, committed, nil
 			}
-			o.endPhase("FIX %s  rejected by the coder", it.ID)
-			continue
+			if did {
+				committed++
+			}
 		}
-		if clean {
-			return false, committed, o.withdrawUncommittedFix(rec, it.ID,
-				fmt.Errorf("round %d: coder reported a fix for %s but left the working tree unchanged", rec.Round, it.ID))
-		}
-		did, err := o.verifyAndCommitFix(ctx, rec, it)
-		if err != nil {
-			o.endPhase("FIX %s  failed: %v", it.ID, err)
-			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
-		}
-		if did {
-			committed++
-		}
-		o.answerConversations(ctx, it, did, replies)
-		o.closeFix(it.ID, did)
 	}
 	return false, committed, nil
+}
+
+// applyOneFix takes one issue from "the coder has spoken" to "committed or not",
+// and is the SERIAL half of a round however many sessions produced the work.
+//
+// Extracted from runFixSessions when the parallel path pushed that function past
+// the complexity limit, and the split is where it belongs: everything here touches
+// the real working tree exactly one issue at a time -- apply, check, gate, commit,
+// answer -- which is the property that lets a failing gate name a single fix.
+//
+// stop reports that the round must end (the coder died and its partial work was
+// salvaged); did reports that a commit landed.
+func (o *Orchestrator) applyOneFix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, reviewedAt string, produced []session, gi int, it model.Issue) (stop, did bool, err error) {
+	if ctx.Err() != nil {
+		// The operator asked to stop between sessions, so do not spend another one.
+		// Nothing is half-done at this point -- every fix so far is verified and
+		// committed and the tree is clean -- so there is nothing to stash, and Run
+		// softens a bare cancellation into a clean interruption.
+		return false, false, ctx.Err()
+	}
+	fixedBefore := rec.Fixed
+	var (
+		salvaged bool
+		replies  []model.FixReply
+	)
+	if produced != nil {
+		// Already run, in its own checkout. Its verdict joins the round here, in
+		// issue order, and its edits are applied to the real tree immediately before
+		// the gate that judges them.
+		s := produced[gi]
+		mergeSession(rec, s)
+		salvaged, replies, err = s.salvaged, s.replies, s.err
+		if err == nil {
+			if aerr := o.applyPatch(ctx, s.patch); aerr != nil {
+				// The tree moved under an assumption the batch was built on. Leave the
+				// issue for the next round rather than forcing a patch that no longer
+				// describes this code.
+				o.logf("WARNING: round %d: %s was fixed in isolation but its patch no longer applies (%v); the finding stays open", rec.Round, it.ID, aerr)
+				o.reopenFixedIssue(rec, it.ID)
+				o.endPhase("FIX %s  not applied; the finding stays open", it.ID)
+				return false, false, nil
+			}
+		}
+	} else {
+		salvaged, replies, err = o.fix(ctx, rec, history, allowSalvage, []model.Issue{it}, o.staleFiles(ctx, reviewedAt, it))
+	}
+	if err != nil {
+		return false, false, o.withdrawUncommittedFix(rec, it.ID, err)
+	}
+	if salvaged {
+		// The coder died and its partial work was committed as a salvage round;
+		// verdicts for the rest are unknown, so stop and let the next round
+		// re-review everything.
+		return true, false, nil
+	}
+	// A cancellation between the coder finishing and this commit must not leave a
+	// committed fix (or a dirty tree) sitting on top of a stop request. Recheck
+	// immediately before touching the tree and route the cancellation through the
+	// same stash-and-interrupt reconciliation, on a fresh context.
+	if ctx.Err() != nil {
+		return false, false, o.withdrawUncommittedFix(rec, it.ID, o.reconcileInterrupt(rec.Round, ctx.Err())) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+	}
+	// Reconcile the verdict against the TREE before trusting it. The coder's
+	// report is a model's claim about its work, and one issue per session makes
+	// the claim checkable: whether these edits exist is not a question about the
+	// round as a whole any more, it is a question about this fix.
+	clean, err := o.collector.GitClean(ctx, o.gitExclude...)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, false, o.withdrawUncommittedFix(rec, it.ID, o.reconcileInterrupt(rec.Round, err)) //nolint:contextcheck // deliberate fresh context: ctx is already canceled
+		}
+		return false, false, o.withdrawUncommittedFix(rec, it.ID, err)
+	}
+	if rec.Fixed == fixedBefore {
+		// Rejected. The verdict is recorded; edits, if any, belong to no verdict
+		// and must not reach a commit -- but they are this session's alone (the
+		// tree was clean when it started), so they are stashed and the loop moves
+		// to the next issue rather than ending the run with the remaining issues
+		// unheard. Only a stash failure aborts.
+		//
+		// The replies go through the same gate as a committed session's, which
+		// drops them and logs the skip: this is the case the gate was written for,
+		// and it is recorded before the stash so an abort there does not swallow it.
+		o.answerConversations(ctx, it, false, replies)
+		if !clean {
+			if err := o.reconcileRejectedSession(ctx, rec, it); err != nil {
+				return false, false, err
+			}
+		}
+		o.endPhase("FIX %s  rejected by the coder", it.ID)
+		return false, false, nil
+	}
+	if clean {
+		return false, false, o.withdrawUncommittedFix(rec, it.ID,
+			fmt.Errorf("round %d: coder reported a fix for %s but left the working tree unchanged", rec.Round, it.ID))
+	}
+	committedNow, err := o.verifyAndCommitFix(ctx, rec, it)
+	if err != nil {
+		o.endPhase("FIX %s  failed: %v", it.ID, err)
+		return false, false, o.withdrawUncommittedFix(rec, it.ID, err)
+	}
+	o.answerConversations(ctx, it, committedNow, replies)
+	o.closeFix(it.ID, committedNow)
+	return false, committedNow, nil
 }
 
 // closeFix ends a fix block with what became of the issue. Its own function so
@@ -3016,6 +3071,13 @@ func heartbeat(done <-chan struct{}, ticks <-chan time.Time, log func()) {
 // returns the result. label prefixes the heartbeat lines, e.g.
 // "fix: claude-coder".
 func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, lensName string, round int, text string) agent.Result {
+	return o.runAgentIn(ctx, o.cfg.Target.Path, label, role, agentName, lensName, round, text)
+}
+
+// runAgentIn is runAgent with an explicit working directory, so a coder session
+// can be given a worktree. Only the directory differs: the same prompt log, the
+// same heartbeat, the same timeout.
+func (o *Orchestrator) runAgentIn(ctx context.Context, dir, label, role, agentName, lensName string, round int, text string) agent.Result {
 	if err := o.logs.Prompt(role, agentName, lensName, round, text); err != nil {
 		o.logf("WARNING: writing %s prompt log: %v", role, err)
 	}
@@ -3041,7 +3103,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 			o.progressf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
 		})
 	}()
-	res := agent.Run(ctx, o.cfg.Agents[agentName], text, o.cfg.Target.Path)
+	res := agent.Run(ctx, o.cfg.Agents[agentName], text, dir)
 	close(done)
 	hb.Wait()
 	return res
@@ -3441,6 +3503,14 @@ func (o *Orchestrator) discardEdits(ctx context.Context, d discard) error {
 // stale names files an earlier session of this same round has already committed to
 // since the reviewers read the tree; empty when nothing moved. See staleFiles.
 func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue, stale []string) (salvaged bool, replies []model.FixReply, err error) {
+	return o.fixIn(ctx, o.cfg.Target.Path, rec, history, allowSalvage, batch, stale)
+}
+
+// fixIn is fix with an explicit working directory, so a session can run in a
+// worktree instead of the target itself. Everything else -- the prompt, the
+// contract, the verdict handling, the artifacts -- is identical, which is the
+// point: a parallel session must not be a second implementation of fixing.
+func (o *Orchestrator) fixIn(ctx context.Context, dir string, rec *model.RoundRecord, history []model.RoundRecord, allowSalvage bool, batch []model.Issue, stale []string) (salvaged bool, replies []model.FixReply, err error) {
 	coder := o.cfg.Roles.Coder
 	promptName := config.LensName(coder.Prompt)
 	label := "fix: " + coder.Agent
@@ -3470,7 +3540,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	}
 	o.phase("FIX %s  %s", fixSubject(active), firstLineOf(fixTitle(active)))
 	o.logf("%s starting on %d issue(s) (prompt %s)", label, len(active), logstore.SizeDesc(len(text)))
-	res := o.runAgent(ctx, label, "fix", coder.Agent, promptName, rec.Round, text)
+	res := o.runAgentIn(ctx, dir, label, "fix", coder.Agent, promptName, rec.Round, text)
 	var out model.FixOutput
 	runErr := res.Err
 	if runErr == nil {

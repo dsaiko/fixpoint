@@ -1396,3 +1396,36 @@ func TestJudgeAgentGoesThroughTheCommonAgentCheck(t *testing.T) {
 		})
 	}
 }
+
+// parallel_fixes needs a repository to make worktrees of, and an operator who
+// asked for four coders and silently got one would wait four times as long as
+// they planned with nothing said about why.
+func TestParallelFixesNeedsAGitTarget(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mode    Mode
+		n       int
+		wantErr string
+	}{
+		"sequential in a directory is fine": {ModeDirectory, 1, ""},
+		"unset in a directory is fine":      {ModeDirectory, 0, ""},
+		"parallel in a directory refused":   {ModeDirectory, 4, "requires a git target"},
+		"parallel on a branch is fine":      {ModeGitDiff, 4, ""},
+		"negative refused":                  {ModeGitDiff, -1, "must not be negative"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := validConfig(t)
+			cfg.Target.Mode = tc.mode
+			if tc.mode == ModeGitDiff {
+				cfg.Target.BaseRef = "main..."
+			}
+			cfg.Loop.ParallelFixes = tc.n
+			err := cfg.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

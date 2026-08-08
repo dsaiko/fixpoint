@@ -970,6 +970,32 @@ type Loop struct {
 	// It was never a free bound. In one five-round run a cap of 8 deferred 18 issues,
 	// and in the CLOSING round -- where no later round follows -- it dropped 5
 	// coverage gaps outright.
+	// ParallelFixes is how many coder sessions may run AT ONCE, each in its own
+	// git worktree of the same base commit (1 = sequential, the default).
+	//
+	// It exists because the coder is where a run's wall clock goes and none of it is
+	// local work: measured over a two-hour run of this tool against its own pull
+	// request, coder sessions were 5301 of 7562 seconds -- 70% -- and a session
+	// spends nearly all of that waiting on a provider. Several at once cost this
+	// machine almost nothing.
+	//
+	// What it does NOT parallelize is the verify gate, and that is the whole design.
+	// Four concurrent runs of this project's suite measured 391s against 159s for
+	// one, so the gate scales at about 1.6x -- but the real reason is stronger than
+	// throughput: two fixes that each pass ALONE can fail TOGETHER, and "the gate
+	// names exactly one fix" is what makes a round auditable and a fix revertable.
+	// So sessions run in parallel, and their patches are applied, verified and
+	// committed one at a time, in order, exactly as they are today.
+	//
+	// Sessions in one batch never touch the same file: the batch is built from the
+	// issues' locations, so two coders cannot edit one file from a shared base and
+	// produce patches that do not compose. A file with several issues simply spans
+	// several batches, which is why the speedup is bounded by the busiest file
+	// rather than by this number.
+	//
+	// Requires a git target. There is nothing to make a worktree of otherwise, and
+	// validation refuses the combination rather than silently running sequentially.
+	ParallelFixes       int  `yaml:"parallel_fixes"`
 	MaxFindingsPerRound int  `yaml:"max_findings_per_round"`
 	ReviewOnly          bool `yaml:"review_only"`
 
@@ -1372,6 +1398,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Loop.MaxFinalPasses < 0 {
 		return fmt.Errorf("loop.max_final_passes: must not be negative, got %d", c.Loop.MaxFinalPasses)
+	}
+	if c.Loop.ParallelFixes < 0 {
+		return fmt.Errorf("loop.parallel_fixes: must not be negative, got %d", c.Loop.ParallelFixes)
+	}
+	// A worktree is a git operation. Refused rather than quietly degraded to
+	// sequential: an operator who asked for four coders and got one would be waiting
+	// four times as long as they planned, with nothing said about why.
+	if c.Loop.ParallelFixes > 1 && c.Target.Mode == ModeDirectory {
+		return fmt.Errorf("loop.parallel_fixes: %d requires a git target -- mode directory has no repository to make a worktree of", c.Loop.ParallelFixes)
 	}
 	if c.Loop.CleanRoundsToStop < 0 {
 		return fmt.Errorf("loop.clean_rounds_to_stop: must not be negative, got %d", c.Loop.CleanRoundsToStop)

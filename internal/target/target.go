@@ -1018,6 +1018,24 @@ func matchAny(res []*regexp.Regexp, path string) bool {
 	return false
 }
 
+// Apply writes a patch file into the working tree.
+//
+// --3way so a hunk whose context has shifted still lands: the patch was taken
+// against the commit the round started from, and fixes committed since may have
+// moved line numbers even in other files. It is NOT a merge -- a genuine overlap
+// still fails, which is the answer the caller wants, since the batch that produced
+// this patch was built on the assumption that no two sessions touch one file.
+//
+// --index leaves the result staged, matching what a coder editing the tree
+// directly leaves behind, so everything downstream -- the clean check, the commit,
+// the stash on rejection -- sees the same shape either way.
+func (c *Collector) Apply(ctx context.Context, patchFile string) error {
+	if out, err := c.git(ctx, "apply", "--3way", "--index", patchFile); err != nil {
+		return fmt.Errorf("apply patch: %w: %s", err, out)
+	}
+	return nil
+}
+
 // GitClean reports whether the working tree has no uncommitted changes.
 // Paths in exclude (repo-relative) are ignored, so e.g. the run's own logs
 // directory does not count as dirt.

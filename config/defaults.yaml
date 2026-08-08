@@ -109,6 +109,32 @@ loop:
   # including the newest code -- the code most worth a coverage review.
   final_skip_run_edits: []
 
+  # How many coder sessions may run AT ONCE, each in its own git worktree of the
+  # same base commit. 1 (the default) is sequential, exactly as every run before
+  # this.
+  #
+  # The coder is where a run's wall clock goes and none of it is local work:
+  # measured over a two-hour run of this tool against its own pull request, coder
+  # sessions were 5301 of 7562 seconds -- 70% -- and a session spends nearly all of
+  # that waiting on a provider.
+  #
+  # What this does NOT parallelize is the verify gate, and that is the design.
+  # Four concurrent runs of this project's suite measured 391s against 159s for
+  # one, but the real reason is stronger: two fixes that each pass ALONE can fail
+  # TOGETHER, and "the gate names exactly one fix" is what makes a round auditable
+  # and a fix revertable. Patches are applied, verified and committed one at a
+  # time, in order.
+  #
+  # Sessions in one batch never share a file, so the speedup is bounded by the
+  # BUSIEST file rather than by this number: measured rounds here held 9-11 issues
+  # over 4-6 files with the worst file holding 4, so a round of nine takes four
+  # batches however high this is set. 4 is a sensible ceiling; beyond that the
+  # provider's own rate limit becomes the constraint.
+  #
+  # Left at 1 here because it needs a git target and the shipped fix- configs
+  # differ on that; fix-branch and fix-pr set it.
+  parallel_fixes: 1
+
   # ISSUES handed to the coder per round; 0 = unlimited, and unlimited is now the
   # default because the reason for a cap is gone. It was sized to ONE coder
   # session's timeout (17 issues blew 30m, ~8 fit), and the coder now gets exactly

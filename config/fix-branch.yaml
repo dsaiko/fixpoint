@@ -53,6 +53,10 @@ roles:
 
 # Inherited from defaults.yaml except for this one key -- see fix-code.yaml.
 loop:
+  # Four coder sessions at once, each in its own worktree; the gate and the
+  # commits stay serial. See config/README.md -- the speedup is bounded by the
+  # busiest file, not by this number.
+  parallel_fixes: 4
   # Keep the closing round off the test files this run itself wrote. It matters
   # MORE here than in fix-code: the material is already only what the branch
   # changed, so without this the closing pass is looking at almost nothing but the

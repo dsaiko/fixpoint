@@ -105,6 +105,38 @@ writes it, and the next look reviews *that test* rather than the code. The shipp
 configs set `["**/*_test.go"]`; the base leaves it empty, because the pattern is
 per-language for the same reason `verify.commands` is.
 
+## Running several coder sessions at once
+
+```yaml
+loop:
+  parallel_fixes: 4   # 1 = sequential, the default
+```
+
+Each session gets its own git worktree of the round's base commit, so they cannot
+see each other's edits. What comes back is a **patch**, and the patches are
+applied, verified and committed **one at a time, in order** — exactly as a
+sequential round does.
+
+That split is the whole design. A coder session is not local work: measured over a
+two-hour run of this tool against its own pull request, coder sessions were 5301
+of 7562 seconds — 70% of the wall clock — and nearly all of that is spent waiting
+on a provider, so several at once cost this machine almost nothing. The verify gate
+is the opposite: four concurrent runs of this project's suite measured 391s against
+159s for one. And throughput is not even the main reason to keep it serial — two
+fixes that each pass **alone** can fail **together**, and "the gate names exactly
+one fix" is what makes a round auditable and a single fix revertable with `git
+revert`.
+
+Sessions in one batch never share a file, so patches cannot fail to compose: each
+is a diff against the same base, and two diffs of one file do not merge. The
+consequence is that the **busiest file bounds the speedup**, not this number.
+Measured rounds here held 9–11 issues across 4–6 files with the worst file holding
+4, so a round of nine takes four batches however high it is set.
+
+If a patch no longer applies — the tree moved in a way the batch did not expect —
+the finding is left open for the next round rather than forced. Requires a git
+target; `mode: directory` is refused rather than silently running sequentially.
+
 ## Commits
 
 Every fix is made in its own coder session and committed on its own.

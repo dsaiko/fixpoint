@@ -55,6 +55,10 @@ roles:
       - { prompt: review-tests, final: true }
 
 loop:
+  # Four coder sessions at once, each in its own worktree; the gate and the
+  # commits stay serial. See config/README.md -- the speedup is bounded by the
+  # busiest file, not by this number.
+  parallel_fixes: 4
   review_only: false
   # Fewer rounds than fix-code. Every round rewrites the branch under a pull
   # request somebody else is reading, and a five-round run turns a reviewable

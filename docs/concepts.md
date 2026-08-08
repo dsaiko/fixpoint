@@ -189,6 +189,17 @@ are rendered by fixpoint from fixpoint's own facts, and both are placed outside
 every region carrying agent text — a signature composed from a finding's prose
 could be forged by whatever wrote that prose.
 
+### Several fixes at once
+
+`loop.parallel_fixes` runs N coder sessions concurrently, each in its own git
+worktree of the round's base, and applies what they produce **serially** through
+the same gate as always — one patch, one verify, one commit. The sessions are the
+part worth parallelizing (70% of a measured run's wall clock, nearly all of it
+spent waiting on a provider); the gate is the part that must not be, because two
+fixes that pass alone can fail together and a serial gate is what names the one
+that broke the build. See
+[config/README.md](../config/README.md#running-several-coder-sessions-at-once).
+
 ## Observations and issues
 
 A reviewer's report is an **observation**. What the coder works from is an

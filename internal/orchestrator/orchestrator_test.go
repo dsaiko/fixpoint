@@ -239,6 +239,25 @@ func (f *fixture) respond(n int, content string) { testfixture.Respond(f.t, f.re
 // answering, simulating a coder fix.
 func (f *fixture) editRepoOn(n int) { testfixture.EditRepoOn(f.t, f.respDir, f.repo, n) }
 
+// writeSideRelative makes the mock agent's n-th invocation write into its OWN
+// working directory rather than into the main checkout. That is the difference a
+// worktree makes: a parallel session's edits must land where it was told to work,
+// and reach the real tree only as a patch.
+func (f *fixture) writeSideRelative(n int, file, body string) {
+	f.t.Helper()
+	testfixture.WriteSide(f.t, f.respDir, n, fmt.Sprintf("#!/bin/sh\necho '%s' >> ./%s\n", body, file))
+}
+
+// fileInRepo reads a file from the main checkout.
+func (f *fixture) fileInRepo(name string) string {
+	f.t.Helper()
+	b, err := os.ReadFile(filepath.Join(f.repo, name))
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // invocations reports how many times the mock agent has been called.
 func (f *fixture) invocations() int { return testfixture.Invocations(f.t, f.respDir) }
 
