@@ -591,8 +591,12 @@ func TestALongConversationKeepsTheQuestionTheEndAndSaysWhatItDropped(t *testing.
 	if strings.Contains(got, "middle message 1\n") {
 		t.Error("a settled middle should be elided in a long thread")
 	}
-	if !strings.Contains(got, "not shown") {
-		t.Errorf("the elision must be stated, or this is a silent truncation:\n%s", got)
+	// The exact number, not merely that something was said: 20 comments keep the
+	// opener and the last six, so 13 went. A count that read 0 or 14 would still
+	// satisfy "not shown" while telling the reader something false about how much
+	// of the thread it is missing, which is the whole warrant for eliding at all.
+	if !strings.Contains(got, "_(13 earlier repl(y|ies) in this conversation are not shown)_") {
+		t.Errorf("the elision must state the true count, 13 of 20:\n%s", got)
 	}
 }
 
