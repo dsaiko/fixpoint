@@ -186,6 +186,48 @@ func (s *Store) Prompt(role, agentName, promptName string, round int, text strin
 	return writeArtifact(name, []byte(agent.EscapeTerminalBlock(agent.RedactSecrets(text))))
 }
 
+// RunID identifies this run: the timestamp segment of its log directory, which is
+// what every artifact path already carries and what an operator types when asked
+// which run something came from.
+//
+// It claims the directory first, like every other exported method, for two
+// reasons. The name must be the directory the artifacts actually LAND in: until
+// ensureDir has run, s.runDir is the unsuffixed candidate, so a caller that asks
+// for the id before the first artifact write -- the review signature does exactly
+// that, before ReviewBody -- would name a run whose body then lands in a "-N"
+// directory claimed against a concurrent run started in the same timestamp
+// interval. And the read must be synchronized: ensureDir rewrites s.runDir on
+// collision from whichever goroutine gets there first, and going through the
+// sync.Once is what orders this read after that write. The error is dropped
+// deliberately -- a store that cannot claim its directory still has a name, and
+// every caller that writes something reports the failure itself.
+func (s *Store) RunID() string {
+	_ = s.ensureDir()
+	return filepath.Base(s.runDir)
+}
+
+// ReviewBody writes the rendered review document at the run root, next to the
+// summary, and returns its path.
+//
+// It is a first-class artifact rather than a section of the summary because it is
+// the thing a human is meant to READ -- and, on the posting path, the exact bytes
+// that go to a pull request. Keeping it a separate file means "what would be
+// posted?" is answered by opening one file, not by extracting part of another.
+//
+// Redacted and terminal-escaped like every other artifact: it carries finding
+// titles and descriptions, which are agent-authored and may quote a discovered
+// secret.
+func (s *Store) ReviewBody(text string) (string, error) {
+	if err := s.ensureDir(); err != nil {
+		return "", err
+	}
+	name := filepath.Join(s.runDir, "review-body.md")
+	if err := writeArtifact(name, []byte(agent.EscapeTerminalBlock(agent.RedactSecrets(text)))); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 // Summary writes the run summary as md + json (raw does not apply).
 func (s *Store) Summary(sum *model.RunSummary) (string, error) {
 	if err := s.ensureDir(); err != nil {
@@ -500,4 +542,77 @@ func renderSources(sb *strings.Builder, src model.RunSources) {
 			fmt.Fprintf(sb, "- %s %s: `%s`\n", label.name, n, label.m[n])
 		}
 	}
+}
+
+// RenderRefuteMD is the human rendering of one reviewer's refutation pass.
+//
+// It exists so the round can be argued about afterwards. The positions carry the
+// evidence a reviewer offered, and the aggregate log line ("3 contested") throws
+// all of it away -- including, for an outvoted refuter, the entire argument.
+func RenderRefuteMD(agentName string, round int, positions []model.RefutePosition, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# refutation by %s (round %d)\n\n", agentName, round)
+	if err != nil {
+		fmt.Fprintf(&b, "**failed:** %v\n\n", err)
+	}
+	if len(positions) == 0 {
+		b.WriteString("_No positions returned._\n")
+		return b.String()
+	}
+	for _, p := range positions {
+		fmt.Fprintf(&b, "## %s — %s\n\n%s\n\n", p.Issue, p.Position, strings.TrimSpace(p.Evidence))
+	}
+	return b.String()
+}
+
+// RenderJudgeMD is the human rendering of the arbiter's pass. A dropped finding's
+// reason reaches the summary; a kept one's reaches nothing else.
+func RenderJudgeMD(agentName string, round int, verdicts []model.JudgeVerdict, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# judgment by %s (round %d)\n\n", agentName, round)
+	if err != nil {
+		fmt.Fprintf(&b, "**failed:** %v\n\n", err)
+	}
+	if len(verdicts) == 0 {
+		b.WriteString("_No verdicts returned._\n")
+		return b.String()
+	}
+	for _, v := range verdicts {
+		fmt.Fprintf(&b, "## %s — %s\n\n%s\n\n", v.Issue, v.Verdict, strings.TrimSpace(v.Reason))
+	}
+	return b.String()
+}
+
+// RenderTriageMD is the human-readable record of what the pull request's comments
+// were decided to commission.
+//
+// It is the audit trail for the one step where text somebody else wrote turns into
+// work: an accepted decision becomes a commit and a declined one becomes a reply
+// posted under the operator's identity, so both need to be readable afterwards
+// without reconstructing them from the pull request.
+func RenderTriageMD(agentName string, decisions []model.TriageDecision, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# conversation triage by %s\n\n", agentName)
+	if err != nil {
+		fmt.Fprintf(&b, "**failed:** %v\n\n", err)
+	}
+	if len(decisions) == 0 {
+		b.WriteString("_No decisions returned._\n")
+		return b.String()
+	}
+	for _, d := range decisions {
+		fmt.Fprintf(&b, "## conversation %s — %s\n\n", d.Thread, d.Verdict)
+		if t := strings.TrimSpace(d.Title); t != "" {
+			loc := strings.TrimSpace(d.File)
+			if d.Line > 0 {
+				loc = fmt.Sprintf("%s:%d", loc, d.Line)
+			}
+			fmt.Fprintf(&b, "**%s** (%s) %s\n\n", t, strings.TrimSpace(d.Severity), loc)
+		}
+		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(d.Reason))
+		if desc := strings.TrimSpace(d.Description); desc != "" {
+			fmt.Fprintf(&b, "%s\n\n", desc)
+		}
+	}
+	return b.String()
 }

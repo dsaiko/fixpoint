@@ -141,6 +141,34 @@ func TestValidate(t *testing.T) {
 		{"logs.dir rejects unknown placeholder", func(c *Config) {
 			c.Logs.Dir = "logs/{tiemstamp}/round-{round}"
 		}, "unknown placeholder {tiemstamp}"},
+		// The two severity floors. review.refute_at may be looser than block_at (that
+		// is the point of the default), but never stricter: a blocking finding the
+		// refutation round never saw is one applyJudgment can never let the judge drop,
+		// however wrong it is, so the pair is refused at load rather than silently
+		// widened.
+		{"unknown block_at", func(c *Config) { c.Review.BlockAt = "showstopper" }, "review.block_at: unknown severity"},
+		{"unknown refute_at", func(c *Config) { c.Review.RefuteAt = "urgent" }, "review.refute_at: unknown severity"},
+		{"refute_at equal to block_at", func(c *Config) {
+			c.Review.Refute = "refute"
+			c.Review.RefuteAt, c.Review.BlockAt = "high", "high"
+		}, ""},
+		{"refute_at looser than block_at", func(c *Config) {
+			c.Review.Refute = "refute"
+			c.Review.RefuteAt, c.Review.BlockAt = "low", "high"
+		}, ""},
+		{"refute_at stricter than block_at", func(c *Config) {
+			c.Review.Refute = "refute"
+			c.Review.RefuteAt, c.Review.BlockAt = "critical", "high"
+		}, "is stricter than review.block_at"},
+		{"refute_at stricter than an unset block_at", func(c *Config) {
+			c.Review.Refute = "refute"
+			c.Review.RefuteAt = "critical"
+		}, "is stricter than review.block_at"},
+		// Nothing to refute means nothing to protect: the pair is only a contradiction
+		// when the round actually runs.
+		{"refute_at stricter than block_at without a refutation round", func(c *Config) {
+			c.Review.RefuteAt, c.Review.BlockAt = "critical", "high"
+		}, ""},
 		{"unknown mode", func(c *Config) { c.Target.Mode = "svn" }, "unknown mode"},
 		{"pr mode without number", func(c *Config) { c.Target.Mode = "pr" }, "PR number required"},
 		{"pr mode with number", func(c *Config) { c.Target.Mode = "pr"; c.Target.PR = 7 }, ""},
@@ -170,7 +198,10 @@ func TestValidate(t *testing.T) {
 			c.Loop.ReviewOnly = true
 		}, ""},
 		{"undefined coder agent", func(c *Config) { c.Roles.Coder.Agent = "ghost" }, "not defined"},
-		{"missing coder agent name", func(c *Config) { c.Roles.Coder.Agent = "" }, "roles.coder.agent: required"},
+		// A coder with a prompt but no agent is a typo, and the message says so
+		// precisely; the "no coder at all" case is legal for a review-only config and
+		// is covered by TestCoderIsRequiredForAFixRunAndOptionalForAReview.
+		{"half-declared coder", func(c *Config) { c.Roles.Coder.Agent = "" }, "both agent and prompt"},
 		{"undefined review agent", func(c *Config) { c.Roles.Review.Agents = []string{"ghost"} }, "not defined"},
 		{"undefined pinned lens agent", func(c *Config) { c.Roles.Review.Prompts[0].Agent = "ghost" }, "not defined"},
 		{"empty command", func(c *Config) {
@@ -412,7 +443,7 @@ func TestValidate(t *testing.T) {
 			a.Command = []string{"echo", "--dangerously-skip-permissions"}
 			c.Agents["coder"] = a
 		}, ""},
-		{"missing coder prompt", func(c *Config) { c.Roles.Coder.Prompt = "" }, "must reference a prompt file"},
+		{"half-declared coder, prompt missing", func(c *Config) { c.Roles.Coder.Prompt = "" }, "both agent and prompt"},
 		{"unreadable prompt file", func(c *Config) { c.Roles.Coder.Prompt = "/nonexistent/prompt.md" }, "prompt file"},
 		{"unknown log format", func(c *Config) { c.Logs.Formats = []string{"xml"} }, "unknown format"},
 		{"duplicate agent pool entry", func(c *Config) {
@@ -710,6 +741,123 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 		}
 	})
 
+	// A packed option carries its value inside the token, so testing the token as a
+	// whole measures the nonexistent filename "--require=./reviewer-hook.js" and
+	// reports nothing -- while node loads that hook out of the post-checkout
+	// worktree and runs it as part of the agent process.
+	t.Run("rejects a packed option value inside the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "reviewer-hook.js")
+		if err := prConfig(t, dir, "echo", "--require=./reviewer-hook.js").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "--require=./reviewer-hook.js") {
+			t.Fatalf("Validate() = %v, want rejection of a PR-supplied packed option value", err)
+		}
+	})
+
+	// And a packed value naming a file only the PR creates, which is the case the
+	// existence rule cannot lean on.
+	t.Run("rejects a packed option value only the PR supplies in mode pr", func(t *testing.T) {
+		if err := prConfig(t, t.TempDir(), "echo", "--config=./only-the-pr-has-it.json").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "--config=./only-the-pr-has-it.json") {
+			t.Fatalf("Validate() = %v, want rejection of a packed path only the PR supplies", err)
+		}
+	})
+
+	// The value read out of a packed option is measured by the same rules as any
+	// other element: a model id is not a path, and the data-scope exemption belongs
+	// to the flag in whichever spelling it is written.
+	t.Run("accepts a packed model id in mode pr", func(t *testing.T) {
+		if err := prConfig(t, t.TempDir(), "echo", "--model=moonshotai/kimi-k2").Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for a packed model id", err)
+		}
+	})
+
+	t.Run("accepts a packed --add-dir into the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := prConfig(t, dir, "echo", "--add-dir=./sub").Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for a packed data-scope directory", err)
+		}
+	})
+
+	// A BARE command name names no path at all, so nothing in argv shows where it
+	// comes from -- PATH does, and PATH is re-read at every invocation, after
+	// `gh pr checkout`. An entry inside the target hands the PR the same direct
+	// execution the argv gate refuses: it ships that executable, or shadows one
+	// resolved further down PATH with a file of the same name. "echo" resolves from
+	// the real PATH here, so this is the shadowing case exactly.
+	t.Run("rejects a bare command with a PATH entry inside the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		binDir := filepath.Join(dir, "bin")
+		if err := os.MkdirAll(binDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if err := prConfig(t, dir, "echo").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "lies inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a bare command shadowable from inside the target", err)
+		}
+	})
+
+	// The entry need not exist yet: bin/ is a directory the PR can add, and the
+	// lexical test is what catches that.
+	t.Run("rejects a bare command with an absent PATH entry inside the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("PATH", filepath.Join(dir, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if err := prConfig(t, dir, "echo").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "lies inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a PATH entry the PR can create", err)
+		}
+	})
+
+	// An entry outside the target that SYMLINKS into it is the same directory by
+	// another name.
+	t.Run("rejects a bare command with a PATH entry linked into the target in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		binDir := filepath.Join(dir, "bin")
+		if err := os.MkdirAll(binDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(t.TempDir(), "shim")
+		if err := os.Symlink(binDir, link); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", link+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if err := prConfig(t, dir, "echo").Validate(); err == nil ||
+			!strings.Contains(err.Error(), "lies inside target") {
+			t.Fatalf("Validate() = %v, want rejection of a PATH entry symlinked into the target", err)
+		}
+	})
+
+	// A RELATIVE PATH entry decides nothing: exec.LookPath reports ErrDot for a name
+	// resolved through one, so such a command never starts. Counting it would refuse
+	// every pr run launched from inside the target with the very common
+	// trailing-colon PATH.
+	t.Run("accepts a bare command with a relative PATH entry in mode pr", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+		t.Setenv("PATH", os.Getenv("PATH")+string(os.PathListSeparator))
+		if err := prConfig(t, dir, "echo").Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil for a relative PATH entry that cannot resolve anything", err)
+		}
+	})
+
+	t.Run("accepts a bare command with a PATH entry inside the target once trust is asserted", func(t *testing.T) {
+		dir := t.TempDir()
+		binDir := filepath.Join(dir, "bin")
+		if err := os.MkdirAll(binDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		cfg := prConfig(t, dir, "echo")
+		cfg.Loop.TrustedTarget = true
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() = %v, want nil once the operator asserts trust", err)
+		}
+	})
+
 	t.Run("accepts a target-relative binary in mode pr with trust asserted", func(t *testing.T) {
 		dir := t.TempDir()
 		writeExec(t, dir, "agent.sh")
@@ -717,6 +865,23 @@ func TestValidateTargetRelativeBinary(t *testing.T) {
 		cfg.Loop.TrustedTarget = true
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("Validate() = %v, want nil once the operator asserts trust", err)
+		}
+	})
+
+	// -trusted-bundle is NOT the other half: it says only that the bundle files
+	// resolved from inside the target may be run, and those were read before
+	// `gh pr checkout` replaced the tree. This command is re-resolved against the
+	// post-checkout worktree at every invocation, so the narrow assertion must
+	// leave the refusal standing -- otherwise `make review-pr`, which passes exactly
+	// that flag, is back to executing PR-authored code as the agent process.
+	t.Run("rejects a target-relative binary in mode pr with only bundle trust", func(t *testing.T) {
+		dir := t.TempDir()
+		writeExec(t, dir, "agent.sh")
+		cfg := prConfig(t, dir, "./agent.sh")
+		cfg.Loop.TrustedBundle = true
+		if err := cfg.Validate(); err == nil ||
+			!strings.Contains(err.Error(), "resolves inside target") {
+			t.Fatalf("Validate() = %v, want the refusal to stand: -trusted-bundle says nothing about post-checkout content", err)
 		}
 	})
 
@@ -1112,5 +1277,101 @@ func TestClosingPhaseDefaultsToOnePass(t *testing.T) {
 	}
 	if c.Loop.MaxFinalPasses != 0 {
 		t.Errorf("Validate() changed max_final_passes to %d; defaulting is Load's job", c.Loop.MaxFinalPasses)
+	}
+}
+
+// The coder is optional only for a review-only config. A fix run without one has
+// nothing to make the changes it exists to make, and must say so at load time
+// rather than failing in the first round.
+func TestCoderIsRequiredForAFixRunAndOptionalForAReview(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reviewOnly bool
+		wantErr    string
+	}{
+		{"fix run without a coder is refused", false, "roles.coder.agent: required"},
+		{"review-only without a coder is fine", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig(t)
+			c.Roles.Coder = RoleRef{}
+			c.Loop.ReviewOnly = tc.reviewOnly
+			err := c.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Validate() = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A half-declared coder is a typo, not a review config: refusing it keeps the
+// "no coder at all" case unambiguous.
+func TestHalfDeclaredCoderIsRefused(t *testing.T) {
+	c := validConfig(t)
+	c.Loop.ReviewOnly = true
+	c.Roles.Coder.Prompt = ""
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "both agent and prompt") {
+		t.Errorf("Validate() = %v, want a complaint about a half-declared coder", err)
+	}
+}
+
+// The judge decides what a review reports and must never be able to edit -- the
+// same rule that keeps write-capable agents out of the reviewer pool.
+func TestJudgeMustBeReadOnly(t *testing.T) {
+	c := validConfig(t)
+	c.Roles.Judge = RoleRef{Agent: "coder", Prompt: c.Roles.Coder.Prompt} // "coder" is can_edit
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must be read-only") {
+		t.Errorf("Validate() = %v, want the judge refused for being write-capable", err)
+	}
+	c.Roles.Judge.Agent = "rev"
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() = %v, want a read-only judge accepted", err)
+	}
+}
+
+// The judge is invoked like any other agent, so it must clear the same check the
+// coder and the reviewers clear -- not a reduced one that only asks whether it is
+// defined and read-only. A judge-only agent has no other place to be validated:
+// the shipped configs happen to pin the judge to an agent that is also in the
+// reviewer pool, which hid this.
+func TestJudgeAgentGoesThroughTheCommonAgentCheck(t *testing.T) {
+	cases := []struct {
+		name    string
+		agent   Agent
+		wantErr string
+	}{
+		// can_edit: false contradicted by the argv. Validate rejects a judge whose
+		// YAML says can_edit: true; without check() a judge that merely CLAIMS to be
+		// read-only while handing the model the write tools was accepted into a
+		// review- config, the exact contradiction the reviewer rule prevents.
+		{"a permission-bypass flag behind can_edit: false", Agent{
+			Command: []string{"echo", "--dangerously-skip-permissions"}, PromptVia: "stdin",
+		}, "--dangerously-skip-permissions"},
+		{"a binary that is not on PATH", Agent{
+			Command: []string{"fixpoint-no-such-judge-binary"}, PromptVia: "stdin",
+		}, "not found on PATH"},
+		{"an invalid prompt_via", Agent{
+			Command: []string{"echo"}, PromptVia: "carrier-pigeon",
+		}, "prompt_via"},
+		{"a negative timeout", Agent{
+			Command: []string{"echo"}, PromptVia: "stdin", Timeout: Duration(-time.Second),
+		}, "timeout must not be negative"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig(t)
+			c.Agents["judge"] = tc.agent
+			c.Roles.Judge = RoleRef{Agent: "judge", Prompt: c.Roles.Coder.Prompt}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Validate() = %v, want an error containing %q", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "judge") {
+				t.Errorf("Validate() = %v, want the error to name the judge role or agent", err)
+			}
+		})
 	}
 }

@@ -624,7 +624,7 @@ func TestLoadBundleExtends(t *testing.T) {
 // Every field is checked in both positions (the task config and the base it
 // extends), because inheritance would otherwise be the way around the rule.
 func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
-	for _, key := range []string{"trusted_target", "allow_untrusted_fix"} {
+	for _, key := range []string{"trusted_target", "trusted_bundle", "allow_untrusted_fix"} {
 		t.Run(key+"/direct", func(t *testing.T) {
 			root := t.TempDir()
 			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
@@ -669,11 +669,73 @@ func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
 // ever bypassed or removed.
 func TestTrustFieldsAreNotYAMLDecodable(t *testing.T) {
 	var cfg Config
-	if err := yaml.Unmarshal([]byte("loop:\n  trusted_target: true\n  allow_untrusted_fix: true\n"), &cfg); err != nil {
+	if err := yaml.Unmarshal([]byte("loop:\n  trusted_target: true\n  trusted_bundle: true\n  allow_untrusted_fix: true\n"), &cfg); err != nil {
 		t.Fatalf("permissive decode should not error here: %v", err)
 	}
-	if cfg.Loop.TrustedTarget || cfg.Loop.AllowUntrustedFix {
+	if cfg.Loop.TrustedTarget || cfg.Loop.TrustedBundle || cfg.Loop.AllowUntrustedFix {
 		t.Error("YAML set a trust field; these must be settable only by the CLI flags")
+	}
+}
+
+// The same boundary as the two tests above, for the publishing switches. Posting
+// is an action on somebody else's pull request, and <project>/config is searched
+// FIRST -- so a review.post key a repository could ship would let the code under
+// review have a review, and with post_verdict an APPROVE, published on its own
+// pull request under the operator's identity, with no flag from the operator.
+//
+// Both positions are checked, since inheritance would otherwise be the way around
+// the rule, and false is refused as well: allowing a "safe" value would mean the
+// loader has to be right about which values are safe, and a reader of the config
+// would reasonably conclude the key works.
+func TestLoadBundleRejectsSelfGrantedPosting(t *testing.T) {
+	for _, key := range []string{"post", "post_verdict"} {
+		t.Run(key+"/direct", func(t *testing.T) {
+			root := t.TempDir()
+			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+				"task": "target: {mode: directory}\nreview:\n  " + key + ": true\n" + taskBody,
+			}, []string{"fix", "review-bugs"}, []string{"mock"})
+			_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+			if err == nil {
+				t.Fatalf("loading a config that sets review.%s must fail: reviewed code could publish on its own pull request", key)
+			}
+			if !strings.Contains(err.Error(), "cannot be set in a configuration file") {
+				t.Errorf("the error must explain the boundary, got: %v", err)
+			}
+		})
+		t.Run(key+"/false-is-also-refused", func(t *testing.T) {
+			root := t.TempDir()
+			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+				"task": "target: {mode: directory}\nreview:\n  " + key + ": false\n" + taskBody,
+			}, []string{"fix", "review-bugs"}, []string{"mock"})
+			if _, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{}); err == nil {
+				t.Fatalf("review.%s: false must also be refused, so the key never looks supported", key)
+			}
+		})
+		t.Run(key+"/via-extends", func(t *testing.T) {
+			root := t.TempDir()
+			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+				"base": "target: {mode: directory}\nreview:\n  " + key + ": true\n",
+				"task": "extends: base\n" + taskBody,
+			}, []string{"fix", "review-bugs"}, []string{"mock"})
+			if _, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{}); err == nil {
+				t.Fatalf("review.%s must be refused in an inherited base too, or extends is the way around the rule", key)
+			}
+		})
+	}
+}
+
+// And the type itself must not carry the value, for the same reason the trust
+// fields must not: this is what keeps silent acceptance impossible if the probe or
+// KnownFields(true) is ever bypassed. A `yaml:"post"` tag added in a later change
+// fails here rather than shipping a config-settable publish switch.
+func TestPostingFieldsAreNotYAMLDecodable(t *testing.T) {
+	var cfg Config
+	if err := yaml.Unmarshal([]byte("review:\n  post: true\n  post_verdict: true\n"), &cfg); err != nil {
+		t.Fatalf("permissive decode should not error here: %v", err)
+	}
+	if cfg.Review.Post || cfg.Review.PostVerdict {
+		t.Errorf("YAML set a publishing flag (post=%v post_verdict=%v); these must be settable only by -post / -post-verdict",
+			cfg.Review.Post, cfg.Review.PostVerdict)
 	}
 }
 
@@ -868,9 +930,11 @@ func TestOverridesApplied(t *testing.T) {
 		MaxIterations:     -1,
 		PR:                1234,
 		AllowUntrustedFix: true,
+		Post:              true,
+		PostVerdict:       true,
 		TrustedTarget:     true,
 	}.Applied(), ", ")
-	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "trusted_target=true", "max_iterations=-1", "pr=1234"} {
+	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "post=true", "post_verdict=true", "trusted_target=true", "max_iterations=-1", "pr=1234"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Applied() = %q, missing %q", got, want)
 		}

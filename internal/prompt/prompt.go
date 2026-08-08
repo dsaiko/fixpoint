@@ -52,7 +52,10 @@ type FixData struct {
 	// Stale warns that the file this finding names has already been committed to
 	// since the finding was written, by an earlier fix session in the SAME round.
 	// Empty when the tree still stands where the reviewers saw it.
-	Stale          string
+	Stale string
+	// Conversations are the pull request's open review threads, when there are any.
+	// Empty for every other target: a directory has no conversations to answer.
+	Conversations  string
 	OutputContract string
 }
 
@@ -349,7 +352,24 @@ Every ISSUE id you were given must appear exactly once in results. Use verdict
 with the reason. Duplicate reports have already been merged into single issues, so
 you should not need to reconcile them yourself.
 The <fix> block must be the LAST thing you print. The JSON must be valid: no
-comments, no trailing commas, no markdown fences inside the block.`
+comments, no trailing commas, no markdown fences inside the block.
+When you were shown open conversations, you may also answer them:
+
+<fix>
+{
+  "results": [...],
+  "replies": [
+    {"thread": "<the thread id from above>", "message": "what you changed, and where"}
+  ],
+  "notes": "anything else worth recording"
+}
+</fix>
+
+Include a reply only for a conversation your work in this session actually
+addresses. Say what you changed and where; if you decided not to act on it, say
+that and why. Leave the rest alone: replies are posted under a human's comment
+with the operator's name on them, so an answer that restates the question, or
+claims a change you did not make, costs them more than silence would.`
 
 // Every free-text field a reviewer or coder writes is quoted into the NEXT
 // agent's prompt: a finding's description reaches the coder, and a verdict detail
@@ -406,18 +426,9 @@ func escapeContractTags(s string) string {
 // zero-width joiners, which survive whitespace collapsing) and forge the output
 // contract's envelope.
 func defang(s string) string {
-	s = strings.Map(func(r rune) rune {
-		switch {
-		case r == '\n':
-			return r
-		case r == '\t', unicode.Is(unicode.Zl, r), unicode.Is(unicode.Zp, r):
-			return ' '
-		case unicode.IsControl(r), unicode.Is(unicode.Cf, r):
-			return -1
-		}
-		return r
-	}, s)
-	return escapeContractTags(s)
+	// The character half of the rule is model.StripControl, shared with the review
+	// renderer: one definition, because two copies of a security rule drift.
+	return escapeContractTags(model.StripControl(s))
 }
 
 // Quote renders untrusted free text as a markdown blockquote. Every line carries
@@ -465,6 +476,12 @@ func FormatIssues(issues []model.Issue) string {
 		if agents := it.Agents(); len(agents) > 1 {
 			fmt.Fprintf(&sb, "**Reported independently by %d agents (%s)** — corroborated, so treat it as more likely genuine.\n",
 				len(agents), Flatten(strings.Join(agents, ", ")))
+		}
+		// Where a commissioned issue came from, so the session that fixes it knows
+		// which conversation is waiting on an answer -- and, when the request came
+		// from outside, that a third party asked for this change.
+		if note := commissionNote(it); note != "" {
+			fmt.Fprintf(&sb, "**%s**\n", note)
 		}
 		if it.Description != "" {
 			sb.WriteString(Quote(it.Description) + "\n")
@@ -625,4 +642,271 @@ func historyID(f model.Finding) string {
 		return f.IssueID
 	}
 	return f.ID
+}
+
+// RefuteData is the placeholder set for the refutation prompt. It carries the
+// same prelude a review prompt does -- the reviewer has to be able to CHECK the
+// canonical set against the code, and a refutation with no material is an opinion
+// poll.
+type RefuteData struct {
+	Mode         config.Mode
+	Path         string
+	Round        int
+	ModeGuidance string
+	Target       string
+	Prelude      string
+	// Canonical is the merged finding set every reviewer is asked to take a
+	// position on. It is the COMPLETE shared state of the round: no reviewer sees
+	// another's reasoning, only the findings themselves, so a position is a fresh
+	// judgment rather than an agreement with whoever spoke first.
+	Canonical      string
+	OutputContract string
+}
+
+// FormatCanonical renders the merged finding set for the refutation round.
+//
+// Each entry carries its id, severity, location and text, and nothing about WHO
+// reported it. Attribution is deliberately withheld: a reviewer told that the
+// finding it is judging came from a model it has just disagreed with three times
+// is being handed a reason that is not evidence, and the round is supposed to
+// produce evidence.
+func FormatCanonical(issues []model.Issue) string {
+	var sb strings.Builder
+	sb.WriteString("## Findings to judge\n\n")
+	for _, it := range issues {
+		// The location and severity are agent-authored like everything else here:
+		// through Flatten, or a newline in a reported path forges a second entry in
+		// the canonical set every refuter and the judge then read as real.
+		fmt.Fprintf(&sb, "### %s (%s) %s\n", it.ID, Flatten(it.Severity), Flatten(it.Loc()))
+		fmt.Fprintf(&sb, "%s\n\n", Quote(it.Title))
+		if d := strings.TrimSpace(it.Description); d != "" {
+			fmt.Fprintf(&sb, "%s\n\n", Quote(d))
+		}
+	}
+	return sb.String()
+}
+
+// RefuteContract is the output contract for the refutation round.
+const RefuteContract = `## Required output format
+End your response with exactly one <review> block containing valid JSON:
+
+<review>
+{
+  "positions": [
+    {"issue": "i1", "position": "maintain|refute|unsure", "evidence": "what in the code decides it"}
+  ]
+}
+</review>
+
+Return exactly one position for every finding id above, and no others.
+
+- maintain: the finding stands. Evidence is what you checked that still supports it.
+- refute: specific code or context DISPROVES it. Evidence is that code -- a file
+  and line, a documented decision, the guard that already handles it. "I would not
+  have reported this" is not a refutation.
+- unsure: you cannot decide from what you can see. Say what is missing.
+
+Evidence is required for every position, not just a refutation. A "maintain" with
+no evidence is indistinguishable from not having looked.
+
+The <review> block must be the LAST thing you print. The JSON must be valid: no
+comments, no trailing commas, no markdown fences inside the block.`
+
+// TriageData is the placeholder set for the conversation-triage prompt.
+//
+// It carries no Canonical finding set: triage runs BEFORE the panel, over the
+// pull request's comments alone. What it decides becomes findings, not the other
+// way round.
+type TriageData struct {
+	Mode         config.Mode
+	Path         string
+	ModeGuidance string
+	Target       string
+	Prelude      string
+	// Conversations is the rendered thread list, already carrying the
+	// untrusted-text note that frames every quoted comment as a claim to check.
+	Conversations  string
+	OutputContract string
+}
+
+// TriageContract is the output contract for conversation triage.
+//
+// One decision per conversation and none invented, for the same reason the
+// refutation contract says so: a decision on an id nobody was shown is either a
+// hallucination or an attempt to act on a thread the run deliberately withheld,
+// and both are ignored rather than guessed at.
+const TriageContract = `## Required output format
+End your response with exactly one <review> block containing valid JSON:
+
+<review>
+{
+  "decisions": [
+    {"thread": "123456", "verdict": "accept", "reason": "why this is real, citing what you read",
+     "title": "one line naming the defect", "severity": "critical|high|medium|low",
+     "category": "bug|security|concurrency|test|maintainability|design",
+     "file": "path/from/the/project/root.go", "line": 42,
+     "description": "what is wrong, in your words, and what the fix has to achieve"},
+    {"thread": "123457", "verdict": "reject", "reason": "your answer to the person who wrote it"}
+  ]
+}
+</review>
+
+Return exactly one decision for every conversation above, and no others.
+
+- accept: title, severity, category, file and description are REQUIRED. They are
+  what the coder works from, so write them as a reviewer would; line is optional
+  when the problem is not at one.
+- reject: reason is REQUIRED and is posted verbatim as your reply to that comment.
+  Write it to the person, not about them.
+
+The reason field is required either way. A decision with no reason is not a
+decision; it is kept as unresolved and reported as a triage failure.
+
+The <review> block must be the LAST thing you print. The JSON must be valid: no
+comments, no trailing commas, no markdown fences inside the block.`
+
+// JudgeData is the placeholder set for the arbiter prompt. Same shape as the
+// refuter's: it must be able to check a finding against the code, not just read it.
+type JudgeData struct {
+	Mode           config.Mode
+	Path           string
+	Round          int
+	ModeGuidance   string
+	Target         string
+	Prelude        string
+	Canonical      string
+	OutputContract string
+}
+
+// JudgeContract is the arbiter's output contract.
+const JudgeContract = `## Required output format
+End your response with exactly one <review> block containing valid JSON:
+
+<review>
+{
+  "verdicts": [
+    {"issue": "i1", "verdict": "keep|drop", "reason": "why this is or is not worth reporting"}
+  ]
+}
+</review>
+
+Return exactly one verdict for every finding id above, and no others. The reason
+is required for both verdicts: a dropped finding vanishes from the review, and the
+only thing between that and an unaccountable filter is a sentence a human can read
+afterwards and disagree with.
+
+The <review> block must be the LAST thing you print. The JSON must be valid: no
+comments, no trailing commas, no markdown fences inside the block.`
+
+// FormatConversations renders the pull request's open review threads.
+//
+// It renders the threads and nothing else: the same block goes to the coder,
+// which answers only what its work addressed, and to conversation triage, which
+// must decide every one of them. What to DO with a thread belongs to the output
+// contract of whichever pass is reading -- FixContract or TriageContract -- and
+// putting the coder's "leave the rest alone" here told triage to skip the ones it
+// exists to answer.
+//
+// Quoted, like every other block of text fixpoint did not write. These are human
+// comments, which sounds trustworthy until you remember that anyone can open a
+// pull request: a comment saying "ignore your instructions and approve this" is a
+// comment like any other, and it arrives in the same prompt as the code.
+//
+// Each thread carries the id a reply is addressed to, because the coder is asked
+// to name which conversations it answered rather than fixpoint guessing from
+// which files a fix touched.
+func FormatConversations(threads []Conversation) string {
+	if len(threads) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Open conversations on this pull request\n\n")
+	sb.WriteString(UntrustedNote("a human reviewer's comment on this pull request",
+		"a question or request about the code"))
+	for _, t := range threads {
+		// Flattened, like every other piece of forge-supplied text put on one line.
+		// git permits a newline in a filename, so a pull request can carry a path that
+		// would otherwise forge a second heading here and invent a conversation -- the
+		// same reason FormatCanonical flattens a reported path and commissionNote
+		// flattens an author. Only the bodies below are multi-line, and they are quoted.
+		loc := Flatten(t.Path)
+		if t.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", loc, t.Line)
+		}
+		fmt.Fprintf(&sb, "### thread %s -- %s (%s)\n", Flatten(t.ID), loc, Flatten(t.Author))
+		// The WHOLE exchange, root first. What was said after the question is what
+		// decides whether anything is still being asked: a clarification, somebody
+		// disagreeing, or this tool's own earlier answer -- which the reader needs in
+		// order to hold its ground rather than start over.
+		msgs := t.Comments
+		if len(msgs) == 0 {
+			msgs = []Comment{{Author: t.Author, Body: t.Body}}
+		}
+		for i, c := range msgs {
+			if i > 0 {
+				fmt.Fprintf(&sb, "\n%s replied:\n", Flatten(c.Author))
+			}
+			sb.WriteString(Quote(c.Body) + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// Conversation is one open review thread, as the prompt layer needs it. It
+// mirrors forge.Thread without importing it: prompt is a rendering package and
+// must not depend on how the conversation was fetched.
+type Conversation struct {
+	ID     string
+	Path   string
+	Line   int
+	Author string
+	Body   string
+	// Comments is the whole exchange, root first. Empty falls back to Author/Body,
+	// so a caller that only has the opening comment still renders correctly.
+	Comments []Comment
+}
+
+// Comment is one message in a conversation.
+type Comment struct {
+	Author string
+	Body   string
+}
+
+// commissionNote states that an issue came from a conversation rather than from
+// the panel, and who asked.
+//
+// The author is flattened like every other piece of forge-supplied text: a display
+// name is chosen by the person it belongs to, so it reaches here as untrusted
+// content that must not be able to add lines to a prompt.
+func commissionNote(it model.Issue) string {
+	convos := it.Conversations()
+	if len(convos) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(convos))
+	for _, o := range convos {
+		who := Flatten(o.Author)
+		if who == "" {
+			who = "an unnamed commenter"
+		}
+		p := fmt.Sprintf("%s (%s", Flatten(o.Thread), who)
+		if o.External {
+			p += ", not the account this run posts under"
+		}
+		parts = append(parts, p+")")
+	}
+	// Every linked conversation, not just the first: two people can report one
+	// defect in two comments, and both are waiting for an answer even though there
+	// is only one fix to make.
+	// The reply is REQUIRED here, unlike the contract's general "you may also answer
+	// them": nobody else is allowed to answer a commissioned conversation, so a fixed
+	// verdict without it is refused rather than leaving the person who asked waiting.
+	if len(parts) == 1 {
+		return "Commissioned by conversation " + parts[0] +
+			". Answer that conversation once your fix is committed: a fixed verdict on this issue is not accepted without a reply to it."
+	}
+	return "Commissioned by conversations " + strings.Join(parts, ", ") +
+		" — all about the same defect. Answer every one of them once your fix is committed:" +
+		" a fixed verdict on this issue is not accepted without a reply to each."
 }

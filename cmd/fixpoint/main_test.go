@@ -16,6 +16,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
+	"github.com/dsaiko/fixpoint/internal/runlog"
 	"github.com/dsaiko/fixpoint/internal/testfixture"
 )
 
@@ -731,15 +732,17 @@ func TestRunTearsDownSignalHandlerBeforeScoreboard(t *testing.T) {
 			stopped = true
 		}
 	}
+	// The scoreboard is recognized by the horizontal rule that opens it, which
+	// appears in no timestamped line. Observed at the WRITER rather than around the
+	// log's method, because what matters is when the bytes land relative to the
+	// handler teardown.
 	origLogger := newRunLogger
-	newRunLogger = func(stderr io.Writer) (func(string, ...any), func(string)) {
-		logf, logRaw := origLogger(stderr)
-		return logf, func(s string) {
+	newRunLogger = func(stderr io.Writer) *runlog.Log {
+		return origLogger(&watchWriter{w: stderr, mark: strings.Repeat("\u2500", 10), seen: func() {
 			if !sawScoreboard {
 				sawScoreboard, stillLive = true, !stopped
 			}
-			logRaw(s)
-		}
+		}})
 	}
 	t.Cleanup(func() {
 		installSignals, newRunLogger = origInstall, origLogger
@@ -758,13 +761,25 @@ func TestRunTearsDownSignalHandlerBeforeScoreboard(t *testing.T) {
 	}
 }
 
-func TestRunReviewerFailureExits1(t *testing.T) {
+func TestRunReviewerFailureExitsNonZeroAsInconclusive(t *testing.T) {
 	f := newFixture(t)
 	f.respond(1, "no review block") // reviewer contract violation
 	var buf bytes.Buffer
 	cfg := f.configFile("directory", "", "  review_only: true")
-	if got := run([]string{"-config", cfg}, &buf, &buf); got != 1 {
-		t.Fatalf("run() = %d, want 1; stderr:\n%s", got, buf.String())
+	// The panel is one agent, so losing it leaves nothing: no quorum, therefore no
+	// approval. It exits 5 (inconclusive) rather than 1 (error) because the run did
+	// not fail -- the REVIEW was incomplete, which is a different fact and one the
+	// verdict can name. What must not change is that automation cannot read it as
+	// success.
+	got := run([]string{"-config", cfg}, &buf, &buf)
+	if got == 0 {
+		t.Fatalf("run() = 0; an incomplete review must never exit success; stderr:\n%s", buf.String())
+	}
+	if got != model.ExitInconclusive {
+		t.Fatalf("run() = %d, want %d (inconclusive); stderr:\n%s", got, model.ExitInconclusive, buf.String())
+	}
+	if !strings.Contains(buf.String(), "INCONCLUSIVE") {
+		t.Errorf("the verdict should be stated on stderr:\n%s", buf.String())
 	}
 }
 
@@ -782,8 +797,8 @@ func TestRunRedactsSecretsInLoggedErrors(t *testing.T) {
 	}))
 	var buf bytes.Buffer
 	cfg := f.configFile("directory", "", "  review_only: true")
-	if got := run([]string{"-config", cfg}, &buf, &buf); got != 1 {
-		t.Fatalf("run() = %d, want 1 for a reviewer contract violation; stderr:\n%s", got, buf.String())
+	if got := run([]string{"-config", cfg}, &buf, &buf); got != model.ExitInconclusive {
+		t.Fatalf("run() = %d, want %d for a reviewer contract violation; stderr:\n%s", got, model.ExitInconclusive, buf.String())
 	}
 	if strings.Contains(buf.String(), secret) {
 		t.Errorf("stderr leaked the credential-shaped value:\n%s", buf.String())
@@ -885,8 +900,12 @@ func TestRunReviewOnlyFlagOverride(t *testing.T) {
 	f.respond(1, reviewResponse(t, aFinding("bug")))
 	var buf bytes.Buffer
 	cfg := f.configFile("directory", "", "  max_iterations: 3")
-	if got := run([]string{"-config", cfg, "-review-only"}, &buf, &buf); got != 0 {
-		t.Fatalf("run(-review-only) = %d, want 0; stderr:\n%s", got, buf.String())
+	// The fixture finding is a high, so the review's VERDICT is changes-requested
+	// and the exit status says so. That is incidental to what this test is about --
+	// the flag suppressing the coder -- but it has to be asserted rather than
+	// ignored, or a future change to the verdict rule would go unnoticed here.
+	if got := run([]string{"-config", cfg, "-review-only"}, &buf, &buf); got != model.ExitChangesRequested {
+		t.Fatalf("run(-review-only) = %d, want %d; stderr:\n%s", got, model.ExitChangesRequested, buf.String())
 	}
 	if got := f.invocations(); got != 1 {
 		t.Errorf("agent invocations = %d, want 1 (flag must suppress the coder)", got)
@@ -1016,6 +1035,23 @@ func TestRunTrustedTargetFlag(t *testing.T) {
 		}
 		if strings.Contains(buf.String(), "pass -trusted-target") {
 			t.Errorf("-trusted-target did not suppress the refusal:\n%s", buf.String())
+		}
+	})
+	// -trusted-bundle is not a shortcut to it. That flag says the bundle files may
+	// be run, nothing about the target's content -- so the fix-round gate, which is
+	// entirely about content a prompt injection could hide in, stays closed.
+	t.Run("-trusted-bundle does not clear the fix-round gate", func(t *testing.T) {
+		f := newFixture(t)
+		var buf bytes.Buffer
+		p := f.configFile("directory", "", "")
+		if got := run([]string{"-config", p, "-trusted-bundle"}, &buf, &buf); got != 1 {
+			t.Fatalf("run(-trusted-bundle) = %d, want 1: bundle trust must not authorize edits; stderr:\n%s", got, buf.String())
+		}
+		if !strings.Contains(buf.String(), "-trusted-target") {
+			t.Errorf("the refusal must still name the flag that does clear it:\n%s", buf.String())
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (refusal comes first)", got)
 		}
 	})
 	// The attack this closes, end to end at the CLI: a config asserting its own
@@ -1293,7 +1329,7 @@ func (f *fixture) planted(rel, body string) string {
 // hands agents. Bundles resolve from <project>/config FIRST, so a hostile clone can
 // ship any of those files, and no flag, prompt injection, or model cooperation is
 // needed to exploit them. Every shape must therefore fail closed, and only
-// -trusted-target may clear it.
+// -trusted-bundle (or the wider -trusted-target) may clear it.
 //
 // Driven through run() rather than the config package alone: the refusal has to
 // happen before any agent process starts, which is a property of the ORDER of
@@ -1346,11 +1382,29 @@ func TestRunRefusesTargetSuppliedBundle(t *testing.T) {
 				if !strings.Contains(buf.String(), named) {
 					t.Errorf("the refusal must name the target-supplied file %s:\n%s", named, buf.String())
 				}
-				if !strings.Contains(buf.String(), "-trusted-target") {
+				if !strings.Contains(buf.String(), "-trusted-bundle") {
 					t.Errorf("the refusal must name the opt-in flag:\n%s", buf.String())
 				}
 				if got := f.invocations(); got != 0 {
 					t.Errorf("agent invocations = %d, want 0: the refusal must precede every process launch", got)
+				}
+			})
+			// The narrow flag is the one this gate is about, and the only one
+			// `make review-pr` passes: it must be sufficient here, so nobody has to
+			// reach for -trusted-target and take its other claims with it.
+			t.Run("proceeds with -trusted-bundle", func(t *testing.T) {
+				f := newFixture(t)
+				f.respond(1, reviewResponse(t))
+				args, _ := tc.plant(t, f)
+				var buf bytes.Buffer
+				if got := run(append(args, "-trusted-bundle"), &buf, &buf); got != 0 {
+					t.Fatalf("run(-trusted-bundle) = %d, want 0; stderr:\n%s", got, buf.String())
+				}
+				if strings.Contains(buf.String(), "refusing to run") {
+					t.Errorf("-trusted-bundle did not clear the gate:\n%s", buf.String())
+				}
+				if got := f.invocations(); got != 1 {
+					t.Errorf("agent invocations = %d, want 1 (the review round ran)", got)
 				}
 			})
 			t.Run("proceeds with -trusted-target", func(t *testing.T) {
@@ -1428,8 +1482,9 @@ func TestRunAllowUntrustedFixFlag(t *testing.T) {
 type gateWriter struct {
 	mark    string
 	hold    time.Duration
-	started chan struct{} // closed as the marked Write begins
+	started chan struct{} // closed as the FIRST marked Write begins
 
+	once   sync.Once
 	mu     sync.Mutex
 	writes []string
 }
@@ -1437,7 +1492,12 @@ type gateWriter struct {
 func (w *gateWriter) Write(p []byte) (int, error) {
 	s := string(p)
 	if strings.Contains(s, w.mark) {
-		close(w.started)
+		// Only the first marked write opens the window. A regression that sends the
+		// table through logf instead of Raw arrives one line per Write (runlog.emit
+		// splits on "\n"), and the table's two horizontal rules both carry the mark:
+		// closing unguarded would panic in run()'s goroutine and take the whole
+		// package down instead of failing with the count below.
+		w.once.Do(func() { close(w.started) })
 		time.Sleep(w.hold)
 	}
 	w.mu.Lock()
@@ -1459,7 +1519,8 @@ func (w *gateWriter) recorded() []string {
 // the concurrent line arrive first here.
 func TestLogRawSerializesAgainstLogLines(t *testing.T) {
 	w := &gateWriter{mark: "TABLE", hold: 200 * time.Millisecond, started: make(chan struct{})}
-	logf, logRaw := newLogger(w)
+	l := newLogger(w)
+	logf, logRaw := l.Logf(), l.Raw
 
 	done := make(chan struct{})
 	go func() {
@@ -1495,35 +1556,53 @@ func TestRunScoreboardWritesThroughLockedWriter(t *testing.T) {
 
 	// The horizontal rule opens the table and appears in no timestamped line.
 	w := &gateWriter{mark: strings.Repeat("─", 10), hold: 200 * time.Millisecond, started: make(chan struct{})}
-	tables := 0 // only run()'s goroutine touches this, and only before run returns
 	orig := newRunLogger
-	t.Cleanup(func() { newRunLogger = orig })
-	newRunLogger = func(io.Writer) (func(string, ...any), func(string)) {
-		logf, logRaw := newLogger(w)
-		return logf, func(s string) {
-			tables++
-			// Race a log line against the table write, joined before returning so
-			// nothing outlives the run: logMu must hold it back until the table is
-			// whole. Without the shared lock it lands first, as it would mid-table.
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				<-w.started
-				logf("concurrent")
-			}()
-			logRaw(s)
-			<-done
-		}
+	racer := make(chan struct{})
+	// Closed when the test is done, so the racer never outlives it: a scoreboard
+	// that bypassed the run's writers never closes w.started, and the goroutine
+	// would otherwise park forever and hang the package.
+	testDone := make(chan struct{})
+	newRunLogger = func(io.Writer) *runlog.Log {
+		l := newLogger(w)
+		// Race a log line against the table write: the gate closes w.started as the
+		// marked write begins and then holds it open, so this line is offered to the
+		// log while the table is half-written. The lock must hold it back until the
+		// table is whole; without it the line lands first, as it would mid-table.
+		go func() {
+			defer close(racer)
+			select {
+			case <-w.started:
+				l.Printf("concurrent")
+			case <-testDone:
+			}
+		}()
+		return l
 	}
+	t.Cleanup(func() { close(testDone) })
+	t.Cleanup(func() { newRunLogger = orig })
 
 	var buf bytes.Buffer
 	if got := run([]string{"-config", f.configFile("directory", "", "  review_only: true")}, &buf, &buf); got != 0 {
 		t.Fatalf("run() = %d, want 0; log:\n%s", got, strings.Join(w.recorded(), ""))
 	}
-	if tables != 1 {
-		t.Fatalf("scoreboard reached the locked writer %d times, want 1: run() is not printing the table through logRaw", tables)
-	}
+	// Counted before the join: the table is whole by the time run() returns, and a
+	// scoreboard that bypassed the run's writers would leave the racer blocked, so
+	// joining first would hang here instead of reporting tables = 0.
 	got := w.recorded()
+	tables := 0
+	for _, s := range got {
+		if strings.Contains(s, w.mark) {
+			tables++
+		}
+	}
+	if tables != 1 {
+		t.Fatalf("the scoreboard reached the locked writer %d times, want 1: run() is not printing the table through Raw", tables)
+	}
+	// The table arrived, so the racer was released by it; join before measuring
+	// order, since the line only reaches the writer once the lock is free.
+	<-racer
+
+	got = w.recorded()
 	table, concurrent := -1, -1
 	for i, s := range got {
 		if strings.Contains(s, w.mark) && table < 0 {
@@ -1540,4 +1619,21 @@ func TestRunScoreboardWritesThroughLockedWriter(t *testing.T) {
 		t.Errorf("concurrent line at %d precedes the table at %d: the scoreboard did not hold the log lock\nwrites = %q",
 			concurrent, table, got)
 	}
+}
+
+// watchWriter calls seen the first time a write carries mark, then passes it
+// through untouched. It exists so a test can observe WHEN a particular piece of
+// output lands without wrapping the logger's own methods.
+type watchWriter struct {
+	w    io.Writer
+	mark string
+	once sync.Once
+	seen func()
+}
+
+func (w *watchWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), w.mark) {
+		w.once.Do(w.seen)
+	}
+	return w.w.Write(p)
 }

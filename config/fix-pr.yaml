@@ -1,0 +1,80 @@
+# Review -> fix -> verify -> commit over a PULL REQUEST, answering the humans who
+# asked for the changes.
+#
+# This is the most dangerous config in the bundle, and the flags say so: it edits
+# a working tree that holds EXTERNALLY AUTHORED code, with an agent whose
+# permission checks are disabled and which is not confined to the target. A
+# prompt-injection payload in the pull request -- in the diff, in a review comment,
+# in a commit message -- reaches the coder. It therefore needs -allow-untrusted-fix
+# on the command line, per invocation, and no config file can grant that.
+#
+# Use it on a branch you are prepared to inspect commit by commit before pushing.
+# The natural workflow is: review-pr first, read what it says, then fix-pr.
+description: Fix a pull request's changes and triage its open conversations; the replies are posted only with -post. Needs -allow-untrusted-fix.
+
+extends: defaults
+
+target:
+  mode: pr
+  pr: 0 # placeholder: pass -pr <number> on the command line
+
+roles:
+  coder: { agent: claude-coder, prompt: fix }
+
+  # Conversation triage: one read-only agent reads every UNRESOLVED comment on the
+  # pull request before any fixing starts and decides each one -- accept, and it
+  # becomes an ordinary issue with its own session, gate and commit; decline, and
+  # it is answered on the spot with the reason.
+  #
+  # Without it a comment is context and nothing else. The coder is shown the
+  # threads and told to leave alone whatever its own issue does not address, which
+  # is the safe default -- anyone who can reach a pull request can write a comment,
+  # and "fix this" from a stranger must not reach the tree on its own say-so. The
+  # cost was that a reviewer could leave five comments, watch a fix run go past,
+  # and get no reply to any of them.
+  #
+  # Naming this role is what widens the trust surface, and it is the same
+  # assertion --allow-untrusted-fix already makes about the diff: PR content
+  # directs work here. Nothing about the path from that text to a commit is
+  # shortened -- one issue per session, the verify gate, a commit you read -- and a
+  # request from an account other than the one this run posts under is labeled as
+  # such in the coder's prompt and in the commit message.
+  #
+  # Read-only by validation, for the same reason as the judge: the agent deciding
+  # what untrusted text commissions must not be able to act on it itself.
+  triage: { agent: claude, prompt: triage }
+  review:
+    # rotate, not `all`: this is a LOOP, so a lens a reviewer missed this round is
+    # seen by a different one next round. The review- configs fan out because they
+    # get a single round and nothing follows them.
+    strategy: rotate
+    prompts:
+      - review-bugs
+      - review-security
+      - review-concurrency
+      - { prompt: review-tests, final: true }
+
+loop:
+  review_only: false
+  # Fewer rounds than fix-code. Every round rewrites the branch under a pull
+  # request somebody else is reading, and a five-round run turns a reviewable
+  # change into an unreviewable one.
+  max_iterations: 3
+  final_skip_run_edits: ["**/*_test.go"]
+
+# The same gate as the other Go configs. It matters more here: the code being
+# verified was written by somebody else, so "it still builds and passes" is the
+# only claim in the run that no model produced.
+verify:
+  policy: no_regressions
+  timeout: 15m
+  commands:
+    - name: fmt
+      run: [make, fmt-check]
+    - name: vet
+      run: [go, vet, ./...]
+    - name: test
+      run: [go, test, -race, ./...]
+    - name: lint
+      run: [make, lint]
+      optional: true

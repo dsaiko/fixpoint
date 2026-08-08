@@ -14,10 +14,30 @@ target:
   pr: 0 # placeholder: pass -pr <number> on the command line, or edit here
 
 roles:
-  coder: { agent: claude-coder, prompt: fix }
+  # The judge: the last filter before a review is published, and read-only by
+  # design -- a review- config must never invoke something that can edit.
+  #
+  # Pinned to claude on measurement: across 19 runs its findings were rejected 1%
+  # of the time against another panel member's 50% on high-severity ones, and this
+  # role decides what a hard severity gate ever sees. A judge that fails leaves
+  # every finding standing and blocks the approval.
+  judge: { agent: claude, prompt: judge }
   review:
-    strategy: rotate
-    agents: [codex, claude]
+    # all: every lens on every reviewer, rather than rotate's one lens per
+    # reviewer per round. A review run has ONE round -- nothing follows to catch
+    # what a single model missed -- so breadth is the whole budget, and this is the
+    # same argument that already makes an unpinned `final` lens fan out to the
+    # panel. Cost is pool-size x lenses, which for a one-shot review is affordable
+    # in a way it is not for a five-round fix loop.
+    strategy: all
+    # The panel is INHERITED from defaults.yaml rather than narrowed here.
+    #
+    # It used to be pinned to two models, on the argument that externally-authored
+    # code deserves a smaller blast radius. Two things retired that: the diff
+    # already leaves the building the moment any hosted model reviews it, so
+    # dropping one vendor changed the count and not the category; and the
+    # refutation round below now makes a noisy reviewer cheap, because a weak
+    # finding is refuted by the others instead of being published.
     prompts:
       - review-bugs
       - review-security
@@ -27,3 +47,22 @@ roles:
 loop:
   review_only: true
   max_iterations: 1
+
+# The refutation round: after the panel reports, every reviewer is shown the MERGED
+# finding set and must take an evidenced position on each one. What all of them
+# refute is dropped; what any of them still stands behind is kept and marked
+# contested.
+#
+# It replaces the obvious alternative -- keep only what two reviewers both found --
+# which measurement ruled out: across 19 runs under 4% of findings were reported by
+# more than one reviewer, and NONE of the 25 the coder rejected as false positives
+# were among them. An intersection would have filtered none of the noise while
+# discarding 237 of 248 confirmed defects.
+#
+# refute_at (default high, inherited) decides WHICH findings it is asked about: the
+# ones the judge gate protects. The round costs a full pass per reviewer per round
+# and has never dropped anything -- 97 findings over two measured runs, 29
+# contested, zero unanimous -- so it is kept for the gate, not as a filter, and
+# scoped to what the gate covers. Set refute_at: low to put everything to it.
+review:
+  refute: refute

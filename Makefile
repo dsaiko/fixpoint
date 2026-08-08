@@ -1,6 +1,8 @@
 # fixpoint -- agent-agnostic automated code review cycle
 
 BINARY  := fixpoint
+# The config the static checks below validate. The run targets each name their
+# own, so this is only the default for `make check`.
 CONFIG  := fix-code
 
 # Analysis tools are run via `go run` with pinned versions, so no global
@@ -9,7 +11,8 @@ GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v
 STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live run review-code fix-branch clean clean-logs help
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live \
+        fix-code fix-branch fix-pr review-code review-branch review-pr clean clean-logs run help
 
 all: build
 
@@ -78,22 +81,94 @@ check: build
 check-live: build
 	./$(BINARY) --check-live $(CONFIG) --trusted-target
 
-## run: run the full review->fix cycle per the configuration
-## The trust gate is a per-invocation flag, never a config default: we assert it
-## here because this target reviews fixpoint's own repository.
-run: build test vet
-	./$(BINARY) $(CONFIG) --trusted-target
+# One target per shipped config, so `make help` lists what can actually be run
+# instead of one generic `run` whose behavior depends on a variable.
+#
+# Two DIFFERENT trust assertions appear below, and the difference is the whole
+# point of having both. Every target here is built from the bundle under config/,
+# which lives inside target.path (this project root), so every one of them needs
+# bundle trust: those files are the argv fixpoint execs and the prompts it sends.
+#
+#   --trusted-bundle says only that. Nothing else consults it.
+#   --trusted-target says that AND that the target's content is trusted when the
+#   run reaches it -- which additionally permits fix rounds and, in mode pr,
+#   downgrades to warnings the refusals that cover what `gh pr checkout` writes
+#   (a target-relative agent command, and repository-selected content filters or
+#   diff drivers). That claim is true for the -code and -branch targets, whose
+#   target is this repository, and FALSE for the -pr targets, whose worktree is
+#   filled with the pull request author's files -- so those pass the narrow flag.
+#
+# Both are per-invocation flags and never config defaults -- see the security
+# notes in config/README.md -- so a target pointed at somebody else's code would
+# have to say so itself.
+#
+# The fix- targets run the test suite and vet first: they let an agent edit the
+# working tree, and starting that from a tree whose tests already fail makes the
+# verify gate's baseline meaningless.
 
-## review-code: run a single review round; the coder is never invoked
-review-code: build
-	./$(BINARY) review-code --trusted-target
+## fix-code: review -> fix -> verify -> commit over the whole project
+fix-code: build test vet
+	./$(BINARY) fix-code --trusted-target
 
-## fix-branch: run the full cycle over only what this branch changed
-## Needs an upstream (`git push -u`); without one pass a base yourself, keeping
+## fix-branch: the same cycle over only what this branch changed
+## Needs an upstream (`git push -u`); without one, pass a base yourself, keeping
 ## the dots that ask for the merge base:
 ##   ./fixpoint fix-branch -base-ref 'origin/develop...' --trusted-target
 fix-branch: build test vet
 	./$(BINARY) fix-branch --trusted-target
+
+## review-code: one review round over the whole project; nothing is modified
+review-code: build
+	./$(BINARY) review-code --trusted-target
+
+## review-branch: one review round over only what this branch changed
+review-branch: build
+	./$(BINARY) review-branch --trusted-target
+
+## fix-pr: review -> fix -> verify -> commit over a pull request; POST=1 also answers its conversations
+## Pass the number as PR=<n>.
+##   make fix-pr PR=170
+##   make fix-pr PR=170 POST=1
+## POST=1 appends -post, the flag every reply path is gated on: without it the
+## triage still runs and the answers are written into the run directory, but
+## nothing reaches the pull request. Replies go out under your identity, so
+## sending them is opt-in here for the same reason -post is a flag and not a
+## config key. POST must be exactly 1 or unset; any other value is refused
+## rather than read as true, so an inherited or mistyped POST cannot post.
+## The most dangerous target here: it edits a tree holding externally-authored
+## code, so it asserts -allow-untrusted-fix -- the flag that accepts the PR
+## author's content, and the one the checkout guards are about. Run review-pr
+## first and read it. -trusted-bundle is the separate, narrower claim: the target
+## path defaults to this project root, so the bundle under config/ is
+## project-supplied policy and the run is refused without it. Those are OUR files,
+## read before the checkout replaced the tree.
+fix-pr: build test vet
+	@test -n "$(PR)" || { echo "usage: make fix-pr PR=<number> [POST=1]"; exit 2; }
+	@test -z "$(POST)" || test "$(POST)" = 1 || { echo "POST must be 1 or unset, got '$(POST)'; replies are not sent"; exit 2; }
+	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-bundle $(if $(filter 1,$(POST)),-post)
+
+## review-pr: review a pull request; pass the number as PR=<n>
+##   make review-pr PR=170
+## -trusted-bundle and NOT -trusted-target: the only thing this run needs to trust
+## is fixpoint's own config/ bundle, resolved before `gh pr checkout` ran. The
+## branch itself is externally authored, so the pr-mode refusals over what the
+## checkout writes stay armed -- which is what makes this the target to run first
+## on a fork's pull request.
+review-pr: build
+	@test -n "$(PR)" || { echo "usage: make review-pr PR=<number>"; exit 2; }
+	./$(BINARY) review-pr -pr $(PR) --trusted-bundle
+
+## run: removed -- name the config you mean (make fix-code, make review-pr PR=n)
+# Exits 2, the usage-error code the PR= guards above use. `run` was the
+# documented entry point for the whole review -> fix -> verify -> commit cycle,
+# so a wrapper or CI step still calling it must not read this explanation as a
+# completed run -- that is the same confusion the review exit codes exist to
+# prevent.
+run:
+	@echo "There is no 'make run': it hid which config was about to spend money."
+	@echo
+	@$(MAKE) --no-print-directory help
+	@exit 2
 
 ## clean: remove the built binary and coverage artifacts
 clean:
@@ -108,5 +183,8 @@ list: build
 	./$(BINARY) --list
 
 ## help: list all targets with their descriptions
+## Only "## name: text" lines are listed; a "## " line without a target name is a
+## continuation for someone reading the Makefile, and sorting those in among the
+## targets made the list unreadable.
 help:
-	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /' | sort
+	@grep -E '^## [a-z][a-z0-9-]*:' $(MAKEFILE_LIST) | sed 's/^## /  /' | sort

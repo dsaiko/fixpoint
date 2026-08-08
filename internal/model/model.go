@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -35,6 +36,16 @@ type Finding struct {
 	// IssueID is the issue this observation was grouped under. Several
 	// observations from different agents and lenses can share one.
 	IssueID string `json:"issue_id,omitempty"`
+
+	// Origin records that this finding came from a CONVERSATION on the pull
+	// request rather than from the panel -- a comment somebody left, which triage
+	// accepted as real work. Zero value means the panel found it.
+	//
+	// It travels with the finding because two later steps need it: the coder is
+	// told which conversation to answer once its fix is committed, and the commit
+	// records who commissioned the change. A fix nobody on the panel asked for
+	// should say whose request it was.
+	Origin Origin `json:"origin,omitempty"`
 
 	// Filled in after the coder round.
 	Verdict       string `json:"verdict,omitempty"` // fixed | rejected | deferred
@@ -124,6 +135,9 @@ type ReviewFinding struct {
 type FixOutput struct {
 	Results []FixResult `json:"results"`
 	Notes   string      `json:"notes,omitempty"`
+	// Replies are answers to the pull request's open conversations, when the coder
+	// was shown any. Optional: a fix run over a PR with no threads returns none.
+	Replies []FixReply `json:"replies,omitempty"`
 }
 
 // FixResult is the coder's verdict on one finding.
@@ -248,11 +262,34 @@ type RunSummary struct {
 	// agents that edit code and the config holds the trust gates, so which FILE
 	// each name resolved to is part of the run's record -- a project-local prompt
 	// shadowing the installed one is otherwise invisible after the fact.
-	Sources    RunSources `json:"sources"`
-	Mode       string     `json:"mode"`
-	Path       string     `json:"path"`
-	Strategy   string     `json:"strategy"`
-	ReviewOnly bool       `json:"review_only"`
+	Sources RunSources `json:"sources"`
+	Mode    string     `json:"mode"`
+	// PR is the pull request this run reviewed, in pr mode. Recorded because the
+	// number is part of "what was run" and because publishing a finished run later
+	// has to know where it goes.
+	PR int `json:"pr,omitempty"`
+	// ReviewedHead is the commit the run reviewed, in pr mode: the head `gh pr
+	// checkout` left in the tree. A review is a statement about ONE commit, and the
+	// pull request can move while the panel runs or between the run and a later
+	// -post-run, so publishing compares this against the forge's current head and
+	// refuses when they differ -- otherwise an approval lands on code no reviewer
+	// read. Empty for a run from before it was recorded, which the posting paths
+	// treat as "cannot be bound" and refuse.
+	ReviewedHead string `json:"reviewed_head,omitempty"`
+	// ReviewedRepo is WHICH repository that commit belongs to, in pr mode: the
+	// canonical host/owner/repo gh resolved for the checkout (see forge.RepoID).
+	// Path and PR alone cannot say -- a path is not an identity, and the checkout
+	// occupying it can be repointed at another repository on the same forge or the
+	// directory reused for one, at which point a later -post-run would publish to
+	// pull request PR of THAT repository. The reviewed head does not catch it: the
+	// commit is public, so anyone may open a request proposing it. So publishing
+	// compares this against the repository the checkout resolves to now and refuses
+	// when they differ. Empty for a run from before it was recorded, which -post-run
+	// treats as "cannot be bound" and refuses.
+	ReviewedRepo string `json:"reviewed_repo,omitempty"`
+	Path         string `json:"path"`
+	Strategy     string `json:"strategy"`
+	ReviewOnly   bool   `json:"review_only"`
 	// The effective limits and command-line assertions the run used. They are what
 	// make the counts readable after the fact: "17 deferred" means nothing without
 	// the per-round cap that deferred them, and "fix rounds ran" needs the flag that
@@ -272,6 +309,43 @@ type RunSummary struct {
 	// the loop's outcome.
 	LoopTermination string `json:"loop_termination,omitempty"`
 	Error           string `json:"error,omitempty"`
+	// ReviewBody is where the rendered review document was written, for a review
+	// run. It is the file an operator reads, and on the posting path the exact
+	// bytes that were sent.
+	ReviewBody string `json:"review_body,omitempty"`
+	// ReviewPosted names the event a review was published as ("comment",
+	// "approve", "request_changes"), or is empty when nothing reached the forge. An
+	// operator reading a summary should not have to infer from a log line whether
+	// their -post actually reached the forge.
+	//
+	// "Published" is not the same as "the run succeeded": it is recorded whenever
+	// the forge accepted the submission, including when the call then failed
+	// afterwards -- an approval whose head moved between the check and the submit is
+	// on the pull request, and a summary that denied it would send the operator
+	// looking for a review a human has to dismiss.
+	ReviewPosted string `json:"review_posted,omitempty"`
+	// ReviewInline are the anchors the run computed for its findings, kept so a
+	// later publish sends exactly what this run produced rather than recomputing it
+	// against a diff that may have moved.
+	ReviewInline []ReviewAnchor `json:"review_inline,omitempty"`
+	// Verdict is set for a review-only run: what the review concluded, and why.
+	// A fix run has no verdict -- its outcome is the commits it made and the
+	// termination above.
+	Verdict *ReviewVerdict `json:"verdict,omitempty"`
+}
+
+// ReviewVerdict is the serializable form of a review's conclusion. The rule that
+// produces it lives in internal/review; this is only how the summary carries it,
+// which is why it holds issue IDS rather than issues -- the findings themselves are
+// already in the rounds, and duplicating them here would let the two disagree.
+type ReviewVerdict struct {
+	Outcome  string   `json:"outcome"`
+	Reasons  []string `json:"reasons"`
+	Blocking []string `json:"blocking,omitempty"`
+	Panel    int      `json:"panel"`
+	Present  int      `json:"present"`
+	Required int      `json:"required"`
+	Missing  []string `json:"missing,omitempty"`
 }
 
 // ExitCode maps a termination to the process exit status, so the run summary and
@@ -295,6 +369,49 @@ func ExitCode(termination string) int {
 		return 1
 	}
 }
+
+// ExitCodeFor is ExitCode with a review run's VERDICT taken into account, and it
+// is what both the CLI and the summary must call: a review that requested changes
+// terminated perfectly normally, so the termination alone would exit 0 and tell
+// automation the branch was fine.
+//
+// A verdict only ever makes the status WORSE. A review whose loop errored or was
+// interrupted keeps that exit code, because an incomplete run's approval is not
+// an approval -- and Decide cannot approve without quorum anyway, so the two
+// agree rather than compete.
+func ExitCodeFor(sum *RunSummary) int {
+	if sum == nil {
+		return ExitCode("")
+	}
+	base := ExitCode(sum.Termination)
+	if sum.Verdict == nil || base != 0 {
+		return base
+	}
+	switch sum.Verdict.Outcome {
+	case VerdictChangesRequested:
+		return ExitChangesRequested
+	case VerdictInconclusive:
+		return ExitInconclusive
+	}
+	return base
+}
+
+// Verdict outcomes, mirroring internal/review's Outcome values. They are declared
+// here too because the summary is decoded by tools that must not have to import
+// the decision logic to read what it decided.
+const (
+	VerdictApprove          = "approve"
+	VerdictChangesRequested = "changes_requested"
+	VerdictInconclusive     = "inconclusive"
+)
+
+// Exit codes above the terminations': a review verdict is a different axis from
+// how the loop ended, so it gets its own numbers rather than overloading
+// all-rejected.
+const (
+	ExitChangesRequested = 4
+	ExitInconclusive     = 5
+)
 
 // Termination reasons.
 const (
@@ -402,6 +519,27 @@ type Issue struct {
 
 	Verdict       string `json:"verdict,omitempty"`
 	VerdictDetail string `json:"verdict_detail,omitempty"`
+	// Origin is where this issue came from, when it was not the panel, and Also
+	// holds the OTHER conversations that turned out to be about the same defect.
+	//
+	// Two people reporting one problem in two comments is the ordinary case, and the
+	// ledger merges them into one issue -- correctly, since it is one fix. But each
+	// of those conversations is a person waiting for an answer, so keeping only the
+	// first left the second reported as commissioned and never replied to. Every
+	// linked conversation is answered when the fix commits. See Finding.Origin.
+	Origin Origin   `json:"origin,omitempty"`
+	Also   []Origin `json:"also,omitempty"`
+	// Contested records that the refutation round disagreed about this finding:
+	// somebody who looked at it did not believe it, or nobody could decide. It is
+	// kept -- one reviewer still standing behind a defect is enough -- but a reader
+	// deciding what to do about it should know the panel split.
+	Contested bool `json:"contested,omitempty"`
+	// ContestedBy names the refuters whose position produced that doubt, sorted. The
+	// boolean alone cannot say WHO doubted the finding, and the judge gate needs
+	// exactly that: the same agent is routinely both a panel refuter and the judge,
+	// so a drop corroborated only by that agent's own refutation is one agent's word
+	// twice, not two agents agreeing. See applyJudgment.
+	ContestedBy []string `json:"contested_by,omitempty"`
 }
 
 // Agents returns the distinct agents that reported this issue, sorted. Two
@@ -433,4 +571,166 @@ func (i Issue) StatusOrDefault() string {
 		return StatusOpen
 	}
 	return i.Status
+}
+
+// RefuteOutput is a reviewer's answer in the refutation round: one position on
+// every finding it was shown.
+type RefuteOutput struct {
+	Positions []RefutePosition `json:"positions"`
+}
+
+// RefutePosition is one reviewer's stance on one issue.
+//
+// Evidence is required by the contract for every position, not just a refutation.
+// A "maintain" with no evidence is indistinguishable from a reviewer that did not
+// look, and the round exists precisely to find out which findings anyone can still
+// stand behind after seeing them written down.
+type RefutePosition struct {
+	Issue    string `json:"issue"`
+	Position string `json:"position"`
+	Evidence string `json:"evidence"`
+}
+
+// The positions a refuter may take. Only Refute removes a finding, and only
+// unanimously -- see the orchestrator's applyRefutations.
+const (
+	PositionMaintain = "maintain"
+	PositionRefute   = "refute"
+	PositionUnsure   = "unsure"
+)
+
+// ValidPosition reports whether p is one a refuter may return.
+func ValidPosition(p string) bool {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case PositionMaintain, PositionRefute, PositionUnsure:
+		return true
+	}
+	return false
+}
+
+// JudgeOutput is the arbiter's answer: one verdict on every finding it was shown.
+type JudgeOutput struct {
+	Verdicts []JudgeVerdict `json:"verdicts"`
+}
+
+// JudgeVerdict is keep-or-drop on one issue, with the reason recorded.
+//
+// The reason is not decoration. A dropped finding disappears from the review, and
+// the only thing standing between that and an unaccountable filter is a sentence a
+// human can read afterwards and disagree with.
+type JudgeVerdict struct {
+	Issue   string `json:"issue"`
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
+}
+
+// What a judge may decide.
+const (
+	JudgeKeep = "keep"
+	JudgeDrop = "drop"
+)
+
+// TriageOutput is the conversation-triage reply.
+type TriageOutput struct {
+	Decisions []TriageDecision `json:"decisions"`
+}
+
+// TriageDecision is accept-or-reject on one pull-request conversation.
+//
+// An accepted decision carries a whole finding, written by triage rather than
+// quoted from the comment: the coder acts on these words, and a comment that says
+// "this looks wrong to me" is not something anyone can fix. A rejected one carries
+// only the reason, which is posted verbatim as the reply -- so it is addressed to
+// the person who commented, not about them.
+type TriageDecision struct {
+	Thread  string `json:"thread"`
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
+
+	// Set on accept.
+	Title       string `json:"title,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Category    string `json:"category,omitempty"`
+	File        string `json:"file,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// What triage may decide.
+const (
+	TriageAccept = "accept"
+	TriageReject = "reject"
+)
+
+// ValidTriageVerdict reports whether v is one triage may return.
+func ValidTriageVerdict(v string) bool {
+	switch NormalizeTriageVerdict(v) {
+	case TriageAccept, TriageReject:
+		return true
+	}
+	return false
+}
+
+// NormalizeTriageVerdict is the canonical spelling of a triage verdict: what
+// ValidTriageVerdict actually checked, and therefore the only form worth STORING.
+// The same trim-in-the-validator gap NormalizeSeverity documents applies here, and
+// costs more: a stored "accept\n" validates as an acceptance and then fails the
+// dispatch comparison, so the work is never commissioned and the acceptance's
+// reason is posted to a human as the decline that explains it.
+func NormalizeTriageVerdict(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+
+// ValidJudgeVerdict reports whether v is one the judge may return.
+func ValidJudgeVerdict(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case JudgeKeep, JudgeDrop:
+		return true
+	}
+	return false
+}
+
+// FixReply is the coder's answer to one open review conversation.
+//
+// fixpoint does not compose these. A reply appears under a human's comment with
+// the operator's identity on it, so the words have to come from the agent that
+// actually did the work and can say what it changed -- not from a template that
+// claims something happened.
+type FixReply struct {
+	Thread  string `json:"thread"`
+	Message string `json:"message"`
+}
+
+// ReviewAnchor is one inline comment as the summary carries it.
+type ReviewAnchor struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Body string `json:"body"`
+}
+
+// Origin identifies a pull-request conversation a finding was commissioned by.
+//
+// External says the comment's author is NOT the account fixpoint is authenticated
+// as -- so it is neither the operator nor anything fixpoint itself posted. Such a
+// request is still acted on (a colleague reviewing your pull request is the normal
+// case), but it is labeled everywhere it travels: in the coder's prompt and in
+// the commit. Somebody reading the history later should be able to see that a
+// change was asked for by a third party, without reconstructing it from the pull
+// request.
+//
+// Unknown authorship counts as external. The check is "does this match the login
+// gh reports", and a login it could not read proves nothing.
+type Origin struct {
+	Thread   string `json:"thread,omitempty"`
+	Author   string `json:"author,omitempty"`
+	External bool   `json:"external,omitempty"`
+}
+
+// FromConversation reports whether the finding was commissioned by a comment.
+func (o Origin) FromConversation() bool { return o.Thread != "" }
+
+// Conversations lists every thread waiting on this issue, primary first.
+func (i Issue) Conversations() []Origin {
+	if !i.Origin.FromConversation() {
+		return nil
+	}
+	return append([]Origin{i.Origin}, i.Also...)
 }

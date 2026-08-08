@@ -285,6 +285,25 @@ func TestRunDirCollision(t *testing.T) {
 	}
 }
 
+// The review signature asks for the run id BEFORE the first artifact is written,
+// so RunID must claim the directory itself. Otherwise it hands out the
+// unsuffixed candidate while the body it is signing lands in the disambiguated
+// one, and the signature names a run that holds somebody else's artifacts.
+func TestRunIDNamesTheDirectoryTheArtifactsLandIn(t *testing.T) {
+	s, _ := newStore(t, "md")
+	if err := os.MkdirAll(s.runDir, 0o700); err != nil { // an earlier run's dir
+		t.Fatal(err)
+	}
+	id := s.RunID() // asked first, before anything is written
+	path, err := s.ReviewBody("body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Base(filepath.Dir(path)); got != id {
+		t.Errorf("run id %q but the review body landed in %q", id, got)
+	}
+}
+
 // Step is called from parallel reviewer goroutines; the run directory must be
 // claimed exactly once, with every writer's files landing in it. Run under
 // -race this also guards the sync.Once protecting runDir.
