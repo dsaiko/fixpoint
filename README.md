@@ -264,7 +264,9 @@ would let reviewed code arrange to have a review posted under your identity.
 
 Reviewing the same pull request twice is fine: findings it already carries are
 recognized and not repeated, the new ones are published, and the body says how
-many it left out — see
+many it left out. Recognition is bound to the commit each finding was published
+about, so one whose code has been pushed to since is published again in full rather
+than counted as old news — see
 [config/README.md](config/README.md#reviewing-the-same-pull-request-twice).
 
 Findings that name a file and a line are also posted as **inline comments**, so a

@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -76,16 +77,16 @@ func TestTheMarkerStaysOnOneLine(t *testing.T) {
 // else's comment would otherwise let a third party suppress a finding from every
 // future review of the pull request -- quieter, and worse, than a duplicate.
 func TestPublishedFindingsReadsOurOwnMarkersOnly(t *testing.T) {
-	ours := ThreadComment{Author: "dsaiko", Body: "**HIGH** — a defect\n" + FindingMarker("20260808-120000", "abc123def456")}
-	forged := ThreadComment{Author: "stranger", Body: "looks fine to me\n" + FindingMarker("20260808-120000", "deadbeef0000")}
+	ours := ThreadComment{Author: "dsaiko", Body: "**HIGH** — a defect\n" + FindingMarker("20260808-120000", "c0ffee", "abc123def456")}
+	forged := ThreadComment{Author: "stranger", Body: "looks fine to me\n" + FindingMarker("20260808-120000", "c0ffee", "deadbeef0000")}
 	unmarked := ThreadComment{Author: "dsaiko", Body: "just a comment"}
 	threads := []Thread{{ID: "1", Comments: []ThreadComment{ours, forged, unmarked}}}
 
 	got := PublishedFindings(threads, nil, "dsaiko")
-	if !got["abc123def456"] {
+	if !slices.Contains(got["abc123def456"], "c0ffee") {
 		t.Error("our own published finding was not recognized, so it will be posted again")
 	}
-	if got["deadbeef0000"] {
+	if len(got["deadbeef0000"]) > 0 {
 		t.Error("a marker in a third party's comment suppressed a finding from every future review")
 	}
 	if len(got) != 1 {
@@ -104,11 +105,11 @@ func TestPublishedFindingsReadsOurOwnMarkersOnly(t *testing.T) {
 // majority of a review come back verbatim in the next one.
 func TestPublishedFindingsReadsTheReviewSummariesToo(t *testing.T) {
 	body := "## Changes requested\n\nA finding with no addressable line.\n\n" +
-		FindingMarker("20260808-120000", "bod1600d1e55") + "\n" +
-		FindingMarker("20260808-120000", "bod200000002") + "\n"
+		FindingMarker("20260808-120000", "c0ffee", "bod1600d1e55") + "\n" +
+		FindingMarker("20260808-120000", "c0ffee", "bod200000002") + "\n"
 	reviews := []Review{
 		{Author: "dsaiko", Body: body},
-		{Author: "stranger", Body: "looks fine\n" + FindingMarker("20260808-120000", "f0r6ed00")},
+		{Author: "stranger", Body: "looks fine\n" + FindingMarker("20260808-120000", "c0ffee", "f0r6ed00")},
 		{Author: "reviewer", Body: "no marker at all"},
 	}
 
@@ -116,11 +117,11 @@ func TestPublishedFindingsReadsTheReviewSummariesToo(t *testing.T) {
 	// Every marker in the body, not the first: a summary lists the whole review, so
 	// reading one would recognize one finding per earlier review.
 	for _, id := range []string{"bod1600d1e55", "bod200000002"} {
-		if !got[id] {
+		if !slices.Contains(got[id], "c0ffee") {
 			t.Errorf("finding %s was published in the review body but is not recognized: %v", id, got)
 		}
 	}
-	if got["f0r6ed00"] {
+	if len(got["f0r6ed00"]) > 0 {
 		t.Error("a marker in a stranger's review suppressed a finding from every future review")
 	}
 	if len(got) != 2 {
@@ -131,6 +132,35 @@ func TestPublishedFindingsReadsTheReviewSummariesToo(t *testing.T) {
 	}
 }
 
+// A published identity says WHAT was said; the commit in its marker says what it
+// was said ABOUT, and both halves are read back.
+//
+// Without the second half, a finding fixed on one head and a fresh defect of the
+// same kind at the same path and line on a later one are one identity: the current
+// review withholds its description -- for a security finding, the entire content of
+// the review -- behind a count asserting it was already reported.
+func TestPublishedFindingsReportEveryCommitAFindingWasPublishedAbout(t *testing.T) {
+	first := FindingMarker("20260101-000000", "0ldc0mm1t", "5ame1dent1ty")
+	reviews := []Review{
+		// Twice in one body, as a review that anchored the finding and marked it in the
+		// summary too produces: one commit, not two entries of it.
+		{Author: "dsaiko", Body: "first look\n" + first + "\n" + first},
+		{Author: "dsaiko", Body: "second look\n" + FindingMarker("20260202-000000", "newc0mm1t", "5ame1dent1ty")},
+		// Written before markers named a commit at all. It is a statement about an
+		// unknown revision, so it withholds nothing: the cost is a visible duplicate,
+		// and the cost the other way is a finding nobody ever sees.
+		{Author: "dsaiko", Body: "older still\n<!-- ai-panel run 20251201-000000 finding 1e6acy1dent1ty -->"},
+	}
+
+	got := PublishedFindings(nil, reviews, "dsaiko")
+	if want := []string{"0ldc0mm1t", "newc0mm1t"}; !slices.Equal(got["5ame1dent1ty"], want) {
+		t.Errorf("published against %v, want each commit it was said on once: %v", got["5ame1dent1ty"], want)
+	}
+	if heads, ok := got["1e6acy1dent1ty"]; ok {
+		t.Errorf("a marker naming no commit was collected as %v, so it can withhold a finding about code nothing has vouched for", heads)
+	}
+}
+
 // Both markers say "this message is ours", but only one says "we answered".
 //
 // An inline review comment is a question this tool ASKED, sitting in a thread
@@ -138,7 +168,7 @@ func TestPublishedFindingsReadsTheReviewSummariesToo(t *testing.T) {
 // conversation the review run before it had just opened -- measured on a real
 // pull request: 12 published findings, all skipped, none fixed, none answered.
 func TestAPublishedFindingIsOursButIsNotAnAnswer(t *testing.T) {
-	finding := "**HIGH** — a defect\n" + FindingMarker("20260808-120000", "abc123")
+	finding := "**HIGH** — a defect\n" + FindingMarker("20260808-120000", "c0ffee", "abc123")
 	if !HasMarker(finding) {
 		t.Error("a published finding is not recognized as written by this tool")
 	}

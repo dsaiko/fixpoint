@@ -435,6 +435,20 @@ as a project that has just been cleaned up.
 The verdict still accounts for every surviving finding, including the omitted
 ones. What was already said is still true.
 
+**A finding counts as said only about the revision it was said on.** The marker
+carries the reviewed commit alongside the identity, and the lookup asks git what
+has moved between that commit and the one under review: a finding whose file has
+been pushed to since is published again, in full. A pull request outlives the
+commit it was reviewed on, and an identity is a path, a line and a title — all
+three of which a later push can restore over different code. Without that check, an
+author could fix a high-severity finding and reintroduce a defect of the same kind
+at the same place later in the pull request's life, and the review would print a
+count saying it was already reported instead of the exploit the panel had just
+described. A commit that cannot be diffed at all — force-pushed away, never fetched
+— vouches for nothing, so everything published against it is published again; so is
+everything carrying a marker written before the commit was recorded in one. A
+finding that names no file stands only while nothing at all has moved.
+
 **A finding whose comment somebody resolved counts as said.** Resolving a review
 comment is how a maintainer says handled — or won't fix — so the lookup reads the
 settled conversations too. Only the lookup does: the conversations an agent is

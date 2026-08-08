@@ -1022,7 +1022,7 @@ func TestAConversationOpenedByOurOwnFindingIsStillWork(t *testing.T) {
 	published := forge.Thread{ID: "100", Author: "dsaiko", Path: "a.go", Line: 3,
 		Body: "**HIGH** — a defect",
 		Comments: []forge.ThreadComment{{Author: "dsaiko",
-			Body: "**HIGH** — a defect\n" + forge.FindingMarker("20260808-114113", "71f40f30f9f9")}}}
+			Body: "**HIGH** — a defect\n" + forge.FindingMarker("20260808-114113", publishedHead, "71f40f30f9f9")}}}
 	answered := forge.Thread{ID: "200", Author: "dsaiko", Comments: []forge.ThreadComment{
 		{Author: "dsaiko", Body: "why?"},
 		{Author: "dsaiko", Body: "Because of the guard.\n" + forge.ReplyMarker("20260808-114113")}}}

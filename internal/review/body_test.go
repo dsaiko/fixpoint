@@ -1,6 +1,7 @@
 package review
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -350,6 +351,18 @@ func TestInlineCommentsAreSignedToo(t *testing.T) {
 	}
 }
 
+// publishedAt is the ordinary case these tests are about: the identities were
+// published about the commit now under review, so nothing has moved since and each
+// of them still describes the code a reader is looking at. The cases where that is
+// NOT true have their own tests below.
+func publishedAt(ids ...string) Published {
+	at := make(map[string][]string, len(ids))
+	for _, id := range ids {
+		at[id] = []string{"c0ffeec0ffee"}
+	}
+	return Published{At: at, Moved: map[string]map[string]bool{"c0ffeec0ffee": {}}}
+}
+
 // Two reviews of one commit is a legitimate thing to want -- a second panel sees
 // what the first missed -- but repeating what is already posted is not. And
 // because the panel is not deterministic the repeat would not even read as a copy:
@@ -365,7 +378,7 @@ func TestABodyOmitsWhatThePullRequestAlreadyCarriesAndSaysHowMuch(t *testing.T) 
 	in := BodyInput{
 		Decision:         Decision{Outcome: ChangesRequested, Reasons: []string{"1 unresolved finding"}},
 		Issues:           []model.Issue{old, fresh},
-		AlreadyPublished: map[string]bool{FindingID(old): true},
+		AlreadyPublished: publishedAt(FindingID(old)),
 	}
 	got := RenderBody(in)
 
@@ -387,7 +400,7 @@ func TestABodyWithNothingNewSaysSo(t *testing.T) {
 	got := RenderBody(BodyInput{
 		Decision:         Decision{Outcome: ChangesRequested},
 		Issues:           []model.Issue{it},
-		AlreadyPublished: map[string]bool{FindingID(it): true},
+		AlreadyPublished: publishedAt(FindingID(it)),
 	})
 	if strings.Contains(got, "No findings.") {
 		t.Errorf("a pull request with an outstanding finding must not be told there are none:\n%s", got)
@@ -412,20 +425,24 @@ func TestTheBodyCarriesTheIdentityOfEveryFindingItPublishes(t *testing.T) {
 	placeless := model.Issue{ID: "i3", Severity: "low", Title: "nowhere in particular"}
 	note := model.Finding{Severity: "low", Title: "an advisory note", Description: "worth knowing."}
 	body := RenderBody(BodyInput{
-		Decision:  Decision{Outcome: ChangesRequested, Reasons: []string{"3 unresolved findings"}},
-		Issues:    []model.Issue{anchored, unanchored, placeless},
-		Advisory:  []model.Finding{note},
-		Signature: "-- AI panel",
-		RunID:     "20260808-120000",
+		Decision:     Decision{Outcome: ChangesRequested, Reasons: []string{"3 unresolved findings"}},
+		Issues:       []model.Issue{anchored, unanchored, placeless},
+		Advisory:     []model.Finding{note},
+		Signature:    "-- AI panel",
+		RunID:        "20260808-120000",
+		ReviewedHead: "0123456789abcdef0123456789abcdef01234567",
 	})
 
 	published := forge.PublishedFindings(nil, []forge.Review{{Author: "me", Body: body}}, "me")
 	for _, it := range []model.Issue{anchored, unanchored, placeless} {
-		if !published[FindingID(it)] {
-			t.Errorf("%q was published in the body but the next review cannot recognize it:\n%s", it.Title, body)
+		// Against the commit the panel read, not merely present: an identity read back
+		// without a revision cannot say whether it describes the code that is there now,
+		// and this reader is what the next run's delta is built from.
+		if !slices.Contains(published[FindingID(it)], "0123456789abcdef0123456789abcdef01234567") {
+			t.Errorf("%q was published in the body but the next review cannot recognize it against the reviewed commit (%v):\n%s", it.Title, published[FindingID(it)], body)
 		}
 	}
-	if !published[AdvisoryID(note)] {
+	if !slices.Contains(published[AdvisoryID(note)], "0123456789abcdef0123456789abcdef01234567") {
 		t.Errorf("an advisory note has no identity, so it is reprinted by every later review:\n%s", body)
 	}
 	// A marker is bookkeeping, not a second copy of the review: nothing it adds is
@@ -450,7 +467,7 @@ func TestARepeatedAdvisoryNoteIsOmittedAndCountedOnItsOwn(t *testing.T) {
 	got := RenderBody(BodyInput{
 		Decision:         Decision{Outcome: Approve},
 		Advisory:         []model.Finding{said, fresh},
-		AlreadyPublished: map[string]bool{AdvisoryID(said): true},
+		AlreadyPublished: publishedAt(AdvisoryID(said)),
 	})
 	if strings.Contains(got, "already noted") {
 		t.Errorf("an advisory note already on the pull request was repeated:\n%s", got)
@@ -463,6 +480,121 @@ func TestARepeatedAdvisoryNoteIsOmittedAndCountedOnItsOwn(t *testing.T) {
 	}
 	if strings.Contains(got, "further finding(s)") {
 		t.Errorf("an advisory note must not be counted as a finding the verdict accounts for:\n%s", got)
+	}
+}
+
+// A pull request lives across pushes, and an identity is a path, a line and a
+// normalized title -- all three of which a later push can restore over DIFFERENT
+// code. An author fixes a high-severity authentication finding, pushes, and a
+// defect of the same kind lands at that same place later in the pull request's
+// life: recognized on the identity alone, the second review withheld the current
+// description -- the exploit, the reproduction, the suggestion -- and printed a
+// count saying it was already reported, while the thread the reader is left to
+// find may be resolved, outdated, or about code that is gone.
+func TestAFindingIsPublishedInFullWhenItsFileMovedSinceItWasSaid(t *testing.T) {
+	reintroduced := model.Issue{
+		ID: "i1", Severity: "high", Title: "authentication bypass",
+		Description: "the session check is skipped for a signed cookie.",
+		File:        "auth.go", Line: 118, Fingerprint: "auth.go#L118",
+	}
+	untouched := model.Issue{
+		ID: "i2", Severity: "high", Title: "unchecked error",
+		Description: "the write error is dropped.",
+		File:        "quiet.go", Line: 4, Fingerprint: "quiet.go#L4",
+	}
+	// Both were reported on an earlier head; only auth.go has been pushed to since.
+	said := Published{
+		At: map[string][]string{
+			FindingID(reintroduced): {"0ldc0mm1t"},
+			FindingID(untouched):    {"0ldc0mm1t"},
+		},
+		Moved: map[string]map[string]bool{"0ldc0mm1t": {"auth.go": true}},
+	}
+
+	got := RenderBody(BodyInput{
+		Decision:         Decision{Outcome: ChangesRequested, Reasons: []string{"2 unresolved findings"}},
+		Issues:           []model.Issue{reintroduced, untouched},
+		AlreadyPublished: said,
+	})
+	if !strings.Contains(got, "the session check is skipped") {
+		t.Errorf("a finding on code pushed since it was reported was withheld as already said:\n%s", got)
+	}
+	if strings.Contains(got, "the write error is dropped") {
+		t.Errorf("a finding on code nobody has touched was repeated:\n%s", got)
+	}
+	if !strings.Contains(got, "1 further finding(s) are already reported") {
+		t.Errorf("exactly the untouched finding should be counted as already reported:\n%s", got)
+	}
+}
+
+// Carries is the whole of "may this finding be withheld?", so each way of
+// answering it no is worth pinning: a commit nothing can be compared against, and
+// a finding with no file to compare.
+func TestOnlyAFindingAboutUnmovedCodeCountsAsAlreadyCarried(t *testing.T) {
+	located := model.Issue{Title: "a defect", File: "a.go", Line: 7, Fingerprint: "a.go#L7"}
+	placeless := model.Issue{Title: "the change needs a test"}
+	for _, tc := range []struct {
+		name string
+		it   model.Issue
+		p    Published
+		want bool
+	}{
+		{
+			name: "nothing moved since it was said",
+			it:   located,
+			p:    Published{At: map[string][]string{FindingID(located): {"h1"}}, Moved: map[string]map[string]bool{"h1": {}}},
+			want: true,
+		},
+		{
+			name: "another file moved, not this one",
+			it:   located,
+			p:    Published{At: map[string][]string{FindingID(located): {"h1"}}, Moved: map[string]map[string]bool{"h1": {"b.go": true}}},
+			want: true,
+		},
+		{
+			name: "its own file moved",
+			it:   located,
+			p:    Published{At: map[string][]string{FindingID(located): {"h1"}}, Moved: map[string]map[string]bool{"h1": {"a.go": true}}},
+			want: false,
+		},
+		{
+			// Force-pushed away, never fetched, git unavailable: nothing is known about what
+			// has moved, so nothing is withheld on the strength of it.
+			name: "the commit it was said about cannot be diffed",
+			it:   located,
+			p:    Published{At: map[string][]string{FindingID(located): {"h1"}}, Moved: map[string]map[string]bool{}},
+			want: false,
+		},
+		{
+			// Said twice; the later head still vouches for the code, so it is still said.
+			name: "one of its commits still vouches for the code",
+			it:   located,
+			p: Published{
+				At:    map[string][]string{FindingID(located): {"h1", "h2"}},
+				Moved: map[string]map[string]bool{"h1": {"a.go": true}, "h2": {}},
+			},
+			want: true,
+		},
+		{
+			// No file, so no file's stillness can vouch for it: it is a statement about the
+			// change, and the change has moved.
+			name: "a finding with no location, on a pull request pushed to since",
+			it:   placeless,
+			p:    Published{At: map[string][]string{FindingID(placeless): {"h1"}}, Moved: map[string]map[string]bool{"h1": {"b.go": true}}},
+			want: false,
+		},
+		{
+			name: "a finding with no location, on a pull request nothing has moved in",
+			it:   placeless,
+			p:    Published{At: map[string][]string{FindingID(placeless): {"h1"}}, Moved: map[string]map[string]bool{"h1": {}}},
+			want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.p.Carries(FindingID(tc.it), tc.it.File); got != tc.want {
+				t.Errorf("Carries() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -522,7 +654,7 @@ func TestAnAdvisoryNoteDoesNotSuppressABlockingFindingOnTheSameDefect(t *testing
 	got := RenderBody(BodyInput{
 		Decision:         Decision{Outcome: ChangesRequested, Reasons: []string{"1 unresolved finding"}},
 		Issues:           []model.Issue{same},
-		AlreadyPublished: map[string]bool{AdvisoryID(note): true},
+		AlreadyPublished: publishedAt(AdvisoryID(note)),
 	})
 	if !strings.Contains(got, "the bearer token reaches the access log") {
 		t.Errorf("a blocking finding was withheld because a previous run reported the defect as an advisory note:\n%s", got)
@@ -569,7 +701,7 @@ func TestADifferentDefectOnAnAlreadyReportedLineIsStillPublished(t *testing.T) {
 	got := RenderBody(BodyInput{
 		Decision:         Decision{Outcome: ChangesRequested, Reasons: []string{"1 unresolved finding"}},
 		Issues:           []model.Issue{said, other},
-		AlreadyPublished: map[string]bool{FindingID(said): true},
+		AlreadyPublished: publishedAt(FindingID(said)),
 	})
 	if strings.Contains(got, "nil deref") {
 		t.Errorf("the finding already on the pull request was repeated:\n%s", got)

@@ -4301,6 +4301,9 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 		// the next review of this pull request recognizes what this one already said --
 		// including the findings that never anchor to a line and live in the body alone.
 		RunID: o.logs.RunID(),
+		// And WHICH COMMIT it was said about, so the next review can tell an omission
+		// that still describes the code from one whose code has been pushed over since.
+		ReviewedHead: sum.ReviewedHead,
 		// Findings this pull request already carries. The body states how many it left
 		// out rather than dropping them silently -- the count is what tells a reader
 		// that the short list is a delta, not a clean bill of health.
@@ -4341,7 +4344,7 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 	// Recorded before any posting, so `-post-run` can publish exactly this review
 	// later without re-running the panel -- and so an operator who reads the file
 	// first is reading the bytes that will actually go out.
-	for _, c := range inlineComments(rec, o.material, signature, o.logs.RunID(), alreadySaid) {
+	for _, c := range inlineComments(rec, o.material, signature, o.logs.RunID(), sum.ReviewedHead, alreadySaid) {
 		sum.ReviewInline = append(sum.ReviewInline, model.ReviewAnchor{Path: c.Path, Line: c.Line, Body: c.Body})
 	}
 	return o.postReview(ctx, sum, published)
@@ -5164,7 +5167,7 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 // The text is the finding's own, already sanitized by the body renderer's rules,
 // with the severity leading so a reader skimming the Files tab can tell a blocker
 // from a note without opening anything.
-func inlineComments(rec *model.RoundRecord, diff, signature, runID string, published map[string]bool) []forge.InlineComment {
+func inlineComments(rec *model.RoundRecord, diff, signature, runID, head string, published review.Published) []forge.InlineComment {
 	// A forge accepts an anchor only inside the pull request's own diff, and it
 	// rejects the WHOLE review when one falls outside -- with a 422 that names
 	// nothing. Measured on this project's own pull request: without this filter
@@ -5181,11 +5184,13 @@ func inlineComments(rec *model.RoundRecord, diff, signature, runID string, publi
 			continue
 		}
 		id := review.FindingID(it)
-		if published[id] {
-			// Already on this pull request from an earlier review of it. Posting it again
-			// would start a SECOND thread saying the same thing -- and since the panel is
-			// not deterministic, the two would be worded differently enough that a reader
-			// could not tell they were one finding.
+		if published.Carries(id, it.File) {
+			// Already on this pull request from an earlier review of it, AS A STATEMENT
+			// ABOUT THIS CODE. Posting it again would start a SECOND thread saying the same
+			// thing -- and since the panel is not deterministic, the two would be worded
+			// differently enough that a reader could not tell they were one finding. An
+			// earlier review of a file that has moved since is not that; see
+			// review.Published.
 			continue
 		}
 		out = append(out, forge.InlineComment{
@@ -5196,9 +5201,10 @@ func inlineComments(rec *model.RoundRecord, diff, signature, runID string, publi
 			// hardcoded credential quotes that credential on a line the diff contains,
 			// which is precisely the case that anchors.
 			//
-			// The marker carries this finding's identity, which is how the NEXT review of
-			// this pull request knows it has already been said.
-			Body: publishedText(review.RenderInline(it, signature) + "\n" + forge.FindingMarker(runID, id)),
+			// The marker carries this finding's identity AND the commit it is being said
+			// about, which is how the NEXT review of this pull request knows it has already
+			// been said -- and whether it was said about the code that is still there.
+			Body: publishedText(review.RenderInline(it, signature) + "\n" + forge.FindingMarker(runID, head, id)),
 		})
 	}
 	return out
@@ -5425,18 +5431,18 @@ func (o *Orchestrator) closeThread(id string) {
 // thread for every finding the pull request already carried. The read is
 // read-only, so the cost of doing it in a run that never publishes is one
 // forge query.
-func (o *Orchestrator) publishedFindings(ctx context.Context) map[string]bool {
+func (o *Orchestrator) publishedFindings(ctx context.Context) review.Published {
 	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
-		return nil
+		return review.Published{}
 	}
 	r := readerFor(ctx, o.cfg.Target.Path)
 	if r == nil {
-		return nil
+		return review.Published{}
 	}
 	me := r.Login(ctx, o.cfg.Target.Path)
 	if me == "" {
 		o.logf("WARNING: could not establish which account this run posts as; findings already on this pull request may be posted again")
-		return nil
+		return review.Published{}
 	}
 	// AllThreads, not Threads: a resolved conversation is the strongest form of
 	// "already said" there is -- resolving a review comment is how a maintainer
@@ -5447,7 +5453,7 @@ func (o *Orchestrator) publishedFindings(ctx context.Context) map[string]bool {
 	threads, err := r.AllThreads(ctx, o.cfg.Target.Path, o.cfg.Target.PR)
 	if err != nil {
 		o.logf("WARNING: could not read what this pull request already carries (%v); findings may be posted again", err)
-		return nil
+		return review.Published{}
 	}
 	// The review SUMMARIES too, because most findings are only ever in one. An
 	// anchor has to fall inside the pull request's own diff and most findings do
@@ -5463,9 +5469,63 @@ func (o *Orchestrator) publishedFindings(ctx context.Context) map[string]bool {
 	if err != nil {
 		o.logf("WARNING: could not read this pull request's earlier reviews (%v); findings that carry no line may be posted again", err)
 	}
-	published := forge.PublishedFindings(threads, reviews, me)
-	if len(published) > 0 {
-		o.logf("%d finding(s) are already on this pull request from an earlier review and will not be repeated", len(published))
+	published := review.Published{At: forge.PublishedFindings(threads, reviews, me)}
+	if published.Len() > 0 {
+		published.Moved = o.movedSincePublished(ctx, published.At)
+		o.logf("%d finding(s) are already on this pull request from an earlier review; the ones whose code has not moved since will not be repeated", published.Len())
 	}
 	return published
+}
+
+// movedSincePublished asks, for every commit an earlier review published a finding
+// about, which paths have changed between it and the commit under review. It is
+// what turns "this was said once" into "this is still a statement about the code a
+// reader is looking at" -- see review.Published, which does the weighing.
+//
+// Best-effort per commit, and the failure direction is the one the whole path uses.
+// A head that cannot be diffed -- force-pushed away, never fetched, git unavailable
+// -- is left out of the map, and everything published against it is published
+// again rather than withheld on a claim nothing can check.
+func (o *Orchestrator) movedSincePublished(ctx context.Context, at map[string][]string) map[string]map[string]bool {
+	moved := make(map[string]map[string]bool, len(at))
+	for _, heads := range at {
+		for _, head := range heads {
+			if _, done := moved[head]; done {
+				continue
+			}
+			if !looksLikeCommit(head) {
+				// Not spelled like a commit, so it is not asked about. An empty one especially:
+				// ChangedSince reads "" as an unborn branch and answers "nothing moved", which is
+				// the claim this whole binding exists to stop being made on nothing.
+				continue
+			}
+			changed, err := o.collector.ChangedSince(ctx, head)
+			if err != nil {
+				o.logf("WARNING: could not tell what has changed since %s, a commit an earlier review was published against (%v); the findings it carried may be posted again", head, err)
+				continue
+			}
+			moved[head] = changed
+		}
+	}
+	return moved
+}
+
+// looksLikeCommit reports whether a string read back out of a marker is spelled
+// like a git object id: hex digits and nothing else.
+//
+// It is there because that string reaches a git argument list, ahead of the
+// revisions in `git diff`, and git has options a value beginning with a dash could
+// impersonate -- `--output=<file>` writes one. Only comments from the account this
+// tool posts under are read at all, so this is a second lock on a door that is
+// already shut, and it costs one pass over forty characters.
+func looksLikeCommit(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }

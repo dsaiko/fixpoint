@@ -26,19 +26,91 @@ type BodyInput struct {
 	// RunID is this run's id, carried by the identity markers the body ends with.
 	// See writeFindingMarkers for why the body needs them at all.
 	RunID string
+	// ReviewedHead is the commit the panel read (RunSummary.ReviewedHead), carried by
+	// those same markers: a later review needs to know not just what was said but
+	// what it was said ABOUT, or it withholds a finding on today's code because
+	// yesterday's was described in the same words. Empty outside pr mode, and when a
+	// run could not read it -- the markers then name no commit and withhold nothing
+	// later. See forge.FindingMarker.
+	ReviewedHead string
 	// AlreadyPublished is what this pull request already carries from an earlier
 	// review, keyed by FindingID -- and by AdvisoryID for the notes, which are
-	// published in the body and nowhere else. They are omitted from the lists and
-	// counted in a line of their own, one line per kind: an advisory note gates
-	// nothing, and the findings' line says the verdict accounts for what it left
-	// out.
+	// published in the body and nowhere else. Those still describing the code under
+	// review are omitted from the lists and counted in a line of their own, one line
+	// per kind: an advisory note gates nothing, and the findings' line says the
+	// verdict accounts for what it left out.
 	//
 	// Counted rather than dropped silently: a review that showed three findings
 	// where a previous one showed thirty, with nothing to say the difference is
 	// history rather than progress, would read as a project that had just been
 	// cleaned up.
-	AlreadyPublished map[string]bool
+	AlreadyPublished Published
 }
+
+// Published is what an earlier review of this pull request already said, and the
+// revision it said it about.
+//
+// The pair is the point, and the identity alone was a real defect. An identity
+// covers a path, a line and a normalized title (see FindingID), all three of which
+// a later push can restore over DIFFERENT code: an author fixes a
+// high-severity authentication finding, pushes, and reintroduces a defect of the
+// same kind at the same place later in the pull request's life. Keyed on the
+// identity alone, that second finding was dropped from the body and from the inline
+// comments and replaced by a count asserting it was already reported -- while the
+// thread the reader is left to find may be resolved, marked outdated, or describing
+// code that is gone. The verdict still counted it; the reader could not read it.
+type Published struct {
+	// At maps a published identity -- FindingID, or AdvisoryID for a note -- to the
+	// commits it was published about, as forge.PublishedFindings read them back.
+	At map[string][]string
+	// Moved maps such a commit to the paths that have changed between it and the
+	// commit now under review.
+	//
+	// A commit ABSENT from this map is one whose diff could not be read at all: it
+	// was force-pushed away, never fetched, or git failed. Nothing is then known
+	// about what has moved since, so nothing published against it is withheld -- the
+	// same direction every other failure on this path errs in, because a duplicate
+	// is visible and a withheld finding is not. A commit that IS the one under
+	// review maps to an EMPTY set, which is the same fact stated in the
+	// affirmative: nothing has moved, so everything it published still stands.
+	Moved map[string]map[string]bool
+}
+
+// Carries reports whether this pull request already says id about the code that is
+// there NOW -- the only form of "already reported" that may withhold a finding
+// from a reader.
+//
+// file is the path the finding names, compared against what has moved since each
+// commit the identity was published about. File granularity rather than the line's:
+// a fix to the defect a finding describes need not land on the reported line, and
+// treating an untouched line in a rewritten file as unchanged code would withhold
+// the finding that says the rewrite did not work.
+//
+// A finding that names NO file is a statement about the change as a whole -- there
+// is no file whose stillness could vouch for it -- so it stands only while nothing
+// at all has moved since it was said.
+func (p Published) Carries(id, file string) bool {
+	for _, head := range p.At[id] {
+		moved, ok := p.Moved[head]
+		if !ok {
+			continue
+		}
+		if file == "" {
+			if len(moved) == 0 {
+				return true
+			}
+			continue
+		}
+		if !moved[file] {
+			return true
+		}
+	}
+	return false
+}
+
+// Len is how many identities this pull request carries, for the operator log and
+// for skipping the delta entirely when it carries none.
+func (p Published) Len() int { return len(p.At) }
 
 // RenderBody produces the review document: the same text whether it is written to
 // a file or posted to a pull request.
@@ -68,7 +140,7 @@ func RenderBody(in BodyInput) string {
 
 	blocking, other := split(in.Issues, in.Decision)
 	var repeated int
-	if len(in.AlreadyPublished) > 0 {
+	if in.AlreadyPublished.Len() > 0 {
 		blocking, repeated = withoutPublished(blocking, in.AlreadyPublished)
 		var n int
 		other, n = withoutPublished(other, in.AlreadyPublished)
@@ -103,7 +175,7 @@ func RenderBody(in BodyInput) string {
 
 	advisory := in.Advisory
 	var repeatedAdvisory int
-	if len(in.AlreadyPublished) > 0 {
+	if in.AlreadyPublished.Len() > 0 {
 		// The same delta as the findings above, and separately counted: an advisory
 		// note gates nothing, so folding it into that line -- which tells the reader
 		// the verdict accounts for what it omitted -- would say something untrue about
@@ -135,7 +207,7 @@ func RenderBody(in BodyInput) string {
 	if in.Signature != "" {
 		fmt.Fprintf(&b, "%s\n", in.Signature)
 	}
-	writeFindingMarkers(&b, in.RunID, blocking, other, advisory)
+	writeFindingMarkers(&b, in.RunID, in.ReviewedHead, blocking, other, advisory)
 	return b.String()
 }
 
@@ -155,22 +227,27 @@ func RenderBody(in BodyInput) string {
 // duplicate marker costs nothing, and singling out the unanchored ones would mean
 // this list and the anchoring rule had to agree forever.
 //
+// Each marker names the commit this review was produced from as well as the
+// identity, because "already said" about a pull request that has since been pushed
+// to is not a statement about the code a reader is looking at -- see
+// forge.FindingMarker and Published.
+//
 // HTML comments, which both forges render as nothing -- the reader sees the review
 // as written. Invisible is not hidden: they are in the source for anyone who
 // looks, and being copyable is why a marker alone never proves authorship (see
 // forge.PublishedFindings).
-func writeFindingMarkers(b *strings.Builder, runID string, blocking, other []model.Issue, advisory []model.Finding) {
+func writeFindingMarkers(b *strings.Builder, runID, head string, blocking, other []model.Issue, advisory []model.Finding) {
 	if len(blocking)+len(other)+len(advisory) == 0 {
 		return
 	}
 	b.WriteString("\n")
 	for _, group := range [][]model.Issue{blocking, other} {
 		for _, it := range group {
-			fmt.Fprintf(b, "%s\n", forge.FindingMarker(runID, FindingID(it)))
+			fmt.Fprintf(b, "%s\n", forge.FindingMarker(runID, head, FindingID(it)))
 		}
 	}
 	for _, f := range advisory {
-		fmt.Fprintf(b, "%s\n", forge.FindingMarker(runID, AdvisoryID(f)))
+		fmt.Fprintf(b, "%s\n", forge.FindingMarker(runID, head, AdvisoryID(f)))
 	}
 }
 
@@ -407,12 +484,13 @@ func findingID(kind, fingerprint, title string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// withoutPublished drops the findings this pull request already carries, and
-// reports how many were dropped.
-func withoutPublished(issues []model.Issue, published map[string]bool) (kept []model.Issue, dropped int) {
+// withoutPublished drops the findings this pull request already carries AS
+// STATEMENTS ABOUT THE CODE UNDER REVIEW, and reports how many were dropped. See
+// Published.Carries for why the second half of that is not optional.
+func withoutPublished(issues []model.Issue, published Published) (kept []model.Issue, dropped int) {
 	kept = make([]model.Issue, 0, len(issues))
 	for _, it := range issues {
-		if published[FindingID(it)] {
+		if published.Carries(FindingID(it), it.File) {
 			dropped++
 			continue
 		}
@@ -422,10 +500,10 @@ func withoutPublished(issues []model.Issue, published map[string]bool) (kept []m
 }
 
 // advisoryWithoutPublished is the same for the advisory notes, keyed by AdvisoryID.
-func advisoryWithoutPublished(notes []model.Finding, published map[string]bool) (kept []model.Finding, dropped int) {
+func advisoryWithoutPublished(notes []model.Finding, published Published) (kept []model.Finding, dropped int) {
 	kept = make([]model.Finding, 0, len(notes))
 	for _, f := range notes {
-		if published[AdvisoryID(f)] {
+		if published.Carries(AdvisoryID(f), f.File) {
 			dropped++
 			continue
 		}

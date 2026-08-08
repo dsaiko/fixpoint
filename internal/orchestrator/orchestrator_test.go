@@ -8204,7 +8204,7 @@ func TestInlineCommentsCoverLocatedSurvivingFindingsOnly(t *testing.T) {
 	// Every finding's line is inside this diff, so the filter keeps what it should.
 	diff := "+++ b/a.go\n@@ -1,20 +1,20 @@\n" + strings.Repeat(" x\n", 20) +
 		"+++ b/b.go\n@@ -1,5 +1,5 @@\n" + strings.Repeat(" y\n", 5)
-	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000", nil)
+	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000", "c0ffeec0ffee", review.Published{})
 	if len(got) != 1 {
 		t.Fatalf("got %d inline comments, want 1: %+v", len(got), got)
 	}
@@ -8465,6 +8465,12 @@ func TestConversationsAreReadOnlyForAFixRunOnAPullRequest(t *testing.T) {
 	}
 }
 
+// publishedHead stands in for the commit an earlier review said its findings
+// about. The tests below are about what the lookup RECOGNIZES; whether a commit
+// still vouches for the code a finding described is a separate question, and
+// TestAFindingIsWithheldOnlyWhileTheCodeItNamedHasNotMoved is where it is asked.
+const publishedHead = "0ldc0mm1t"
+
 // What the pull request already carries is looked up for the RENDERED review,
 // not for the process that happens to be posting.
 //
@@ -8479,7 +8485,7 @@ func TestFindingsAlreadyOnThePullRequestAreLookedUpEvenWhenThisRunIsNotPosting(t
 	published := forge.Thread{
 		ID: "100", Path: "a.go", Line: 1, Author: "dsaiko", Body: "old finding",
 		Comments: []forge.ThreadComment{
-			{Author: "dsaiko", Body: "old finding\n" + forge.FindingMarker("20260101-000000", "deadbeefcafe")},
+			{Author: "dsaiko", Body: "old finding\n" + forge.FindingMarker("20260101-000000", publishedHead, "deadbeefcafe")},
 		},
 	}
 
@@ -8563,12 +8569,12 @@ func TestFindingsAlreadyOnThePullRequestAreLookedUpEvenWhenThisRunIsNotPosting(t
 			if read := reader.threadsRead > 0; read != tc.wantRead {
 				t.Errorf("pull request read = %v, want %v", read, tc.wantRead)
 			}
-			if len(got) != len(tc.wantIDs) {
-				t.Errorf("published = %v, want %v", got, tc.wantIDs)
+			if len(got.At) != len(tc.wantIDs) {
+				t.Errorf("published = %v, want %v", got.At, tc.wantIDs)
 			}
 			for _, id := range tc.wantIDs {
-				if !got[id] {
-					t.Errorf("published = %v, want it to carry %q", got, id)
+				if !slices.Contains(got.At[id], publishedHead) {
+					t.Errorf("published = %v, want it to carry %q against the commit it was said on", got.At, id)
 				}
 			}
 			if tc.wantLog != "" && !strings.Contains(logs(), tc.wantLog) {
@@ -8589,7 +8595,7 @@ func TestAFindingOnAResolvedConversationIsStillRecognizedAsAlreadySaid(t *testin
 	settled := forge.Thread{
 		ID: "101", Path: "b.go", Line: 2, Author: "dsaiko", Body: "wont fix",
 		Comments: []forge.ThreadComment{
-			{Author: "dsaiko", Body: "wont fix\n" + forge.FindingMarker("20260101-000000", "5e771edf1d")},
+			{Author: "dsaiko", Body: "wont fix\n" + forge.FindingMarker("20260101-000000", publishedHead, "5e771edf1d")},
 		},
 	}
 
@@ -8610,8 +8616,8 @@ func TestAFindingOnAResolvedConversationIsStillRecognizedAsAlreadySaid(t *testin
 	readerFor = func(context.Context, string) forge.Reader { return reader }
 	defer func() { readerFor = prev }()
 
-	if got := o.publishedFindings(t.Context()); !got["5e771edf1d"] {
-		t.Errorf("published = %v, want the finding a human resolved -- it is answered, not unreported", got)
+	if got := o.publishedFindings(t.Context()); len(got.At["5e771edf1d"]) == 0 {
+		t.Errorf("published = %v, want the finding a human resolved -- it is answered, not unreported", got.At)
 	}
 }
 
@@ -8637,15 +8643,15 @@ func TestFindingsPublishedInAReviewSummaryAreRecognizedToo(t *testing.T) {
 	// exactly the state the old lookup could not see.
 	reader := &fakeReader{
 		reviews: []forge.Review{{Author: "dsaiko", Body: "## Changes requested\n\n" +
-			forge.FindingMarker("20260101-000000", "b0d1600d1e55")}},
+			forge.FindingMarker("20260101-000000", publishedHead, "b0d1600d1e55")}},
 		login: "dsaiko",
 	}
 	prev := readerFor
 	readerFor = func(context.Context, string) forge.Reader { return reader }
 	defer func() { readerFor = prev }()
 
-	if got := o.publishedFindings(t.Context()); !got["b0d1600d1e55"] {
-		t.Errorf("published = %v, want the finding published in an earlier review body", got)
+	if got := o.publishedFindings(t.Context()); len(got.At["b0d1600d1e55"]) == 0 {
+		t.Errorf("published = %v, want the finding published in an earlier review body", got.At)
 	}
 
 	// And summaries that cannot be read cost only what they carry: the
@@ -8653,17 +8659,84 @@ func TestFindingsPublishedInAReviewSummaryAreRecognizedToo(t *testing.T) {
 	// nothing. Every failure on this path errs toward repeating a finding.
 	reader = &fakeReader{
 		threads: []forge.Thread{{ID: "1", Author: "dsaiko", Comments: []forge.ThreadComment{
-			{Author: "dsaiko", Body: "anchored\n" + forge.FindingMarker("20260101-000000", "a11c40red00")},
+			{Author: "dsaiko", Body: "anchored\n" + forge.FindingMarker("20260101-000000", publishedHead, "a11c40red00")},
 		}}},
 		reviewsErr: errors.New("gh: 502"),
 		login:      "dsaiko",
 	}
 	got := o.publishedFindings(t.Context())
-	if !got["a11c40red00"] {
-		t.Errorf("published = %v, want the anchored finding the conversations still carry", got)
+	if len(got.At["a11c40red00"]) == 0 {
+		t.Errorf("published = %v, want the anchored finding the conversations still carry", got.At)
 	}
 	if !strings.Contains(logs(), "could not read this pull request's earlier reviews") {
 		t.Errorf("an unreadable set of summaries must be said out loud:\n%s", logs())
+	}
+}
+
+// "Already reported" is a claim about a REVISION, and a pull request outlives the
+// one it was reviewed on. A finding fixed on an earlier head and a fresh defect of
+// the same kind at the same path and line later in the pull request's life share an
+// identity, so recognizing the identity alone withheld the current finding's
+// description -- for a security finding, the entire review -- behind a count, while
+// pointing at a thread that may be resolved, outdated, or about code that is gone.
+//
+// So the lookup reads back WHICH commit each finding was published about and asks
+// the collector what has moved since. Here: one finding said on the commit under
+// review, one said on a commit whose file has been rewritten since, and one said on
+// a commit this checkout cannot resolve at all.
+func TestAFindingIsWithheldOnlyWhileTheCodeItNamedHasNotMoved(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	before := strings.TrimSpace(testfixture.GitRun(t, f.repo, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(f.repo, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testfixture.GitRun(t, f.repo, "commit", "-qam", "rewrite main.go")
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := strings.TrimSpace(testfixture.GitRun(t, f.repo, "rev-parse", "HEAD"))
+	// A head is read out of a comment and reaches a git argument list ahead of the
+	// revisions, and `git diff --output=<file>` writes a file and prints nothing --
+	// which would look exactly like "nothing has moved". Only our own account's
+	// comments are read at all, so this is the second lock; it is still locked.
+	probe := filepath.Join(t.TempDir(), "probe")
+	forged := "<!-- ai-panel run 20260101-000000 head --output=" + probe + " finding 5a1d0nf0r6ed -->"
+	reader := &fakeReader{
+		reviews: []forge.Review{{Author: "dsaiko", Body: "## Changes requested\n\n" +
+			forge.FindingMarker("20260102-000000", now, "5a1d0ncurrent") + "\n" +
+			forge.FindingMarker("20260101-000000", before, "5a1d0nm0ved") + "\n" +
+			forge.FindingMarker("20260101-000000", "beefbeefbeefbeefbeefbeefbeefbeefbeefbeef", "5a1d0n60ne") + "\n" +
+			forged}},
+		login: "dsaiko",
+	}
+	prev := readerFor
+	readerFor = func(context.Context, string) forge.Reader { return reader }
+	defer func() { readerFor = prev }()
+
+	got := o.publishedFindings(t.Context())
+	if !got.Carries("5a1d0ncurrent", "main.go") {
+		t.Errorf("a finding said about the commit under review is not recognized, so it will be posted a second time: %+v", got)
+	}
+	if got.Carries("5a1d0nm0ved", "main.go") {
+		t.Error("a finding said about a commit whose file has been rewritten since was withheld from the review as already reported")
+	}
+	if got.Carries("5a1d0n60ne", "main.go") {
+		t.Error("a finding said about a commit this checkout cannot resolve was withheld on a claim nothing can check")
+	}
+	if !strings.Contains(logs(), "could not tell what has changed since beefbeef") {
+		t.Errorf("a commit that cannot be diffed must be said out loud:\n%s", logs())
+	}
+	if got.Carries("5a1d0nf0r6ed", "main.go") {
+		t.Error("a head that is not spelled like a commit was diffed against, and withheld a finding")
+	}
+	if _, err := os.Stat(probe); err == nil {
+		t.Errorf("a head read out of a comment reached git as an option: it wrote %s", probe)
 	}
 }
 
@@ -9730,8 +9803,11 @@ func TestInlineCommentsSkipWhatIsAlreadyOnThePullRequest(t *testing.T) {
 	rec := &model.RoundRecord{Round: 1, Issues: []model.Issue{known, fresh}}
 	diff := "+++ b/a.go\n@@ -1,3 +1,3 @@\n line one\n line two\n line three\n"
 
-	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000",
-		map[string]bool{review.FindingID(known): true})
+	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000", "c0ffeec0ffee",
+		review.Published{
+			At:    map[string][]string{review.FindingID(known): {"0ldc0mm1t"}},
+			Moved: map[string]map[string]bool{"0ldc0mm1t": {}},
+		})
 
 	if len(got) != 1 {
 		t.Fatalf("posted %d inline comment(s), want only the new one: %+v", len(got), got)
@@ -9758,8 +9834,11 @@ func TestInlineCommentsStillAnchorADifferentDefectOnACommentedLine(t *testing.T)
 	rec := &model.RoundRecord{Round: 1, Issues: []model.Issue{known, other}}
 	diff := "+++ b/a.go\n@@ -1,3 +1,3 @@\n line one\n line two\n line three\n"
 
-	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000",
-		map[string]bool{review.FindingID(known): true})
+	got := inlineComments(rec, diff, "-- AI panel", "20260808-120000", "c0ffeec0ffee",
+		review.Published{
+			At:    map[string][]string{review.FindingID(known): {"0ldc0mm1t"}},
+			Moved: map[string]map[string]bool{"0ldc0mm1t": {}},
+		})
 
 	if len(got) != 1 {
 		t.Fatalf("posted %d inline comment(s), want only the unreported defect: %+v", len(got), got)
