@@ -562,3 +562,51 @@ func TestReviewContractMatchesSeverityVocabulary(t *testing.T) {
 		}
 	}
 }
+
+// Every run adds a reply to every open thread, so the conversation block grows
+// without limit as a pull request stays open -- measured on this project's own:
+// 54 KB when only opening comments were rendered, 434 KB once whole threads were,
+// which is larger than the biggest review prompt this tool has ever built.
+//
+// The opening comment is the question and the recent ones are the current state;
+// the middle is the part that has been settled. What is dropped must be SAID,
+// which is what separates this from trimming a diff: a shortened diff reads
+// exactly like a complete one.
+func TestALongConversationKeepsTheQuestionTheEndAndSaysWhatItDropped(t *testing.T) {
+	msgs := make([]Comment, 0, 20)
+	msgs = append(msgs, Comment{Author: "reporter", Body: "the original question"})
+	for i := 1; i < 19; i++ {
+		msgs = append(msgs, Comment{Author: "someone", Body: fmt.Sprintf("middle message %d", i)})
+	}
+	msgs = append(msgs, Comment{Author: "reporter", Body: "the latest word"})
+
+	got := FormatConversations([]Conversation{{ID: "1", Path: "a.go", Line: 2, Author: "reporter", Comments: msgs}})
+
+	if !strings.Contains(got, "the original question") {
+		t.Error("the comment that opened the conversation must survive: it is the question")
+	}
+	if !strings.Contains(got, "the latest word") {
+		t.Error("the most recent comment must survive: it is the current state")
+	}
+	if strings.Contains(got, "middle message 1\n") {
+		t.Error("a settled middle should be elided in a long thread")
+	}
+	if !strings.Contains(got, "not shown") {
+		t.Errorf("the elision must be stated, or this is a silent truncation:\n%s", got)
+	}
+}
+
+// A short conversation is rendered whole, with nothing claimed to be missing.
+func TestAShortConversationIsRenderedWhole(t *testing.T) {
+	got := FormatConversations([]Conversation{{ID: "1", Author: "a", Comments: []Comment{
+		{Author: "a", Body: "one"}, {Author: "b", Body: "two"}, {Author: "a", Body: "three"},
+	}}})
+	for _, want := range []string{"one", "two", "three"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q is missing from a short conversation:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "not shown") {
+		t.Errorf("nothing was dropped, so nothing should claim it was:\n%s", got)
+	}
+}

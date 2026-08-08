@@ -834,16 +834,22 @@ func FormatConversations(threads []Conversation) string {
 			loc = fmt.Sprintf("%s:%d", loc, t.Line)
 		}
 		fmt.Fprintf(&sb, "### thread %s -- %s (%s)\n", Flatten(t.ID), loc, Flatten(t.Author))
-		// The WHOLE exchange, root first. What was said after the question is what
-		// decides whether anything is still being asked: a clarification, somebody
-		// disagreeing, or this tool's own earlier answer -- which the reader needs in
-		// order to hold its ground rather than start over.
+		// The exchange, root first. What was said after the question is what decides
+		// whether anything is still being asked: a clarification, somebody disagreeing,
+		// or this tool's own earlier answer -- which the reader needs in order to hold
+		// its ground rather than start over.
 		msgs := t.Comments
 		if len(msgs) == 0 {
 			msgs = []Comment{{Author: t.Author, Body: t.Body}}
 		}
-		for i, c := range msgs {
-			if i > 0 {
+		kept, elided := elideMiddle(msgs)
+		for i, c := range kept {
+			switch {
+			case i == 0:
+			case elided > 0 && i == 1:
+				fmt.Fprintf(&sb, "\n_(%d earlier repl(y|ies) in this conversation are not shown)_\n\n%s replied:\n",
+					elided, Flatten(c.Author))
+			default:
 				fmt.Fprintf(&sb, "\n%s replied:\n", Flatten(c.Author))
 			}
 			sb.WriteString(Quote(c.Body) + "\n")
@@ -909,4 +915,36 @@ func commissionNote(it model.Issue) string {
 	return "Commissioned by conversations " + strings.Join(parts, ", ") +
 		" — all about the same defect. Answer every one of them once your fix is committed:" +
 		" a fixed verdict on this issue is not accepted without a reply to each."
+}
+
+// conversationTail is how many of a thread's most recent comments are rendered
+// alongside the one that opened it.
+//
+// A long thread is the middle of an argument, and the middle is the part that has
+// been settled: what matters is the QUESTION and the CURRENT state. Six is enough
+// to carry a disagreement and this tool's answer to it.
+const conversationTail = 6
+
+// elideMiddle keeps a conversation's opening comment and its most recent ones,
+// returning how many it dropped between them.
+//
+// This is the one place fixpoint truncates material on purpose, and it is bounded
+// by two things that make it different from trimming a diff. The omission is
+// STATED in the rendered text, so a reader knows it is looking at part of a
+// thread rather than all of it -- unlike a shortened diff, which reads exactly
+// like a complete one. And nothing is decided from what is dropped: the decision
+// is about the code, which the agent reads itself.
+//
+// Without it the block grows without limit. Every run adds a reply to every open
+// thread, so a pull request that stays open long enough eventually renders a
+// prompt no model will take -- measured on this project's own: 54 KB when only
+// the opening comments were shown, 434 KB once whole threads were, which is
+// larger than the biggest review prompt this tool has ever built.
+func elideMiddle(msgs []Comment) (kept []Comment, elided int) {
+	if len(msgs) <= conversationTail+1 {
+		return msgs, 0
+	}
+	kept = append(kept, msgs[0])
+	kept = append(kept, msgs[len(msgs)-conversationTail:]...)
+	return kept, len(msgs) - len(kept)
 }

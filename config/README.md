@@ -359,12 +359,29 @@ clean bill of health, and the run can then converge over code nobody saw.
 Because a failed reviewer resets the clean-round streak, a round that lost one to
 its budget cannot be mistaken for a clean round.
 
-There is deliberately **no default**, because sizing it is per-agent and
-empirical: a model's advertised context window is in tokens, this is in bytes, and
+The shipped agents set one, sized from measurement rather than from a model's
+advertised window: 900 kB for the in-house CLIs against a 434 kB observed maximum,
+400 kB for the ollama- and OpenRouter-served ones, whose route produced the
+failure this exists for. Those are runaway guards, not context limits — they fire
+where a prompt has clearly stopped being one a review can use.
+
+There is deliberately **no default in the code**, because sizing it is per-agent
+and empirical: a model's advertised context window is in tokens, this is in bytes, and
 the agentic session adds file reads and tool results on top of whatever fixpoint
 sends. Set it below where that CLI actually refuses, not at its nominal limit.
 `target`'s own material cap is a separate, global bound on the collected diff or
 listing; this one bounds the whole rendered prompt.
+
+The other thing that grows without bound is the **conversation block**: every run
+adds a reply to every open thread, and on this project's own pull request it went
+from 54 kB, when only the comment that opened each thread was rendered, to 434 kB
+once whole threads were — larger than the biggest review prompt this tool has ever
+built. A long thread is therefore rendered as its opening comment plus its six
+most recent ones, with the number of omitted replies stated in the text. That is
+the one place fixpoint truncates on purpose, and it is bounded by two things a
+shortened diff is not: the omission is visible to the reader, and nothing is
+decided from what was dropped — the decision is about the code, which the agent
+reads itself.
 
 ## Reporting what a run cost
 
