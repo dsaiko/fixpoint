@@ -4703,6 +4703,59 @@ func TestCollectSurvivesAPullRequestDescriptionItCannotRead(t *testing.T) {
 	}
 }
 
+// The pull request half is read at most once per run, and the latch closes on
+// SUCCESS rather than on the attempt -- so a `gh pr view` that trips gitOpTimeout
+// once is retried next round instead of pinning an empty description over the rest
+// of the run. Both halves of that are invisible to a test that collects once: a
+// version latching before the error check returns "" on the single call too, and
+// so does one with no cache at all. The read swallows its error and an absent
+// description is indistinguishable from a pull request that has none, so a
+// regression here is silent by construction unless something collects twice.
+func TestCollectRetriesAnUnreadDescriptionAndThenStopsAsking(t *testing.T) {
+	repo, mainSHA := prIntentRepo(t)
+	// One line per title/body call, which is both the counter the stub fails on and
+	// the record the cache is asserted against.
+	calls := filepath.Join(t.TempDir(), "calls")
+	installGhPRIntent(t, mainSHA, `echo call >> '`+calls+`'; `+
+		`if [ "$(wc -l < '`+calls+`')" -eq 1 ]; then echo "gh: request timed out" >&2; exit 1; fi; `+
+		`printf '%s\n\n%s\n' 'uploader: retry the flaky part' 'As PROJ-1234 requires, it now retries three times.'`)
+
+	c := New(config.Target{Mode: "pr", Path: repo, PR: 7})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	collect := func(round int) string {
+		t.Helper()
+		material, err := c.Collect(t.Context())
+		if err != nil {
+			t.Fatalf("Collect() round %d = %v", round, err)
+		}
+		return material
+	}
+
+	if material := collect(1); strings.Contains(material, "What this pull request says it is") {
+		t.Errorf("round 1 read nothing, so nothing may claim to quote it:\n%s", material)
+	}
+	for _, round := range []int{2, 3} {
+		material := collect(round)
+		for _, want := range []string{"uploader: retry the flaky part", "As PROJ-1234 requires"} {
+			if !strings.Contains(material, want) {
+				t.Errorf("round %d is missing %q: the failed read latched and the description is gone for the run:\n%s", round, want, material)
+			}
+		}
+	}
+
+	// Round 2 succeeded, so round 3 must have been served from the cache: three
+	// collections, one failed call and one that worked.
+	log, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(strings.Fields(string(log))); n != 2 {
+		t.Errorf("gh pr view --json title,body ran %d times across 3 collections, want 2 (one failure, one cached success)", n)
+	}
+}
+
 // The intent is prose somebody else writes, sitting at the HEAD of the material,
 // directly above fixpoint's own "Diff against pinned base ...:" line. Unmarked, a
 // commit message could print that line itself and follow it with a fabricated
