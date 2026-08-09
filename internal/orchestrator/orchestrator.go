@@ -239,6 +239,9 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 			return nil, err
 		}
 	}
+	if err := loadCreateTemplates(cfg, load); err != nil {
+		return nil, err
+	}
 	if j := cfg.Roles.Judge; j.Prompt != "" {
 		if err := load(j.Prompt, j.PromptPath, prompt.JudgeData{}); err != nil {
 			return nil, err
@@ -282,6 +285,34 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		o.collector.ExcludeLogs(rel)
 	}
 	return o, nil
+}
+
+// loadCreateTemplates parses the editor and create-phase prompts, eagerly like
+// every other template New loads: a missing one must fail before any agent
+// process starts, not mid-pipeline after the propose sessions were paid for.
+// Split out of New only for the complexity budget.
+func loadCreateTemplates(cfg *config.Config, load func(name, path string, data any) error) error {
+	if e := cfg.Roles.Editor; e.Prompt != "" {
+		if err := load(e.Prompt, e.PromptPath, prompt.EditorData{}); err != nil {
+			return err
+		}
+	}
+	for _, cp := range []struct {
+		name, path string
+		data       any
+	}{
+		{cfg.Create.Propose, cfg.Create.ProposePath, prompt.ProposeData{}},
+		{cfg.Create.Critique, cfg.Create.CritiquePath, prompt.CritiqueData{}},
+		{cfg.Create.Object, cfg.Create.ObjectPath, prompt.ObjectData{}},
+	} {
+		if cp.name == "" {
+			continue
+		}
+		if err := load(cp.name, cp.path, cp.data); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Phaser receives the run's structure: which block is open, and what closed it.
@@ -3016,6 +3047,14 @@ func heartbeat(done <-chan struct{}, ticks <-chan time.Time, log func()) {
 // returns the result. label prefixes the heartbeat lines, e.g.
 // "fix: claude-coder".
 func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, lensName string, round int, text string) agent.Result {
+	return o.runAgentIn(ctx, o.cfg.Target.Path, label, role, agentName, lensName, round, text)
+}
+
+// runAgentIn is runAgent with an explicit working directory, so a create phase
+// can run its agent inside the assignment snapshot rather than the target. Only
+// the directory differs: the same prompt log, the same heartbeat, the same
+// timeout.
+func (o *Orchestrator) runAgentIn(ctx context.Context, dir, label, role, agentName, lensName string, round int, text string) agent.Result {
 	if err := o.logs.Prompt(role, agentName, lensName, round, text); err != nil {
 		o.logf("WARNING: writing %s prompt log: %v", role, err)
 	}
@@ -3041,7 +3080,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, label, role, agentName, len
 			o.progressf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
 		})
 	}()
-	res := agent.Run(ctx, o.cfg.Agents[agentName], text, o.cfg.Target.Path)
+	res := agent.Run(ctx, o.cfg.Agents[agentName], text, dir)
 	close(done)
 	hb.Wait()
 	return res
