@@ -57,6 +57,7 @@ Flags:
 	maxIter := fs.Int("max-iterations", 0, "override loop.max_iterations (0 = use config)")
 	baseRef := fs.String("base-ref", "", "override target.base_ref in git-diff mode; a trailing \"...\" means the merge base with HEAD (empty = use config)")
 	pr := fs.Int("pr", 0, "override target.pr in pr mode; which PR to review is per-invocation, so review-pr ships without a number (0 = use config)")
+	targetPath := fs.String("target", "", "point a directory-mode run at a file or a directory; a file is reviewed as a document, shown to the panel in full (empty = use config)")
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
 	trustedBundle := fs.Bool("trusted-bundle", false, "assert only that the bundle files resolved from inside the target may be run; trusts no other target content and permits no fix round")
@@ -129,11 +130,17 @@ Flags:
 	// LoadBundle, because an override changes what a valid configuration is (e.g.
 	// -review-only exempts an all-once lens list from the recurring-lens rule) and
 	// validation must therefore see the post-override value.
+	target, err := absTarget(*targetPath)
+	if err != nil {
+		logf("-target: %v", err)
+		return 1
+	}
 	loaded, err := config.LoadBundle(resolver, name, projectRoot, config.Overrides{
 		ReviewOnly:        *reviewOnly,
 		MaxIterations:     *maxIter,
 		BaseRef:           *baseRef,
 		PR:                *pr,
+		Target:            target,
 		AllowUntrustedFix: *allowUntrustedFix,
 		TrustedTarget:     *trustedTarget,
 		TrustedBundle:     *trustedBundle,
@@ -347,6 +354,17 @@ func newLogger(stderr io.Writer) *runlog.Log {
 	return runlog.New(stderr).Transform(func(s string) string {
 		return agent.EscapeTerminal(agent.RedactSecrets(s))
 	})
+}
+
+// absTarget resolves the -target flag against the OPERATOR's working directory,
+// because only this layer knows it: config anchors relative paths against the
+// project root, which is not where the flag was typed when fixpoint runs from a
+// subdirectory. Empty stays empty -- "use config".
+func absTarget(flag string) (string, error) {
+	if flag == "" {
+		return "", nil
+	}
+	return filepath.Abs(flag)
 }
 
 // forceQuit ends the process on a second interrupt, with the interrupted run's

@@ -266,7 +266,7 @@ func (o *Orchestrator) askTriage(ctx context.Context, t config.RoleRef, material
 	d := prompt.TriageData{
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
-		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
+		ModeGuidance:   o.guidance(),
 		Target:         material,
 		Conversations:  o.conversations(),
 		OutputContract: prompt.TriageContract,

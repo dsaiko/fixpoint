@@ -301,6 +301,7 @@ and the review is still on disk.
 | `-review-only` | Run exactly one review round; the coder is never invoked (no edits in git-diff/directory mode; pr mode still runs `gh pr checkout`, switching the branch and working tree in Prepare). |
 | `-max-iterations n` | Override `loop.max_iterations`. |
 | `-base-ref ref` | Override `target.base_ref` in git-diff mode; a trailing `...` means the merge base with HEAD. For `fix-branch` on a branch with no upstream: `-base-ref 'origin/main...'`. |
+| `-target path` | Point a directory-mode run at a file or a directory. A file is reviewed as a **document**, shown to the panel in full; a directory is collected as a listing. How `review-design` is aimed. |
 | `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. |
 | `-trusted-target` | Assert a directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without it). |
 | `-trusted-bundle` | Assert **only** that the bundle files resolved from inside the target may be executed and sent to agents. Permits no fix round and trusts no other target content — this is the flag to use when the config is yours but the code is not, as `review-pr` on a fork's branch is. |
@@ -339,6 +340,7 @@ command line.
 |---|---|
 | [review-code](config/review-code.yaml) | Review a whole project once, no edits. Needs `-trusted-bundle` (or `-trusted-target`) if the project ships its own bundle. |
 | [review-branch](config/review-branch.yaml) | Review only what this branch changed, no edits. The review-only twin of `fix-branch`. |
+| [review-design](config/review-design.yaml) | Review a design document (`-target docs/DESIGN.md`) or a project's architecture (`-target <dir>`), no edits. Structure, data, and failure modes — not code defects. |
 | [review-pr](config/review-pr.yaml) | Review a GitHub pull request; review-only by default. |
 | [fix-pr](config/fix-pr.yaml) | Fix a pull request's changes and triage its open conversations; the replies are posted only with `-post`. Needs `-allow-untrusted-fix`, and `-trusted-bundle` as well when the target ships the bundle being used. |
 | [fix-code](config/fix-code.yaml) | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |

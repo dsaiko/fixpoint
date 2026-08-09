@@ -243,9 +243,39 @@ func (c *Collector) Prepare(ctx context.Context) error {
 		}
 		c.baseSHA = strings.TrimSpace(mb)
 	case config.ModeDirectory:
-		// nothing to prepare
+		if err := c.prepareDocument(); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// prepareDocument is the whole of directory-mode preparation: proof the document
+// exists, before any agent is pinged or a journal is opened -- a typo in -target
+// must cost nothing. A directory here means the caller resolved -target wrongly,
+// and silently listing it would run a whole review over the wrong material.
+func (c *Collector) prepareDocument() error {
+	if c.cfg.Document == "" {
+		return nil
+	}
+	info, err := os.Stat(c.documentPath())
+	if err != nil {
+		return fmt.Errorf("target.document: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("target.document %s is a directory; a document target is one file", c.documentPath())
+	}
+	return nil
+}
+
+// documentPath resolves target.document against target.path. Absolute stays
+// absolute, so a config can point at a document outside the project it anchors
+// logs in.
+func (c *Collector) documentPath() string {
+	if filepath.IsAbs(c.cfg.Document) {
+		return c.cfg.Document
+	}
+	return filepath.Join(c.cfg.Path, c.cfg.Document)
 }
 
 // Scope reports, in one line, how much a run would review -- for --check, before
@@ -321,6 +351,16 @@ func (c *Collector) Scope(ctx context.Context) (string, error) {
 		}
 		return out, nil
 	case config.ModeDirectory:
+		if c.cfg.Document != "" {
+			// Named and sized, for the same reason git-diff reports its shortstat:
+			// --check exists so the operator sees WHAT would be reviewed before
+			// anything is spent, and "1 file in scope" says nothing about which one.
+			info, err := os.Stat(c.documentPath())
+			if err != nil {
+				return "", fmt.Errorf("target.document: %w", err)
+			}
+			return fmt.Sprintf("document %s (%d bytes)", c.cfg.Document, info.Size()), nil
+		}
 		count, _, err := c.listFiles(ctx)
 		if err != nil {
 			return "", err
@@ -416,6 +456,21 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		}
 		return truncate(sb.String()), nil
 	case config.ModeDirectory:
+		if c.cfg.Document != "" {
+			// The document IS the material, in full. A listing tells reviewers to go
+			// and explore; a design document is judged as a text, and the panel should
+			// read the same bytes rather than each excerpting its own copy. It flows
+			// through the same fencing and defanging as a diff -- it is target-authored
+			// content like everything else between the material markers.
+			doc, err := os.ReadFile(c.documentPath())
+			if err != nil {
+				return "", fmt.Errorf("target.document: %w", err)
+			}
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "Document under review: %s\n\n", c.cfg.Document)
+			sb.Write(doc)
+			return truncate(sb.String()), nil
+		}
 		count, listing, err := c.listFiles(ctx)
 		if err != nil {
 			return "", err

@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -76,7 +77,15 @@ type Overrides struct {
 	// does: which pull request to review is per-invocation by nature, so the
 	// bundled review-pr config carries no usable number and would otherwise have to
 	// be copied and edited once per PR.
-	PR                int
+	PR int
+	// Target points a directory-mode run at a file or a directory, as an ABSOLUTE
+	// path (the caller resolves it against its own working directory -- this layer
+	// cannot know where the flag was typed). A directory becomes target.path; a
+	// file becomes target.document with its parent as target.path, so the panel
+	// reads the document as the material while still working inside the directory
+	// that gives it context. Which file to review is per-invocation by nature --
+	// the same argument as BaseRef and PR.
+	Target            string
 	AllowUntrustedFix bool
 	// Post publishes the review on the pull request, and PostVerdict additionally
 	// lets it carry the verdict (approve / request changes) instead of a comment.
@@ -136,6 +145,35 @@ func (o Overrides) apply(c *Config) {
 	}
 }
 
+// applyTarget folds the -target override in, and is the one override that can
+// FAIL: it names something on disk, and a typo must be a load error rather than a
+// run over the wrong directory. Separate from apply because apply cannot error
+// and retrofitting an error onto nine infallible assignments for the sake of one
+// stat would make every caller handle a failure eight of them cannot have.
+func (o Overrides) applyTarget(c *Config) error {
+	if o.Target == "" {
+		return nil
+	}
+	if !filepath.IsAbs(o.Target) {
+		// The contract with the caller, restated as an error: this layer anchors
+		// relative paths against projectRoot, and the flag was typed relative to the
+		// operator's cwd, which may differ. Refusing is better than resolving against
+		// the wrong root and reviewing whatever happens to be there.
+		return fmt.Errorf("-target %q must be an absolute path", o.Target)
+	}
+	info, err := os.Stat(o.Target)
+	if err != nil {
+		return fmt.Errorf("-target %s: %w", o.Target, err)
+	}
+	if info.IsDir() {
+		c.Target.Path = o.Target
+		return nil
+	}
+	c.Target.Path = filepath.Dir(o.Target)
+	c.Target.Document = filepath.Base(o.Target)
+	return nil
+}
+
 // Applied names the overrides that changed the configuration, for the run log.
 // It reports what was ASSERTED, so a flag whose value the config already set
 // still appears: the operator's assertion is the thing worth recording.
@@ -174,6 +212,10 @@ func (o Overrides) Applied() []string {
 		// Recorded for the same reason as base_ref: in pr mode it decides WHAT was
 		// reviewed.
 		out = append(out, "pr="+strconv.Itoa(o.PR))
+	}
+	if o.Target != "" {
+		// Same reason again: it decides WHAT was reviewed.
+		out = append(out, "target="+o.Target)
 	}
 	return out
 }
@@ -221,6 +263,9 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loa
 	// Last, so the operator's assertions win over every file in the bundle, and so
 	// Validate (run by the caller) sees the value the run will actually use.
 	ov.apply(cfg)
+	if err := ov.applyTarget(cfg); err != nil {
+		return nil, err
+	}
 	l := &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot, Overrides: ov, ownInlineAgents: ownInline}
 	// Refused while the configuration is compiled rather than left to the caller's
 	// trust gate: no flag rescues it (see rejectProjectSuppliedInheritAll), so making
