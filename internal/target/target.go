@@ -2636,8 +2636,12 @@ func (c *Collector) readIntent(ctx context.Context) string {
 		sb.WriteString("\n\n")
 	}
 	if c.baseSHA != "" {
-		// %B is the whole message, subject and body: the body is where a reason is
-		// written, and a subject line alone is a label rather than an explanation.
+		// %s and %b are the subject and the body, taken separately rather than as
+		// %B, so that %h and the subject share one line and the body starts below a
+		// blank line this format imposes -- a layout %B cannot be asked for, since it
+		// reproduces the message's own spacing verbatim. The body is here at all
+		// because a subject line alone is a label rather than an explanation, and the
+		// body is where a reason is written.
 		if out, err := c.git(ctx, "log", "--no-merges", "--format=%h %s%n%n%b%n---", c.baseSHA+"..HEAD"); err == nil {
 			if t := strings.TrimSpace(out); t != "" {
 				sb.WriteString("Commit messages of the changes under review:\n\n")
