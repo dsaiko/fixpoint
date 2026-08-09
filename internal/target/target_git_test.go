@@ -4762,17 +4762,38 @@ func TestCollectWithoutAnyIntentIsJustTheDiff(t *testing.T) {
 // of commits; neither may crowd out the diff, which is the thing being reviewed.
 // The cap is STATED, because a reader who cannot tell a truncated description from
 // a short one reads the missing half as absent.
+// Both shapes of the same 500 lines, because `git log` ends its output with a
+// newline and a pull request body pasted into a text box need not: a count that
+// differs between them is a count that is wrong in one of them.
 func TestClampIntentSaysWhatItDropped(t *testing.T) {
 	var b strings.Builder
 	for i := range 500 {
 		fmt.Fprintf(&b, "line %d\n", i)
 	}
-	got := clampIntent(b.String(), intentLines, intentBytes)
-	if strings.Contains(got, "line 450") {
-		t.Error("the clamp did not apply")
-	}
-	if !strings.Contains(got, "not shown") {
-		t.Errorf("a silent truncation reads as a short description:\n%s", got[len(got)-200:])
+	body := strings.TrimSuffix(b.String(), "\n")
+	for _, tc := range []struct {
+		name string
+		in   string
+	}{
+		{"trailing newline", body + "\n"},
+		{"no trailing newline", body},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clampIntent(tc.in, intentLines, intentBytes)
+			// The boundary, not merely that something was cut: 400 lines kept means
+			// line 399 is the last one and line 400 the first one gone. An off-by-one
+			// at either end passes a looser assertion.
+			if !strings.Contains(got, "line 399") {
+				t.Errorf("the last line within the cap was dropped:\n%s", got[max(0, len(got)-200):])
+			}
+			if strings.Contains(got, "line 400") {
+				t.Errorf("the first line past the cap survived:\n%s", got[max(0, len(got)-200):])
+			}
+			// 500 lines, 400 kept: exactly 100 dropped, whatever the input ends with.
+			if want := "[100 further line(s) not shown]"; !strings.Contains(got, want) {
+				t.Errorf("truncation must say what it dropped, and say it correctly: want %q in:\n%s", want, got[max(0, len(got)-200):])
+			}
+		})
 	}
 	if short := "one\ntwo\n"; clampIntent(short, intentLines, intentBytes) != short {
 		t.Error("a short text must pass through untouched, with nothing claimed to be missing")

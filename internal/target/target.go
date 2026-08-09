@@ -2720,7 +2720,16 @@ const (
 //nolint:unparam // both caps are always their constants today; see above.
 func clampIntent(s string, maxLines, maxBytes int) string {
 	var dropped []string
-	if lines := strings.Split(s, "\n"); len(lines) > maxLines {
+	lines := strings.Split(s, "\n")
+	// A text ending in a newline splits to a trailing empty element, which is the
+	// end of the last line rather than a line of its own. Counting it would claim
+	// one more dropped line than was dropped, and would report a different number
+	// for the same content depending on how it happened to end -- `git log` ends in
+	// a newline, a pull request body need not.
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	if len(lines) > maxLines {
 		dropped = append(dropped, fmt.Sprintf("%d further line(s)", len(lines)-maxLines))
 		s = strings.Join(lines[:maxLines], "\n")
 	}
