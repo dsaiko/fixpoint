@@ -228,6 +228,21 @@ func (s *Store) ReviewBody(text string) (string, error) {
 	return name, nil
 }
 
+// ScratchDir claims and returns a run-owned directory for transient working
+// state -- today the create pipeline's assignment snapshot. Under the run
+// directory so it inherits the owner-only permissions and the gitignore, and so
+// what a run worked against survives beside its artifacts for the audit trail.
+func (s *Store) ScratchDir(name string) (string, error) {
+	if err := s.ensureDir(); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(s.runDir, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 // Summary writes the run summary as md + json (raw does not apply).
 func (s *Store) Summary(sum *model.RunSummary) (string, error) {
 	if err := s.ensureDir(); err != nil {

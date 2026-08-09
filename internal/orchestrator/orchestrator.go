@@ -621,6 +621,16 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	o.warnInheritedEnv()
 	o.warnTargetSuppliedCommand()
 
+	// A create run is its own pipeline: no coder, no verify gate, no forge, no
+	// git requirement -- its agents run inside a snapshot COPY of the assignment
+	// (which carries no .git, so the branch-conditional git hardening below has
+	// nothing to act on), and its only write to the world is the deliverable,
+	// published atomically at the end. Everything from here down is loop
+	// machinery a create run does not have.
+	if o.cfg.IsCreate() {
+		return o.runCreate(ctx, sum)
+	}
+
 	// Enforce the fix-round trust gate; see checkFixTrust for the rationale.
 	if err := o.checkFixTrust(); err != nil {
 		return err

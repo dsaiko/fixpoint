@@ -313,6 +313,9 @@ type RunSummary struct {
 	// run. It is the file an operator reads, and on the posting path the exact
 	// bytes that were sent.
 	ReviewBody string `json:"review_body,omitempty"`
+	// Deliverable is where a create run published its document, recorded so the
+	// summary can answer "where did it go" without re-deriving the default.
+	Deliverable string `json:"deliverable,omitempty"`
 	// ReviewPosted names the event a review was published as ("comment",
 	// "approve", "request_changes"), or is empty when nothing reached the forge. An
 	// operator reading a summary should not have to infer from a log line whether
@@ -359,7 +362,7 @@ type ReviewVerdict struct {
 // for that, not the exit status.
 func ExitCode(termination string) int {
 	switch termination {
-	case TermConverged, TermReviewOnly:
+	case TermConverged, TermReviewOnly, TermCreated:
 		return 0
 	case TermMaxIterations:
 		return 2
@@ -421,6 +424,7 @@ const (
 	TermMaxIterations = "max-iterations"
 	TermInterrupted   = "interrupted"
 	TermError         = "error"
+	TermCreated       = "created" // a create run published its deliverable
 )
 
 // RunSources is the provenance of one run's configuration: which file each
