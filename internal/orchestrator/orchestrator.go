@@ -2051,7 +2051,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		sum.Termination = model.TermInterrupted
 		return true, nil //nolint:nilerr // interruption is a normal termination, not a round error
 	}
-	o.rule("round %d/%d", round, o.cfg.Loop.MaxIterations)
+	o.rule("round %d/%d", round, o.maxRounds())
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
@@ -4590,6 +4590,18 @@ func (o *Orchestrator) guidance() string {
 		return prompt.DocumentGuidance
 	}
 	return prompt.ModeGuidance(o.cfg.Target.Mode)
+}
+
+// maxRounds is the ceiling the round banner shows. A review-only run ends after
+// one round BY DESIGN -- it produces a verdict and nothing follows -- so showing
+// loop.max_iterations there promised rounds that cannot happen: review-code
+// inherits 5 from defaults and printed "round 1/5" for a run that always has one.
+// Caught by the operator on review-design's first real run.
+func (o *Orchestrator) maxRounds() int {
+	if o.cfg.Loop.ReviewOnly {
+		return 1
+	}
+	return o.cfg.Loop.MaxIterations
 }
 
 // issuesAtOrAbove selects the findings a refutation round is asked about: those

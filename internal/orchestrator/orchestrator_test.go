@@ -10044,3 +10044,27 @@ func TestReviewingADocumentShowsThePanelTheDocument(t *testing.T) {
 		t.Errorf("finding anchored at %s:%d, want DESIGN.md:3 -- a document finding cites the document", it.File, it.Line)
 	}
 }
+
+// A review-only run has exactly one round by design, and the banner must say so:
+// review-code inherits max_iterations 5 from defaults and printed "round 1/5",
+// promising four rounds that cannot happen. Caught by the operator watching
+// review-design's first real run.
+func TestAReviewOnlyRunAnnouncesOneRound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 5, ReviewOnly: true})
+	f.respond(1, reviewResponse(t))
+
+	logf, logs := captureLog()
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs(), "round 1/1") {
+		t.Errorf("banner should say round 1/1 for a review-only run:\n%s", logs())
+	}
+	if strings.Contains(logs(), "round 1/5") {
+		t.Errorf("banner promises rounds a review-only run cannot have:\n%s", logs())
+	}
+}
