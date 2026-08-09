@@ -892,6 +892,33 @@ func TestFormatIntentIsBoundedInBytes(t *testing.T) {
 	}
 }
 
+// The backstop is a defence against an unbounded caller, not a second cut at the
+// collector's own output: a change with both a long description and a long history
+// must reach the coder as whole as it reaches the reviewers, whose material path
+// applies no cut of its own. The collector clamps its two halves separately, so
+// what it can hand over is twice its cap plus the framing between them -- and
+// since the commits are written last, a backstop below that sum would take the
+// per-step reasoning specifically.
+//
+// The cap is spelled out here rather than imported because target imports this
+// package; if target's intentBytes moves, this fails and says which way.
+func TestFormatIntentClearsWhatTheCollectorCanProduce(t *testing.T) {
+	const collectorHalf = 16 << 10 // internal/target: intentBytes, per half
+
+	// Both halves at their cap, under the headings readIntent writes.
+	intent := "What this pull request says it is:\n\n" + strings.Repeat("d", collectorHalf) +
+		"\n\nCommit messages of the changes under review:\n\n" + strings.Repeat("c", collectorHalf) +
+		"\n\nlast line of the last commit message\n\n"
+
+	got := FormatIntent(intent)
+	if strings.Contains(got, "cut here by fixpoint") {
+		t.Errorf("the backstop cut an intent the collector had already bounded: %d bytes in", len(intent))
+	}
+	if !strings.Contains(got, "last line of the last commit message") {
+		t.Error("the commit half is written last, so a low backstop drops its reasoning first")
+	}
+}
+
 // Nothing to say renders nothing -- not an empty heading claiming there is
 // background when there is none.
 func TestFormatIntentIsEmptyWithoutAnIntent(t *testing.T) {

@@ -1080,10 +1080,20 @@ func FormatIntent(intent string) string {
 	return sb.String()
 }
 
-// intentBytes is the backstop for the above, sitting above the collector's own
-// cap so that in the ordinary case this changes nothing and the marker a reader
-// sees is the one the collector wrote.
-const intentBytes = 24 << 10
+// intentBytes is the backstop for the above, sitting above everything the
+// collector can hand over so that in the ordinary case this changes nothing and
+// the marker a reader sees is the one the collector wrote.
+//
+// Above the SUM, not one half of it: the collector clamps the pull request text
+// and the commit messages separately, at 16 kB each today, and hands both over as
+// one string under their two headings. A backstop between one cap and two would
+// fire on a change that has both a long description and a long history -- and
+// since the commits come last, it would cut exactly the per-step reasoning this
+// was added to carry, while the reviewers, whose material path applies no such
+// second cut, saw all of it. 40 kB clears the two caps and their framing with
+// room for a third half, and is still a small fraction of the smallest agent
+// budget this has to fit inside.
+const intentBytes = 40 << 10
 
 // clipBytes cuts s to at most limit bytes on a rune boundary and says it did, in
 // the same shape the collector's own clamp uses: a cut a reader cannot see reads
