@@ -530,11 +530,18 @@ func probe(path string) (runnable bool, description, extends string) {
 				Prompts []yaml.Node `yaml:"prompts"`
 			} `yaml:"review"`
 		} `yaml:"roles"`
+		Create struct {
+			Propose string `yaml:"propose"`
+		} `yaml:"create"`
 	}
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return true, "", ""
 	}
-	return len(p.Roles.Review.Prompts) > 0, strings.TrimSpace(p.Description), strings.TrimSpace(p.Extends)
+	// Runnable means "defines work of its own": review lenses, or a create
+	// pipeline -- a create config has no lenses by design and must not be listed
+	// as a base for others to inherit.
+	runnable = len(p.Roles.Review.Prompts) > 0 || strings.TrimSpace(p.Create.Propose) != ""
+	return runnable, strings.TrimSpace(p.Description), strings.TrimSpace(p.Extends)
 }
 
 // isPathLike reports whether an argument should be treated as a filesystem path
