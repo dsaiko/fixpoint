@@ -560,6 +560,36 @@ func (b *BoundedBuffer) String() string {
 // a handful of attempts at most.
 const maxExtractAttempts = 100
 
+// ExtractText returns the body of the LAST <tag>...</tag> block in output, for
+// contracts whose payload is PROSE rather than JSON -- a design proposal is a
+// document, and demanding it arrive as a JSON string would cost every newline a
+// backslash and every reviewer a parse failure.
+//
+// Same anchoring rules as ExtractJSON, for the same reasons: the final closing
+// tag wins (a quoted </tag> inside the body is never last), and only whitespace
+// may follow it -- an agent that quotes an earlier block and then answers
+// untagged has not met the contract, and falling back to the quoted block would
+// accept the wrong text as the answer.
+func ExtractText(output, tag string) (string, error) {
+	openTag, closeTag := "<"+tag+">", "</"+tag+">"
+	c := strings.LastIndex(output, closeTag)
+	if c < 0 {
+		return "", fmt.Errorf("no <%s> block found in agent output", tag)
+	}
+	if strings.TrimSpace(output[c+len(closeTag):]) != "" {
+		return "", fmt.Errorf("<%s> block is not the last output (the contract requires the tagged block to be final; untagged trailing output follows the last </%s>)", tag, tag)
+	}
+	o := strings.LastIndex(output[:c], openTag)
+	if o < 0 {
+		return "", fmt.Errorf("no <%s> block found in agent output", tag)
+	}
+	body := strings.TrimSpace(output[o+len(openTag) : c])
+	if body == "" {
+		return "", fmt.Errorf("the <%s> block is empty", tag)
+	}
+	return body, nil
+}
+
 // ExtractJSON finds the agent's FINAL <tag>...</tag> block in the output and
 // unmarshals its JSON payload into out.
 //

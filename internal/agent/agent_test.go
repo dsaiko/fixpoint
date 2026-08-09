@@ -515,3 +515,32 @@ func TestRunAllowsAPromptAtOrUnderTheBudgetAndIgnoresAZeroBudget(t *testing.T) {
 		})
 	}
 }
+
+// A design proposal is prose, and the envelope rules are ExtractJSON's: the
+// final closing tag wins, and nothing but whitespace may follow it.
+func TestExtractText(t *testing.T) {
+	for name, tc := range map[string]struct {
+		output  string
+		want    string
+		wantErr string
+	}{
+		"plain":                  {output: "thinking...\n<design># Title\n\nBody.</design>", want: "# Title\n\nBody."},
+		"quoted closer inside":   {output: "<design>write </design> literally\nmore</design>", want: "write </design> literally\nmore"},
+		"trailing prose refused": {output: "<design>d</design>\nand another thing", wantErr: "not the last output"},
+		"missing":                {output: "no envelope here", wantErr: "no <design> block"},
+		"empty":                  {output: "<design>   </design>", wantErr: "block is empty"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := ExtractText(tc.output, "design")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("ExtractText() = %q, %v; want error containing %q", got, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("ExtractText() = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
