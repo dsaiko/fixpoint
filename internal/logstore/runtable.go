@@ -32,7 +32,10 @@ func RenderRunTable(sum *model.RunSummary) string {
 	// The bundle name comes from a filename that may live inside the target, so it
 	// is escaped here as it is in the row below and in `--list`.
 	title := fmt.Sprintf("fixpoint · %s · %s", agent.EscapeTerminal(configName(sum)), sum.Termination)
-	if n := len(sum.Rounds) - st.finalRounds; n > 0 {
+	// A create run has one pipeline, not rounds -- its single RoundRecord exists to
+	// bill the steps, and "created after 1 round(s)" would dress that bookkeeping
+	// up as loop vocabulary.
+	if n := len(sum.Rounds) - st.finalRounds; n > 0 && !sum.Create {
 		title += fmt.Sprintf(" after %d round(s)", n)
 	}
 	// The closing round is named separately: it runs after the outcome is decided,
