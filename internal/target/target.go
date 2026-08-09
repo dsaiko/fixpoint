@@ -395,7 +395,12 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		// "Diff against pinned base <sha>:" line, follow it with a fabricated patch, and
 		// be lexically indistinguishable from the real framing a few lines below. Same
 		// treatment the coder's copy gets (prompt.FormatIntent).
-		if intent := prompt.Quote(c.Intent(ctx)); intent != "" {
+		//
+		// The same specs the diff was rendered with, not a second call that builds
+		// them again: the log below the heading must describe the diff below IT, and
+		// two independent builds can disagree (HideRunEdits moves between them, a
+		// symlink appears) about which paths are in scope.
+		if intent := prompt.Quote(c.readIntent(ctx, specs)); intent != "" {
 			sb.WriteString(prompt.UntrustedNote("the pull request and the commits under review",
 				"background on what the change is for"))
 			sb.WriteString(intent + "\n\n")
@@ -2630,7 +2635,18 @@ func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 // Bounded, because a description is free text somebody else writes and a branch can
 // carry hundreds of commits. The cap is stated in the output rather than applied
 // silently, for the same reason the conversation elision states its own.
-func (c *Collector) Intent(ctx context.Context) string { return c.readIntent(ctx) }
+// Collect renders this beside the diff and passes the pathspec it built for that
+// diff; this entry point has no diff next to it, so it builds its own. A pathspec
+// that cannot be built is nil rather than fatal, for the same reason everything
+// else here is best effort -- and nil drops the commit half instead of widening it
+// back to the whole repository.
+func (c *Collector) Intent(ctx context.Context) string {
+	specs, err := c.collectPathspec(ctx)
+	if err != nil {
+		specs = nil
+	}
+	return c.readIntent(ctx, specs)
+}
 
 // readIntent does the reading. Only the pull request half is cached, and the
 // distinction is the point: a title and body are a remote fact pinned for the run,
@@ -2641,21 +2657,33 @@ func (c *Collector) Intent(ctx context.Context) string { return c.readIntent(ctx
 // contains the rest: exactly the silent omission the clamp states rather than
 // hides. `git log` is local, so the network-round-trip reason to cache never
 // applied to it.
-func (c *Collector) readIntent(ctx context.Context) string {
+//
+// specs is the collection pathspec the diff this text introduces is rendered
+// with, and the log carries it too. The diff is scoped -- to target.path, minus
+// target.exclude, the mandatory credential patterns, this run's own edits and the
+// symlink aliases -- so an unscoped log heads it with commits that changed nothing
+// under review and calls them the reasoning for it: on a repository where the
+// target is one package of many, that is most of the range. Those messages also
+// spend the intentBytes cap the commits that DID contribute need, so the effect is
+// not merely noise -- it displaces the thing this was added to carry. nil means
+// the pathspec could not be built, and the half is dropped rather than widened.
+func (c *Collector) readIntent(ctx context.Context, specs []string) string {
 	var sb strings.Builder
 	if t := c.prIntent(ctx); t != "" {
 		sb.WriteString("What this pull request says it is:\n\n")
 		sb.WriteString(t)
 		sb.WriteString("\n\n")
 	}
-	if c.baseSHA != "" {
+	if c.baseSHA != "" && len(specs) > 0 {
 		// %s and %b are the subject and the body, taken separately rather than as
 		// %B, so that %h and the subject share one line and the body starts below a
 		// blank line this format imposes -- a layout %B cannot be asked for, since it
 		// reproduces the message's own spacing verbatim. The body is here at all
 		// because a subject line alone is a label rather than an explanation, and the
 		// body is where a reason is written.
-		if out, err := c.git(ctx, "log", "--no-merges", "--format=%h %s%n%n%b%n---", c.baseSHA+"..HEAD"); err == nil {
+		args := []string{"log", "--no-merges", "--format=%h %s%n%n%b%n---", c.baseSHA + "..HEAD", "--"}
+		args = append(args, specs...)
+		if out, err := c.git(ctx, args...); err == nil {
 			if t := strings.TrimSpace(out); t != "" {
 				sb.WriteString("Commit messages of the changes under review:\n\n")
 				sb.WriteString(clampIntent(t, intentLines, intentBytes))

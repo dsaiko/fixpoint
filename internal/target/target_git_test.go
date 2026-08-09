@@ -4561,6 +4561,44 @@ func TestCollectCarriesTheCommitMessagesOfTheChangesUnderReview(t *testing.T) {
 	}
 }
 
+// The commit list introduces the diff, so it has to describe the same change the
+// diff does. `git log` is scoped by nothing at all on its own -- not even by the
+// directory it runs in -- so without the collection pathspec a target that is one
+// package of a larger repository heads its material with the commit messages of
+// every OTHER package, presented as the reasoning for the code under review. They
+// are not merely noise either: they spend the same intentBytes cap, so on a long
+// range they displace the messages of the commits that did contribute.
+func TestCommitMessagesAreScopedLikeTheDiff(t *testing.T) {
+	repo := gitRepo(t)
+	base := strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	writeFile(t, repo, "vendor/lib/lib.go", "package lib\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-qm", "vendor: bump the pinned library")
+	writeFile(t, repo, "main.go", "package main\n\nfunc changed() {}\n")
+	git(t, repo, "commit", "-aqm", "guard the nil deref")
+
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: base, Exclude: []string{"**/vendor/**"}})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(material, "guard the nil deref") {
+		t.Errorf("the in-scope commit lost its message:\n%s", material)
+	}
+	if strings.Contains(material, "bump the pinned library") {
+		t.Errorf("a commit outside the reviewed scope is quoted as the intent of the change:\n%s", material)
+	}
+	// The exported entry point builds the pathspec itself -- the coder reads it with
+	// no diff beside it -- so it has to reach the same answer.
+	if intent := c.Intent(t.Context()); !strings.Contains(intent, "guard the nil deref") ||
+		strings.Contains(intent, "bump the pinned library") {
+		t.Errorf("Intent() is scoped differently from the material:\n%s", intent)
+	}
+}
+
 // prIntentRepo is the pr-mode fixture the two tests below share: a main branch
 // pinned as the base, and a feature branch carrying one change for the PR.
 func prIntentRepo(t *testing.T) (repo, mainSHA string) {
@@ -4577,7 +4615,7 @@ func prIntentRepo(t *testing.T) (repo, mainSHA string) {
 
 // installGhPRIntent puts a gh on PATH answering the two calls pr mode makes: the
 // base-oid lookup Prepare pins the diff against, and the title/body read the
-// intent comes from, whose behaviour is the caller's shell fragment.
+// intent comes from, whose behavior is the caller's shell fragment.
 //
 // Matched on the whole argument list, so neither call can answer for the other.
 // The shape of the title/body call IS what these tests pin -- a flag typo, a
