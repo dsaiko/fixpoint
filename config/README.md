@@ -86,6 +86,30 @@ decoded *over* the base and only assigns the keys it actually contains. That is
 also why `roles` in the base does not make it runnable — `--list` decides that on
 `roles.review.prompts`, which a base deliberately omits.
 
+## Reviewing a design
+
+`review-design` runs the same pipeline as `review-code` — panel, refutation,
+judge, verdict — with two differences: the lenses ask about **decisions**
+(boundaries and dependencies, data and state, failure and operation) rather than
+defects, and the target is usually a single document:
+
+```sh
+fixpoint review-design -target docs/DESIGN.md     # a document
+fixpoint review-design -target ~/src/someproject  # a project's architecture
+```
+
+A file passed to `-target` becomes `target.document`: the material is the file
+itself, shown to the panel whole, introduced as a document to judge rather than an
+index to explore. The panel still runs in the directory that holds it, so anything
+the document references stays readable. A directory reviews architecture over the
+ordinary listing. Findings cite the document's own lines, so the review reads like
+any other — file, line, consequence.
+
+The document is target-authored text and goes through the same fencing and
+defanging as a diff. Nothing here needs a trust flag beyond what any review needs
+(`-trusted-bundle` when the target ships its own bundle): no coder runs, and the
+judge is read-only by validation.
+
 ## Per-lens modifiers
 
 A `roles.review.prompts` entry may be a bare prompt name or a mapping carrying

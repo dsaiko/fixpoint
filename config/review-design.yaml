@@ -1,0 +1,42 @@
+# One review round over a DESIGN, no edits: a design document, or a project
+# judged at the architecture level rather than line by line.
+#
+# The target is usually named per invocation:
+#
+#   fixpoint review-design -target docs/DESIGN.md     # a document, reviewed whole
+#   fixpoint review-design -target ~/src/someproject  # a project's architecture
+#
+# A file becomes the material itself, shown to the panel in full; a directory is
+# collected as a listing exactly like review-code, but the lenses ask about
+# structure, data, and failure modes instead of defects. Code-level findings are
+# deliberately out of scope -- review-code owns those, and a panel told to do both
+# at once does neither well.
+description: Review a design document or a project's architecture once, no edits.
+
+extends: defaults
+
+roles:
+  # Same judge as the code reviews, same reasoning (see review-code.yaml). Design
+  # findings need the filter more, if anything: "I would structure this
+  # differently" is exactly the style-preference-in-defect's-clothing the judge
+  # prompt already names.
+  judge: { agent: claude, prompt: judge }
+  review:
+    # all: one round, nothing follows it, so breadth is the budget -- the same
+    # argument as review-code.
+    strategy: all
+    prompts:
+      - design-boundaries
+      - design-data
+      - design-failure
+
+loop:
+  review_only: true
+
+# Refutation, scoped by refute_at exactly as everywhere else. Design findings are
+# harder to refute with a file-and-line proof than code findings -- expect more
+# contested and fewer dropped -- but the round is what authorizes the judge to
+# drop a blocking finding, and that gate matters here for the same reason it does
+# in review-code.
+review:
+  refute: refute

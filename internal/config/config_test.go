@@ -1396,3 +1396,77 @@ func TestJudgeAgentGoesThroughTheCommonAgentCheck(t *testing.T) {
 		})
 	}
 }
+
+// target.document narrows a directory target to one file. In the git modes the
+// material is a diff, so the key would be silently inert there -- and an inert
+// key sitting in a config looking like an active narrowing is worse than a load
+// error, the same rule every other refused-inert key follows.
+func TestDocumentRequiresDirectoryMode(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mode    Mode
+		wantErr string
+	}{
+		"directory": {ModeDirectory, ""},
+		"git-diff":  {ModeGitDiff, "only mode directory"},
+		"pr":        {ModePR, "only mode directory"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := validConfig(t)
+			cfg.Target.Mode = tc.mode
+			cfg.Target.Document = "DESIGN.md"
+			if tc.mode == ModeGitDiff {
+				cfg.Target.BaseRef = "main..."
+			}
+			if tc.mode == ModePR {
+				cfg.Target.PR = 7
+			}
+			err := cfg.Validate()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("Validate() = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// -target accepts a file or a directory, and the difference decides the run's
+// shape: a directory is reviewed as a listing, a file as a document shown whole.
+// A typo must be a load error, not a review of whatever happened to resolve.
+func TestTargetOverrideResolvesFilesDirectoriesAndTypos(t *testing.T) {
+	dir := t.TempDir()
+	doc := filepath.Join(dir, "DESIGN.md")
+	if err := os.WriteFile(doc, []byte("# design\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		target   string
+		wantErr  string
+		wantPath string
+		wantDoc  string
+	}{
+		"a directory": {target: dir, wantPath: dir, wantDoc: ""},
+		"a file":      {target: doc, wantPath: dir, wantDoc: "DESIGN.md"},
+		"a typo":      {target: filepath.Join(dir, "DESING.md"), wantErr: "no such file"},
+		"relative":    {target: "DESIGN.md", wantErr: "must be an absolute path"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := validConfig(t)
+			err := Overrides{Target: tc.target}.applyTarget(cfg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("applyTarget() = %v, want error containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("applyTarget() = %v", err)
+			}
+			if cfg.Target.Path != tc.wantPath || cfg.Target.Document != tc.wantDoc {
+				t.Errorf("path=%q document=%q, want path=%q document=%q",
+					cfg.Target.Path, cfg.Target.Document, tc.wantPath, tc.wantDoc)
+			}
+		})
+	}
+}

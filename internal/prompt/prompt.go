@@ -297,6 +297,16 @@ func ModeGuidance(mode config.Mode) string {
 	}
 }
 
+// DocumentGuidance replaces the directory guidance when the target is narrowed to
+// one file. The directory line tells reviewers the material is "an index, not the
+// content" and to go exploring -- which, pointed at a design document, sends the
+// panel reading a repository that is not the subject. Here the material IS the
+// subject, whole.
+const DocumentGuidance = "The material below is a document under review, shown in full. " +
+	"Judge what it DESCRIBES -- the design, its structure, its consequences -- not its " +
+	"prose style. You are running in the directory that holds it: read any file it " +
+	"references for context."
+
 // ReviewContract is the output contract injected into review prompts. It carries
 // the severity rubric as well as the JSON shape: severity decides which findings
 // reach the coder when a round is capped, so it is a scheduling input, not a

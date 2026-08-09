@@ -77,6 +77,18 @@ type Target struct {
 	Path    string `yaml:"path"`
 	BaseRef string `yaml:"base_ref"`
 	PR      int    `yaml:"pr"`
+	// Document narrows a directory target to ONE FILE, which becomes the material
+	// itself -- shown to the panel in full rather than as a listing entry. It is how
+	// review-design reads a design document: the reviewers judge the text, and the
+	// surrounding directory is still their working directory, so anything the
+	// document references (diagrams, earlier drafts, the project itself) stays
+	// readable.
+	//
+	// Relative to Path, or absolute. Usually set per invocation via -target, which
+	// accepts a file or a directory and fills in Path/Document accordingly -- which
+	// file to review is per-invocation by nature, the same argument as BaseRef and
+	// PR.
+	Document string `yaml:"document"`
 	// Exclude removes paths from directory-mode collection. There is
 	// deliberately no include/allowlist counterpart: an allowlist has to be
 	// re-derived for every language and silently drops whatever it forgets,
@@ -1349,6 +1361,13 @@ func (c *Config) Validate() error {
 	case ModeGitDiff, ModePR, ModeDirectory:
 	default:
 		return fmt.Errorf("target.mode: unknown mode %q (want git-diff | pr | directory)", c.Target.Mode)
+	}
+	// A document is only meaningful where the material would otherwise be a
+	// listing. In the git modes the material is a diff, and a silently inert
+	// `document:` key would sit in the config looking like a narrowing that never
+	// happens -- same rule as every other refused-inert key here.
+	if c.Target.Document != "" && c.Target.Mode != ModeDirectory {
+		return fmt.Errorf("target.document is set but target.mode is %q: a document target reviews one file as the material, which only mode directory supports", c.Target.Mode)
 	}
 	if c.Target.Mode == ModePR && c.Target.PR <= 0 {
 		return errors.New("target.pr: PR number required for mode pr")

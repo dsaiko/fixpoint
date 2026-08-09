@@ -10005,3 +10005,42 @@ func TestTheVerificationCorrectionPromptCarriesWhatTheChangeSaysItIs(t *testing.
 		}
 	}
 }
+
+// review-design end to end: the panel is shown the document itself, told it is a
+// document rather than an index to explore, and the run ends with a verdict --
+// the same machinery as every other review, pointed at a text instead of a tree.
+func TestReviewingADocumentShowsThePanelTheDocument(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, ReviewOnly: true})
+	doc := "# Design: card game\n\nAll state lives in the DOM.\n"
+	if err := os.WriteFile(filepath.Join(f.repo, "DESIGN.md"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.Target.Document = "DESIGN.md"
+	f.respond(1, reviewResponse(t, model.ReviewFinding{
+		Category: "design", Severity: "high", File: "DESIGN.md", Line: 3,
+		Title: "state in the DOM cannot be saved or tested"}))
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := f.reviewPrompt(1)
+	for _, want := range []string{
+		"Document under review: DESIGN.md",
+		"All state lives in the DOM",
+		"a document under review, shown in full", // DocumentGuidance, not the listing guidance
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "an index, not the content") {
+		t.Errorf("a document target was introduced with the listing guidance:\n%s", prompt)
+	}
+	if sum.Verdict == nil || sum.Verdict.Outcome != model.VerdictChangesRequested {
+		t.Fatalf("verdict = %+v, want changes_requested on a surviving high", sum.Verdict)
+	}
+	if it := sum.Rounds[0].Issues[0]; it.File != "DESIGN.md" || it.Line != 3 {
+		t.Errorf("finding anchored at %s:%d, want DESIGN.md:3 -- a document finding cites the document", it.File, it.Line)
+	}
+}

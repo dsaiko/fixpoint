@@ -4990,3 +4990,76 @@ func TestCollectKeepsTheDiffWhenTheIntentIsOversized(t *testing.T) {
 		}
 	}
 }
+
+// A document target's material is the file itself, whole. A listing tells
+// reviewers to explore; a design document is judged as a text, and every panel
+// member must read the same bytes.
+func TestCollectDocumentIsTheFileItself(t *testing.T) {
+	dir := t.TempDir()
+	body := "# Design\n\nThe uploader retries forever.\n"
+	if err := os.WriteFile(filepath.Join(dir, "DESIGN.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling that must NOT appear: the document is the scope, not the directory.
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.go"), []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := New(config.Target{Mode: "directory", Path: dir, Document: "DESIGN.md"})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Document under review: DESIGN.md", "retries forever"} {
+		if !strings.Contains(material, want) {
+			t.Errorf("Collect() missing %q:\n%s", want, material)
+		}
+	}
+	if strings.Contains(material, "unrelated.go") {
+		t.Errorf("a sibling file leaked into a document target's material:\n%s", material)
+	}
+	if strings.Contains(material, "Files in scope") {
+		t.Errorf("a document target rendered as a listing:\n%s", material)
+	}
+}
+
+// A missing document fails at Prepare -- before any agent is pinged or a journal
+// opened, because a typo in -target must cost nothing. A directory reaching this
+// point means the caller resolved the flag wrongly, and silently listing it would
+// review the wrong material.
+func TestPrepareRefusesAMissingOrDirectoryDocument(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ doc, wantErr string }{
+		"missing":     {"NOPE.md", "no such file"},
+		"a directory": {"docs", "is a directory"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := New(config.Target{Mode: "directory", Path: dir, Document: tc.doc})
+			if err := c.Prepare(t.Context()); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Prepare() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// --check reports WHAT would be reviewed before anything is spent, and for a
+// document "1 file in scope" says nothing about which one.
+func TestScopeNamesTheDocument(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "DESIGN.md"), []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := New(config.Target{Mode: "directory", Path: dir, Document: "DESIGN.md"})
+	got, err := c.Scope(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "document DESIGN.md (5 bytes)"; got != want {
+		t.Errorf("Scope() = %q, want %q", got, want)
+	}
+}

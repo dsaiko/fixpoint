@@ -3070,7 +3070,7 @@ func (o *Orchestrator) runReviewAssignment(ctx context.Context, asg model.Assign
 		Mode:         o.cfg.Target.Mode,
 		Path:         o.cfg.Target.Path,
 		Round:        round,
-		ModeGuidance: prompt.ModeGuidance(o.cfg.Target.Mode),
+		ModeGuidance: o.guidance(),
 		Target:       material,
 		History:      prompt.FormatHistory(history),
 		// Nothing lens- or agent-specific may reach the prelude: it is what the
@@ -4581,6 +4581,17 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	o.endPhase("REFUTE  %d of %d responder(s), %d dropped, %d contested", responded, len(panel), dropped, contested)
 }
 
+// guidance is the mode line every prompt opens with, document-aware: a directory
+// target narrowed to one file is reviewed as a document shown in full, and telling
+// the panel the material is "an index, not the content" would send it exploring a
+// repository that is not the subject.
+func (o *Orchestrator) guidance() string {
+	if o.cfg.Target.Document != "" {
+		return prompt.DocumentGuidance
+	}
+	return prompt.ModeGuidance(o.cfg.Target.Mode)
+}
+
 // issuesAtOrAbove selects the findings a refutation round is asked about: those
 // at or worse than the floor, in the order they were merged.
 //
@@ -4630,7 +4641,7 @@ func (o *Orchestrator) refuteWith(ctx context.Context, agentName string, round i
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
 		Round:          round,
-		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
+		ModeGuidance:   o.guidance(),
 		Target:         material,
 		Canonical:      prompt.FormatCanonical(subject),
 		OutputContract: prompt.RefuteContract,
@@ -4854,7 +4865,7 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 		Mode:           o.cfg.Target.Mode,
 		Path:           o.cfg.Target.Path,
 		Round:          rec.Round,
-		ModeGuidance:   prompt.ModeGuidance(o.cfg.Target.Mode),
+		ModeGuidance:   o.guidance(),
 		Target:         material,
 		Canonical:      prompt.FormatCanonical(undecidedIssues(rec)),
 		OutputContract: prompt.JudgeContract,
