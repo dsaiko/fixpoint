@@ -4907,8 +4907,22 @@ func TestClampIntentBoundsBytesNotJustLines(t *testing.T) {
 		t.Errorf("the byte cut must be stated, not silent:\n%s", got[max(0, len(got)-200):])
 	}
 	// A cut that lands mid-character would put invalid UTF-8 into every prompt.
-	if wide := strings.Repeat("é", intentBytes); !utf8.ValidString(clampIntent(wide, intentLines, intentBytes)) {
+	// The input is DELIBERATELY misaligned: a run of two-byte characters alone puts
+	// a rune boundary at every even offset, so an even cap lands cleanly on one and
+	// the assertion would hold with the backoff loop deleted. One leading ASCII byte
+	// shifts every boundary to an odd offset, so the cap now lands mid-character and
+	// only the backoff keeps the result valid.
+	wide := "x" + strings.Repeat("é", intentBytes)
+	if utf8.ValidString(wide[:intentBytes]) {
+		t.Fatalf("this fixture no longer straddles the cap at %d bytes, so it cannot "+
+			"detect a missing backoff: adjust it until the naive cut is invalid", intentBytes)
+	}
+	got = clampIntent(wide, intentLines, intentBytes)
+	if !utf8.ValidString(got) {
 		t.Error("the byte cap cut inside a multibyte character")
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Error("the byte cap left a partial character that renders as a replacement rune")
 	}
 }
 
