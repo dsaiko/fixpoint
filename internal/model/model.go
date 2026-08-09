@@ -313,8 +313,11 @@ type RunSummary struct {
 	// run. It is the file an operator reads, and on the posting path the exact
 	// bytes that were sent.
 	ReviewBody string `json:"review_body,omitempty"`
-	// Deliverable is where a create run published its document, recorded so the
-	// summary can answer "where did it go" without re-deriving the default.
+	// Create marks a create-design run, whose summary reads in that pipeline's
+	// vocabulary rather than the loop's, and Deliverable is where it published
+	// its document -- recorded so the summary can answer "where did it go"
+	// without re-deriving the default.
+	Create      bool   `json:"create,omitempty"`
 	Deliverable string `json:"deliverable,omitempty"`
 	// ReviewPosted names the event a review was published as ("comment",
 	// "approve", "request_changes"), or is empty when nothing reached the forge. An
