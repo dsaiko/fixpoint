@@ -27,6 +27,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/gitenv"
+	"github.com/dsaiko/fixpoint/internal/prompt"
 )
 
 // maxMaterial caps the material embedded into prompts. Agents are agentic and
@@ -383,9 +384,21 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		// the only place a decision is written down at all.
 		//
 		// It is the SUBJECT of the review like everything else here: whoever opened the
-		// pull request wrote it, which on a public repository is anyone.
-		if intent := c.Intent(ctx); intent != "" {
-			sb.WriteString(intent)
+		// pull request wrote it, which on a public repository is anyone -- so it carries
+		// the marker, unlike the diff below it.
+		//
+		// The material's exemption from Quote is specific to patch text: a per-line "> "
+		// would change every line of a diff and make the line numbers in a finding
+		// meaningless. Nothing anchors to a line of a description, so that argument does
+		// not reach this half -- and without the marker this is free prose at column 0
+		// at the HEAD of the material, where a commit message can print fixpoint's own
+		// "Diff against pinned base <sha>:" line, follow it with a fabricated patch, and
+		// be lexically indistinguishable from the real framing a few lines below. Same
+		// treatment the coder's copy gets (prompt.FormatIntent).
+		if intent := prompt.Quote(c.Intent(ctx)); intent != "" {
+			sb.WriteString(prompt.UntrustedNote("the pull request and the commits under review",
+				"background on what the change is for"))
+			sb.WriteString(intent + "\n\n")
 		}
 		if c.baseSHA != "" {
 			fmt.Fprintf(&sb, "Diff against pinned base %s:\n\n", shortSHA(c.baseSHA))
