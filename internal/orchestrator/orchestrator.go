@@ -3455,12 +3455,17 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 		label += " on " + active[0].ID
 	}
 	d := prompt.FixData{
-		Mode:           o.cfg.Target.Mode,
-		Path:           o.cfg.Target.Path,
-		Round:          rec.Round,
-		Findings:       prompt.FormatIssues(active),
-		History:        prompt.FormatHistory(history),
-		Stale:          prompt.FormatStale(stale),
+		Mode:     o.cfg.Target.Mode,
+		Path:     o.cfg.Target.Path,
+		Round:    rec.Round,
+		Findings: prompt.FormatIssues(active),
+		History:  prompt.FormatHistory(history),
+		Stale:    prompt.FormatStale(stale),
+		// What the change says it is. The coder gets no material of its own, so this
+		// is the only place it can learn what the work is FOR -- which is what the
+		// value judgments in fix.md ("does this restate a deliberate decision?", "is
+		// this worth the change it asks for?") actually rest on.
+		Intent:         prompt.FormatIntent(o.collector.Intent(ctx)),
 		Conversations:  o.conversations(),
 		OutputContract: prompt.FixContract,
 	}
@@ -4145,8 +4150,13 @@ func (o *Orchestrator) fixVerification(ctx context.Context, rec *model.RoundReco
 		// just made for this issue -- everything earlier is already committed and
 		// verified, and the issues it has not been given yet changed nothing. Naming
 		// anything else would ask it to correct a check using work it cannot see.
-		Findings:       prompt.FormatIssues([]model.Issue{fixed}),
-		Verification:   verify.FormatForCoder(blocking),
+		Findings:     prompt.FormatIssues([]model.Issue{fixed}),
+		Verification: verify.FormatForCoder(blocking),
+		// The same intent the fix session got. This render carries fix.md's value
+		// judgments ("does this restate a deliberate decision?") whole, so leaving it
+		// empty would ask those questions of a coder that cannot answer them -- and
+		// this pass is the one that edits files with a check already red.
+		Intent:         prompt.FormatIntent(o.collector.Intent(ctx)),
 		OutputContract: prompt.FixContract,
 	}
 	text, err := prompt.Render(o.templates[coder.Prompt], d)

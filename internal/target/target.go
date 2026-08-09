@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/gitenv"
+	"github.com/dsaiko/fixpoint/internal/prompt"
 )
 
 // maxMaterial caps the material embedded into prompts. Agents are agentic and
@@ -54,6 +56,18 @@ type Collector struct {
 	// afterCheckout is called by Prepare the moment `gh pr checkout` has switched
 	// branches, before Prepare issues another git command. Set via OnCheckout.
 	afterCheckout func(context.Context) error
+	// prMu/prText/prRead cache the PULL REQUEST half of Intent -- and only that
+	// half. A title and body do not move under a run, so re-reading them per round
+	// and per fix session would spend a network round trip to be told the same
+	// thing. The commit half is derived from a HEAD this run advances, so it is read
+	// fresh every time; see readIntent.
+	//
+	// prRead latches on SUCCESS, not on the attempt: a `gh pr view` that trips
+	// gitOpTimeout once would otherwise pin an empty description over every
+	// remaining round, silently.
+	prMu   sync.Mutex
+	prText string
+	prRead bool
 }
 
 // New returns a collector for the configured target.
@@ -360,6 +374,37 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("list untracked files: %w", err)
 		}
 		var sb strings.Builder
+		// What the change SAYS it is, ahead of what it does.
+		//
+		// A diff answers "is this internally consistent"; it cannot answer "does this
+		// do what it was for", because the intent is not in it. The pull request's
+		// title and description carry that -- and the ticket references, so a reviewer
+		// at least knows PROJ-1234 was named even when it cannot read it. Commit
+		// messages carry the author's reasoning per step, which for many projects is
+		// the only place a decision is written down at all.
+		//
+		// It is the SUBJECT of the review like everything else here: whoever opened the
+		// pull request wrote it, which on a public repository is anyone -- so it carries
+		// the marker, unlike the diff below it.
+		//
+		// The material's exemption from Quote is specific to patch text: a per-line "> "
+		// would change every line of a diff and make the line numbers in a finding
+		// meaningless. Nothing anchors to a line of a description, so that argument does
+		// not reach this half -- and without the marker this is free prose at column 0
+		// at the HEAD of the material, where a commit message can print fixpoint's own
+		// "Diff against pinned base <sha>:" line, follow it with a fabricated patch, and
+		// be lexically indistinguishable from the real framing a few lines below. Same
+		// treatment the coder's copy gets (prompt.FormatIntent).
+		//
+		// The same specs the diff was rendered with, not a second call that builds
+		// them again: the log below the heading must describe the diff below IT, and
+		// two independent builds can disagree (HideRunEdits moves between them, a
+		// symlink appears) about which paths are in scope.
+		if intent := prompt.Quote(c.readIntent(ctx, specs)); intent != "" {
+			sb.WriteString(prompt.UntrustedNote("the pull request and the commits under review",
+				"background on what the change is for"))
+			sb.WriteString(intent + "\n\n")
+		}
 		if c.baseSHA != "" {
 			fmt.Fprintf(&sb, "Diff against pinned base %s:\n\n", shortSHA(c.baseSHA))
 		} else {
@@ -2576,4 +2621,158 @@ func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 		res = append(res, re)
 	}
 	return res, nil
+}
+
+// Intent is what the change says about itself: the pull request's title and
+// description, and the messages of the commits under review.
+//
+// Best effort by design. Every source here is a separate command that can fail --
+// no `gh`, no network, a repository that does not expose one -- and none of it is
+// worth failing a round over: the diff is the material, this is context on top of
+// it. What cannot be read is simply absent, which is exactly the state every run
+// before this was in.
+//
+// Bounded, because a description is free text somebody else writes and a branch can
+// carry hundreds of commits. The cap is stated in the output rather than applied
+// silently, for the same reason the conversation elision states its own.
+// Collect renders this beside the diff and passes the pathspec it built for that
+// diff; this entry point has no diff next to it, so it builds its own. A pathspec
+// that cannot be built is nil rather than fatal, for the same reason everything
+// else here is best effort -- and nil drops the commit half instead of widening it
+// back to the whole repository.
+func (c *Collector) Intent(ctx context.Context) string {
+	specs, err := c.collectPathspec(ctx)
+	if err != nil {
+		specs = nil
+	}
+	return c.readIntent(ctx, specs)
+}
+
+// readIntent does the reading. Only the pull request half is cached, and the
+// distinction is the point: a title and body are a remote fact pinned for the run,
+// while the commit list is derived from a HEAD THIS RUN MOVES -- the orchestrator
+// commits each accepted fix, so the range grows every round. Caching that half
+// would leave rounds 2+ quoting the commits present at round 1 under a heading
+// that claims to list the changes under review, in front of a diff that already
+// contains the rest: exactly the silent omission the clamp states rather than
+// hides. `git log` is local, so the network-round-trip reason to cache never
+// applied to it.
+//
+// specs is the collection pathspec the diff this text introduces is rendered
+// with, and the log carries it too. The diff is scoped -- to target.path, minus
+// target.exclude, the mandatory credential patterns, this run's own edits and the
+// symlink aliases -- so an unscoped log heads it with commits that changed nothing
+// under review and calls them the reasoning for it: on a repository where the
+// target is one package of many, that is most of the range. Those messages also
+// spend the intentBytes cap the commits that DID contribute need, so the effect is
+// not merely noise -- it displaces the thing this was added to carry. nil means
+// the pathspec could not be built, and the half is dropped rather than widened.
+func (c *Collector) readIntent(ctx context.Context, specs []string) string {
+	var sb strings.Builder
+	if t := c.prIntent(ctx); t != "" {
+		sb.WriteString("What this pull request says it is:\n\n")
+		sb.WriteString(t)
+		sb.WriteString("\n\n")
+	}
+	if c.baseSHA != "" && len(specs) > 0 {
+		// %s and %b are the subject and the body, taken separately rather than as
+		// %B, so that %h and the subject share one line and the body starts below a
+		// blank line this format imposes -- a layout %B cannot be asked for, since it
+		// reproduces the message's own spacing verbatim. The body is here at all
+		// because a subject line alone is a label rather than an explanation, and the
+		// body is where a reason is written.
+		args := []string{"log", "--no-merges", "--format=%h %s%n%n%b%n---", c.baseSHA + "..HEAD", "--"}
+		args = append(args, specs...)
+		if out, err := c.git(ctx, args...); err == nil {
+			if t := strings.TrimSpace(out); t != "" {
+				sb.WriteString("Commit messages of the changes under review:\n\n")
+				sb.WriteString(clampIntent(t, intentLines, intentBytes))
+				sb.WriteString("\n\n")
+			}
+		}
+	}
+	return sb.String()
+}
+
+// prIntent is the pull request's clamped title and body, read at most once per run
+// and empty when there is nothing to read.
+func (c *Collector) prIntent(ctx context.Context) string {
+	if c.cfg.Mode != config.ModePR || c.cfg.PR <= 0 {
+		return ""
+	}
+	// Held across the command so two callers cannot both spend the round trip. It
+	// runs a handful of times per run at most, and never on the reviewers' path
+	// concurrently with anything that contends for this lock.
+	c.prMu.Lock()
+	defer c.prMu.Unlock()
+	if c.prRead {
+		return c.prText
+	}
+	out, err := c.run(ctx, "gh", "pr", "view", strconv.Itoa(c.cfg.PR), "--json", "title,body", "--jq", `.title + "\n\n" + .body`)
+	if err != nil {
+		return "" // not latched: worth one more attempt next round
+	}
+	if t := strings.TrimSpace(out); t != "" {
+		c.prText = clampIntent(t, intentLines, intentBytes)
+	}
+	c.prRead = true
+	return c.prText
+}
+
+// intentLines and intentBytes bound each half of the context above. Generous
+// enough for a real description and a branch's worth of commit messages, small
+// enough that neither can crowd out the diff -- which is the thing being reviewed.
+//
+// Both, because lines alone are not a bound: git imposes no limit on a commit
+// message, GitHub allows a 64 kB body, and one pasted log line passes a line cap
+// untouched. Collect writes this AHEAD of the diff and truncate keeps the leading
+// maxMaterial bytes, so an intent bounded only by lines could fill the whole
+// budget and cut the diff away entirely -- leaving every lens to report a clean
+// round on code it was never shown.
+const (
+	intentLines = 400
+	intentBytes = 16 << 10 // ~5% of maxMaterial: ample for prose, never the diff's budget
+)
+
+// clampIntent keeps the first maxLines lines and at most maxBytes of them, and
+// says what it dropped.
+//
+// Stated rather than silent: a reader that cannot tell a truncated description
+// from a short one will read the missing half as absent, and the whole reason this
+// material is here is to say what the change is for.
+//
+// The caps are parameters rather than the constants themselves so the bound is
+// stated at the call site rather than buried, and so a test can pin a boundary
+// without a 400-line fixture.
+//
+//nolint:unparam // both caps are always their constants today; see above.
+func clampIntent(s string, maxLines, maxBytes int) string {
+	var dropped []string
+	lines := strings.Split(s, "\n")
+	// A text ending in a newline splits to a trailing empty element, which is the
+	// end of the last line rather than a line of its own. Counting it would claim
+	// one more dropped line than was dropped, and would report a different number
+	// for the same content depending on how it happened to end -- `git log` ends in
+	// a newline, a pull request body need not.
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	if len(lines) > maxLines {
+		dropped = append(dropped, fmt.Sprintf("%d further line(s)", len(lines)-maxLines))
+		s = strings.Join(lines[:maxLines], "\n")
+	}
+	if len(s) > maxBytes {
+		// Back off to a rune boundary, as truncate does: cutting inside a multibyte
+		// character would embed invalid UTF-8 into the prompt.
+		cut := maxBytes
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		dropped = append(dropped, agent.HumanSize(len(s)-cut)+" past the "+agent.HumanSize(maxBytes)+" cap")
+		s = s[:cut]
+	}
+	if len(dropped) == 0 {
+		return s
+	}
+	return s + "\n\n[" + strings.Join(dropped, " and ") + " not shown]"
 }

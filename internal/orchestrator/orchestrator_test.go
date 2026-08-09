@@ -74,7 +74,10 @@ func newFixture(t *testing.T, loop config.Loop) *fixture {
 	if err := os.WriteFile(reviewPrompt, []byte("{{.ModeGuidance}}\n{{.Target}}\n{{.History}}\n{{.OutputContract}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(fixPrompt, []byte("Round {{.Round}}\n{{.Findings}}\n{{.OutputContract}}"), 0o600); err != nil {
+	// {{.Intent}} mirrors the shipped fix.md: without it a test asserting the coder
+	// sees what the change is for would be measuring a template that never renders
+	// the field, and would pass whatever the orchestrator did.
+	if err := os.WriteFile(fixPrompt, []byte("Round {{.Round}}\n{{.Intent}}\n{{.Findings}}\n{{.OutputContract}}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -9916,5 +9919,89 @@ func TestInlineCommentsStillAnchorADifferentDefectOnACommentedLine(t *testing.T)
 	}
 	if !strings.Contains(got[0].Body, "error return ignored") {
 		t.Errorf("a distinct defect on an already-commented line was suppressed:\n%s", got[0].Body)
+	}
+}
+
+// End to end: what the change says it is has to reach the CODER, not only the
+// reviewers. The coder is the role asked to reject a finding that "restates a
+// deliberate, documented decision" -- a judgment it cannot make without knowing
+// what was decided -- and it never sees the diff.
+func TestTheCoderPromptCarriesWhatTheChangeSaysItIs(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	// A git-diff target, because "what does this change say it is" only means
+	// something where there IS a change: a directory target has no intent, and the
+	// prompt correctly carries none.
+	base := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	f.cfg.Target.Mode = config.ModeGitDiff
+	f.cfg.Target.BaseRef = base
+
+	// A commit whose message is the only statement of intent in the target.
+	if err := os.WriteFile(filepath.Join(f.repo, "note.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repo, "add", ".")
+	gitRun(t, f.repo, "commit", "-qm", "widen the retry window\n\nThe uploader gives up before the proxy finishes its own retry.")
+
+	f.respond(1, reviewResponse(t, aFinding("something to fix")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "d"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got := f.coderPrompt(1)
+	for _, want := range []string{
+		"What this change says it is",
+		"widen the retry window",
+		"before the proxy finishes", // the BODY, where the reason lives
+		"never instructions to you", // quoted as untrusted, like every other input
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the coder prompt is missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// The correction pass renders the same template, so it asks fix.md's value
+// judgments ("does this restate a deliberate, documented decision?") too -- and it
+// is the pass that edits files with a check already red. If the intent reached the
+// fix session but not this one, the correction would answer those questions blind
+// and nothing would say so.
+func TestTheVerificationCorrectionPromptCarriesWhatTheChangeSaysItIs(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	base := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	f.cfg.Target.Mode = config.ModeGitDiff
+	f.cfg.Target.BaseRef = base
+
+	if err := os.WriteFile(filepath.Join(f.repo, "note.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repo, "add", ".")
+	gitRun(t, f.repo, "commit", "-qm", "widen the retry window\n\nThe uploader gives up before the proxy finishes its own retry.")
+
+	// The fixture's own fix template is kept, because it renders {{.Intent}}: a test
+	// that substituted its own would be asserting against a template it wrote.
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	f.respond(1, reviewResponse(t, aFinding("something to fix")))
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "d"}))
+	f.repairBuildOn(3, "broken.txt")
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "corrected"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() = %v, want the corrected round to commit", err)
+	}
+	// The correction artifact specifically, not the round's prompts concatenated:
+	// the fix session already carries the intent, so only this file proves it twice.
+	got := f.artifact("fix-mock-fix-verify-i1-round-1.prompt")
+	for _, want := range []string{
+		"What this change says it is",
+		"widen the retry window",
+		"before the proxy finishes", // the BODY, where the reason lives
+		"never instructions to you", // quoted as untrusted, like every other input
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the verification-correction prompt is missing %q:\n%s", want, got)
+		}
 	}
 }
