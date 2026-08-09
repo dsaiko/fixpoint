@@ -110,6 +110,48 @@ defanging as a diff. Nothing here needs a trust flag beyond what any review need
 (`-trusted-bundle` when the target ships its own bundle): no coder runs, and the
 judge is read-only by validation.
 
+## Drafting a design
+
+`create-design` is not a review: it turns an assignment — *"a browser card game
+of Prší"*, *"an ESP32 CO2 sensor with a printable case"* — into a design
+document. The pipeline exists because the panel does not converge (under 4%
+corroboration, measured), so "the models agree" is a fiction; someone must hold
+the pen:
+
+```
+assignment ─► snapshot ─► PROPOSE (each pool agent, independently)
+           ─► CRITIQUE (each reads the OTHERS' proposals, anonymized)
+           ─► SYNTHESIZE (the editor writes the document + dissent)
+           ─► OBJECT (one bounded pass: blocking objections only)
+           ─► REVISE (the editor applies or records each objection)
+           ─► fixpoint stamps provenance and writes -out
+```
+
+```sh
+fixpoint create-design -target assignment.md                  # -> DESIGN.md beside it
+fixpoint create-design -target ideas/ -out designs/sensor.md
+```
+
+What the shape guarantees, each the answer to a finding from the specification's
+own review (docs/design/create-design.md):
+
+- Agents run inside a **snapshot copy** of the assignment and never write files;
+  the deliverable is written by fixpoint, atomically, and an existing file is
+  never overwritten — the no-overwrite refusal and the write are one `link(2)`.
+- A critic never receives its own proposal (anonymization cannot blind an author
+  to its own text); the editor is blinded the same way, and the artifacts keep
+  the label-to-agent mapping for the audit trail.
+- Proposal caps derive from the **smallest** `prompt_budget` across pool and
+  editor, refuse below a floor at startup, and every elision is stated in place.
+- The deliverable opens with a provenance header **stamped by fixpoint**: run id,
+  survivor counts, and the degradations a reader must see — `SINGLE-MODEL`,
+  `UNCRITIQUED`, `UNREVISED`. A failed REVISE ships the draft with the panel's
+  objections in a fixpoint-owned appendix rather than failing the run or
+  discarding them.
+
+A created design has **not** been reviewed. The intended workflow is
+`create-design → review-design → implement-design` (the last is increment 3).
+
 ## Per-lens modifiers
 
 A `roles.review.prompts` entry may be a bare prompt name or a mapping carrying

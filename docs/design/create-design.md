@@ -136,9 +136,6 @@ phase exists to close.
 # create-design.yaml
 roles:
   editor: { agent: claude, prompt: design-editor }   # read-only, validated
-  review:
-    strategy: all
-    prompts: []          # no review lenses; the pool is used for propose/critique
 
 create:
   propose: design-propose
@@ -146,6 +143,10 @@ create:
   object: design-object
   objections: 1
 ```
+
+(As shipped, `roles.review` is absent entirely: the pool is inherited from
+defaults, lenses are refused in a create config, and an unset strategy defaults
+to `all` -- the only value that means what a create run does.)
 
 The proposal/critique panel is the existing reviewer pool (`roles.review.agents`
 from defaults), so who designs is the same one-edit decision as who reviews.

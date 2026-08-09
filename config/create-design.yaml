@@ -1,0 +1,41 @@
+# Draft a design from an assignment: every pool agent proposes independently,
+# critiques the others' proposals anonymously, and an editor synthesizes the one
+# document -- with the panel's dissent recorded, never erased.
+#
+#   fixpoint create-design -target assignment.md                  # -> DESIGN.md beside it
+#   fixpoint create-design -target ideas/ -out designs/sensor.md
+#
+# The pipeline exists because the panel does not converge -- measured at under
+# 4% corroboration -- so "the models agree on a design" is a fiction: someone
+# must hold the pen. The full specification is docs/design/create-design.md,
+# which was itself reviewed by review-design and revised twice.
+#
+# Agents run inside a SNAPSHOT copy of the assignment and never write files; the
+# deliverable is written by fixpoint itself, atomically, and an existing file is
+# never overwritten. No trust flag is needed beyond what any run needs
+# (-trusted-bundle when the target ships its own bundle).
+#
+# The intended workflow is explicit -- a created design has NOT been reviewed:
+#
+#   fixpoint create-design -target assignment.md
+#   fixpoint review-design -target DESIGN.md
+description: Draft a design document from an assignment; the pool proposes, an editor synthesizes.
+
+extends: defaults
+
+roles:
+  # The pen-holder: read-only by validation, like the judge, and pinned to
+  # claude for the same measured reason. The proposal/critique pool is
+  # roles.review.agents, inherited from defaults -- who designs is the same
+  # one-edit decision as who reviews.
+  editor: { agent: claude, prompt: design-editor }
+
+create:
+  propose: design-propose
+  critique: design-critique
+  object: design-object
+  # One bounded objection pass over the editor's draft, then the editor's
+  # revision. At most 1 by validation: an objection loop does not converge --
+  # the same measurement behind max_final_passes -- and the check on the
+  # revision is the review-design run that follows.
+  objections: 1
