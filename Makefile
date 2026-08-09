@@ -12,7 +12,7 @@ STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
 .PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live \
-        fix-code fix-branch fix-pr review-code review-branch review-pr review-design clean clean-logs run help
+        fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help
 
 all: build
 
@@ -127,6 +127,12 @@ review-code: build
 review-design: build
 	@test -n "$(TARGET)" || { echo "usage: make review-design TARGET=<file-or-dir>"; exit 2; }
 	./$(BINARY) review-design -target "$(TARGET)" --trusted-bundle
+
+## create-design: draft a design document from an assignment file or directory
+##   make create-design TARGET=assignment.md [OUT=path/DESIGN.md]
+create-design: build
+	@test -n "$(TARGET)" || { echo "usage: make create-design TARGET=<file-or-dir> [OUT=<file>]"; exit 2; }
+	./$(BINARY) create-design -target "$(TARGET)" $(if $(OUT),-out "$(OUT)") --trusted-bundle
 
 ## review-branch: one review round over only what this branch changed
 review-branch: build

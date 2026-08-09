@@ -310,6 +310,18 @@ func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Co
 	if j := cfg.Roles.Judge.Agent; j != "" {
 		who += ", judge " + j
 	}
+	if cfg.IsCreate() {
+		// A create run has no lenses and no coder by design; describing it in the
+		// loop's vocabulary would print "0 review lens(es), no coder" for a
+		// perfectly-shaped config and send the operator hunting for a problem.
+		objections := "no objection pass"
+		if cfg.Create.Objections > 0 {
+			objections = "1 objection pass"
+		}
+		logf("configuration OK: create pipeline -- pool of %d, editor %s, %s",
+			len(cfg.Roles.Review.Agents), cfg.Roles.Editor.Agent, objections)
+		return 0
+	}
 	logf("configuration OK: %d review lens(es), %s, strategy %s",
 		len(cfg.Roles.Review.Prompts), who, cfg.Roles.Review.Strategy)
 	// --check is static, so the fix-trust gate has not fired -- but reporting
