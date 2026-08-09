@@ -1,10 +1,14 @@
 # create-design: a panel drafts a design, an editor holds the pen
 
-Status: revision 2. Revision 1 was reviewed by `review-design` itself (run
-20260809-135648: 37 findings, 13 surviving highs); this revision answers them —
-most materially, the pipeline was collecting blocking objections with no phase
-able to apply them. This document remains the specification for increment 2 of
-the design pipeline (`review-design` → **`create-design`** → `implement-design`).
+Status: revision 3, declared implementable. Revision 1 was reviewed by
+`review-design` (run 20260809-135648: 37 findings) and revision 2 answered them;
+the re-review (run 20260809-142133: 46 findings) then found holes revision 2 had
+itself introduced, and this revision closes the material ones. Remaining findings
+are accepted and recorded under *Inherited properties* — a specification does not
+converge to zero findings any more than code does, and the stop rule is an
+operator's judgment, not an empty report. This document is the specification for
+increment 2 of the design pipeline (`review-design` → **`create-design`** →
+`implement-design`).
 
 ## Goal
 
@@ -42,13 +46,16 @@ assignment ─► snapshot ─► PROPOSE (each pool agent, independently)
            ─► fixpoint stamps provenance and writes -out
 ```
 
-Every phase reads the SNAPSHOT of the assignment, taken once into the run's
-artifacts before anything runs — a file is copied verbatim; a directory is pinned
-as an inventory (paths and content hashes) that every phase receives, with the
-files themselves read from disk and a closing re-hash recording any mid-run drift
-in the deliverable's provenance. Without this, phases of one run can read
-different bytes of "the same" assignment, and nothing in the artifacts can prove
-what was actually designed against.
+Every phase runs against the SNAPSHOT of the assignment: a verbatim copy — file
+or directory — taken into the run's artifacts before anything runs, and used as
+the agents' working directory. The copy is what freezes the bytes; an inventory
+of hashes only detects drift after the fact, which the re-review of this document
+correctly called not-a-snapshot. Copying also makes the exclusions structural
+rather than rule-based: `-out`, `.fixpoint/`, and anything else that is not the
+assignment simply is not in the copy, so a rerun cannot ingest its own previous
+deliverable or the logs of the run that produced it. An assignment too large to
+fit the prompt caps below is refused at startup, before any session — the copy
+cost is bounded by the same number.
 
 ### PROPOSE
 
@@ -59,8 +66,10 @@ agent sees another's work; independence is where the panel's value is, per the
 corroboration measurement above.
 
 A proposal is prose in a `<design>` envelope, not findings JSON. It is bounded
-(stated cap, elision announced — the same rule the conversation and intent
-clamps follow), because the critique prompt must later carry all of them.
+(stated cap, elision announced — the same rule the conversation and intent clamps
+follow), because later phases must carry several of them at once — the SYNTHESIZE
+prompt, the largest of the run, carries them all. The cap formula lives under
+*Roles and configuration*.
 
 ### CRITIQUE
 
@@ -98,6 +107,11 @@ principle as `contested` on findings.
 One bounded pass (`create.objections: 1`, `0` disables both this phase and
 REVISE): the panel reads the final draft and may raise **blocking objections
 only** — a defect in the chosen design, not a preference for the road not taken.
+The phase has its own prompt (`create.object`) and a structured output contract —
+objection id, the passage it names, the defect, the consequence — so the handoff
+to REVISE is machine-checkable rather than prose the editor may miss. Objectors
+are labeled the same way critics are: anonymous in the editor's prompt,
+attributable in the artifacts.
 
 ### REVISE
 
@@ -110,10 +124,11 @@ that follows is the check on the revision itself.
 
 If REVISE fails, the run does not ship the draft as though nothing happened and
 does not fail either: fixpoint appends the unapplied objections verbatim to the
-dissent section — a mechanical append, no model holds the pen — and stamps the
-provenance as unrevised. Objections a reader can see and weigh are worth more
-than a failed run; objections silently discarded are the defect this phase
-exists to close.
+**fixpoint-owned appendix** below its provenance footer — never into the editor's
+own text, whose internal structure is prose no machine reliably edits — and
+stamps the provenance as unrevised. Objections a reader can see and weigh are
+worth more than a failed run; objections silently discarded are the defect this
+phase exists to close.
 
 ## Roles and configuration
 
@@ -128,6 +143,7 @@ roles:
 create:
   propose: design-propose
   critique: design-critique
+  object: design-object
   objections: 1
 ```
 
@@ -140,14 +156,23 @@ synthesize + 2 object + 1 revise). Two proposals is thin; the pool returning to
 four after the ollama quota reset doubles the value of the propose phase at the
 same shape.
 
-Prompt sizing is a function of POOL SIZE, and the largest prompt is not the
-critique but the SYNTHESIZE — assignment + N proposals + N critiques — which is
-also the only phase whose failure fails the run. The per-proposal and
-per-critique caps are therefore derived, not fixed: cap = (agent prompt_budget −
-assignment size − contract overhead) / (2 × pool), announced in the prompt and
-elided with a stated count like every other clamp in this tool. A pool of four
-halves the caps a pool of two enjoys; growing the panel must never be able to
-push the editor over its budget.
+Prompt sizing is a function of POOL SIZE, and the largest prompt is the
+SYNTHESIZE — assignment + N proposals + N critiques — which is also the only
+phase whose failure fails the run; the REVISE prompt (draft + objections) is
+sized under the same rule. The per-proposal and per-critique caps are derived,
+not fixed:
+
+    cap = (B − assignment − overhead) / (2 × pool)
+
+where **B is the smallest `prompt_budget` across the pool and the editor** — the
+pool is deliberately heterogeneous (900 kB in-house, 400 kB served), and a cap
+derived from anything but the minimum overruns exactly the agent least able to
+take it. The formula is validated at startup: if the cap falls below a stated
+floor (an assignment so large that proposals would be squeezed into uselessness),
+the run is refused before any session rather than degraded into one. Announced in
+the prompt and elided with a stated count, like every other clamp in this tool. A
+pool of four halves the caps a pool of two enjoys; growing the panel must never
+be able to push the editor over its budget.
 
 ## Output and trust
 
@@ -161,11 +186,15 @@ push the editor over its budget.
   deliverable is not a log. fixpoint **refuses to overwrite** an existing file,
   checked at startup (before anything is spent) and again at the write;
   regenerating over a reviewed design must be a deliberate `-out` choice, not a
-  default. The write is temp-file-plus-rename, so a failure mid-write cannot
-  leave a truncated file that the overwrite refusal would then protect forever.
-  When the assignment is a directory, the `-out` path is excluded from its
-  inventory — otherwise the second run of the same command reads its own
-  deliverable as part of the assignment and designs against its previous answer.
+  default. The write is temp-file-then-**hard-link**: the deliverable is written
+  beside its destination and linked into place, and `link(2)` fails if the target
+  exists — which makes the no-overwrite refusal and the publication one atomic
+  operation instead of a check racing a write. (Plain rename would silently
+  replace the very file the refusal exists to protect, which the re-review of
+  this document caught.) A failed write leaves only a temp file, cleaned up by
+  the run or overwritten by the next; it can never leave a truncated deliverable
+  squatting on the protected name. Exclusion of `-out` from a directory
+  assignment falls out of the snapshot: the copy simply does not contain it.
 - **Provenance is stamped by fixpoint, not written by the editor.** The
   deliverable opens with a header fixpoint composes from its own facts — run id,
   pool, which phases degraded (single-model, uncritiqued, unrevised) — followed
@@ -230,6 +259,24 @@ should be the same one-edit decision as who reviews. If create-design ever needs
 a different panel, an explicit `create.agents` override is the extension point —
 a second pool by default would drift exactly the way the per-config panels did
 before the pool was centralized.
+
+Findings from this document's own reviews that are ACCEPTED as tool-wide
+properties rather than answered here:
+
+- **Timeouts and liveness** are the agent layer's: every session runs under its
+  agent's `timeout` with the heartbeat the whole tool uses. "Failed" means what
+  it means everywhere else — a non-zero exit, an unparseable reply, or that
+  timeout.
+- **Concurrent runs** are excluded by the existing per-project run lock; a
+  second create-design on the same project does not start, so the publication
+  step never races another fixpoint.
+- **No resume.** A run that dies in SYNTHESIZE spends its PROPOSE and CRITIQUE
+  sessions; their artifacts survive for a human but no machinery replays them.
+  True of every fixpoint run and accepted here for the same reason: resume is a
+  tool-wide feature with tool-wide complexity, not something one config should
+  grow privately.
+- **Fan-out has no admission control** beyond pool size — the same property as
+  the review panel's fan-out, bounded by the same number.
 
 ## Open questions for the reviewing panel
 
