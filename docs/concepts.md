@@ -207,6 +207,13 @@ Each half is capped at 400 lines and says how many it dropped, so neither can cr
 out the code. Anything that cannot be read — no `gh`, no network, no commits since
 the base — is simply absent, which is the state every run before this was in.
 
+The **coder** gets it too, and separately: its prompt has no material section at
+all — it works from file-and-line findings and reads the repository itself — so
+without this it fixed code with no idea what the change was for. That matters most
+for the judgment it is asked to make beyond fixing, since "reject what restates a
+deliberate, documented decision" is not answerable without knowing what was
+decided.
+
 Following a link the description contains is a different question, and not one this
 answers: reaching an internal tracker means credentials, network, and a decision
 that its contents may travel to a model provider.

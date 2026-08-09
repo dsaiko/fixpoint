@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -54,6 +55,11 @@ type Collector struct {
 	// afterCheckout is called by Prepare the moment `gh pr checkout` has switched
 	// branches, before Prepare issues another git command. Set via OnCheckout.
 	afterCheckout func(context.Context) error
+	// intentOnce/intentText cache what the change says about itself. Read once:
+	// a fix round asks per session and the pull request does not move under a run,
+	// so re-reading would spend a network round trip to be told the same thing.
+	intentOnce sync.Once
+	intentText string
 }
 
 // New returns a collector for the configured target.
@@ -371,7 +377,7 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 		//
 		// It is the SUBJECT of the review like everything else here: whoever opened the
 		// pull request wrote it, which on a public repository is anyone.
-		if intent := c.intent(ctx); intent != "" {
+		if intent := c.Intent(ctx); intent != "" {
 			sb.WriteString(intent)
 		}
 		if c.baseSHA != "" {
@@ -2592,7 +2598,7 @@ func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 	return res, nil
 }
 
-// intent is what the change says about itself: the pull request's title and
+// Intent is what the change says about itself: the pull request's title and
 // description, and the messages of the commits under review.
 //
 // Best effort by design. Every source here is a separate command that can fail --
@@ -2604,7 +2610,16 @@ func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 // Bounded, because a description is free text somebody else writes and a branch can
 // carry hundreds of commits. The cap is stated in the output rather than applied
 // silently, for the same reason the conversation elision states its own.
-func (c *Collector) intent(ctx context.Context) string {
+func (c *Collector) Intent(ctx context.Context) string {
+	c.intentOnce.Do(func() { c.intentText = c.readIntent(ctx) })
+	return c.intentText
+}
+
+// readIntent does the reading. Separated from Intent only so the caching sits in
+// one place: a fix round asks for this once per session, and a pull request does
+// not change under a run -- re-running `gh pr view` per session would spend a
+// network round trip to be told the same thing.
+func (c *Collector) readIntent(ctx context.Context) string {
 	var sb strings.Builder
 	if c.cfg.Mode == config.ModePR && c.cfg.PR > 0 {
 		if out, err := c.run(ctx, "gh", "pr", "view", strconv.Itoa(c.cfg.PR), "--json", "title,body", "--jq", `.title + "\n\n" + .body`); err == nil {
