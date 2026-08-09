@@ -1470,3 +1470,94 @@ func TestTargetOverrideResolvesFilesDirectoriesAndTypos(t *testing.T) {
 		})
 	}
 }
+
+// createConfig returns a valid create-design configuration.
+func createConfig(t *testing.T) *Config {
+	t.Helper()
+	p := writePrompt(t)
+	return &Config{
+		Target: Target{Mode: "directory", Path: "."},
+		Loop:   Loop{CommitPolicy: CommitPerFix},
+		Roles: Roles{
+			Editor: RoleRef{Agent: "ed", Prompt: p},
+			Review: Review{Agents: []string{"rev"}},
+		},
+		Create: Create{Propose: p, Critique: p, Object: p, Objections: 1},
+		Agents: map[string]Agent{
+			"ed":  {Command: []string{"echo"}, PromptVia: "stdin"},
+			"rev": {Command: []string{"echo"}, PromptVia: "stdin"},
+		},
+		Logs: Logs{Formats: []string{"md", "json", "raw"}},
+	}
+}
+
+// A create config is a different shape of run, and its shape is validated the
+// way every other is: required parts required, inert keys refused. The coder,
+// judge, lens, and refutation refusals are the house inert-key rule -- a create
+// run drafts a document, so a key describing review/fix machinery would describe
+// a run that does not happen.
+func TestValidateCreate(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"valid", func(*Config) {}, ""},
+		{"objections may be disabled with no object prompt", func(c *Config) {
+			c.Create.Objections = 0
+			c.Create.Object = ""
+		}, ""},
+		{"editor required", func(c *Config) { c.Roles.Editor = RoleRef{} }, "roles.editor: required"},
+		{"editor pairing", func(c *Config) { c.Roles.Editor.Prompt = "" }, "both agent and prompt"},
+		{"editor must be read-only", func(c *Config) {
+			a := c.Agents["ed"]
+			a.CanEdit = true
+			c.Agents["ed"] = a
+		}, "must be read-only"},
+		{"critique required", func(c *Config) { c.Create.Critique = "" }, "create.critique: required"},
+		{"object required when objections run", func(c *Config) { c.Create.Object = "" }, "create.object: required"},
+		{"object inert when objections disabled", func(c *Config) { c.Create.Objections = 0 }, "never runs"},
+		{"objection loop refused", func(c *Config) { c.Create.Objections = 2 }, "does not converge"},
+		{"negative objections", func(c *Config) { c.Create.Objections = -1 }, "must not be negative"},
+		{"git mode refused", func(c *Config) { c.Target.Mode = ModeGitDiff; c.Target.BaseRef = "main..." }, "must be directory"},
+		{"lenses refused", func(c *Config) {
+			c.Roles.Review.Prompts = []ReviewLens{{Prompt: writePrompt(t)}}
+		}, "a create run drafts"},
+		{"coder refused", func(c *Config) {
+			c.Roles.Coder = RoleRef{Agent: "ed", Prompt: writePrompt(t)}
+		}, "roles.coder is set in a create config"},
+		{"judge refused", func(c *Config) {
+			c.Roles.Judge = RoleRef{Agent: "ed", Prompt: writePrompt(t)}
+		}, "roles.judge is set in a create config"},
+		{"refute refused", func(c *Config) { c.Review.Refute = "refute" }, "review.refute is set in a create config"},
+		{"pool required", func(c *Config) { c.Roles.Review.Agents = nil }, "needs the pool"},
+		{"critique without propose refused outside create", func(c *Config) {
+			c.Create = Create{Critique: "x"}
+			c.Roles.Editor = RoleRef{}
+			// restore the loop shape a non-create config needs
+			c.Roles.Coder = RoleRef{Agent: "ed", Prompt: writePrompt(t)}
+			a := c.Agents["ed"]
+			a.CanEdit = true
+			c.Agents["ed"] = a
+			c.Roles.Review.Prompts = []ReviewLens{{Prompt: writePrompt(t)}}
+			c.Roles.Review.Strategy = "rotate"
+		}, "create.critique is set but create.propose is not"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := createConfig(t)
+			tc.mutate(cfg)
+			cfg.applyDefaults()
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

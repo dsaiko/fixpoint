@@ -475,7 +475,7 @@ func (c *Config) resolveAgents(r *Resolver, into map[string]string) error {
 // unconditional env.inherit_all refusal. Unset roles contribute an empty name,
 // which resolveAgents and the refusal loop already skip.
 func (c *Config) referencedAgents() []string {
-	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent, c.Roles.Judge.Agent, c.Roles.Triage.Agent)
+	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent, c.Roles.Judge.Agent, c.Roles.Triage.Agent, c.Roles.Editor.Agent)
 }
 
 // resolvePrompts turns every bare prompt name into a concrete file path, stored
@@ -524,6 +524,32 @@ func (c *Config) resolvePrompts(r *Resolver, into map[string]string) error {
 			return err
 		}
 		c.Roles.Triage.PromptPath = p
+	}
+	if c.Roles.Editor.Prompt != "" {
+		p, err := resolve(c.Roles.Editor.Prompt)
+		if err != nil {
+			return err
+		}
+		c.Roles.Editor.PromptPath = p
+	}
+	// The create prompts resolve like every other: eagerly, so a missing one
+	// fails before any agent process starts.
+	for _, pp := range []struct {
+		name string
+		into *string
+	}{
+		{c.Create.Propose, &c.Create.ProposePath},
+		{c.Create.Critique, &c.Create.CritiquePath},
+		{c.Create.Object, &c.Create.ObjectPath},
+	} {
+		if pp.name == "" {
+			continue
+		}
+		p, err := resolve(pp.name)
+		if err != nil {
+			return err
+		}
+		*pp.into = p
 	}
 	if c.Review.Refute != "" {
 		p, err := resolve(c.Review.Refute)

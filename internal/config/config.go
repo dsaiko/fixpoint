@@ -37,6 +37,7 @@ type Config struct {
 	Loop   Loop             `yaml:"loop"`
 	Logs   Logs             `yaml:"logs"`
 	Verify Verify           `yaml:"verify"`
+	Create Create           `yaml:"create"`
 
 	// PingAgents: before a run, invoke every agent used by the run with a
 	// trivial prompt (in parallel) and abort if any fails. Catches expired
@@ -109,6 +110,17 @@ type Roles struct {
 	// that it never invokes something that can modify the target. Same judgment,
 	// different hands.
 	Judge RoleRef `yaml:"judge"`
+	// Editor is the pen-holder of a CREATE run: the read-only agent that reads
+	// every proposal and critique and WRITES the design document. It exists
+	// because the panel does not converge -- measured at under 4% corroboration
+	// -- so "the models agree on a design" is a fiction; somebody must hold the
+	// pen, and dissent is recorded rather than resolved.
+	//
+	// Read-only for the same reason as the judge: it is the single voice the
+	// deliverable speaks with, fed exclusively by text other models wrote about
+	// an untrusted assignment, and the decision-maker must not be the thing that
+	// can also act.
+	Editor RoleRef `yaml:"editor"`
 	// Triage is the optional arbiter for the pull request's OPEN CONVERSATIONS: a
 	// read-only agent that reads every unresolved comment and decides, one by one,
 	// whether it names real work.
@@ -126,6 +138,33 @@ type Roles struct {
 	// It is only meaningful in pr mode; in any other mode there are no
 	// conversations and the step does not run.
 	Triage RoleRef `yaml:"triage"`
+}
+
+// IsCreate reports whether this config runs the create-design pipeline rather
+// than a review/fix loop. The discriminator is create.propose: a create run is
+// defined by having proposals to make.
+func (c *Config) IsCreate() bool { return c.Create.Propose != "" }
+
+// Create configures the create-design pipeline: a panel drafts independent
+// proposals, critiques each other's anonymously, and the editor synthesizes the
+// deliverable. Setting `propose` is what makes a config a CREATE config; the
+// full pipeline shape is docs/design/create-design.md.
+type Create struct {
+	// Propose names the prompt each pool agent drafts its proposal from.
+	Propose     string `yaml:"propose"`
+	ProposePath string `yaml:"-"`
+	// Critique names the prompt each agent critiques the OTHERS' proposals with.
+	Critique     string `yaml:"critique"`
+	CritiquePath string `yaml:"-"`
+	// Object names the prompt for the bounded objection pass over the editor's
+	// draft. Required only when Objections > 0.
+	Object     string `yaml:"object"`
+	ObjectPath string `yaml:"-"`
+	// Objections is how many objection passes run over the editor's draft
+	// (each followed by the editor's REVISE). 0 disables both phases; the
+	// shipped config sets 1, and more than 1 is refused -- an objection loop
+	// does not converge, the same measurement behind max_final_passes.
+	Objections int `yaml:"objections"`
 }
 
 // RoleRef points one role at an agent and a prompt, both by BARE NAME:
@@ -1307,6 +1346,13 @@ func (c *Config) applyDefaults() {
 	if c.Target.Path == "" {
 		c.Target.Path = "."
 	}
+	// A create config has no lens list for a strategy to schedule, but the pool
+	// checks live on the rotate/all branch of the strategy switch and a create run
+	// uses the WHOLE pool by definition -- so "all" is not a guess, it is the only
+	// value that means what a create run does.
+	if c.IsCreate() && c.Roles.Review.Strategy == "" {
+		c.Roles.Review.Strategy = StrategyAll
+	}
 	// Default only the absent (zero) case; a negative value is invalid operator
 	// input, not "unset", and Validate rejects it rather than silently masking it
 	// with a positive default.
@@ -1408,6 +1454,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("roles.triage is set but target.mode is %q: conversations exist only on a pull request", c.Target.Mode)
 		}
 	}
+	if e := c.Roles.Editor; e.Agent != "" || e.Prompt != "" {
+		if e.Agent == "" || e.Prompt == "" {
+			return errors.New("roles.editor: both agent and prompt are required when either is set")
+		}
+	}
+	if err := c.validateCreate(); err != nil {
+		return err
+	}
 	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
 		return fmt.Errorf("review.block_at: unknown severity %q (want %s)", c.Review.BlockAt, strings.Join(model.Severities, " | "))
 	}
@@ -1433,7 +1487,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if len(c.Roles.Review.Prompts) == 0 {
+	if len(c.Roles.Review.Prompts) == 0 && !c.IsCreate() {
 		return errors.New("roles.review.prompts: at least one review lens is required. A config with no lenses is a base meant to be inherited with `extends`, not run directly -- `fixpoint --list` marks which configs are runnable")
 	}
 	switch c.Roles.Review.Strategy {
@@ -1481,8 +1535,9 @@ func (c *Config) Validate() error {
 	// once (round 1 only) nor final (after the loop). If EVERY lens is one of those,
 	// the rounds in between have no reviewers, the fix is "verified" by an empty
 	// review, and the run converges without any finding ever being re-checked.
-	// review-only runs are a single round, so this does not apply.
-	if !c.Loop.ReviewOnly {
+	// review-only runs are a single round, so this does not apply -- and a create
+	// run has no lenses at all.
+	if !c.Loop.ReviewOnly && !c.IsCreate() {
 		recurring := false
 		for _, l := range c.Roles.Review.Prompts {
 			if !l.Once && !l.Final {
@@ -1628,7 +1683,7 @@ func (c *Config) Validate() error {
 	// so a config that names a coder still cannot name a broken one.
 	switch {
 	case c.Roles.Coder.Agent == "" && c.Roles.Coder.Prompt == "":
-		if !c.Loop.ReviewOnly {
+		if !c.Loop.ReviewOnly && !c.IsCreate() {
 			return errors.New("roles.coder.agent: required (a fix run needs a coder; set loop.review_only for a config that only reviews)")
 		}
 	case c.Roles.Coder.Agent == "" || c.Roles.Coder.Prompt == "":
@@ -1682,6 +1737,18 @@ func (c *Config) Validate() error {
 	// claim from being contradicted by the argv. The shipped configs pin the judge
 	// to an agent that is also in the reviewer pool and so was checked there; a
 	// judge-only agent has no other place to be validated.
+	if e := c.Roles.Editor; e.Agent != "" {
+		if err := check("roles.editor", e.Agent); err != nil {
+			return err
+		}
+		// The editor is the single voice the deliverable speaks with, fed
+		// exclusively by model-written text about an untrusted assignment. Same
+		// rule, same reason as the judge: the decision-maker must not be able to
+		// act on the tree it decides about.
+		if c.Agents[e.Agent].CanEdit {
+			return fmt.Errorf("roles.editor.agent: %q declares can_edit; the editor writes the deliverable through fixpoint, never files -- it must be read-only", e.Agent)
+		}
+	}
 	if j := c.Roles.Judge; j.Agent != "" {
 		if err := check("roles.judge", j.Agent); err != nil {
 			return err
@@ -2142,6 +2209,71 @@ type ReviewPolicy struct {
 	// keys so that error reads as the boundary it is rather than as a typo.
 	Post        bool `yaml:"-"`
 	PostVerdict bool `yaml:"-"`
+}
+
+// validateCreate is every rule about the create-design pipeline's shape.
+//
+// The refusals of coder, judge, and review lenses are the same house rule as
+// every other refused-inert key: a create run drafts a document -- nothing is
+// fixed, no findings exist for a judge to filter, no lens ever runs -- so those
+// keys sitting in the config would describe a run that does not happen. A reader
+// must be able to trust that what a config says is what its run does.
+func (c *Config) validateCreate() error {
+	if !c.IsCreate() {
+		return c.refusePartialCreate()
+	}
+	if c.Create.Critique == "" {
+		return errors.New("create.critique: required in a create config -- the critique phase is what stops a synthesis of unexamined proposals (its runtime skipping below two proposals is a degradation, not a configuration)")
+	}
+	if c.Roles.Editor.Agent == "" {
+		return errors.New("roles.editor: required in a create config -- the panel does not converge, so somebody must hold the pen")
+	}
+	switch {
+	case c.Create.Objections < 0:
+		return fmt.Errorf("create.objections: must not be negative, got %d", c.Create.Objections)
+	case c.Create.Objections > 1:
+		// The same measurement behind max_final_passes: a second pass over the
+		// revision critiques the revision, and the loop does not converge.
+		return fmt.Errorf("create.objections: at most 1, got %d -- an objection loop does not converge; the check on the revision is the review-design run that follows", c.Create.Objections)
+	case c.Create.Objections == 1 && c.Create.Object == "":
+		return errors.New("create.object: required when create.objections is 1 -- the objection pass needs its prompt")
+	case c.Create.Objections == 0 && c.Create.Object != "":
+		return errors.New("create.object is set but create.objections is 0, so the pass it names never runs")
+	}
+	if c.Target.Mode != ModeDirectory {
+		return fmt.Errorf("create: target.mode must be directory (the assignment is a local file or directory), got %q", c.Target.Mode)
+	}
+	if len(c.Roles.Review.Prompts) > 0 {
+		return errors.New("roles.review.prompts is set in a create config; a create run drafts, it does not review -- the lenses belong to the review-design that follows")
+	}
+	if c.Roles.Coder.Agent != "" || c.Roles.Coder.Prompt != "" {
+		return errors.New("roles.coder is set in a create config; nothing is fixed here, and a write-capable agent has no place in a run whose only product fixpoint itself writes")
+	}
+	if c.Roles.Judge.Agent != "" || c.Roles.Judge.Prompt != "" {
+		return errors.New("roles.judge is set in a create config; there are no findings to filter -- the editor is this pipeline's arbiter")
+	}
+	if c.Review.Refute != "" {
+		return errors.New("review.refute is set in a create config; refutation runs over findings, which a create run does not produce -- the critique phase is its analog here")
+	}
+	if len(c.Roles.Review.Agents) == 0 {
+		return errors.New("roles.review.agents: a create config needs the pool -- it is who proposes and critiques")
+	}
+	return nil
+}
+
+// refusePartialCreate rejects create.* keys in a config that is not a create
+// config -- each is the same inert-key refusal, split out of validateCreate only
+// to keep that function under the complexity limit.
+func (c *Config) refusePartialCreate() error {
+	switch {
+	case c.Create.Critique != "":
+		return errors.New("create.critique is set but create.propose is not; a create run is defined by having proposals to make")
+	case c.Create.Object != "":
+		return errors.New("create.object is set but create.propose is not; a create run is defined by having proposals to make")
+	case c.Create.Objections != 0:
+		return errors.New("create.objections is set but create.propose is not; a create run is defined by having proposals to make")
+	}
+	return nil
 }
 
 // BlockFloor is the resolved severity floor that forces CHANGES_REQUESTED.
