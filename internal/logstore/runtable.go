@@ -531,7 +531,12 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 	} else if !sum.ReviewOnly {
 		strategy += " · no per-round cap"
 	}
-	if sum.MaxIterations > 0 {
+	// A review-only run has exactly one round by design, so "max 5 round(s)" would
+	// describe a cap that can never bind -- same correction as the round banner.
+	switch {
+	case sum.ReviewOnly:
+		strategy += " · 1 round"
+	case sum.MaxIterations > 0:
 		strategy += fmt.Sprintf(" · max %d round(s)", sum.MaxIterations)
 	}
 	out = append(out, [2]string{"settings", strategy})
