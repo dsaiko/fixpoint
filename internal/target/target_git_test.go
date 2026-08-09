@@ -4551,6 +4551,35 @@ func TestCollectCarriesTheCommitMessagesOfTheChangesUnderReview(t *testing.T) {
 	}
 }
 
+// The commit list is derived from a HEAD this run MOVES: the orchestrator commits
+// each accepted fix, so round 2's diff contains a commit round 1's never saw. A
+// list cached at round 1 would sit under a heading claiming to quote the changes
+// under review while omitting one of them, with nothing saying so.
+func TestCollectRereadsTheCommitMessagesAfterTheRunCommits(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: "HEAD"})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "main.go", "package main\n\nfunc changed() {}\n")
+	git(t, repo, "commit", "-aqm", "the change under review")
+	if _, err := c.Collect(t.Context()); err != nil { // round 1
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "main.go", "package main\n\nfunc changed() { fixed() }\n")
+	git(t, repo, "commit", "-aqm", "fixpoint: i1 -- the round's own fix")
+
+	material, err := c.Collect(t.Context()) // round 2
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"the change under review", "the round's own fix"} {
+		if !strings.Contains(material, want) {
+			t.Errorf("the commit list is stale, missing %q:\n%s", want, material)
+		}
+	}
+}
+
 // Nothing to say is not a failure. A repository with no commits since the base,
 // no gh, or no network simply has no context to add -- which is the state every
 // run before this was in, and a round must still work there.

@@ -55,11 +55,18 @@ type Collector struct {
 	// afterCheckout is called by Prepare the moment `gh pr checkout` has switched
 	// branches, before Prepare issues another git command. Set via OnCheckout.
 	afterCheckout func(context.Context) error
-	// intentOnce/intentText cache what the change says about itself. Read once:
-	// a fix round asks per session and the pull request does not move under a run,
-	// so re-reading would spend a network round trip to be told the same thing.
-	intentOnce sync.Once
-	intentText string
+	// prMu/prText/prRead cache the PULL REQUEST half of Intent -- and only that
+	// half. A title and body do not move under a run, so re-reading them per round
+	// and per fix session would spend a network round trip to be told the same
+	// thing. The commit half is derived from a HEAD this run advances, so it is read
+	// fresh every time; see readIntent.
+	//
+	// prRead latches on SUCCESS, not on the attempt: a `gh pr view` that trips
+	// gitOpTimeout once would otherwise pin an empty description over every
+	// remaining round, silently.
+	prMu   sync.Mutex
+	prText string
+	prRead bool
 }
 
 // New returns a collector for the configured target.
@@ -2610,25 +2617,23 @@ func compileGlobs(globs []string) ([]*regexp.Regexp, error) {
 // Bounded, because a description is free text somebody else writes and a branch can
 // carry hundreds of commits. The cap is stated in the output rather than applied
 // silently, for the same reason the conversation elision states its own.
-func (c *Collector) Intent(ctx context.Context) string {
-	c.intentOnce.Do(func() { c.intentText = c.readIntent(ctx) })
-	return c.intentText
-}
+func (c *Collector) Intent(ctx context.Context) string { return c.readIntent(ctx) }
 
-// readIntent does the reading. Separated from Intent only so the caching sits in
-// one place: a fix round asks for this once per session, and a pull request does
-// not change under a run -- re-running `gh pr view` per session would spend a
-// network round trip to be told the same thing.
+// readIntent does the reading. Only the pull request half is cached, and the
+// distinction is the point: a title and body are a remote fact pinned for the run,
+// while the commit list is derived from a HEAD THIS RUN MOVES -- the orchestrator
+// commits each accepted fix, so the range grows every round. Caching that half
+// would leave rounds 2+ quoting the commits present at round 1 under a heading
+// that claims to list the changes under review, in front of a diff that already
+// contains the rest: exactly the silent omission the clamp states rather than
+// hides. `git log` is local, so the network-round-trip reason to cache never
+// applied to it.
 func (c *Collector) readIntent(ctx context.Context) string {
 	var sb strings.Builder
-	if c.cfg.Mode == config.ModePR && c.cfg.PR > 0 {
-		if out, err := c.run(ctx, "gh", "pr", "view", strconv.Itoa(c.cfg.PR), "--json", "title,body", "--jq", `.title + "\n\n" + .body`); err == nil {
-			if t := strings.TrimSpace(out); t != "" {
-				sb.WriteString("What this pull request says it is:\n\n")
-				sb.WriteString(clampIntent(t, intentLines, intentBytes))
-				sb.WriteString("\n\n")
-			}
-		}
+	if t := c.prIntent(ctx); t != "" {
+		sb.WriteString("What this pull request says it is:\n\n")
+		sb.WriteString(t)
+		sb.WriteString("\n\n")
 	}
 	if c.baseSHA != "" {
 		// %B is the whole message, subject and body: the body is where a reason is
@@ -2642,6 +2647,31 @@ func (c *Collector) readIntent(ctx context.Context) string {
 		}
 	}
 	return sb.String()
+}
+
+// prIntent is the pull request's clamped title and body, read at most once per run
+// and empty when there is nothing to read.
+func (c *Collector) prIntent(ctx context.Context) string {
+	if c.cfg.Mode != config.ModePR || c.cfg.PR <= 0 {
+		return ""
+	}
+	// Held across the command so two callers cannot both spend the round trip. It
+	// runs a handful of times per run at most, and never on the reviewers' path
+	// concurrently with anything that contends for this lock.
+	c.prMu.Lock()
+	defer c.prMu.Unlock()
+	if c.prRead {
+		return c.prText
+	}
+	out, err := c.run(ctx, "gh", "pr", "view", strconv.Itoa(c.cfg.PR), "--json", "title,body", "--jq", `.title + "\n\n" + .body`)
+	if err != nil {
+		return "" // not latched: worth one more attempt next round
+	}
+	if t := strings.TrimSpace(out); t != "" {
+		c.prText = clampIntent(t, intentLines, intentBytes)
+	}
+	c.prRead = true
+	return c.prText
 }
 
 // intentLines and intentBytes bound each half of the context above. Generous
