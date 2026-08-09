@@ -886,12 +886,39 @@ func TestFormatIntentIsBoundedInBytes(t *testing.T) {
 	if !strings.Contains(got, "cut here by fixpoint") {
 		t.Errorf("the cut must be stated, not silent:\n%s", got[max(0, len(got)-200):])
 	}
-	if !utf8.ValidString(FormatIntent(strings.Repeat("é", intentBytes))) {
-		t.Error("the byte cap cut inside a multibyte character")
-	}
 	// The bound must not fire on anything a real description would carry.
 	if in := "Add retry to the uploader\n\nCloses #42."; !strings.Contains(FormatIntent(in), "Closes #42.") {
 		t.Error("an ordinary description must pass through untouched")
+	}
+}
+
+// The cut is by bytes, so it has to land where a character does not.
+//
+// Directly on clipBytes and on an intent whose limit byte is a CONTINUATION byte:
+// through FormatIntent the check is worth little, because Quote's strings.Map
+// rewrites an invalid byte into U+FFFD, so a cut through the middle of a rune
+// arrives as valid UTF-8 and the damage is invisible. An odd-length ASCII run
+// followed by two-byte runes puts the limit inside one of them; every rune
+// boundary lands even in a run of two-byte runes alone, which is why repeating a
+// single multibyte rune never exercises the backoff at all.
+func TestClipBytesCutsOnARuneBoundary(t *testing.T) {
+	const head = intentBytes - 1 // odd relative to the two-byte runes that follow
+	got := clipBytes(strings.Repeat("a", head)+strings.Repeat("é", 100), intentBytes)
+
+	if !utf8.ValidString(got) {
+		t.Errorf("the cut split a character: not valid UTF-8:\n%q", got[max(0, len(got)-32):])
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Error("the cut left a broken character behind, later mapped to U+FFFD")
+	}
+	kept, _, found := strings.Cut(got, "\n\n[... cut here")
+	if !found {
+		t.Fatalf("the cut must be stated, not silent:\n%q", got[max(0, len(got)-64):])
+	}
+	// One byte back, not a whole rune more: the backoff stops at the first byte
+	// that starts a rune, which is the last byte of the ASCII run.
+	if len(kept) != head {
+		t.Errorf("kept %d bytes, want the %d that fit whole", len(kept), head)
 	}
 }
 
