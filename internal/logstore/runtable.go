@@ -519,7 +519,10 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 	)
 
 	mode := "review+fix"
-	if sum.ReviewOnly {
+	switch {
+	case sum.Create:
+		mode = "create (a design is drafted; nothing is edited)"
+	case sum.ReviewOnly:
 		mode = "review only (the coder never runs)"
 	}
 	strategy := mode + " · strategy " + sum.Strategy
@@ -528,12 +531,15 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 	// leaving its absence to be inferred from a missing field.
 	if sum.MaxFindingsPerRound > 0 {
 		strategy += fmt.Sprintf(" · cap %d issue(s)/round", sum.MaxFindingsPerRound)
-	} else if !sum.ReviewOnly {
+	} else if !sum.ReviewOnly && !sum.Create {
 		strategy += " · no per-round cap"
 	}
 	// A review-only run has exactly one round by design, so "max 5 round(s)" would
 	// describe a cap that can never bind -- same correction as the round banner.
 	switch {
+	case sum.Create:
+		// One pipeline, not rounds: propose -> critique -> synthesize -> object ->
+		// revise. Loop numbers would describe machinery a create run does not have.
 	case sum.ReviewOnly:
 		strategy += " · 1 round"
 	case sum.MaxIterations > 0:
@@ -571,9 +577,16 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 	if coder == "" {
 		coder = "coder"
 	}
-	if sum.ReviewOnly {
+	switch {
+	case sum.Create:
+		// A create run's product is the deliverable, not commits: say where it went
+		// instead of describing a coder that does not exist in this pipeline.
+		if sum.Deliverable != "" {
+			out = append(out, [2]string{"deliverable", agent.EscapeTerminal(sum.Deliverable)})
+		}
+	case sum.ReviewOnly:
 		out = append(out, [2]string{"coder", "not invoked (review-only run)"})
-	} else {
+	default:
 		line := fmt.Sprintf("%s · %d fixed · %d rejected · %s",
 			coder, st.coderFixed, st.coderReject, humanDuration(st.coderDur))
 		if n := st.coderUsage.Tokens(); n > 0 {

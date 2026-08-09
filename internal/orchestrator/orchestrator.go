@@ -503,6 +503,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 		Overrides:           o.overrides,
 		CommitPolicy:        o.cfg.Loop.CommitPolicy,
 		Coder:               o.cfg.Roles.Coder.Agent,
+		Create:              o.cfg.IsCreate(),
 	}
 	err := o.run(ctx, sum)
 	sum.FinishedAt = time.Now()
@@ -2053,7 +2054,13 @@ func (o *Orchestrator) warnGuardOnce(msg string) {
 //     deps, a fetched base_ref, a cloned third-party project) -> trusted_target
 //     (or allow_untrusted_fix).
 func (o *Orchestrator) checkFixTrust() error {
-	if o.cfg.Loop.ReviewOnly {
+	// A create run has no fix rounds and no coder: every agent it invokes is
+	// read-only by validation, and its one write -- the deliverable -- is made by
+	// fixpoint itself. There is nothing for this gate to guard, and firing it
+	// demanded -trusted-target for a run that cannot edit anything. Caught on
+	// create-design's first live run: Ping() enforces this gate for -check-live,
+	// so the create pipeline's own preflight tripped it.
+	if o.cfg.Loop.ReviewOnly || o.cfg.IsCreate() {
 		return nil
 	}
 	switch o.cfg.Target.Mode {
@@ -2842,7 +2849,10 @@ func (o *Orchestrator) activeAgentNames() []string {
 			names = append(names, n)
 		}
 	}
-	if !o.cfg.Loop.ReviewOnly {
+	// The coder only exists outside review-only/create runs -- and add() must
+	// never see an empty name: a create config has no coder, and the blank entry
+	// was pinged as a third "agent" on create-design's first live run.
+	if !o.cfg.Loop.ReviewOnly && o.cfg.Roles.Coder.Agent != "" {
 		add(o.cfg.Roles.Coder.Agent)
 	}
 	for _, a := range o.cfg.Roles.Review.ActiveAgents() {
@@ -2857,6 +2867,11 @@ func (o *Orchestrator) activeAgentNames() []string {
 	// than after the panel has been paid for.
 	if o.cfg.Roles.Triage.Agent != "" {
 		add(o.cfg.Roles.Triage.Agent)
+	}
+	// The editor is invoked like any other agent and its expired login should
+	// fail at preflight, not after the propose phase was paid for.
+	if o.cfg.Roles.Editor.Agent != "" {
+		add(o.cfg.Roles.Editor.Agent)
 	}
 	sort.Strings(names)
 	return names

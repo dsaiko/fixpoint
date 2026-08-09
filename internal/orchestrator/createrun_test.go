@@ -454,3 +454,31 @@ func TestCreateRunRefusesAnExistingDeliverableBeforeSpending(t *testing.T) {
 		t.Errorf("%d agent invocation(s) were spent on a run that was refused at startup", n)
 	}
 }
+
+// The exact failure of create-design's first live run: Ping() enforces the
+// fix-round trust gate for -check-live, a create config has review_only unset,
+// and the gate demanded -trusted-target for a run that cannot edit anything.
+// The preflight also pinged a blank third "agent" -- the empty coder name.
+func TestCreateRunNeedsNoTrustFlagAndPingsNoBlankAgent(t *testing.T) {
+	f, o, _ := createFixture(t, "mock", "mock2")
+	if err := o.checkFixTrust(); err != nil {
+		t.Fatalf("checkFixTrust() = %v; a create run has no coder and nothing for the gate to guard", err)
+	}
+	names := o.activeAgentNames()
+	for _, n := range names {
+		if n == "" {
+			t.Fatalf("activeAgentNames() = %v; a blank agent would be pinged and fail preflight", names)
+		}
+	}
+	want := map[string]bool{"mock": true, "mock2": true}
+	for _, n := range names {
+		if !want[n] {
+			t.Errorf("unexpected agent %q in %v", n, names)
+		}
+		delete(want, n)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing agents: %v (the editor must be pinged too; here it is in the pool)", want)
+	}
+	_ = f
+}
