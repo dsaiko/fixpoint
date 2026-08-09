@@ -1125,3 +1125,102 @@ func clipBytes(s string, limit int) string {
 	}
 	return s[:cut] + "\n\n[... cut here by fixpoint; the rest is not shown]"
 }
+
+// ProposeData is the placeholder set for a create run's PROPOSE phase: one
+// agent, the assignment, no sight of anybody else's work -- independence is
+// where the panel's value is, measured at under 4% corroboration.
+type ProposeData struct {
+	Path           string
+	ModeGuidance   string
+	Target         string
+	Prelude        string
+	Cap            string // the stated proposal cap, or "" when unbounded
+	OutputContract string
+}
+
+// CritiqueData is the placeholder set for the CRITIQUE phase: the OTHER agents'
+// proposals, anonymized -- a critic never receives its own, since anonymization
+// cannot blind an author to its own text.
+type CritiqueData struct {
+	Path           string
+	ModeGuidance   string
+	Target         string
+	Prelude        string
+	Proposals      string // rendered by FormatProposals
+	OutputContract string
+}
+
+// EditorData is the placeholder set for SYNTHESIZE and REVISE: the whole run's
+// material in one prompt -- assignment, every proposal, every critique, and (on
+// the REVISE pass) the draft plus the objections.
+type EditorData struct {
+	Path           string
+	ModeGuidance   string
+	Target         string
+	Prelude        string
+	Proposals      string
+	Critiques      string
+	Draft          string // REVISE only: the editor's own prior document
+	Objections     string // REVISE only: the panel's blocking objections
+	OutputContract string
+}
+
+// ObjectData is the placeholder set for the OBJECT pass: the editor's draft,
+// judged for blocking defects only.
+type ObjectData struct {
+	Path           string
+	ModeGuidance   string
+	Target         string
+	Prelude        string
+	Draft          string
+	OutputContract string
+}
+
+// FormatProposals renders labeled proposals for a critic or the editor.
+//
+// Quoted like every other model-authored text that enters another model's
+// prompt: a proposal was written by an agent reading an untrusted assignment,
+// and nothing in it may address the reader.
+func FormatProposals(labeled [][2]string) string {
+	var sb strings.Builder
+	for _, p := range labeled {
+		fmt.Fprintf(&sb, "### Proposal %s\n\n", Flatten(p[0]))
+		sb.WriteString(Quote(p[1]) + "\n\n")
+	}
+	return strings.TrimRight(sb.String(), "\n") + "\n"
+}
+
+// ProposeContract is the output contract for the PROPOSE phase.
+const ProposeContract = `## Required output format
+End your response with exactly one <design> block containing your COMPLETE
+proposal as markdown -- not JSON, not a summary of it:
+
+<design>
+# <a name for the design>
+... architecture, data, technology choices, failure handling, open questions ...
+</design>
+
+The <design> block must be the LAST thing you print. Everything outside it is
+discarded.`
+
+// CritiqueContract is the output contract for the CRITIQUE phase.
+const CritiqueContract = `## Required output format
+End your response with exactly one <review> block containing valid JSON:
+
+<review>
+{
+  "critiques": [
+    {"proposal": "A",
+     "strengths": ["what should survive into the final design, and why"],
+     "weaknesses": ["what is weak or wrong, and the consequence"],
+     "adopt": ["the specific ideas you would carry into a combined design"]}
+  ]
+}
+</review>
+
+Return exactly one critique for every proposal shown above, and no others. Every
+entry needs at least one concrete point; an empty critique is indistinguishable
+from not having read the proposal.
+
+The <review> block must be the LAST thing you print. The JSON must be valid: no
+comments, no trailing commas, no markdown fences inside the block.`

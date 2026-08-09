@@ -734,3 +734,26 @@ func (i Issue) Conversations() []Origin {
 	}
 	return append([]Origin{i.Origin}, i.Also...)
 }
+
+// CritiqueOutput is the CRITIQUE phase's reply: one structured judgment per
+// proposal the critic was shown.
+type CritiqueOutput struct {
+	Critiques []Critique `json:"critiques"`
+}
+
+// Critique is one critic's judgment of one anonymized proposal. Strengths and
+// adopt are what the editor builds from; weaknesses are what it must answer or
+// record as dissent.
+type Critique struct {
+	Proposal   string   `json:"proposal"`
+	Strengths  []string `json:"strengths"`
+	Weaknesses []string `json:"weaknesses"`
+	Adopt      []string `json:"adopt"`
+}
+
+// Empty reports a critique carrying no content at all -- indistinguishable from
+// the critic not having read the proposal, and refused by the caller for that
+// reason.
+func (c Critique) Empty() bool {
+	return len(c.Strengths) == 0 && len(c.Weaknesses) == 0 && len(c.Adopt) == 0
+}
