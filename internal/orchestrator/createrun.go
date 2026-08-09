@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
+	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/create"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
+	"github.com/dsaiko/fixpoint/internal/target"
 )
 
 // The create-design pipeline's agent phases. The mechanics that are not agent
@@ -486,4 +490,246 @@ func renderObjectionsMD(agentName string, objections []model.Objection, err erro
 		fmt.Fprintf(&b, "## objection %d\n\n- passage: %s\n- defect: %s\n- consequence: %s\n\n", i+1, obj.Passage, obj.Defect, obj.Consequence)
 	}
 	return b.String()
+}
+
+// runCreate drives the whole create-design pipeline. It is dispatched from
+// run() before any of the loop's machinery: a create run has no coder, no
+// verify gate, no forge, and no git requirement -- its only write to the world
+// is the deliverable, published atomically at the very end.
+//
+// Phase order and every failure rule are docs/design/create-design.md's; the
+// comments below cite the decisions rather than restating the document.
+func (o *Orchestrator) runCreate(ctx context.Context, sum *model.RunSummary) error {
+	out, snap, capBytes, material, err := o.prepareCreate(ctx, sum)
+	if err != nil {
+		return err
+	}
+
+	rec := model.RoundRecord{Round: 1}
+	defer func() {
+		// Whatever happened, the steps are billed: a failed pipeline still spent
+		// its sessions, and the scoreboard must say so.
+		sum.Rounds = append(sum.Rounds, rec)
+	}()
+
+	proposals := o.proposeAll(ctx, snap.Dir, material, capBytes)
+	alive := 0
+	for _, p := range proposals {
+		rec.Steps = append(rec.Steps, p.step)
+		if p.err == nil {
+			alive++
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if alive == 0 {
+		return errors.New("create: every proposal failed; there is nothing to synthesize")
+	}
+
+	// Below two proposals there is nothing to compare: the critique phase is
+	// skipped, and the deliverable's provenance -- not the editor -- says so.
+	var critiques []critiqueResult
+	carried := 0
+	if alive >= 2 {
+		critiques = o.critiqueAll(ctx, snap.Dir, proposals)
+		for _, c := range critiques {
+			rec.Steps = append(rec.Steps, c.step)
+			if c.err == nil && len(c.critiques) > 0 {
+				carried++
+			}
+		}
+	} else {
+		o.logf("create: only %d proposal survived, so there is nothing to critique; the deliverable is stamped single-model", alive)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	doc, step, err := o.synthesize(ctx, snap.Dir, material, proposals, critiques)
+	rec.Steps = append(rec.Steps, step)
+	if err != nil {
+		return fmt.Errorf("create: the editor failed and nobody else may hold the pen: %w", err)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	doc, unapplied, unrevised, err := o.objectAndRevise(ctx, snap.Dir, doc, &rec)
+	if err != nil {
+		return err
+	}
+
+	deliverable := create.Deliverable(doc, create.Provenance{
+		RunID:        o.logs.RunID(),
+		Editor:       o.cfg.Roles.Editor.Agent,
+		Pool:         len(o.cfg.Roles.Review.Agents),
+		Proposals:    alive,
+		Critiques:    carried,
+		SingleModel:  alive == 1,
+		Uncritiqued:  alive >= 2 && carried == 0,
+		Unrevised:    unrevised,
+		SkippedLinks: snap.SkippedLinks,
+	}, unapplied)
+	// Through the same funnel as every text that leaves fixpoint: the document is
+	// agent-authored, and a credential quoted into it must not reach disk unmasked.
+	if err := create.Publish(out, agent.RedactSecrets(deliverable)); err != nil {
+		return err
+	}
+	sum.Termination = model.TermCreated
+	o.logf("deliverable: %s", out)
+	return nil
+}
+
+// prepareCreate is everything before the first agent phase: resolve the
+// deliverable path and refuse an existing one (a courtesy -- fail in seconds,
+// not after eight sessions; the link(2) at publish is the guarantee), ping,
+// snapshot, derive the caps, render the material.
+func (o *Orchestrator) prepareCreate(ctx context.Context, sum *model.RunSummary) (out string, snap create.Snapshotted, capBytes int, material string, err error) {
+	assignment, isDir, err := o.assignmentPath()
+	if err != nil {
+		return "", snap, 0, "", err
+	}
+	out = o.cfg.Create.Out
+	if out == "" {
+		out = create.DefaultOut(assignment, isDir)
+	}
+	if _, serr := os.Stat(out); serr == nil {
+		return "", snap, 0, "", fmt.Errorf("%s already exists; a regenerated design must not silently replace a reviewed one -- name a different -out", out)
+	}
+	sum.Deliverable = out
+
+	if o.cfg.Ping() {
+		o.phase("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
+		if err := o.Ping(ctx); err != nil {
+			o.endPhase("PREFLIGHT  failed")
+			return "", snap, 0, "", err
+		}
+		o.endPhase("PREFLIGHT  every agent responded")
+	}
+
+	// The snapshot is what every phase runs against; the caps bound what the
+	// phases may say to each other. Both derive from the same budgets, and both
+	// refuse at startup rather than degrade midway.
+	budgets := o.createBudgets()
+	snapBudget := int64(1) << 30
+	if m := minPositive(budgets); m > 0 {
+		snapBudget = int64(m)
+	}
+	scratch, err := o.logs.ScratchDir("assignment")
+	if err != nil {
+		return "", snap, 0, "", err
+	}
+	snap, err = create.Snapshot(assignment, scratch, []string{out}, snapBudget)
+	if err != nil {
+		return "", snap, 0, "", err
+	}
+	if snap.SkippedLinks > 0 {
+		o.logf("WARNING: %d symlink(s) in the assignment were not followed; the deliverable's provenance says so", snap.SkippedLinks)
+	}
+	capBytes, err = create.Caps(budgets, snap.Bytes, len(o.cfg.Roles.Review.Agents))
+	if err != nil {
+		return "", snap, 0, "", err
+	}
+	o.logf("assignment: %d file(s), %d byte(s); per-proposal cap %s", snap.Files, snap.Bytes, capDesc(capBytes))
+
+	material, err = o.snapshotMaterial(ctx, snap)
+	if err != nil {
+		return "", snap, 0, "", err
+	}
+	return out, snap, capBytes, material, nil
+}
+
+// objectAndRevise runs the bounded objection pass and the editor's revision.
+// A failed revision does not fail the run: the draft ships with the objections
+// appended by fixpoint and the provenance stamped unrevised -- objections a
+// reader can see and weigh are worth more than a failed run.
+func (o *Orchestrator) objectAndRevise(ctx context.Context, snapDir, doc string, rec *model.RoundRecord) (string, []model.Objection, bool, error) {
+	if o.cfg.Create.Objections < 1 {
+		return doc, nil, false, ctx.Err()
+	}
+	results := o.objectAll(ctx, snapDir, doc)
+	var objections []model.Objection
+	for _, r := range results {
+		rec.Steps = append(rec.Steps, r.step)
+		objections = append(objections, r.objections...)
+	}
+	if ctx.Err() != nil {
+		return doc, nil, false, ctx.Err()
+	}
+	if len(objections) == 0 {
+		return doc, nil, false, nil
+	}
+	revised, rstep, rerr := o.revise(ctx, snapDir, doc, objections)
+	rec.Steps = append(rec.Steps, rstep)
+	if ctx.Err() != nil {
+		return doc, nil, false, ctx.Err()
+	}
+	if rerr != nil {
+		// Deliberately NOT an error: the run continues, the draft ships with the
+		// objections in fixpoint's appendix and the provenance stamped unrevised.
+		// See the specification's REVISE failure rule.
+		return doc, objections, true, nil //nolint:nilerr // shipping unrevised is the designed outcome
+	}
+	return revised, nil, false, nil
+}
+
+// assignmentPath resolves what the run designs against, and whether it is a
+// directory.
+func (o *Orchestrator) assignmentPath() (string, bool, error) {
+	if o.cfg.Target.Document != "" {
+		doc := o.cfg.Target.Document
+		if !filepath.IsAbs(doc) {
+			doc = filepath.Join(o.cfg.Target.Path, doc)
+		}
+		return doc, false, nil
+	}
+	info, err := os.Stat(o.cfg.Target.Path)
+	if err != nil {
+		return "", false, fmt.Errorf("assignment: %w", err)
+	}
+	return o.cfg.Target.Path, info.IsDir(), nil
+}
+
+// createBudgets collects the prompt budgets the caps derive from: the pool's and
+// the editor's, since the SYNTHESIZE prompt is the largest of the run.
+func (o *Orchestrator) createBudgets() []int {
+	out := make([]int, 0, len(o.cfg.Roles.Review.Agents)+1)
+	for _, name := range o.cfg.Roles.Review.Agents {
+		out = append(out, o.cfg.Agents[name].PromptBudget)
+	}
+	out = append(out, o.cfg.Agents[o.cfg.Roles.Editor.Agent].PromptBudget)
+	return out
+}
+
+// snapshotMaterial renders the assignment for the prompts, through the same
+// collector every review uses -- a file becomes the material whole, a directory
+// a listing -- so the fencing and truncation rules are shared, not reimplemented.
+func (o *Orchestrator) snapshotMaterial(ctx context.Context, snap create.Snapshotted) (string, error) {
+	c := target.New(config.Target{Mode: config.ModeDirectory, Path: snap.Dir, Document: snap.Entry})
+	if err := c.Prepare(ctx); err != nil {
+		return "", err
+	}
+	return c.Collect(ctx)
+}
+
+func minPositive(ns []int) int {
+	out := 0
+	for _, n := range ns {
+		if n <= 0 {
+			continue
+		}
+		if out == 0 || n < out {
+			out = n
+		}
+	}
+	return out
+}
+
+// capDesc renders a cap for the log, where 0 means unbounded.
+func capDesc(capBytes int) string {
+	if capBytes <= 0 {
+		return "unbounded (no prompt budgets declared)"
+	}
+	return fmt.Sprintf("%d bytes", capBytes)
 }

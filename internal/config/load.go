@@ -85,7 +85,10 @@ type Overrides struct {
 	// reads the document as the material while still working inside the directory
 	// that gives it context. Which file to review is per-invocation by nature --
 	// the same argument as BaseRef and PR.
-	Target            string
+	Target string
+	// Out is where a create run writes its deliverable, absolute for the same
+	// reason Target is: the flag was typed in the operator's cwd.
+	Out               string
 	AllowUntrustedFix bool
 	// Post publishes the review on the pull request, and PostVerdict additionally
 	// lets it carry the verdict (approve / request changes) instead of a comment.
@@ -142,6 +145,9 @@ func (o Overrides) apply(c *Config) {
 	// config carries.
 	if o.PR != 0 {
 		c.Target.PR = o.PR
+	}
+	if o.Out != "" {
+		c.Create.Out = o.Out
 	}
 }
 
@@ -216,6 +222,9 @@ func (o Overrides) Applied() []string {
 	if o.Target != "" {
 		// Same reason again: it decides WHAT was reviewed.
 		out = append(out, "target="+o.Target)
+	}
+	if o.Out != "" {
+		out = append(out, "out="+o.Out)
 	}
 	return out
 }

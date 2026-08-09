@@ -342,3 +342,115 @@ func TestReviseCarriesDraftAndObjections(t *testing.T) {
 		}
 	}
 }
+
+// The whole pipeline, end to end through Run(): propose, critique, synthesize,
+// object, revise, publish. The deliverable lands atomically with fixpoint's
+// provenance header, the run terminates "created", and every session is billed.
+func TestCreateRunEndToEnd(t *testing.T) {
+	f, o, _ := createFixture(t, "mock", "mock2")
+	f.cfg.Create.Out = filepath.Join(t.TempDir(), "DESIGN.md")
+
+	// Phases are sequential, so invocation ordinals map to phases; WITHIN a phase
+	// the two agents race, so both responses of a phase are identical.
+	f.respond(1, design("# Proposal\n\nServer-held state."))
+	f.respond(2, design("# Proposal\n\nServer-held state."))
+	critique := `<review>{"critiques":[
+		{"proposal":"A","strengths":["clear"],"weaknesses":["no failure story"],"adopt":["the schema"]},
+		{"proposal":"B","strengths":["clear"],"weaknesses":["no failure story"],"adopt":["the schema"]}]}</review>`
+	f.respond(3, critique)
+	f.respond(4, critique)
+	f.respond(5, design("# Final\n\nThe design.\n\n## Decisions and dissent\n\nA's schema won."))
+	objection := `<review>{"objections":[{"passage":"retries","defect":"unbounded retry","consequence":"wedges on a dead dependency"}]}</review>`
+	f.respond(6, objection)
+	f.respond(7, objection)
+	f.respond(8, design("# Final v2\n\nCapped retries.\n\n## Decisions and dissent\n\nObjection 1 applied."))
+
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if sum.Termination != model.TermCreated {
+		t.Fatalf("termination = %q, want created", sum.Termination)
+	}
+	if code := model.ExitCodeFor(sum); code != 0 {
+		t.Errorf("exit = %d, want 0", code)
+	}
+	b, err := os.ReadFile(f.cfg.Create.Out)
+	if err != nil {
+		t.Fatalf("no deliverable: %v", err)
+	}
+	text := string(b)
+	for _, want := range []string{
+		"stamped by the tool", // fixpoint's provenance, not the editor's
+		"Capped retries",      // the REVISED document, not the draft
+		"Decisions and dissent",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("deliverable missing %q:\n%s", want, text)
+		}
+	}
+	for _, absent := range []string{"SINGLE-MODEL", "UNREVISED", "Appendix"} {
+		if strings.Contains(text, absent) {
+			t.Errorf("a clean run's deliverable carries %q", absent)
+		}
+	}
+	// 2 propose + 2 critique + 1 synthesize + 2 object + 1 revise = 8 billed steps.
+	steps := 0
+	for _, r := range sum.Rounds {
+		steps += len(r.Steps)
+	}
+	if steps != 8 {
+		t.Errorf("billed steps = %d, want 8", steps)
+	}
+}
+
+// A failed REVISE ships the draft with the objections in fixpoint's appendix and
+// the provenance stamped unrevised: objections a reader can see and weigh are
+// worth more than a failed run.
+func TestCreateRunShipsUnrevisedWhenReviseFails(t *testing.T) {
+	f, o, _ := createFixture(t, "mock")
+	f.cfg.Create.Out = filepath.Join(t.TempDir(), "DESIGN.md")
+
+	f.respond(1, design("# Solo proposal"))
+	// single proposal -> critique skipped -> synthesize is invocation 2
+	f.respond(2, design("# Final\n\n## Decisions and dissent\n\nnone."))
+	f.respond(3, `<review>{"objections":[{"passage":"x","defect":"broken","consequence":"bad"}]}</review>`)
+	f.respond(4, "the revise session answers with no envelope")
+
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if sum.Termination != model.TermCreated {
+		t.Fatalf("termination = %q, want created: an unrevised deliverable still ships", sum.Termination)
+	}
+	b, err := os.ReadFile(f.cfg.Create.Out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	for _, want := range []string{"UNREVISED", "SINGLE-MODEL", "Appendix: unapplied objections", "broken"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("deliverable missing %q:\n%s", want, text)
+		}
+	}
+}
+
+// An existing deliverable refuses the run before a single agent is pinged: a
+// regenerated design must not silently replace a reviewed one.
+func TestCreateRunRefusesAnExistingDeliverableBeforeSpending(t *testing.T) {
+	f, o, _ := createFixture(t, "mock")
+	out := filepath.Join(t.TempDir(), "DESIGN.md")
+	if err := os.WriteFile(out, []byte("the reviewed design"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.Create.Out = out
+
+	_, err := o.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Run() = %v, want the overwrite refusal", err)
+	}
+	if n := f.invocations(); n != 0 {
+		t.Errorf("%d agent invocation(s) were spent on a run that was refused at startup", n)
+	}
+}

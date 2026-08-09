@@ -160,6 +160,11 @@ type Create struct {
 	// draft. Required only when Objections > 0.
 	Object     string `yaml:"object"`
 	ObjectPath string `yaml:"-"`
+	// Out is where the deliverable is written; empty means DESIGN.md beside the
+	// assignment. Usually set per invocation via -out (resolved absolute by the
+	// CLI), and never under .fixpoint/ -- a deliverable is not a log. fixpoint
+	// refuses to overwrite whatever it points at.
+	Out string `yaml:"out"`
 	// Objections is how many objection passes run over the editor's draft
 	// (each followed by the editor's REVISE). 0 disables both phases; the
 	// shipped config sets 1, and more than 1 is refused -- an objection loop
