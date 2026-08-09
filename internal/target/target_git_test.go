@@ -18,6 +18,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/prompt"
 )
 
 // gitRepo creates a temporary git repository with one committed file and
@@ -4908,6 +4909,42 @@ func TestClampIntentBoundsBytesNotJustLines(t *testing.T) {
 	// A cut that lands mid-character would put invalid UTF-8 into every prompt.
 	if wide := strings.Repeat("é", intentBytes); !utf8.ValidString(clampIntent(wide, intentLines, intentBytes)) {
 		t.Error("the byte cap cut inside a multibyte character")
+	}
+}
+
+// The coder's own backstop has to clear what this package can hand it. The fix
+// prompt has no material-wide truncate, so prompt.FormatIntent caps the intent a
+// second time -- and a second cut below the first is not a defense, it is a
+// silent loss: readIntent clamps its two halves separately and writes the commits
+// LAST, so a backstop under the sum takes the per-step reasoning specifically,
+// while the reviewers, whose material path applies no such cut, saw all of it.
+//
+// The assertion belongs on THIS side of the pair. prompt cannot import target, so
+// a test written there can only restate the cap as a literal and would keep
+// passing on its stale copy after this one moves; here both constants are the
+// real ones, and raising either fails this.
+func TestTheCoderBackstopClearsWhatThisPackageCanProduce(t *testing.T) {
+	const last = "the last line of the last commit message"
+
+	// The largest each half can be: what clampIntent returns for input past its
+	// cap, which is the cap plus the marker stating the cut. The sentinel sits at
+	// the end of the commit half's KEPT region, where a low backstop cuts first.
+	prHalf := clampIntent(strings.Repeat("d", 2*intentBytes), intentLines, intentBytes)
+	commits := strings.Repeat("c", intentBytes-len(last)) + last + strings.Repeat("c", intentBytes)
+	commitHalf := clampIntent(commits, intentLines, intentBytes)
+
+	// Under the headings and spacing readIntent writes.
+	intent := "What this pull request says it is:\n\n" + prHalf + "\n\n" +
+		"Commit messages of the changes under review:\n\n" + commitHalf + "\n\n"
+
+	got := prompt.FormatIntent(intent)
+	if strings.Contains(got, "cut here by fixpoint") {
+		t.Errorf("the coder's backstop cut an intent this package had already bounded, %d bytes in: "+
+			"prompt.intentBytes must stay above two intentBytes halves and their framing", len(intent))
+	}
+	if !strings.Contains(got, last) {
+		t.Errorf("the commit half is written last, so a backstop below the sum drops its reasoning first:\n%s",
+			got[max(0, len(got)-200):])
 	}
 }
 

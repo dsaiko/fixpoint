@@ -903,8 +903,12 @@ func TestFormatIntentIsBoundedInBytes(t *testing.T) {
 // since the commits are written last, a backstop below that sum would take the
 // per-step reasoning specifically.
 //
-// The cap is spelled out here rather than imported because target imports this
-// package; if target's intentBytes moves, this fails and says which way.
+// A LOCAL bound check only. target imports this package, so the cap below is a
+// copy of its constant rather than the constant, and a copy cannot notice the
+// original moving: raise target's intentBytes and this still feeds the old size
+// and still passes. The coupling itself is asserted where both numbers are real,
+// in internal/target (TestTheCoderBackstopClearsWhatThisPackageCanProduce); what
+// this pins is that FormatIntent leaves ~32 kB of framed intent alone.
 func TestFormatIntentClearsWhatTheCollectorCanProduce(t *testing.T) {
 	const collectorHalf = 16 << 10 // internal/target: intentBytes, per half
 
