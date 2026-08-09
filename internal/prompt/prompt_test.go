@@ -921,8 +921,12 @@ func TestFormatIntentClearsWhatTheCollectorCanProduce(t *testing.T) {
 
 // Nothing to say renders nothing -- not an empty heading claiming there is
 // background when there is none.
+//
+// Including an intent that is not empty until it has been defanged: control and
+// format runes are not Unicode whitespace, so a check on the input passes them
+// through to a quoting step that deletes them.
 func TestFormatIntentIsEmptyWithoutAnIntent(t *testing.T) {
-	for _, in := range []string{"", "   \n\t\n"} {
+	for _, in := range []string{"", "   \n\t\n", "\x07", "\u200b\n \n\u200b"} {
 		if got := FormatIntent(in); got != "" {
 			t.Errorf("FormatIntent(%q) = %q, want empty", in, got)
 		}

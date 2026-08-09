@@ -1067,15 +1067,22 @@ func mayElide(n int) bool { return n > conversationTail+1 }
 // fall back on, and agent.Run refuses a prompt over the agent's budget BEFORE
 // starting -- so an unbounded description here would not cost the coder its
 // context, it would cost the round.
+//
+// Whether there is anything to say is decided on the QUOTED text, the way Collect
+// decides it (target.go), not on the input: defanging strips control and format
+// runes, which are not Unicode whitespace, so an intent of "\x07" alone survives a
+// TrimSpace test and then renders to nothing -- leaving a heading announcing
+// background over an empty section.
 func FormatIntent(intent string) string {
-	if strings.TrimSpace(intent) == "" {
+	body := Quote(clipBytes(intent, intentBytes))
+	if body == "" {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("## What this change says it is\n\n")
 	sb.WriteString(UntrustedNote("the pull request and the commits under review",
 		"background on what the change is for"))
-	sb.WriteString(Quote(clipBytes(intent, intentBytes)))
+	sb.WriteString(body)
 	sb.WriteString("\n")
 	return sb.String()
 }
