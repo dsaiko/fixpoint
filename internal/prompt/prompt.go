@@ -55,7 +55,17 @@ type FixData struct {
 	Stale string
 	// Conversations are the pull request's open review threads, when there are any.
 	// Empty for every other target: a directory has no conversations to answer.
-	Conversations  string
+	Conversations string
+	// Intent is what the change says about itself -- the pull request's title and
+	// description, and the commit messages under review.
+	//
+	// The coder never sees the diff (there is no material in this prompt: it has
+	// file-and-line findings and reads the repository itself), so without this it
+	// works with no idea what the change is FOR. That matters most for the decision
+	// this role is asked to make beyond fixing: whether a finding is genuine, and
+	// whether a correct-but-costly change is worth making. "Reject what restates a
+	// deliberate decision" is not answerable without knowing what was decided.
+	Intent         string
 	OutputContract string
 }
 
@@ -1044,3 +1054,64 @@ func ElidesComments(msgs []Comment) bool {
 // mayElide reports whether a conversation of n comments is long enough for
 // elideMiddle to consider dropping anything. Whether it does is ElidesComments.
 func mayElide(n int) bool { return n > conversationTail+1 }
+
+// FormatIntent renders what a change says about itself for a prompt that has no
+// material section of its own -- today the coder's.
+//
+// Quoted and defanged like every other piece of text this tool did not write.
+// Whoever opened the pull request wrote the description, which on a public
+// repository is anyone, and the coder is the one role that can edit files.
+//
+// Bounded here as well as at the source. The collector already caps what it
+// reads, but this is exported, the fix prompt has no material-wide truncate to
+// fall back on, and agent.Run refuses a prompt over the agent's budget BEFORE
+// starting -- so an unbounded description here would not cost the coder its
+// context, it would cost the round.
+//
+// Whether there is anything to say is decided on the QUOTED text, the way Collect
+// decides it (target.go), not on the input: defanging strips control and format
+// runes, which are not Unicode whitespace, so an intent of "\x07" alone survives a
+// TrimSpace test and then renders to nothing -- leaving a heading announcing
+// background over an empty section.
+func FormatIntent(intent string) string {
+	body := Quote(clipBytes(intent, intentBytes))
+	if body == "" {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## What this change says it is\n\n")
+	sb.WriteString(UntrustedNote("the pull request and the commits under review",
+		"background on what the change is for"))
+	sb.WriteString(body)
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// intentBytes is the backstop for the above, sitting above everything the
+// collector can hand over so that in the ordinary case this changes nothing and
+// the marker a reader sees is the one the collector wrote.
+//
+// Above the SUM, not one half of it: the collector clamps the pull request text
+// and the commit messages separately, at 16 kB each today, and hands both over as
+// one string under their two headings. A backstop between one cap and two would
+// fire on a change that has both a long description and a long history -- and
+// since the commits come last, it would cut exactly the per-step reasoning this
+// was added to carry, while the reviewers, whose material path applies no such
+// second cut, saw all of it. 40 kB clears the two caps and their framing with
+// room for a third half, and is still a small fraction of the smallest agent
+// budget this has to fit inside.
+const intentBytes = 40 << 10
+
+// clipBytes cuts s to at most limit bytes on a rune boundary and says it did, in
+// the same shape the collector's own clamp uses: a cut a reader cannot see reads
+// as a description that simply ended there.
+func clipBytes(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n\n[... cut here by fixpoint; the rest is not shown]"
+}

@@ -3,6 +3,7 @@ You are an expert software engineer resolving findings from a code review.
 Working directory: `{{.Path}}` — all file paths below are relative to it.
 Round {{.Round}}.
 
+{{.Intent}}
 ## Issues to resolve
 Each entry below is one distinct problem. Reports of the same problem from
 different reviewers have already been merged, so you will not see the same issue
