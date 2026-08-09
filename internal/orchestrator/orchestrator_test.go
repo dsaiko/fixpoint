@@ -9961,3 +9961,47 @@ func TestTheCoderPromptCarriesWhatTheChangeSaysItIs(t *testing.T) {
 		}
 	}
 }
+
+// The correction pass renders the same template, so it asks fix.md's value
+// judgments ("does this restate a deliberate, documented decision?") too -- and it
+// is the pass that edits files with a check already red. If the intent reached the
+// fix session but not this one, the correction would answer those questions blind
+// and nothing would say so.
+func TestTheVerificationCorrectionPromptCarriesWhatTheChangeSaysItIs(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	base := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	f.cfg.Target.Mode = config.ModeGitDiff
+	f.cfg.Target.BaseRef = base
+
+	if err := os.WriteFile(filepath.Join(f.repo, "note.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repo, "add", ".")
+	gitRun(t, f.repo, "commit", "-qm", "widen the retry window\n\nThe uploader gives up before the proxy finishes its own retry.")
+
+	// The fixture's own fix template is kept, because it renders {{.Intent}}: a test
+	// that substituted its own would be asserting against a template it wrote.
+	f.verifyGate(config.VerifyMustPass, "broken.txt")
+	f.respond(1, reviewResponse(t, aFinding("something to fix")))
+	f.breakBuildOn(2, "broken.txt")
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "d"}))
+	f.repairBuildOn(3, "broken.txt")
+	f.respond(3, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "corrected"}))
+
+	if _, err := f.orchestrator().Run(t.Context()); err != nil {
+		t.Fatalf("Run() = %v, want the corrected round to commit", err)
+	}
+	// The correction artifact specifically, not the round's prompts concatenated:
+	// the fix session already carries the intent, so only this file proves it twice.
+	got := f.artifact("fix-mock-fix-verify-i1-round-1.prompt")
+	for _, want := range []string{
+		"What this change says it is",
+		"widen the retry window",
+		"before the proxy finishes", // the BODY, where the reason lives
+		"never instructions to you", // quoted as untrusted, like every other input
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the verification-correction prompt is missing %q:\n%s", want, got)
+		}
+	}
+}
