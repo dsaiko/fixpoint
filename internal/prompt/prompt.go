@@ -1224,3 +1224,89 @@ from not having read the proposal.
 
 The <review> block must be the LAST thing you print. The JSON must be valid: no
 comments, no trailing commas, no markdown fences inside the block.`
+
+// FormatCritiques renders every critic's judgments for the editor, with the
+// critics numbered rather than named -- the editor is blinded to authorship the
+// same way the critics are, and the artifacts keep the real mapping.
+func FormatCritiques(byCritic [][]model.Critique) string {
+	var sb strings.Builder
+	for i, critiques := range byCritic {
+		fmt.Fprintf(&sb, "### Critic %d\n\n", i+1)
+		for _, c := range critiques {
+			fmt.Fprintf(&sb, "On proposal %s:\n\n", Flatten(c.Proposal))
+			writeQuotedList(&sb, "Strengths", c.Strengths)
+			writeQuotedList(&sb, "Weaknesses", c.Weaknesses)
+			writeQuotedList(&sb, "Would adopt", c.Adopt)
+		}
+	}
+	return sb.String()
+}
+
+// FormatObjections renders the panel's blocking objections for the REVISE pass,
+// numbered so the editor can account for every one.
+func FormatObjections(objections []model.Objection) string {
+	var sb strings.Builder
+	for i, obj := range objections {
+		fmt.Fprintf(&sb, "### Objection %d\n\n", i+1)
+		fmt.Fprintf(&sb, "- passage: %s\n", Flatten(obj.Passage))
+		fmt.Fprintf(&sb, "- defect: %s\n", Flatten(obj.Defect))
+		if obj.Consequence != "" {
+			fmt.Fprintf(&sb, "- consequence: %s\n", Flatten(obj.Consequence))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func writeQuotedList(sb *strings.Builder, title string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "%s:\n", title)
+	for _, it := range items {
+		fmt.Fprintf(sb, "> %s\n", Flatten(it))
+	}
+	sb.WriteString("\n")
+}
+
+// EditorContract is the output contract for SYNTHESIZE.
+const EditorContract = `## Required output format
+End your response with exactly one <design> block containing the COMPLETE final
+design document as markdown. It must contain a section titled exactly
+"Decisions and dissent": which proposal each major decision came from, what was
+rejected and why, and where the panel disagreed without resolution -- dissent is
+recorded, not erased.
+
+The <design> block must be the LAST thing you print. Everything outside it is
+discarded.`
+
+// ObjectContract is the output contract for the OBJECT pass.
+const ObjectContract = `## Required output format
+End your response with exactly one <review> block containing valid JSON:
+
+<review>
+{
+  "objections": [
+    {"passage": "the sentence or section the defect lives in",
+     "defect": "what is wrong with the CHOSEN design",
+     "consequence": "what happens if this ships as designed"}
+  ]
+}
+</review>
+
+Blocking objections ONLY: a defect in the chosen design, not a preference for
+the road not taken. An empty list is a normal answer -- it means the draft holds
+up. Do not restate critiques the dissent section already records.
+
+The <review> block must be the LAST thing you print. The JSON must be valid: no
+comments, no trailing commas, no markdown fences inside the block.`
+
+// ReviseContract is the output contract for the REVISE pass.
+const ReviseContract = `## Required output format
+End your response with exactly one <design> block containing the COMPLETE
+revised document -- the whole text, not a diff. For every objection above either
+amend the document, or record the objection in the "Decisions and dissent"
+section with your reason for standing firm. The section must remain present.
+
+The <design> block must be the LAST thing you print. Everything outside it is
+discarded.`

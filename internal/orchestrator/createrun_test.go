@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/model"
 )
 
 // createFixture builds an orchestrator for a create config over a mock pool.
@@ -36,9 +37,14 @@ func createFixture(t *testing.T, pool ...string) (*fixture, *Orchestrator, func(
 	f.cfg.Roles.Coder = config.RoleRef{}
 	f.cfg.Roles.Review = config.Review{Strategy: "all", Agents: pool}
 	f.cfg.Roles.Editor = config.RoleRef{Agent: pool[0], Prompt: "editor", PromptPath: editorP}
+	objectP := filepath.Join(dir, "object.md")
+	if err := os.WriteFile(objectP, []byte("{{.Prelude}}\n{{.Draft}}\n{{.OutputContract}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	f.cfg.Create = config.Create{
 		Propose: "propose", ProposePath: proposeP,
 		Critique: "critique", CritiquePath: critiqueP,
+		Object: "object", ObjectPath: objectP, Objections: 1,
 	}
 	logf, logs := captureLog()
 	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
@@ -222,5 +228,117 @@ func TestProposalsAreClampedWithTheCapStated(t *testing.T) {
 	b, _ := os.ReadFile(prompts[0])
 	if !strings.Contains(string(b), "under 9000 bytes") {
 		t.Errorf("the cap must be stated in the prompt:\n%s", b)
+	}
+}
+
+// SYNTHESIZE fails closed, and the one structural demand -- the dissent section
+// -- is a contract violation when missing: a synthesis that erases disagreement
+// is the failure the pipeline exists to avoid, and fixpoint editing the editor's
+// prose to fix it is what the specification's own review ruled out.
+func TestSynthesizeRequiresTheDissentSection(t *testing.T) {
+	f, o, _ := createFixture(t, "mock")
+	proposals := []proposal{{agent: "mock", label: "A", text: "# One"}}
+
+	f.respond(1, design("# Final\n\nNo dissent recorded here."))
+	if _, _, err := o.synthesize(t.Context(), f.repo, "assignment", proposals, nil); err == nil ||
+		!strings.Contains(err.Error(), "Decisions and dissent") {
+		t.Fatalf("synthesize() = %v, want the missing-section contract violation", err)
+	}
+
+	f2, o2, _ := createFixture(t, "mock")
+	f2.respond(1, design("# Final\n\n## Decisions and dissent\n\nA won on data ownership."))
+	doc, step, err := o2.synthesize(t.Context(), f2.repo, "assignment", proposals, nil)
+	if err != nil {
+		t.Fatalf("synthesize() = %v", err)
+	}
+	if !strings.Contains(doc, "A won on data ownership") {
+		t.Errorf("the document lost its content: %q", doc)
+	}
+	if step.Agent != "mock" {
+		t.Errorf("the editor session was not billed: %+v", step)
+	}
+}
+
+// The editor reads everything quoted and blinded: proposals under their labels,
+// critics numbered, never an agent name.
+func TestSynthesizePromptIsBlindedAndQuoted(t *testing.T) {
+	f, o, _ := createFixture(t, "mock", "mock2")
+	proposals := []proposal{
+		{agent: "mock", label: "A", text: "# One"},
+		{agent: "mock2", label: "B", text: "# Two"},
+	}
+	critiques := []critiqueResult{
+		{agent: "mock", critiques: []model.Critique{{Proposal: "B", Weaknesses: []string{"fragile bootstrap"}}}},
+	}
+	f.respond(1, design("# Final\n\n## Decisions and dissent\n\nnoted."))
+	f.respond(2, design("# Final\n\n## Decisions and dissent\n\nnoted."))
+	if _, _, err := o.synthesize(t.Context(), f.repo, "assignment", proposals, critiques); err != nil {
+		t.Fatal(err)
+	}
+	prompts, _ := filepath.Glob(filepath.Join(f.cfg.Logs.StaticBase(), "*", "*", "synthesize-*.prompt"))
+	if len(prompts) == 0 {
+		t.Fatal("no synthesize prompt artifact")
+	}
+	b, _ := os.ReadFile(prompts[0])
+	text := string(b)
+	for _, want := range []string{"### Proposal A", "### Proposal B", "### Critic 1", "> fragile bootstrap"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("editor prompt missing %q", want)
+		}
+	}
+	if strings.Contains(text, "by mock") {
+		t.Errorf("an agent name reached the blinded editor prompt:\n%s", text)
+	}
+}
+
+// Objections are blocking defects with a claim; a passage alone is refused, an
+// empty list is a normal answer, and a failed objector is reported rather than
+// fatal -- the net over the editor is reported when it fails, not silently
+// absent.
+func TestObjectAllFiltersAndTolerates(t *testing.T) {
+	f, o, logs := createFixture(t, "mock", "mock2")
+	reply := `<review>{"objections":[
+		{"passage":"the retry section","defect":"retries forever with no cap","consequence":"a dead dependency wedges the system"},
+		{"passage":"the intro","defect":"","consequence":"none"}]}</review>`
+	f.respond(1, reply)
+	f.respond(2, reply)
+
+	got := o.objectAll(t.Context(), f.repo, "# Draft")
+	for _, r := range got {
+		if r.err != nil {
+			t.Fatalf("objector %s failed: %v", r.agent, r.err)
+		}
+		if len(r.objections) != 1 {
+			t.Fatalf("objector %s carried %d objection(s), want the one with a defect", r.agent, len(r.objections))
+		}
+	}
+	if !strings.Contains(logs(), "no defect stated") {
+		t.Errorf("the refusal should be logged:\n%s", logs())
+	}
+}
+
+// REVISE hands the editor its own draft and the numbered objections, and a
+// revised document comes back whole.
+func TestReviseCarriesDraftAndObjections(t *testing.T) {
+	f, o, _ := createFixture(t, "mock")
+	objections := []model.Objection{{Passage: "retry section", Defect: "no cap", Consequence: "wedge"}}
+	f.respond(1, design("# Final v2\n\n## Decisions and dissent\n\nObjection 1 stands: capped now."))
+
+	doc, _, err := o.revise(t.Context(), f.repo, "# Final v1\n\n## Decisions and dissent\n\nx", objections)
+	if err != nil {
+		t.Fatalf("revise() = %v", err)
+	}
+	if !strings.Contains(doc, "capped now") {
+		t.Errorf("revision lost: %q", doc)
+	}
+	prompts, _ := filepath.Glob(filepath.Join(f.cfg.Logs.StaticBase(), "*", "*", "revise-*.prompt"))
+	if len(prompts) == 0 {
+		t.Fatal("no revise prompt artifact")
+	}
+	b, _ := os.ReadFile(prompts[0])
+	for _, want := range []string{"### Objection 1", "no cap", "> # Final v1"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("revise prompt missing %q", want)
+		}
 	}
 }

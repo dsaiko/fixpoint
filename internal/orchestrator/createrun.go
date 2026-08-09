@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -254,4 +255,235 @@ func writeList(b *strings.Builder, title string, items []string) {
 		fmt.Fprintf(b, "- %s\n", it)
 	}
 	b.WriteString("\n")
+}
+
+// synthesize runs the editor over everything the run has produced: the
+// assignment, every surviving proposal, every carried critique. The editor is
+// the answer to "how do the models agree" -- they do not, and someone must hold
+// the pen.
+//
+// It fails CLOSED, and the run with it: nobody else may hold the pen, and
+// falling back to "use the best proposal verbatim" would publish an unreviewed
+// single voice under a synthesis's name. The one structural demand -- a
+// "Decisions and dissent" section -- is checked here, because a synthesis that
+// erases disagreement is the failure the whole pipeline exists to avoid.
+func (o *Orchestrator) synthesize(ctx context.Context, snapDir, material string, proposals []proposal, critiques []critiqueResult) (string, model.StepStat, error) {
+	e := o.cfg.Roles.Editor
+	var labeled [][2]string
+	for _, p := range proposals {
+		if p.err == nil {
+			labeled = append(labeled, [2]string{p.label, p.text})
+		}
+	}
+	byCritic := make([][]model.Critique, 0, len(critiques))
+	for _, c := range critiques {
+		if c.err == nil && len(c.critiques) > 0 {
+			byCritic = append(byCritic, c.critiques)
+		}
+	}
+	o.phase("SYNTHESIZE  %s over %d proposal(s) and %d critique set(s)", e.Agent, len(labeled), len(byCritic))
+	d := prompt.EditorData{
+		Path:           snapDir,
+		ModeGuidance:   prompt.DocumentGuidance,
+		Target:         material,
+		Proposals:      prompt.FormatProposals(labeled),
+		Critiques:      prompt.FormatCritiques(byCritic),
+		OutputContract: prompt.EditorContract,
+	}
+	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
+		Mode: o.cfg.Target.Mode, Path: snapDir, ModeGuidance: d.ModeGuidance, Target: d.Target,
+	})
+	doc, step, err := o.editorSession(ctx, snapDir, "synthesize", d)
+	if err != nil {
+		o.endPhase("SYNTHESIZE  failed; the run fails with it")
+		return "", step, err
+	}
+	o.endPhase("SYNTHESIZE  %d bytes", len(doc))
+	return doc, step, nil
+}
+
+// objectionResult is one panel member's OBJECT pass.
+type objectionResult struct {
+	agent      string
+	objections []model.Objection
+	step       model.StepStat
+	err        error
+}
+
+// objectAll runs the bounded objection pass: every pool agent reads the final
+// draft and may raise blocking defects only. Zero objections is a normal answer.
+func (o *Orchestrator) objectAll(ctx context.Context, snapDir, draft string) []objectionResult {
+	pool := append([]string(nil), o.cfg.Roles.Review.Agents...)
+	sort.Strings(pool)
+	o.phase("OBJECT  %d agent(s) reading the final draft", len(pool))
+	out := make([]objectionResult, len(pool))
+	var wg sync.WaitGroup
+	for i, name := range pool {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			out[i] = o.objectWith(ctx, snapDir, draft, name)
+		}(i, name)
+	}
+	wg.Wait()
+	total, failed := 0, 0
+	for _, r := range out {
+		if r.err != nil {
+			failed++
+			continue
+		}
+		total += len(r.objections)
+	}
+	o.endPhase("OBJECT  %d objection(s), %d objector(s) failed", total, failed)
+	return out
+}
+
+// objectWith runs one agent's objection session.
+func (o *Orchestrator) objectWith(ctx context.Context, snapDir, draft, agentName string) objectionResult {
+	r := objectionResult{agent: agentName}
+	d := prompt.ObjectData{
+		Path:           snapDir,
+		ModeGuidance:   prompt.DocumentGuidance,
+		Draft:          prompt.Quote(draft),
+		OutputContract: prompt.ObjectContract,
+	}
+	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
+		Mode: o.cfg.Target.Mode, Path: snapDir, ModeGuidance: d.ModeGuidance,
+	})
+	tmpl := o.templates[o.cfg.Create.Object]
+	if tmpl == nil {
+		r.err = fmt.Errorf("object prompt %q was never loaded", o.cfg.Create.Object)
+		return r
+	}
+	text, err := prompt.Render(tmpl, d)
+	if err != nil {
+		r.err = err
+		return r
+	}
+	label := "object: " + agentName
+	res := o.runAgentIn(ctx, snapDir, label, "object", agentName, o.cfg.Create.Object, 1, text)
+	var out model.ObjectionOutput
+	perr := res.Err
+	if perr == nil {
+		perr = agent.ExtractJSON(res.Stdout, "review", &out)
+	}
+	r.step = stepStat("object", agentName, o.cfg.Create.Object, len(text), res, perr != nil)
+	o.logStep("object", agentName, o.cfg.Create.Object, 1, perr == nil, out,
+		renderObjectionsMD(agentName, out.Objections, perr), res, "")
+	if perr != nil {
+		// Not fatal: objections are a net over the editor, and a net that failed is
+		// reported rather than silently absent -- the caller records it.
+		o.logf("WARNING: %s failed (%v)", label, perr)
+		r.err = perr
+		return r
+	}
+	for _, obj := range out.Objections {
+		if !obj.Substantial() {
+			o.logf("WARNING: %s raised an objection with no defect stated; ignored -- a passage alone is a pointer with no claim", label)
+			continue
+		}
+		r.objections = append(r.objections, obj)
+	}
+	o.logf("%s done (%d objection(s), %s)", label, len(r.objections), res.Duration)
+	return r
+}
+
+// revise runs the editor once more, over its own draft and the panel's
+// objections. Failure is NOT fatal to the run: the caller ships the draft with
+// the unapplied objections appended to the fixpoint-owned appendix and the
+// provenance stamped unrevised -- objections a reader can see and weigh are
+// worth more than a failed run, and objections silently discarded are the
+// defect the phase exists to close.
+func (o *Orchestrator) revise(ctx context.Context, snapDir, draft string, objections []model.Objection) (string, model.StepStat, error) {
+	e := o.cfg.Roles.Editor
+	o.phase("REVISE  %s addressing %d objection(s)", e.Agent, len(objections))
+	d := prompt.EditorData{
+		Path:           snapDir,
+		ModeGuidance:   prompt.DocumentGuidance,
+		Draft:          prompt.Quote(draft),
+		Objections:     prompt.FormatObjections(objections),
+		OutputContract: prompt.ReviseContract,
+	}
+	d.Prelude = prompt.FormatPrelude(prompt.ReviewData{
+		Mode: o.cfg.Target.Mode, Path: snapDir, ModeGuidance: d.ModeGuidance,
+	})
+	doc, step, err := o.editorSession(ctx, snapDir, "revise", d)
+	if err != nil {
+		o.endPhase("REVISE  failed; the draft ships with the objections appended")
+		return "", step, err
+	}
+	o.endPhase("REVISE  %d bytes", len(doc))
+	return doc, step, nil
+}
+
+// editorSession is one editor invocation: render, run, extract the document,
+// enforce the dissent section, persist the artifact. Shared by SYNTHESIZE and
+// REVISE, which differ only in their data and what a failure means.
+func (o *Orchestrator) editorSession(ctx context.Context, snapDir, phase string, d prompt.EditorData) (string, model.StepStat, error) {
+	e := o.cfg.Roles.Editor
+	tmpl := o.templates[e.Prompt]
+	if tmpl == nil {
+		return "", model.StepStat{}, fmt.Errorf("editor prompt %q was never loaded", e.Prompt)
+	}
+	text, err := prompt.Render(tmpl, d)
+	if err != nil {
+		return "", model.StepStat{}, err
+	}
+	label := phase + ": " + e.Agent
+	res := o.runAgentIn(ctx, snapDir, label, phase, e.Agent, e.Prompt, 1, text)
+	var doc string
+	perr := res.Err
+	if perr == nil {
+		doc, perr = agent.ExtractText(res.Stdout, "design")
+	}
+	if perr == nil && !hasDissentSection(doc) {
+		// A synthesis that erases disagreement is the failure the pipeline exists to
+		// avoid, and the contract names the section verbatim. Checked as a contract
+		// violation, not fixed up: fixpoint editing the editor's prose is what the
+		// specification's own review ruled out.
+		perr = errors.New("the document has no \"Decisions and dissent\" section; the contract requires dissent to be recorded, not erased")
+	}
+	step := stepStat(phase, e.Agent, e.Prompt, len(text), res, perr != nil)
+	o.logStep(phase, e.Agent, e.Prompt, 1, perr == nil, nil, editorArtifact(phase, e.Agent, doc, perr), res, "")
+	if perr != nil {
+		o.logf("WARNING: %s failed (%v)", label, perr)
+		return "", step, perr
+	}
+	o.logf("%s done (%d bytes, %s)", label, len(doc), res.Duration)
+	return doc, step, nil
+}
+
+// hasDissentSection looks for the contract's required heading.
+func hasDissentSection(doc string) bool {
+	return strings.Contains(strings.ToLower(doc), "decisions and dissent")
+}
+
+// editorArtifact is the persisted record of one editor session.
+func editorArtifact(phase, agentName, doc string, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s by %s\n\n", phase, agentName)
+	if err != nil {
+		fmt.Fprintf(&b, "**failed:** %v\n", err)
+		return b.String()
+	}
+	b.WriteString(doc + "\n")
+	return b.String()
+}
+
+// renderObjectionsMD is the persisted record of one objector's session.
+func renderObjectionsMD(agentName string, objections []model.Objection, err error) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# objections by %s\n\n", agentName)
+	if err != nil {
+		fmt.Fprintf(&b, "**failed:** %v\n", err)
+		return b.String()
+	}
+	if len(objections) == 0 {
+		b.WriteString("_None: the draft holds up._\n")
+		return b.String()
+	}
+	for i, obj := range objections {
+		fmt.Fprintf(&b, "## objection %d\n\n- passage: %s\n- defect: %s\n- consequence: %s\n\n", i+1, obj.Passage, obj.Defect, obj.Consequence)
+	}
+	return b.String()
 }

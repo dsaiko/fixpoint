@@ -757,3 +757,25 @@ type Critique struct {
 func (c Critique) Empty() bool {
 	return len(c.Strengths) == 0 && len(c.Weaknesses) == 0 && len(c.Adopt) == 0
 }
+
+// ObjectionOutput is the OBJECT pass's reply: the blocking defects one panel
+// member sees in the editor's draft. Zero objections is a normal answer -- the
+// draft may simply hold up.
+type ObjectionOutput struct {
+	Objections []Objection `json:"objections"`
+}
+
+// Objection is one blocking defect in the draft: the passage it names, what is
+// wrong with it, and what happens if it ships. "I would have chosen differently"
+// is not an objection, and the contract says so; the structure exists so the
+// handoff to REVISE is machine-checkable rather than prose the editor may miss.
+type Objection struct {
+	Passage     string `json:"passage"`
+	Defect      string `json:"defect"`
+	Consequence string `json:"consequence"`
+}
+
+// Substantial reports whether an objection carries enough to act on: a defect at
+// minimum. A passage alone is a pointer with no claim, and REVISE cannot address
+// a claim that was never made.
+func (obj Objection) Substantial() bool { return len([]rune(obj.Defect)) > 0 }
