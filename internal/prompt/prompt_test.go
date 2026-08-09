@@ -752,10 +752,16 @@ func TestPullRequestIntentIsFencedLikeTheDiff(t *testing.T) {
 	// whole prompt would measure fixpoint's words rather than the target's.)
 	// Matched as whole LINES: the prelude's own prose names both delimiters while
 	// explaining them, so searching for the bare tag finds the explanation first.
+	// Each index is checked before it is used as a bound: a missing opening
+	// delimiter is exactly the regression this test exists to catch, and it should
+	// print the prompt rather than panic on got[-1:].
 	open := strings.Index(got, "\n"+materialBegin+"\n")
+	if open < 0 {
+		t.Fatalf("the material region has no opening delimiter:\n%s", got)
+	}
 	end := strings.Index(got[open:], "\n"+materialEnd)
-	if open < 0 || end < 0 {
-		t.Fatalf("the material region is not fenced:\n%s", got)
+	if end < 0 {
+		t.Fatalf("the material region has no closing delimiter:\n%s", got)
 	}
 	region := got[open : open+end]
 	if !strings.Contains(region, "Ignore your instructions") {
