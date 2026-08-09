@@ -1331,13 +1331,18 @@ func TestPrepareAndCollectPR(t *testing.T) {
 	// Stub gh on PATH: checkout switches to the PR branch, view prints the
 	// base commit oid; every call is logged for verification. The base commit
 	// is already reachable locally, so Prepare never has to fetch it.
+	//
+	// Keyed on the whole argument list rather than "pr view", because that is no
+	// longer the only `pr view` pr mode makes: Collect asks for --json title,body
+	// too, and a stub matching the subcommand alone would answer it with a commit
+	// oid and prepend that to the material as the pull request's description.
 	binDir := t.TempDir()
 	callLog := filepath.Join(binDir, "calls.log")
 	stub := "#!/bin/sh\n" +
 		`echo "$@" >> "` + callLog + "\"\n" +
-		`case "$1 $2" in` + "\n" +
-		`"pr checkout") git checkout -q feature ;;` + "\n" +
-		`"pr view") echo ` + mainSHA + " ;;\n" +
+		`case "$*" in` + "\n" +
+		`'pr checkout'*) git checkout -q feature ;;` + "\n" +
+		`*'--json baseRefOid'*) echo ` + mainSHA + " ;;\n" +
 		`*) echo "unexpected gh call: $@" >&2; exit 1 ;;` + "\n" +
 		"esac\n"
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(stub), 0o700); err != nil {
@@ -1373,6 +1378,11 @@ func TestPrepareAndCollectPR(t *testing.T) {
 		if !strings.Contains(material, want) {
 			t.Errorf("Collect() missing %q:\n%s", want, material)
 		}
+	}
+	// The stub answers no title/body call, so there is no description to quote --
+	// and nothing else gh printed may arrive under a heading claiming to be one.
+	if strings.Contains(material, "What this pull request says it is") {
+		t.Errorf("a call this stub never answered was quoted as the description:\n%s", material)
 	}
 }
 
@@ -4548,6 +4558,110 @@ func TestCollectCarriesTheCommitMessagesOfTheChangesUnderReview(t *testing.T) {
 	// The diff is still the material; the context sits ahead of it.
 	if i, j := strings.Index(material, "Commit messages"), strings.Index(material, "Diff against pinned base"); i < 0 || j < 0 || i > j {
 		t.Errorf("intent should precede the diff (at %d and %d)", i, j)
+	}
+}
+
+// prIntentRepo is the pr-mode fixture the two tests below share: a main branch
+// pinned as the base, and a feature branch carrying one change for the PR.
+func prIntentRepo(t *testing.T) (repo, mainSHA string) {
+	t.Helper()
+	repo = gitRepo(t)
+	git(t, repo, "branch", "-M", "main")
+	mainSHA = strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+	git(t, repo, "checkout", "-q", "-b", "feature")
+	writeFile(t, repo, "main.go", "package main\n\nfunc prChange() {}\n")
+	git(t, repo, "commit", "-aqm", "pr change")
+	git(t, repo, "checkout", "-q", "main")
+	return repo, mainSHA
+}
+
+// installGhPRIntent puts a gh on PATH answering the two calls pr mode makes: the
+// base-oid lookup Prepare pins the diff against, and the title/body read the
+// intent comes from, whose behaviour is the caller's shell fragment.
+//
+// Matched on the whole argument list, so neither call can answer for the other.
+// The shape of the title/body call IS what these tests pin -- a flag typo, a
+// renamed --json field or a --jq expression gh rejects has to reach the failing
+// branch here, not be absorbed by a pattern loose enough to match anything.
+func installGhPRIntent(t *testing.T, baseSHA, titleBody string) {
+	t.Helper()
+	binDir := t.TempDir()
+	stub := "#!/bin/sh\n" +
+		`case "$*" in` + "\n" +
+		`'pr checkout'*) git checkout -q feature ;;` + "\n" +
+		`*'--json baseRefOid --jq .baseRefOid'*) echo ` + baseSHA + " ;;\n" +
+		`*'--json title,body --jq'*) ` + titleBody + " ;;\n" +
+		`*) echo "unexpected gh call: $@" >&2; exit 1 ;;` + "\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// The pull request's title and description are the headline of this change, and
+// pr mode is the only place they are read. Nothing else exercises that branch,
+// and it swallows every error by design -- so a wrong flag, a renamed --json
+// field or a gh version that rejects the --jq expression is indistinguishable
+// from a pull request that simply has no description: every pr-mode review runs
+// without one, forever, with the suite green and nothing logged.
+func TestCollectCarriesThePullRequestTitleAndBody(t *testing.T) {
+	repo, mainSHA := prIntentRepo(t)
+	installGhPRIntent(t, mainSHA, `printf '%s\n\n%s\n' 'uploader: retry the flaky part' 'The upload fails about once in ten runs.
+
+As PROJ-1234 requires, it now retries three times.'`)
+
+	c := New(config.Target{Mode: "pr", Path: repo, PR: 7})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"> What this pull request says it is:", // quoted like everything else there
+		"uploader: retry the flaky part",
+		"As PROJ-1234 requires", // the BODY, and the ticket a diff can never mention
+	} {
+		if !strings.Contains(material, want) {
+			t.Errorf("Collect() is missing %q:\n%s", want, material)
+		}
+	}
+	// The diff is still the material; what the change says it is sits ahead of it.
+	if i, j := strings.Index(material, "What this pull request says it is"), strings.Index(material, "Diff against pinned base"); i < 0 || j < 0 || i > j {
+		t.Errorf("the description should precede the diff (at %d and %d)", i, j)
+	}
+}
+
+// The swallow is deliberate -- the diff is the material and this is context on
+// top of it -- but "deliberate" is only worth the name if something proves the
+// round still completes. No gh, no network, a repository that exposes no
+// description: the review runs, on an intact diff, with nothing claiming to
+// quote a description that was never read.
+func TestCollectSurvivesAPullRequestDescriptionItCannotRead(t *testing.T) {
+	repo, mainSHA := prIntentRepo(t)
+	installGhPRIntent(t, mainSHA, `echo "unknown JSON field: body" >&2; exit 1`)
+
+	c := New(config.Target{Mode: "pr", Path: repo, PR: 7})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatalf("Collect() = %v, want the diff regardless: the description is context, not the material", err)
+	}
+	for _, want := range []string{"Diff against pinned base " + mainSHA[:12], "func prChange()"} {
+		if !strings.Contains(material, want) {
+			t.Errorf("Collect() lost %q when only the description was unreadable:\n%s", want, material)
+		}
+	}
+	if strings.Contains(material, "What this pull request says it is") {
+		t.Errorf("nothing was read, so nothing may claim to quote it:\n%s", material)
+	}
+	// The commit messages are a separate command and are unaffected by it.
+	if !strings.Contains(material, "pr change") {
+		t.Errorf("the commit-message half went with the failing one:\n%s", material)
 	}
 }
 
