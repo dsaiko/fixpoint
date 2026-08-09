@@ -1061,6 +1061,12 @@ func mayElide(n int) bool { return n > conversationTail+1 }
 // Quoted and defanged like every other piece of text this tool did not write.
 // Whoever opened the pull request wrote the description, which on a public
 // repository is anyone, and the coder is the one role that can edit files.
+//
+// Bounded here as well as at the source. The collector already caps what it
+// reads, but this is exported, the fix prompt has no material-wide truncate to
+// fall back on, and agent.Run refuses a prompt over the agent's budget BEFORE
+// starting -- so an unbounded description here would not cost the coder its
+// context, it would cost the round.
 func FormatIntent(intent string) string {
 	if strings.TrimSpace(intent) == "" {
 		return ""
@@ -1069,7 +1075,26 @@ func FormatIntent(intent string) string {
 	sb.WriteString("## What this change says it is\n\n")
 	sb.WriteString(UntrustedNote("the pull request and the commits under review",
 		"background on what the change is for"))
-	sb.WriteString(Quote(intent))
+	sb.WriteString(Quote(clipBytes(intent, intentBytes)))
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// intentBytes is the backstop for the above, sitting above the collector's own
+// cap so that in the ordinary case this changes nothing and the marker a reader
+// sees is the one the collector wrote.
+const intentBytes = 24 << 10
+
+// clipBytes cuts s to at most limit bytes on a rune boundary and says it did, in
+// the same shape the collector's own clamp uses: a cut a reader cannot see reads
+// as a description that simply ended there.
+func clipBytes(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n\n[... cut here by fixpoint; the rest is not shown]"
 }

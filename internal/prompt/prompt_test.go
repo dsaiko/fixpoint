@@ -800,6 +800,27 @@ func TestFormatIntentIsQuotedAsUntrustedBackground(t *testing.T) {
 	}
 }
 
+// The fix prompt has no material-wide truncate, and agent.Run refuses a prompt
+// over the agent's budget before starting -- so an unbounded description here
+// does not cost the coder its context, it costs the round.
+func TestFormatIntentIsBoundedInBytes(t *testing.T) {
+	got := FormatIntent("a subject\n\n" + strings.Repeat("x", 4*intentBytes))
+
+	if len(got) > intentBytes+2_000 {
+		t.Errorf("an oversized description reached the coder whole: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "cut here by fixpoint") {
+		t.Errorf("the cut must be stated, not silent:\n%s", got[max(0, len(got)-200):])
+	}
+	if !utf8.ValidString(FormatIntent(strings.Repeat("é", intentBytes))) {
+		t.Error("the byte cap cut inside a multibyte character")
+	}
+	// The bound must not fire on anything a real description would carry.
+	if in := "Add retry to the uploader\n\nCloses #42."; !strings.Contains(FormatIntent(in), "Closes #42.") {
+		t.Error("an ordinary description must pass through untouched")
+	}
+}
+
 // Nothing to say renders nothing -- not an empty heading claiming there is
 // background when there is none.
 func TestFormatIntentIsEmptyWithoutAnIntent(t *testing.T) {

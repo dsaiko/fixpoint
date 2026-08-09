@@ -203,8 +203,9 @@ place a decision is written down at all.
 
 All of it is the SUBJECT of the review, fenced and defanged exactly like the diff:
 whoever opened the pull request wrote it, which on a public repository is anyone.
-Each half is capped at 400 lines and says how many it dropped, so neither can crowd
-out the code. Anything that cannot be read — no `gh`, no network, no commits since
+Each half is capped at 400 lines *and* 16 KB and says what it dropped, so neither
+can crowd out the code — lines alone would not bound it, since git imposes no limit
+on a commit message and one pasted line defeats a line cap. Anything that cannot be read — no `gh`, no network, no commits since
 the base — is simply absent, which is the state every run before this was in.
 
 The **coder** gets it too, and separately: its prompt has no material section at

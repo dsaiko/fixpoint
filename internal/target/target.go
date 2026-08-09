@@ -2625,7 +2625,7 @@ func (c *Collector) readIntent(ctx context.Context) string {
 		if out, err := c.run(ctx, "gh", "pr", "view", strconv.Itoa(c.cfg.PR), "--json", "title,body", "--jq", `.title + "\n\n" + .body`); err == nil {
 			if t := strings.TrimSpace(out); t != "" {
 				sb.WriteString("What this pull request says it is:\n\n")
-				sb.WriteString(clampLines(t, intentLines))
+				sb.WriteString(clampIntent(t, intentLines, intentBytes))
 				sb.WriteString("\n\n")
 			}
 		}
@@ -2636,7 +2636,7 @@ func (c *Collector) readIntent(ctx context.Context) string {
 		if out, err := c.git(ctx, "log", "--no-merges", "--format=%h %s%n%n%b%n---", c.baseSHA+"..HEAD"); err == nil {
 			if t := strings.TrimSpace(out); t != "" {
 				sb.WriteString("Commit messages of the changes under review:\n\n")
-				sb.WriteString(clampLines(t, intentLines))
+				sb.WriteString(clampIntent(t, intentLines, intentBytes))
 				sb.WriteString("\n\n")
 			}
 		}
@@ -2644,26 +2644,51 @@ func (c *Collector) readIntent(ctx context.Context) string {
 	return sb.String()
 }
 
-// intentLines bounds each half of the context above. Generous enough for a real
-// description and a branch's worth of commit messages, small enough that neither
-// can crowd out the diff -- which is the thing being reviewed.
-const intentLines = 400
-
-// clampLines keeps the first n lines and says how many it dropped.
+// intentLines and intentBytes bound each half of the context above. Generous
+// enough for a real description and a branch's worth of commit messages, small
+// enough that neither can crowd out the diff -- which is the thing being reviewed.
 //
-// stated at the call site rather than buried, and so a test can pin the boundary
-// without a 400-line fixture.
+// Both, because lines alone are not a bound: git imposes no limit on a commit
+// message, GitHub allows a 64 kB body, and one pasted log line passes a line cap
+// untouched. Collect writes this AHEAD of the diff and truncate keeps the leading
+// maxMaterial bytes, so an intent bounded only by lines could fill the whole
+// budget and cut the diff away entirely -- leaving every lens to report a clean
+// round on code it was never shown.
+const (
+	intentLines = 400
+	intentBytes = 16 << 10 // ~5% of maxMaterial: ample for prose, never the diff's budget
+)
+
+// clampIntent keeps the first maxLines lines and at most maxBytes of them, and
+// says what it dropped.
 //
 // Stated rather than silent: a reader that cannot tell a truncated description
 // from a short one will read the missing half as absent, and the whole reason this
 // material is here is to say what the change is for.
 //
-//nolint:unparam // n is always intentLines today; it is a parameter so the cap is
-func clampLines(s string, n int) string {
-	lines := strings.Split(s, "\n")
-	if len(lines) <= n {
+// The caps are parameters rather than the constants themselves so the bound is
+// stated at the call site rather than buried, and so a test can pin a boundary
+// without a 400-line fixture.
+//
+//nolint:unparam // both caps are always their constants today; see above.
+func clampIntent(s string, maxLines, maxBytes int) string {
+	var dropped []string
+	if lines := strings.Split(s, "\n"); len(lines) > maxLines {
+		dropped = append(dropped, fmt.Sprintf("%d further line(s)", len(lines)-maxLines))
+		s = strings.Join(lines[:maxLines], "\n")
+	}
+	if len(s) > maxBytes {
+		// Back off to a rune boundary, as truncate does: cutting inside a multibyte
+		// character would embed invalid UTF-8 into the prompt.
+		cut := maxBytes
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		dropped = append(dropped, agent.HumanSize(len(s)-cut)+" past the "+agent.HumanSize(maxBytes)+" cap")
+		s = s[:cut]
+	}
+	if len(dropped) == 0 {
 		return s
 	}
-	return strings.Join(lines[:n], "\n") +
-		fmt.Sprintf("\n\n[%d further line(s) not shown]", len(lines)-n)
+	return s + "\n\n[" + strings.Join(dropped, " and ") + " not shown]"
 }

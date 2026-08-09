@@ -4578,19 +4578,68 @@ func TestCollectWithoutAnyIntentIsJustTheDiff(t *testing.T) {
 // of commits; neither may crowd out the diff, which is the thing being reviewed.
 // The cap is STATED, because a reader who cannot tell a truncated description from
 // a short one reads the missing half as absent.
-func TestClampLinesSaysWhatItDropped(t *testing.T) {
+func TestClampIntentSaysWhatItDropped(t *testing.T) {
 	var b strings.Builder
 	for i := range 500 {
 		fmt.Fprintf(&b, "line %d\n", i)
 	}
-	got := clampLines(b.String(), intentLines)
+	got := clampIntent(b.String(), intentLines, intentBytes)
 	if strings.Contains(got, "line 450") {
 		t.Error("the clamp did not apply")
 	}
 	if !strings.Contains(got, "not shown") {
 		t.Errorf("a silent truncation reads as a short description:\n%s", got[len(got)-200:])
 	}
-	if short := "one\ntwo\n"; clampLines(short, intentLines) != short {
+	if short := "one\ntwo\n"; clampIntent(short, intentLines, intentBytes) != short {
 		t.Error("a short text must pass through untouched, with nothing claimed to be missing")
+	}
+}
+
+// A line cap is not a size cap: git imposes no limit on a commit message, so one
+// pasted line passes 400 lines untouched. The intent is written AHEAD of the diff
+// and the material is head-truncated, so an intent bounded only by lines would
+// take the whole budget and leave the reviewer prose and no code -- which reads as
+// a clean round on something nobody saw.
+func TestClampIntentBoundsBytesNotJustLines(t *testing.T) {
+	oneLine := strings.Repeat("x", maxMaterial)
+	got := clampIntent(oneLine, intentLines, intentBytes)
+	if len(got) > intentBytes+200 {
+		t.Errorf("a single %d-byte line survived the byte cap: got %d bytes", len(oneLine), len(got))
+	}
+	if !strings.Contains(got, "not shown") {
+		t.Errorf("the byte cut must be stated, not silent:\n%s", got[max(0, len(got)-200):])
+	}
+	// A cut that lands mid-character would put invalid UTF-8 into every prompt.
+	if wide := strings.Repeat("é", intentBytes); !utf8.ValidString(clampIntent(wide, intentLines, intentBytes)) {
+		t.Error("the byte cap cut inside a multibyte character")
+	}
+}
+
+// The end-to-end shape of the same thing: an oversized commit message must cost
+// itself, never the diff.
+func TestCollectKeepsTheDiffWhenTheIntentIsOversized(t *testing.T) {
+	repo := gitRepo(t)
+	c := New(config.Target{Mode: "git-diff", Path: repo, BaseRef: "HEAD"})
+	if err := c.Prepare(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "main.go", "package main\n\nfunc changed() {}\n")
+	// Well over maxMaterial, on far fewer than intentLines lines. Passed as a file
+	// because a single argument that size exceeds what exec will carry -- which is
+	// the only thing stopping it, and no bound git itself imposes.
+	msg := filepath.Join(t.TempDir(), "msg.txt")
+	if err := os.WriteFile(msg, []byte("a subject\n\n"+strings.Repeat("A", maxMaterial+1_000)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "commit", "-aq", "-F", msg)
+
+	material, err := c.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Diff against pinned base", "func changed()"} {
+		if !strings.Contains(material, want) {
+			t.Errorf("the intent evicted %q from the material (%d bytes collected)", want, len(material))
+		}
 	}
 }
