@@ -47,12 +47,18 @@ def read_manifest(path):
 
 
 def matches(seed, finding):
-    if not finding.get("file", "").endswith(seed["file"]):
+    # `file` may list alternatives ("store.go|worker.go") for a defect whose
+    # two halves live in different files and get reported from either.
+    if not any(finding.get("file", "").endswith(f) for f in seed["file"].split("|")):
         return False
     if seed["line"] > 0 and abs(int(finding.get("line") or 0) - seed["line"]) > seed["span"]:
         return False
     text = (finding.get("title", "") + " " + finding.get("description", "")).lower()
-    hits = sum(1 for k in seed["keywords"] if k.lower() in text)
+    # Word-boundary prefix match: "race" hits "races" and "racing" but "lock"
+    # does not hit "block" -- substring matching produced both failure modes
+    # in calibration.
+    hits = sum(1 for k in seed["keywords"]
+               if re.search(r"\b" + re.escape(k.lower()), text))
     return hits >= seed["need"]
 
 
