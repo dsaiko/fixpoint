@@ -58,10 +58,12 @@ seeds:
     note: "preview never closes resp.Body; connections leak"
   - id: C08
     file: worker.go
-    line: 110
-    span: 6
+    # No line gate: reported at mustHead itself or at the client.Do call site
+    # in CheckTargets -- calibration saw both.
+    line: 0
+    span: 0
     need: 2
-    keywords: [nil, panic, request, "mustHead", "Do"]
+    keywords: [nil, panic, crash, mustHead]
     note: "mustHead logs and returns nil request; client.Do(nil) panics"
   - id: X01
     file: worker.go
