@@ -1,5 +1,6 @@
 > Drafted by an AI panel and synthesized by a single editor · run 20260809-175113
 > 2 proposal(s) from a pool of 2, 2 critique set(s) · this header is stamped by the tool, not written by the editor
+> Revision 2 · the operator folded in the 18 high findings of review-design run 20260812-183115 (the first review with repository access) · what changed and why is recorded at the end of §11
 
 # implement-design: plan first, one task per commit, two targets
 
@@ -113,13 +114,16 @@ fixpoint implement-go -target DESIGN.md -out ~/src/prsi -trusted-target
      │         clean-tree precondition → coder session → repository invariant
      │         → tree reconciliation → gate → commit
      │         a failed task is discarded; its dependents are skipped
+     │         every processed task leaves exactly one commit: code, or an
+     │         empty outcome marker (§5.4) — skipped tasks are derived, not recorded
      │
   REPORT     scoreboard, run summary, journal; exit 0 or 2               (orchestrator)
 ```
 
 With `-continue <project>` (§5.5) the run skips SCAFFOLD, reads the plan from the
-project's own bootstrap commit, replays what was already built from the commit
-trailers, and enters BUILD at the first unbuilt task.
+project's own bootstrap commit, replays every recorded outcome — built or not —
+from the commit trailers, and enters BUILD at the first task with no commit of
+either kind.
 
 **Planning happens before the write-target exists.** Proposal B's ordering, and it
 is right for two reasons: a planning failure leaves no orphan directory to explain,
@@ -245,8 +249,9 @@ true, so that no later change "helpfully" starts executing acceptance criteria.
    already-sorted DAG, and makes a cyclic plan *impossible* rather than *detected*.
 4. `files` non-empty, `≤ implement.max_files_per_task` (default 12), each a
    relative slash path with no `..`, no leading `/`, not under `.git/` or
-   `.fixpoint/`, and not matching the mandatory credential patterns the config
-   layer already enforces. The list is advisory to the coder — coders are not
+   `.fixpoint/`, not one of the four control artifacts (`DESIGN.md`, `PLAN.md`,
+   `PLAN.json`, `.gitignore` — §4.3), and not matching the mandatory credential
+   patterns the config layer already enforces. The list is advisory to the coder — coders are not
    confined to it, which is an existing property of the tool — but a plan naming
    `~/.ssh/authorized_keys` was written by something that misunderstood or was
    steered, and refusing it costs nothing.
@@ -278,12 +283,17 @@ true, so that no later change "helpfully" starts executing acceptance criteria.
      header, in the run summary, and in `plan_finished{coverage:"unchecked"}` — and
      the summary line reads *"no automated check ruled out the plan dropping part of
      the design."* Nothing in a run report may imply the check ran when it did not.
-7. **Fit.** The plan must be executable inside the run's deadline:
-   `len(tasks) × (session_timeout + gate_timeout + 1 min)` must not exceed
-   `implement.max_run_duration`. Over it is a refusal naming all four numbers —
-   *"this plan needs at least 14h40m at one attempt per task; max_run_duration is
-   8h. Raise it, cut the plan, or split the design."* — costing one planner session
-   and no coder session. If either timeout is unbounded or not reachable as a value
+7. **Fit.** The plan must be executable inside the run's deadline **at the worst
+   case the configuration actually permits**, not at an optimistic one attempt:
+   `len(tasks) × max_task_attempts × (session_timeout + gate_timeout + 1 min)`
+   must not exceed `implement.max_run_duration`. Over it is a refusal naming all
+   five numbers — *"this plan needs at least 29h10m at 2 attempts per task;
+   max_run_duration is 16h. Raise it, cut the plan, lower max_task_attempts, or
+   split the design."* — costing one planner session and no coder session. The
+   number the refusal quotes and the number the run can spend are the same number;
+   an expected-case model here was rejected in review (run 20260812-183115) because
+   the common run — two or three tasks needing their second attempt — would still
+   hit the deadline mid-run, which is the exact failure this rule exists to refuse. If either timeout is unbounded or not reachable as a value
    (§0), the check is **skipped and says so** in the same places coverage says so.
    This rule exists because the alternative, discovered in review, is a plan the
    validator calls legal that is arithmetically guaranteed to hit the deadline
@@ -310,7 +320,7 @@ was actually returned.
 | the validated plan, canonical | `.fixpoint/<ts>/plan.json` | fixpoint | the run's artifacts |
 | the validated plan, in the project | `<project>/PLAN.json`, committed **once**, never edited | the project | forever |
 | the plan as a human artifact | `<project>/PLAN.md`, committed **once**, never edited | the project | forever |
-| **what has already been built** | the write-target's commit trailers (`Fixpoint-Task`) | the project | forever |
+| **every task's outcome, built or not** | the write-target's commit trailers (`Fixpoint-Task` + `Fixpoint-Outcome`, §5.4) | the project | forever |
 | live per-task status | `.fixpoint/<ts>/status.json` (rewritten per task) + journal | fixpoint | the run's artifacts |
 | per-task outcome, timing, tokens | `journal.jsonl` + `RunSummary.Tasks` | fixpoint | the run's artifacts |
 | the repository-invariant baseline | `.fixpoint/<ts>/round-<n>/repostate.json` | fixpoint | the run's artifacts |
@@ -337,6 +347,21 @@ rerun. Progress does *not* live in either file. Proposal A rewrote and re-commit
 un-gated commit into a history whose entire value is one-task-one-revert, and Critic
 2 showed it also leaves HEAD in a state the gate never saw. What was and was not
 built lives in the commit trailers, the run summary and the scoreboard.
+
+**`DESIGN.md`, `PLAN.md`, `PLAN.json` and `.gitignore` are control artifacts, and
+the protection is mechanical, not declarative.** Declaring them immutable while
+they sit as ordinary tracked files in the coder's worktree protects nothing — a
+coder could edit the design of record and pass an unrelated build gate (review
+run 20260812-183115). So: the plan validator refuses a task whose `files` name one
+(§4.2 rule 4); after every coder session their blob hashes are compared against the
+bootstrap commit's, and a change is restored from the bootstrap blob with the task
+failed as a contract violation (§5.2 step 5); the commit step never stages them
+(§5.2 step 8); and `-continue` reads them from the bootstrap commit's blobs, never
+from the worktree, so orchestration state cannot be altered by anything a session
+wrote. `.gitignore` is on the list because it decides what fixpoint's own census
+can see: it is written once by fixpoint from the operator's `gitignore_seed`
+(§5.1), and no agent may author or amend the exemption set that governs the
+tool's own invariants.
 
 **The plan is not written into the project's `.fixpoint/`.** Proposal B put it
 there; Critic 1 flagged that `.fixpoint/` is fixpoint's own artifact root and
@@ -371,17 +396,29 @@ its youth:
 
 - `git -c init.defaultBranch=main init` — the operator's global default branch is
   not this tool's business to guess.
-- `core.hooksPath` is set, repo-locally, to an **empty fixpoint-owned directory**
-  inside the run's artifacts, so a hook file dropped into `.git/hooks/` by anything
-  never runs. Every fixpoint-owned git invocation in this pipeline additionally
-  passes `-c core.hooksPath=<empty>` and commits with `--no-verify`, so the
+- `core.hooksPath` is set, repo-locally, to an **empty directory inside the
+  repository's own `.git/`** — `.git/fixpoint-hooks/`, created empty at init — so a
+  hook file dropped into `.git/hooks/` by anything never runs. Inside `.git/`, not
+  inside the run's artifacts: an earlier draft pointed it at the artifact tree, and
+  review run 20260812-183115 named the consequences — the delivered repository would
+  carry an absolute path into a directory §5.5 itself calls transient, the operator's
+  hooks would be silently disabled by a dangling reference, a recreated directory
+  would execute for whoever owned it, and the §5.2 step 4 invariant would be checking
+  the emptiness of a directory outside the repository it claims to validate. The
+  setting is durable on purpose (later `fix-code` runs want the same posture) and is
+  named in the run report at handoff, so it is a disclosed property, not a silent
+  one. Every fixpoint-owned git invocation in this pipeline additionally passes
+  `-c core.hooksPath=.git/fixpoint-hooks` and commits with `--no-verify`, so the
   protection survives a coder that edits the repo config back.
 - An explicit fixpoint committer identity is written repo-locally rather than
   inheriting ambient global git config.
 - `.gitignore` in the bootstrap commit contains `.fixpoint/` plus the stack config's
   `implement.gitignore_seed` entries (e.g. `node_modules/`, `dist/`, `target/`),
   because a build's output being ignored from commit one is what keeps §5.2 step 7
-  from having to delete anything in the common case.
+  from having to delete anything in the common case. It is a **control artifact**
+  (§4.3): fixpoint writes it once, no session may change it, and a missing entry is
+  the operator's to add via `gitignore_seed` — the exemption set that decides what
+  the census can see is never agent-authored.
 
 Then one tool-authored commit containing `DESIGN.md`, `PLAN.md`, `PLAN.json` and
 `.gitignore`, and no source code:
@@ -417,8 +454,15 @@ it, would be worse than either.
 
 Immediately after the bootstrap commit, fixpoint records the **repository-invariant
 baseline** (§5.2 step 4): the digest of `.git/config`, the effective `core.hooksPath`
-and the emptiness of the hooks directory it points at, the full ref list, and the
-absence of any nested `.git` in the worktree.
+and the emptiness of the hooks directory it points at, the full ref list, the
+absence of any nested `.git` in the worktree — and the git metadata that controls
+what the census itself can see: the digests of `.git/info/exclude` and
+`.git/info/attributes` (both written empty at init), and the absence of
+`.git/objects/info/alternates` and of a `shallow` marker. Review run
+20260812-183115 showed why the list must include them: one line in
+`.git/info/exclude` makes a coder's source path invisible to `git status`, so the
+gate passes on a file no commit contains — hardening that guards `.git/config` but
+not the exclude file guards the lock and leaves the door open.
 
 ### 5.2 The per-task sequence
 
@@ -435,8 +479,11 @@ For each task in plan order:
 1. **Skip check.** If any task this one transitively `depends_on` failed or was
    blocked, skip without spending a session and record *which* dependency stopped
    it.
-2. **Record the base.** `HeadSHA`, and the repository-invariant snapshot, before the
-   session starts.
+2. **Record the base.** `HeadSHA`, the repository-invariant snapshot, and the
+   **ignored-path census**: every ignored path with its size and mtime. A stat
+   walk, not a digest walk — `node_modules/` makes hashing the ignored tree
+   unaffordable, and creation/modification detection is all §5.2 step 6 needs from
+   it. All before the session starts.
 3. **Coder session.** Prompt in §6. Working directory is the write-target. Attempt
    number 1.
 4. **Repository invariant.** After the session, HEAD first:
@@ -453,13 +500,20 @@ For each task in plan order:
    about to commit without touching HEAD at all. Compared against the snapshot from
    step 2: the digest of `.git/config`; the effective `core.hooksPath` and the
    emptiness of the directory it names; the full ref list (`git for-each-ref` plus
-   packed-refs digest) other than the branch HEAD is on; and the absence of any
-   nested `.git` file or directory anywhere in the worktree. **Any mismatch stops
-   the run** with the same repository-invariant failure, naming what changed. This
+   packed-refs digest) other than the branch HEAD is on; the absence of any
+   nested `.git` file or directory anywhere in the worktree; and the census-bearing
+   metadata of §5.1's baseline — `.git/info/exclude`, `.git/info/attributes`,
+   no alternates, no shallow marker. **Any mismatch stops the run** with the same
+   repository-invariant failure, naming what changed. This
    is not a task failure: a session that rewrote the repository's own configuration
    is a session whose other output cannot be reasoned about either.
 5. **Reconcile the report against the tree.** "Dirty" here means dirty relative to
    HEAD, which step 0 guaranteed was also the state at session start.
+   - **control artifacts first**: the blob hashes of `DESIGN.md`, `PLAN.md`,
+     `PLAN.json` and `.gitignore` are compared against the bootstrap commit's. A
+     change is restored from the bootstrap blob and the task fails as a contract
+     violation (§4.3) — session-scoped, like a coder that commits, because the
+     authoritative bytes were never lost; the run continues.
    - reported `implemented`, tree clean → contract violation, task failed
      ("the coder reported implementing T07 but left the working tree unchanged").
    - reported `already_satisfied` or `blocked`, tree dirty → edits discarded
@@ -467,14 +521,29 @@ For each task in plan order:
      task failed. A session that disclaims work must not leave work behind.
    - reported `already_satisfied` → the coder must name the earlier task ids that
      cover it; fixpoint checks each names an *earlier* task that this run or an
-     earlier run of this plan actually committed. Uncorroborated → contract
-     violation, task failed.
+     earlier run of this plan actually implemented — a code commit, not an outcome
+     marker (§5.4). Uncorroborated → contract violation, task failed.
    - reported `implemented`, tree dirty → on to the gate.
-6. **Pre-gate census.** Record, for the un-ignored working tree: the set of
-   untracked paths **with a sha256 for each**, and the set of modified tracked
-   paths with their digests. Digests, not just paths, because a task's new files are
-   untracked by definition and a gate that rewrites one of them changes no path set
-   at all.
+6. **Pre-gate census, and the ignored-path reconciliation.** Record, for the
+   un-ignored working tree: the set of untracked paths **with a sha256 for each**,
+   and the set of modified tracked paths with their digests. Digests, not just
+   paths, because a task's new files are untracked by definition and a gate that
+   rewrites one of them changes no path set at all. During the same walk, the
+   **byte bound** is enforced: if the session's un-ignored changes exceed
+   `implement.max_task_bytes`, the attempt fails before anything is hashed, stashed
+   or gated — one runaway generation must not consume the object database, the
+   deadline and the disk (§7.1).
+
+   Then the ignored tree is compared against step 2's stat census, because a gate
+   must never pass on bytes HEAD does not contain (review run 20260812-183115):
+   - ignored paths the **session created** are deleted before the gate runs, with a
+     journal note. A coder that ran the build to test its work loses nothing the
+     gate does not recreate from committed sources.
+   - ignored paths the **session modified** fail the task with a distinct
+     `hidden-state` outcome naming them. There is no legitimate reason for a coder
+     to edit a build cache in place, and the illegitimate one — patching
+     `node_modules/` so the tests pass — is exactly what this rule exists to
+     refuse loudly instead of committing.
 7. **Gate.** `verify.Run` over the write-target. Its output is target-authored
    text and is fenced, quoted and defanged before it reaches any prompt. Afterwards,
    the tree is compared against the step 6 census, and every difference is
@@ -487,22 +556,43 @@ For each task in plan order:
      and a formatter or codegen step in the gate would otherwise rewrite the
      session's source and have those bytes committed under the coder's attribution
      without any verification pass over them.
+   - **Gate-maintained committed files**: paths named in the stack config's
+     `implement.gate_generated` list (`go.sum`, `package-lock.json`, `Cargo.lock`,
+     …) that the gate created or rewrote. These are **staged into the task commit**
+     and attributed to the gate in a trailer (`Fixpoint-Gate-Wrote: go.sum`) —
+     neither a mutation failure nor removable output. Without this third,
+     config-owned category the two-bucket rule gets lockfiles exactly wrong (review
+     run 20260812-183115): a lockfile the gate creates would be deleted from every
+     commit forever, and a lockfile the gate updates would fail the task — while the
+     log recommended a `.gitignore` entry, the one remedy that is always wrong for a
+     file clones need. Coder-written changes to these paths remain ordinary
+     sources; the list is the operator's, like the gate itself.
    - **Gate output**: un-ignored paths that did not exist before the gate ran. These
-     are excluded from the commit, **and removed from the write-target after the
-     commit**, and named in the task's log line with the note that the project needs
-     a `.gitignore` entry for them. Removal is what makes the exclusion mean
-     anything: a build artifact left in place is simply a file that the *next*
-     task's census sees as pre-existing, and therefore commits, attributed to the
-     next task's coder — an invariant honoured for exactly one task. Removal is safe
-     because the gate produced these bytes from committed sources and re-running the
-     gate reproduces them, and it is usually a no-op because `gitignore_seed`
-     (§5.1) and task 1's own `.gitignore` cover the normal cases: **ignored paths
-     are never touched, never censused, and never committed.**
-   - On gate failure: one bounded **in-session** correction attempt, with the
-     failures formatted for the coder. (A correction attempt re-runs steps 4–7.)
+     are excluded from the commit, **and removed from the write-target after every
+     gate run, before any commit** — not deferred until after a successful one,
+     because a failed gate's droppings would otherwise sit in the tree for the next
+     attempt and a crash between commit and a deferred cleanup would leave a dirty
+     tree `-continue` refuses. They are named in the task's log line with the note
+     that the operator's `gitignore_seed` needs an entry for them. Removal is what
+     makes the exclusion mean anything: a build artifact left in place is simply a
+     file that the *next* task's census sees as pre-existing, and therefore commits,
+     attributed to the next task's coder — an invariant honoured for exactly one
+     task. Removal is safe because the gate produced these bytes from committed
+     sources and re-running the gate reproduces them, and it is usually a no-op
+     because `gitignore_seed` (§5.1) covers the normal cases: **ignored paths are
+     never committed, and outside step 6's reconciliation, never touched.**
+   - On gate failure the **attempt fails** — there is no in-session correction
+     pass. An earlier draft allowed one; review run 20260812-183115 showed it
+     cannot be had honestly: the agent interface is a one-shot process, so a
+     "correction" is a second session whose edits land in a commit the trailers
+     attribute to one — the exact rule the assignment calls hard-won — and the
+     failed gate's output contaminates the correction's census. The retry budget
+     lives in one place, §5.3, where each attempt is one session, one gate, one
+     census, discarded whole or committed whole.
 8. **Commit.** The index is not trusted: fixpoint first resets the index to HEAD
    (worktree untouched), then stages exactly the path set it computed in step 7 —
-   coder-authored additions and modifications, minus gate output. A gitlink can
+   coder-authored additions and modifications, plus gate-maintained committed
+   files, minus gate output, and **never a control artifact** (§4.3). A gitlink can
    never be staged (step 4 already refuses a nested `.git`). Subject
    `fixpoint: <id> — <title>`; body carrying the task goal and acceptance criteria;
    trailers:
@@ -510,6 +600,7 @@ For each task in plan order:
    ```
    Fixpoint-Run: 20260809-175113
    Fixpoint-Task: T03
+   Fixpoint-Outcome: implemented
    Fixpoint-Attempt: 1
    Design-SHA256: <digest>
    Coder: claude-coder/<configured-model-label>
@@ -519,17 +610,26 @@ For each task in plan order:
    For an ungated run the last line reads exactly
    `Verification: skipped (no operator gates configured)` — **never** "passed"
    (Proposal B; both critics). Every agent-authored field goes through
-   flatten + redact before it lands anywhere fixpoint publishes. After the commit,
-   gate output is removed (step 7) and the tree is asserted clean again, which is
-   step 0 for the next task.
+   flatten + redact before it lands anywhere fixpoint publishes. Gate output was
+   already removed before the commit (step 7), so the tree is asserted clean
+   immediately after it, which is step 0 for the next task.
+
+   A task that ends **without** code — `already_satisfied`, `blocked`, or `failed`
+   after its attempts — gets an **empty outcome marker commit** instead (§5.4):
+   same trailers, `Fixpoint-Outcome` naming the outcome and its reason
+   (`Fixpoint-Covered-By: T04`, `Fixpoint-Blocked-By: T02`, or the failing check),
+   subject `fixpoint: <id> — <title> [already_satisfied]`, no tree change, not
+   gated — the bootstrap commit's exemption argument (§5.1) verbatim: there are no
+   bytes to gate.
 9. **Journal + log line**, then the next task.
 
 ### 5.3 Attempts: a bounded second session, not a bounded human
 
 `implement.max_task_attempts`, default **2**.
 
-- Attempt 1 is the session plus its one in-session gate correction.
-- If it still fails the gate, or the session dies, **all of its changes are
+- An attempt is **exactly one coder session and one gate run** — no correction
+  pass inside it (§5.2 step 7).
+- If the attempt fails the gate, or the session dies, **all of its changes are
   discarded** and attempt 2 is a *fresh* session from the last accepted commit,
   carrying the prior failure diagnostic as prompt text and **none** of the prior
   file changes. One commit stays attributable to one session; several sessions'
@@ -548,7 +648,11 @@ to satisfy the gate, producing a "passing" task no single session authored. So:
 - the discard stashes **tracked and untracked** un-ignored changes together
   (`git stash push --include-untracked` semantics), under a stash message naming
   the run, task and attempt;
-- ignored paths are left alone, exactly as in §5.2 step 7;
+- ignored paths the session **created** are deleted, using step 2's ignored-path
+  census — a dead session may never have reached step 6's reconciliation, and an
+  attempt's residue surviving under an ignore rule is the same
+  two-sessions-one-commit bug in slow motion. Pre-existing ignored paths are left
+  alone;
 - and immediately afterwards fixpoint **asserts the tree is clean relative to
   HEAD** (§5.2 step 0's check). If anything remains, the run stops with a
   repository-invariant failure rather than starting attempt 2 on a polluted base.
@@ -571,12 +675,27 @@ resets, so nothing is destroyed), but they never reach a commit.
 
 | outcome | commit | dependents | run exit |
 |---|---|---|---|
-| `implemented` | yes | proceed | 0 |
-| `already_satisfied` — corroborated by named earlier committed tasks | no | proceed | 0 |
-| `carried` — committed by an earlier run of this plan, found by trailer on `-continue` | already there | proceed | 0 |
-| `blocked` — cannot be done as specified | no | skipped | 2 |
-| `failed` — gate, contract violation, gate mutation, or dead session after all attempts | no | skipped | 2 |
-| `skipped` — a dependency did not land | no | skipped | 2 |
+| `implemented` | code commit | proceed | 0 |
+| `already_satisfied` — corroborated by named earlier implemented tasks | empty marker | proceed | 0 |
+| `carried` — recorded by an earlier run of this plan, found by trailer on `-continue` | already there | per its outcome | 0 |
+| `blocked` — cannot be done as specified | empty marker | skipped | 2 |
+| `failed` — gate, contract violation, hidden state, gate mutation, or dead session after all attempts | empty marker | skipped | 2 |
+| `skipped` — a dependency did not land | **none — derived** | skipped | 2 |
+
+**Every processed task leaves exactly one commit**, because the commit trailers
+are the resume state (§5.5) and a state that cannot represent the outcomes §5.4
+defines breaks `-continue` on ordinary runs — review run 20260812-183115's most
+corroborated finding. A task that produced no code gets an empty, tool-authored
+**outcome marker commit** (§5.2 step 8) carrying `Fixpoint-Task`,
+`Fixpoint-Outcome` and the reason, so the full outcome vector is reconstructible
+from HEAD alone, on a machine where the run's artifacts never existed. Reverting a
+marker is a no-op, so one-task-one-revert survives; a marker changes no tree
+bytes, so the rule §8 protects — no tool-authored *diff* enters the history
+between coder tasks — survives too, and the bootstrap commit already establishes
+the ungated tool-commit precedent. `skipped` is the one outcome **derived, not
+recorded**: it is a pure function of the plan's `depends_on` graph and the
+recorded `failed`/`blocked` markers, and recording it would bury a 40-task run's
+history under empty commits the moment task 2 fails.
 
 `already_satisfied` exists because planners over-decompose, and a run that failed
 because task 9 turned out to be part of task 8 would be failing on a taxonomy
@@ -595,7 +714,7 @@ design and it must be loud.
 
 ### 5.5 The run has a deadline, and the deadline has a continuation
 
-`implement.max_run_duration`, default **16h**, checked between tasks. On expiry the
+`implement.max_run_duration`, default **32h**, checked between tasks. On expiry the
 run stops cleanly, reports incomplete (exit 2), and names the task it stopped
 before. Per-session and per-gate timeouts alone leave a hundred-task plan free to
 occupy a machine for days with no deadline at which it fails loudly (Critic 1).
@@ -603,12 +722,17 @@ occupy a machine for days with no deadline at which it fails loudly (Critic 1).
 Two things make the deadline honest rather than a trap:
 
 **It is checked against the plan before any coder session runs.** §4.2 rule 7
-refuses a plan that cannot fit, naming the arithmetic. The default of 16h is chosen
-to admit the whole 8–25 task range the planner prompt asks for at one attempt each
-(25 × ~35 min ≈ 14.6 h); a 40-task plan — legal under `max_tasks` — does *not* fit
-16h and is refused at plan time with instructions to raise the deadline or split the
-design. The two defaults no longer contradict each other under the design's own
-~30-minute unit of work: one of them now refuses in terms of the other.
+refuses a plan that cannot fit, naming the arithmetic — and the arithmetic is the
+worst case the configuration permits, not the happy path. The default of 32h is
+chosen to admit the whole 8–25 task range the planner prompt asks for at the
+default `max_task_attempts: 2` (25 × 2 × ~35 min ≈ 29.2 h); an earlier draft's
+16h admitted the same range only at one attempt each, so the common run — a few
+tasks needing their second session — was arithmetically guaranteed to hit the
+deadline mid-run, the exact trap rule 7 exists to refuse (review run
+20260812-183115). A 40-task plan — legal under `max_tasks` — does *not* fit 32h
+and is refused at plan time with instructions to raise the deadline or split the
+design. An operator running smaller plans lowers the deadline; the fit rule keeps
+whichever number is set honest.
 
 **An expired run can be continued, not only rerun.** `-continue <project>` resumes
 into a repository fixpoint itself built:
@@ -624,14 +748,20 @@ The repository is self-describing, so no side-channel state is needed:
 - the design is read from the committed `DESIGN.md` and must hash to the
   `design_sha256` in `PLAN.json`'s provenance, and to the bootstrap commit's
   `Design-SHA256` trailer; any mismatch is a refusal;
-- **what was already built is replayed from the commit trailers**: every commit
-  reachable from HEAD carrying `Fixpoint-Task: <id>` marks that task `carried`; the
-  run enters BUILD at the first task with no such commit;
+- **every recorded outcome is replayed from the commit trailers**: each commit
+  reachable from HEAD carrying `Fixpoint-Task: <id>` — a code commit or an outcome
+  marker (§5.4) — marks that task `carried` with its recorded
+  `Fixpoint-Outcome`; skips are re-derived from the plan and the carried
+  `failed`/`blocked` outcomes; the run enters BUILD at the first task with no
+  commit of either kind. Carried outcomes are **final**: a carried `failed` or
+  `blocked` task is not retried — retrying against a corrected design is a fresh
+  run, and a `-retry-failed` variant is an open question (§12), not a silent
+  behaviour;
 - the run refuses unless HEAD is the bootstrap commit or a fixpoint task commit,
-  the tree is clean (§5.2 step 0), the commit sequence is a prefix of the plan
-  order, and the configured `Verify-Profile` digest matches the bootstrap trailer —
-  a project half-built under one gate must not be finished under another and
-  reported as one thing;
+  the tree is clean (§5.2 step 0), the recorded tasks — commits and markers,
+  plus the derived skips — form a prefix of the plan order, and the configured
+  `Verify-Profile` digest matches the bootstrap trailer — a project half-built
+  under one gate must not be finished under another and reported as one thing;
 - **the trust boundary is re-established rather than inherited.** Between runs the
   tree was outside fixpoint's lock and anyone could have touched it, so `-continue`
   runs the *first-contact* hardening §2 says drops out for a fresh directory:
@@ -639,7 +769,10 @@ The repository is self-describing, so no side-channel state is needed:
   and the repository-invariant baseline is taken fresh. `-trusted-target` is still
   required.
 - the deadline restarts; the report covers the whole plan, with `carried` tasks
-  shown as such and attributed to the run id in their trailers.
+  shown with their recorded outcome and reason (read from the marker trailers, so
+  a `blocked` task's finding survives the first run's artifacts) and attributed to
+  the run id in their trailers. What the markers cannot carry — the first run's
+  timings and token counts — is reported as unavailable, not as zero.
 
 `-continue` is deliberately narrow: same plan, same design, same gate, clean tree,
 prefix history. It is not a general resume-anything facility, and it is not a
@@ -659,9 +792,9 @@ and demands:
   quoted in the prompt. The skeleton, the manifest, the entry point, and whatever
   minimum makes `go build ./... && go vet ./... && go test ./...` (or the operator's
   actual list) succeed. Every later task must keep them passing.
-- **Task 1 should also write the project's `.gitignore`** for this stack's build
-  output, since anything the gate creates that is not ignored is deleted after each
-  commit and named as a defect in the log (§5.2 step 7).
+- **`.gitignore` is fixpoint's, not a task.** The bootstrap commit wrote it from
+  the operator's `gitignore_seed`, and no task may modify it (§4.3). A plan that
+  schedules ignore-file work was written against a different tool.
 - **You are shown the gate; you do not choose it.** Do not name build, test or
   install commands in your output — there is no field for them and anything you
   write elsewhere is ignored. The operator configured the gate; your job is to make
@@ -697,6 +830,11 @@ four rules the fix prompt does not need:
 - **Do not touch `.git` — not the config, not the hooks, not the index, not any
   ref.** fixpoint checks this after every session and stops the whole run on a
   mismatch, so a stray `git config` costs the operator the rest of the run.
+- **Do not edit `DESIGN.md`, `PLAN.md`, `PLAN.json` or `.gitignore`, and do not
+  write into ignored paths.** The first four are restored and fail the task
+  (§4.3); an edit to an existing ignored path fails the task as hidden state, and
+  ignored files you create are deleted before the gate runs (§5.2 step 6) — work
+  hidden from the commit is work the gate must not see.
 - **Say so if this task is already satisfied** by earlier work, name the task ids
   that cover it, and change nothing. That is a legitimate answer, not a failure.
 
@@ -716,18 +854,28 @@ Output contract, in an `<implement>` envelope:
 
 The gate's commands must come from the operator and never from the design — but the
 operator is configuring a gate for a project whose language the design has not been
-read to discover. The answer is `extends`, which adds no keys:
+read to discover. The answer is `extends` — with one constraint this design must
+respect rather than wish away: **the loader's inheritance is one level deep, on
+purpose** (`loadWithExtends` refuses a base that itself extends another config, so
+the effective configuration stays readable from two files). An earlier draft
+stacked `implement-go → implement-design → defaults`; verified against the loader,
+every one of those configs fails to load (review run 20260812-183115 — the one
+reuse hypothesis whose failure invalidated a section outright). So there is no
+`implement-design.yaml` base file at all:
 
 ```
-config/implement-design.yaml   base: roles, prompts, shape rules. NO commands. Not runnable.
-config/implement-go.yaml       extends implement-design; verify: go build / vet / test
-config/implement-node.yaml     extends implement-design; verify: npm ci / build / test
-config/implement-web.yaml      extends implement-design; verify.policy: off
+config/implement-go.yaml       extends defaults; roles + verify: go build / vet / test
+config/implement-node.yaml     extends defaults; roles + verify: npm ci / build / test
+config/implement-web.yaml      extends defaults; roles + verify.policy: off
 ```
+
+Each stack config is runnable and self-contained; the shared shape numbers live in
+code (`applyDefaults`), exactly as the create pipeline's do — a config carries only
+what an operator would edit:
 
 ```yaml
-# config/implement-design.yaml
-description: Implement a reviewed design as a new project, one task per commit. Needs -trusted-target.
+# config/implement-go.yaml
+description: Implement a reviewed design as a new Go project, one task per commit. Needs -trusted-target.
 extends: defaults
 
 roles:
@@ -735,20 +883,17 @@ roles:
   coder:   { agent: claude-coder, prompt: implement-task }
 
 implement:
-  max_tasks: 40             # hard ceiling; the deadline usually binds first (§4.2 r7)
-  max_files_per_task: 12
-  max_task_attempts: 2
-  max_vacuous_frac: 0.34
-  max_run_duration: 16h
-  gitignore_seed: []        # per-stack: node_modules/, dist/, target/, …
+  gitignore_seed: []          # go builds in-tree artifacts rarely; node: node_modules/, dist/
+  gate_generated: ["go.sum"]  # files the gate maintains and the commit must keep (§5.2 step 7)
+
+verify:
+  commands: ["go build ./...", "go vet ./...", "go test ./..."]
 ```
 
-```yaml
-# config/implement-node.yaml (excerpt)
-extends: implement-design
-implement:
-  gitignore_seed: ["node_modules/", "dist/", ".next/"]
-```
+Code-level defaults (config keys so a wrong guess is the operator's to correct,
+§12.2): `max_tasks: 40`, `max_files_per_task: 12`, `max_task_attempts: 2`,
+`max_vacuous_frac: 0.34`, `max_run_duration: 32h`, `max_task_bytes: 64MB`,
+`min_free_disk: 2GB`.
 
 The existing `verify` block is reused as-is. Proposal B introduced a parallel
 `implement_design.verification` block; Critic 1 killed it and is right — operators
@@ -768,8 +913,10 @@ commit.
   in every commit trailer, and in every log line as `ungated`. Commits land ungated,
   exactly as the fix loop does on such projects. Nothing else changes — including
   §5.2 steps 6 and 7, which still run: an ungated run has no gate to create output
-  or mutate sources, so the census is trivially empty, and the code path is the same
-  one rather than a second one.
+  or mutate sources, so the post-gate diff against the census is trivially empty,
+  and the code path is the same one rather than a second one. The byte bound and
+  the ignored-path reconciliation in step 6 are about the coder, not the gate, and
+  apply unchanged.
 - **`verify.policy: no_regressions` is refused.** A no-regressions baseline is
   captured on the pristine tree — and the pristine tree here is *empty*, so
   `go build ./...` fails in it, and that failure would exempt the build check for
@@ -901,7 +1048,12 @@ the panel on the plan after all.
 | task 1 does not leave the project building | task 1's gate | task 1 fails after its attempts; everything depends on it, so everything is skipped; exit 2 | verify output per attempt; summary names the failing check | fix the plan's first task, rerun into a fresh directory |
 | a mid-run task fails the gate on every attempt | that task | task failed, changes stashed, dependents skipped, run continues, exit 2 | scoreboard and summary name the task, the check, and each skipped dependent | rerun that task by hand, or hand the project to `fix-code` |
 | the gate rewrites tracked sources, or the coder's new untracked sources | that task | `gate-mutated-sources`, task failed, paths named | the diff the gate produced | fix the gate config; a formatter belongs in a task, not a gate |
-| the gate creates un-ignored output | that task | output excluded from the commit, deleted after it, named in the log with a `.gitignore` recommendation | the log line | add the ignore entry (or `gitignore_seed`) so the next run stops paying for it |
+| the gate creates un-ignored output | that task | output excluded from the commit, deleted before it, named in the log with a `gitignore_seed` recommendation | the log line | add the seed entry so the next run stops paying for it |
+| the gate rewrites a `gate_generated` file (lockfile) | that task | staged into the commit, attributed to the gate in a trailer | the trailer | none needed — this is the designed path |
+| the coder edits a control artifact (`DESIGN.md`, `PLAN.md`, `PLAN.json`, `.gitignore`) | that task | restored from the bootstrap blob, task failed as contract violation | the journal event and the restored file | rerun the task |
+| the coder modifies an existing ignored path | that task | `hidden-state`, task failed, paths named | the ignored-path census diff | rerun the task; if the path is a legitimate committed file, it should not be ignored |
+| the coder's changes exceed `max_task_bytes` | that task | attempt failed before hashing or stashing, byte count named | the census walk's report | raise the bound, or fix the plan's task |
+| free disk below `min_free_disk` | preflight or between tasks | refusal / run stops incomplete (exit 2), threshold named | `df` | free space, `-continue` |
 | the coder dies mid-task | that task | changes discarded (tracked **and** untracked), attempt burned; next attempt starts clean | `git stash list`, attempt artifacts | the built tasks stand |
 | the coder claims a task it did not do | that task | contract violation, task failed | the session artifact and the clean tree | rerun that task |
 | the coder committed on its own | that task | soft-reset to base, journal deviation, run continues | the journal event | none needed |
@@ -946,7 +1098,7 @@ not run" (1).
 
 **The scoreboard.** The run table gains an implement shape, exactly as it gained a
 create one: the header reads
-`implement (a project is built; 18 of 20 task(s) committed; coverage "##" | unchecked)`
+`implement (a project is built; 18 of 20 task(s) implemented; coverage "##" | unchecked)`
 and, where the create summary puts the deliverable path, this one puts the project
 path and branch. Below it, one row per task: id, truncated title, outcome, short
 SHA, attempts, duration, tokens, and the gate verdict. An ungated run says `ungated`
@@ -1028,13 +1180,17 @@ handoff that quietly loses scope.
 - **`init.defaultBranch=main` passed explicitly on `git init`**, because the
   operator's global setting is not this tool's business to guess.
 - **Hooks disabled repo-locally and re-asserted per invocation**: `core.hooksPath`
-  points at an empty fixpoint-owned directory, every fixpoint git call passes
-  `-c core.hooksPath=<empty>`, and commits use `--no-verify`. Belt and braces on
-  purpose: the config is the default posture, the per-invocation flag is what
-  survives a session that edited the config, and §5.2 step 4 is what notices it did.
+  points at the empty `.git/fixpoint-hooks/` inside the repository itself (§5.1),
+  every fixpoint git call passes `-c core.hooksPath=.git/fixpoint-hooks`, and
+  commits use `--no-verify`. Belt and braces on purpose: the config is the default
+  posture, the per-invocation flag is what survives a session that edited the
+  config, and §5.2 step 4 is what notices it did.
 - **Census by digest, not by path set** (`git status --porcelain` for the path
   classification, sha256 for content), because on a greenfield project the files
-  that matter are untracked and a path set cannot see a rewrite.
+  that matter are untracked and a path set cannot see a rewrite. The **ignored**
+  tree is censused by stat (size + mtime), not digest — `node_modules/` makes
+  hashing it unaffordable, and creation/modification detection is all §5.2 step 6
+  asks of it.
 - **The index is rebuilt, never inherited**: reset to HEAD, then stage fixpoint's
   own computed pathspec.
 - **Gate commands executed by the existing `verify` executor**, with its existing
@@ -1047,9 +1203,10 @@ handoff that quietly loses scope.
 - **No database and no new state format.** The run's facts are an append-only
   journal flushed as it happens, plus `status.json` rewritten atomically after each
   task — and, for continuation, the git history itself: `PLAN.json` in the bootstrap
-  commit plus `Fixpoint-Task` trailers is the entire resume state, so a killed run
-  leaves an accurate record of what it had done in the one place that cannot drift
-  from the tree it describes.
+  commit plus the `Fixpoint-Task`/`Fixpoint-Outcome` trailers of code commits and
+  outcome markers (§5.4) are the entire resume state, so a killed run leaves an
+  accurate record of what it had done — and what it decided without committing —
+  in the one place that cannot drift from the tree it describes.
 
 ## 11. Decisions and dissent
 
@@ -1238,6 +1395,55 @@ and the narrowing is a decision, not an oversight:
    what actually drops out — hardening a tree fixpoint did not make — and the rest
    is relocated, not deleted.
 
+### Findings from review round 1 (run 20260812-183115), and what changed
+
+The first review with repository access: 44 findings, 41 after merge, 31 kept by
+the judge, of which 18 high. All 18 are folded into this revision — ten decisions,
+recorded here because several reshape mechanisms rather than patch sentences:
+
+1. **`core.hooksPath` moved inside the repository** (`.git/fixpoint-hooks/`,
+   §5.1). The delivered repo no longer references the transient artifact tree —
+   the review's most corroborated finding (both agents, three lenses).
+2. **The outcome marker commit** (§5.4). Trailer-only resume state could not
+   represent `already_satisfied`/`failed`/`blocked`, so `-continue` refused
+   exactly the runs it exists to recover — four independent findings. Every
+   processed task now leaves one commit; `skipped` is derived, not recorded.
+3. **`implement.gate_generated`** (§5.2 step 7). The two-bucket classification
+   got lockfiles exactly wrong: created → deleted forever, updated → task failed.
+   A third, config-owned category commits them with gate attribution.
+4. **`.gitignore` is fixpoint-owned and the metadata invariant grew**
+   (§4.3, §5.1). The agent-authored exemption set governed fixpoint's own census;
+   and `.git/info/exclude` could hide a source from `git status` while the gate
+   read it from the tree.
+5. **Control artifacts protected mechanically** (§4.3, §5.2 steps 5 and 8).
+   "Immutable" was declared, not enforced; now: reserved in validation, blob-hash
+   checked per session, never staged, read from the bootstrap commit on
+   `-continue`.
+6. **Ignored paths join the transaction** (§5.2 steps 2 and 6, §5.3). Stat
+   census; session-created ignored paths deleted before the gate and on discard;
+   session-modified ones are a `hidden-state` task failure — a gate must never
+   pass on bytes HEAD does not contain.
+7. **The in-session correction pass is removed** (§5.2 step 7, §5.3). Under a
+   one-shot agent interface it was a second session inside one attempt — breaking
+   one-session-one-commit and contaminating its own census. An attempt is one
+   session, one gate; gate output is removed after every gate run, not only after
+   success.
+8. **The fit rule uses the worst case the config permits** (§4.2 rule 7), and
+   `max_run_duration` defaults to 32h so the advertised 8–25 task range fits at
+   `max_task_attempts: 2`.
+9. **Byte and disk bounds** (`max_task_bytes`, `min_free_disk`, §5.2 step 6, §8).
+   Coder output was the one resource with no ceiling.
+10. **No `implement-design.yaml` base config** (§7.1). The loader's one-level
+    `extends` is deliberate and verified; the stack configs extend `defaults`
+    directly and the shared numbers live in code. The one reuse hypothesis whose
+    failure invalidated a section, exactly as §0 warned.
+
+Two findings the judge rejected are recorded as rejected for the implementer's
+benefit: the between-tasks deadline check stands (per-session and per-gate
+timeouts already bound a hung task; a journal heartbeat is a nice-to-have), and
+exit 2 continues to mean both "finished with holes" and "deadline expired" (the
+scoreboard distinguishes them; a per-pipeline exit taxonomy stays out of scope).
+
 ### Where the panel did not converge
 
 1. **Worktrees versus a single tree.** Critic 1 argued the candidate-worktree /
@@ -1276,11 +1482,12 @@ and the narrowing is a decision, not an oversight:
    in scope here rather than assumed; and if the discard helper is tracked-only,
    extending it is in scope here (§5.3), not optional.
 2. **The numbers are guesses.** 40 tasks, 12 files per task, 2 attempts, 0.34
-   vacuous, 16h, 8–25 preferred, 32 kB of design excerpt. Nothing measured them,
-   because nothing has run. Every one is a config key or prompt text, and every one
-   refuses rather than truncates — including the deadline, which is now checked
-   against the plan before a coder session runs — so a wrong guess surfaces as a
-   refusal at startup rather than as a bad project or a truncated run.
+   vacuous, 32h, 64 MB per attempt, 2 GB free disk, 8–25 preferred, 32 kB of design
+   excerpt. Nothing measured them, because nothing has run. Every one is a config
+   key or prompt text, and every one refuses rather than truncates — including the
+   deadline, which is checked against the plan's worst case before a coder session
+   runs — so a wrong guess surfaces as a refusal at startup rather than as a bad
+   project or a truncated run.
 3. **One gate, one language.** A design implying a polyglot project — a Go server
    and a React front end, each with its own build — gets one `verify` block. Out of
    scope here; the honest answer is that the gate needs per-task or per-directory
@@ -1297,7 +1504,11 @@ and the narrowing is a decision, not an oversight:
    and a repository together, no automated step in this pipeline asks whether the
    built thing matches the document it came from. The coverage rule is a floor
    against wholesale omission at plan time and is not a substitute.
-6. **A machine-verifiable approval artifact from `review-design`.** This design
+6. **`-continue -retry-failed`.** Carried `failed`/`blocked` outcomes are final
+   (§5.5); a flag that re-opens them against the same plan would need to answer
+   what a retry means for a task whose dependents already landed. Deferred until a
+   real run produces the need.
+7. **A machine-verifiable approval artifact from `review-design`.** This design
    records the design's path and hash but never claims the document was approved. If
    `review-design` later emits structured approval metadata, implement-design should
    accept it, preserve it in the bootstrap trailers and in `PLAN.json`'s provenance,
