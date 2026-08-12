@@ -11,7 +11,7 @@ GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v
 STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live \
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench \
         fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help
 
 all: build
@@ -133,6 +133,13 @@ review-design: build
 create-design: build
 	@test -n "$(TARGET)" || { echo "usage: make create-design TARGET=<file-or-dir> [OUT=<file>]"; exit 2; }
 	./$(BINARY) create-design -target "$(TARGET)" $(if $(OUT),-out "$(OUT)") --trusted-bundle
+
+## bench: measure one model as a reviewer against the seeded targets;
+## methodology and decision rule in bench/README.md
+##   make bench MODEL=glm-5.2:cloud [TASK=code|design|all] [N=repeats]
+bench:
+	@test -n "$(MODEL)" || { echo "usage: make bench MODEL=<ollama-model> [TASK=code|design|all] [N=repeats]"; exit 2; }
+	bench/run.sh "$(MODEL)" "$(or $(TASK),all)" "$(or $(N),1)"
 
 ## review-branch: one review round over only what this branch changed
 review-branch: build

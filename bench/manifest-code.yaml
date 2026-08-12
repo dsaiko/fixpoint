@@ -1,0 +1,91 @@
+# Seeded defects in bench/testdata/target-code. The matcher (bench/score.py)
+# counts a seed as FOUND when a finding names the right file, lands within
+# `span` lines of `line`, and mentions at least `need` of the keywords
+# (case-insensitive, in title+description). Frozen: never fix these bugs --
+# the target's whole value is that it does not change between measurements.
+task: code
+seeds:
+  - id: C01
+    file: store.go
+    line: 53
+    span: 8
+    need: 1
+    keywords: [quota, "nil map", uninitialized, initialise, initialize, panic]
+    note: "s.quota is never initialized in NewStore; first Create panics with nil-map write"
+  - id: C02
+    file: store.go
+    line: 64
+    span: 6
+    need: 1
+    keywords: [Before, After, inverted, expir, backwards, reversed]
+    note: "expiry comparison inverted: live links are deleted, expired ones resolve"
+  - id: C03
+    file: store.go
+    line: 77
+    span: 6
+    need: 1
+    keywords: [twice, "validateCode(to)", "never validated", duplicate, copy-paste, "to"]
+    note: "Rename validates `from` twice; `to` is never validated"
+  - id: C04
+    file: store.go
+    line: 105
+    span: 6
+    need: 1
+    keywords: [off-by-one, "out of range", bounds, "len(all) + 1", clamp]
+    note: "Page clamps end to len(all)+1; last page slices out of range"
+  - id: C05
+    file: store.go
+    line: 122
+    span: 5
+    need: 1
+    keywords: [integer division, truncat, "always 0", "always returns 0", float, order of operations]
+    note: "used/len*100 in integer arithmetic is 0 for every rate under 100%"
+  - id: C06
+    file: main.go
+    line: 54
+    span: 5
+    need: 1
+    keywords: [ignored, discarded, "_", error, Atoi]
+    note: "strconv.Atoi error discarded; bad TTL silently becomes 0 hours"
+  - id: C07
+    file: main.go
+    line: 86
+    span: 10
+    need: 1
+    keywords: [Close, leak, body, connection]
+    note: "preview never closes resp.Body; connections leak"
+  - id: C08
+    file: worker.go
+    line: 110
+    span: 6
+    need: 2
+    keywords: [nil, panic, request, "mustHead", "Do"]
+    note: "mustHead logs and returns nil request; client.Do(nil) panics"
+  - id: X01
+    file: worker.go
+    line: 20
+    span: 5
+    need: 1
+    keywords: [value receiver, copies, copied, copylocks, pointer receiver]
+    note: "AddResolved has a value receiver; the mutex is copied and the increment is lost"
+  - id: X02
+    file: worker.go
+    line: 51
+    span: 8
+    need: 2
+    keywords: [race, lock, mutex, concurrent, unsynchronized, synchroniz]
+    note: "janitor iterates and deletes s.links concurrently with HTTP handlers; Store has no lock"
+  - id: X03
+    file: worker.go
+    line: 68
+    span: 6
+    need: 2
+    keywords: [wg.Add, goroutine, race, before, Wait, inside]
+    note: "wg.Add inside the goroutine races wg.Wait; WarmCache can return before probes start"
+  - id: X04
+    file: worker.go
+    line: 100
+    span: 16
+    need: 2
+    keywords: [unbuffered, block, leak, goroutine, drain, buffered]
+    note: "CheckTargets returns on first error; remaining sends to the unbuffered channel block forever"

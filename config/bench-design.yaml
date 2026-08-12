@@ -1,0 +1,20 @@
+# Reviewer benchmark, design task: ONE candidate model reviews the frozen,
+# seeded design document in bench/testdata/target-design. Scored
+# deterministically by bench/score.py against bench/manifest-design.yaml -- no
+# judge and no refutation on purpose, so the run measures the candidate and
+# nothing else. One lens: the seeds are failure-mode flaws, and one session per
+# candidate keeps a seven-model sweep inside a week's quota.
+# Methodology and decision rule: bench/README.md. Run via `make bench`.
+description: Benchmark one candidate reviewer against the seeded design target.
+
+extends: defaults
+
+roles:
+  review:
+    agents: [bench-candidate]
+    strategy: all
+    prompts:
+      - design-failure
+
+loop:
+  review_only: true
