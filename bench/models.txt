@@ -20,9 +20,14 @@ minimax-m3:cloud
 # Second wave, from a library survey (2026-08-12): the depth tier of the
 # flash-vs-depth question, the one distinct-lineage lab on offer, the
 # efficiency tier of the nemotron family, and the only Alibaba frontier.
-# Skipped deliberately: gemma4 (lost its seat on live numbers), glm-5.1 /
-# kimi-k2.6 / minimax-m2.7 (older siblings of swept models), nemotron-3-nano
-# and gpt-oss:20b (too small to review).
+# Skipped deliberately: glm-5.1 / kimi-k2.6 / minimax-m2.7 (older siblings
+# of swept models), nemotron-3-nano and gpt-oss:20b (too small to review).
+# gemma4:31b-cloud was measured after all, on operator request: 17/20 -- the
+# bench (single-round seeded recall) is kinder to it than the live runs
+# (multi-round novel yield) that cost it the seat; both are true.
+# Retries (2026-08-13): minimax-m3's ping hang was transient -- the retry
+# scored 20/20, so it needs N=3 before any seat talk; mistral-large-3 failed
+# the design contract a second time and is out on the repeat-failure rule.
 deepseek-v4-pro:cloud
 gpt-oss:120b-cloud
 nemotron-3-super:cloud
