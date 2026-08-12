@@ -7,10 +7,12 @@ task: code
 seeds:
   - id: C01
     file: store.go
-    line: 53
-    span: 8
+    # No line gate: the defect is legitimately reported at NewStore (the map
+    # not made) or at Create (the write that panics) -- calibration saw both.
+    line: 0
+    span: 0
     need: 1
-    keywords: [quota, "nil map", uninitialized, initialise, initialize, panic]
+    keywords: [quota]
     note: "s.quota is never initialized in NewStore; first Create panics with nil-map write"
   - id: C02
     file: store.go
@@ -24,7 +26,7 @@ seeds:
     line: 77
     span: 6
     need: 1
-    keywords: [twice, "validateCode(to)", "never validated", duplicate, copy-paste, "to"]
+    keywords: [twice, "validateCode(to)", "never validated", duplicate, copy-paste]
     note: "Rename validates `from` twice; `to` is never validated"
   - id: C04
     file: store.go
@@ -69,11 +71,13 @@ seeds:
     keywords: [value receiver, copies, copied, copylocks, pointer receiver]
     note: "AddResolved has a value receiver; the mutex is copied and the increment is lost"
   - id: X02
-    file: worker.go
-    line: 51
-    span: 8
+    # Reported from either side of the race: the unlocked Store or the
+    # janitor that sweeps it. No line gate for the same reason.
+    file: store.go|worker.go
+    line: 0
+    span: 0
     need: 2
-    keywords: [race, lock, mutex, concurrent, unsynchronized, synchroniz]
+    keywords: [race, lock, mutex, concurrent, unsynchronized, synchroniz, janitor, handler]
     note: "janitor iterates and deletes s.links concurrently with HTTP handlers; Store has no lock"
   - id: X03
     file: worker.go

@@ -25,6 +25,13 @@ func shippedAgents(t *testing.T) map[string]Agent {
 		if e.IsDir() || filepath.Ext(e.Name()) != configExt {
 			continue
 		}
+		// Generated per-run by bench/run.sh and gitignored: present whenever a
+		// benchmark is running, but never shipped, so it is not this test's to
+		// police (a copied baseline would double-count a real agent, and an
+		// ollama candidate would demand a budget row per swept model).
+		if e.Name() == "bench-candidate"+configExt {
+			continue
+		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			t.Fatalf("reading %s: %v", e.Name(), err)
