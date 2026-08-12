@@ -51,21 +51,20 @@ roles:
   # 6% rejection rate, and no marginal cost on ChatGPT-account auth -- the best
   # value per session here.
   #
-  # TEMPORARY, 2026-08-06: the two ollama reviewers are out because Ollama Cloud's
-  # weekly limit is spent (kimi 3249 requests, deepseek 1497), and it resets around
-  # 2026-08-09. Leaving them in is worse than a smaller panel: a dead agent does not
-  # fail fast, it burns its full 20m timeout writing nothing while the round waits
-  # for its slowest reviewer -- and quorum counts agents whose every lens succeeded,
-  # so four minus two dead is 2 of 4, not a strict majority, and every verdict lands
-  # on INCONCLUSIVE regardless of what the survivors found.
-  #
-  # To restore: put deepseek-ollama back first. Over 16 runs it returned 7 findings
-  # from 5 steps at 3.3M tokens each against kimi's 45 from 33 at 4.3M, with a 14%
-  # rejection rate against kimi's 18% -- and in the 2026-08-06 fix run it produced
-  # the best finding no in-house model had (unsanitized verdict reasons), while two
-  # of kimi's three were on the unreachable GitLab path.
+  # RESTORED 2026-08-12, after the quota reset and the seeded-target benchmark
+  # (bench/README.md, bench/results.csv, 16 models). deepseek-v4-flash scored a
+  # perfect 20/20 seeds with zero noise -- the "flash trades depth for latency"
+  # concern it was once passed over for did not survive measurement. kimi keeps
+  # its seat at 19/20 with the best tokens-per-finding of any ollama reviewer
+  # (108 found/Mtok to deepseek's 83). glm-5.2 also scored 20/20 and is the
+  # standing alternative if either seat underperforms live; the rest of the
+  # 2026-08 sweep disqualified itself (timeouts, contract failures, or half the
+  # recall at multiples of the tokens). If the weekly limit is hit again, drop
+  # kimi first (2.2x deepseek's weekly drawdown in production), then deepseek --
+  # a dead ollama agent burns its full 20m timeout and can flip quorum to
+  # INCONCLUSIVE, so a spent limit means a smaller panel, never a waiting one.
   review:
-    agents: [claude, codex]
+    agents: [claude, codex, deepseek-ollama, kimi-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
