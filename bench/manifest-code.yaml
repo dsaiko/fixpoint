@@ -33,7 +33,7 @@ seeds:
     line: 105
     span: 6
     need: 1
-    keywords: [off-by-one, "out of range", bounds, "len(all) + 1", clamp]
+    keywords: [off-by-one, "out of range", bounds, "len(all) + 1", clamp, panic, exceed]
     note: "Page clamps end to len(all)+1; last page slices out of range"
   - id: C05
     file: store.go
