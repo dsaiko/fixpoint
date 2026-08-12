@@ -17,3 +17,13 @@ kimi-k3:cloud
 kimi-k2.7-code:cloud
 nemotron-3-ultra:cloud
 minimax-m3:cloud
+# Second wave, from a library survey (2026-08-12): the depth tier of the
+# flash-vs-depth question, the one distinct-lineage lab on offer, the
+# efficiency tier of the nemotron family, and the only Alibaba frontier.
+# Skipped deliberately: gemma4 (lost its seat on live numbers), glm-5.1 /
+# kimi-k2.6 / minimax-m2.7 (older siblings of swept models), nemotron-3-nano
+# and gpt-oss:20b (too small to review).
+deepseek-v4-pro:cloud
+gpt-oss:120b-cloud
+nemotron-3-super:cloud
+qwen3.5:397b-cloud
