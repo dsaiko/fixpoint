@@ -44,7 +44,7 @@ seeds:
     line: 0
     span: 0
     need: 2
-    keywords: [SQLite, "two processes", locking, corrupt, concurrent, "both open"]
+    keywords: [SQLite, "two processes", locking, corrupt, concurrent, "both open", notes.db, CLI]
     note: "desktop client and CLI open the same SQLite file with no locking story"
   - id: D07
     file: DESIGN.md
