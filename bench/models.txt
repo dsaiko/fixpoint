@@ -1,0 +1,12 @@
+# Candidates for the 2026-08 reviewer sweep, one per line. Run each with:
+#   make bench MODEL=<name>
+# Floating :cloud tags are a repeatability hazard -- bench/run.sh records what
+# `ollama show` resolves at run time; prefer dated tags where the library
+# offers them (see config/agents/deepseek-ollama.yaml for why).
+mistral-large-3:675b-cloud
+deepseek-v4-flash:0731-cloud
+glm-5.2:cloud
+kimi-k3:cloud
+kimi-k2.7-code:cloud
+nemotron-3-ultra:cloud
+minimax-m3:cloud

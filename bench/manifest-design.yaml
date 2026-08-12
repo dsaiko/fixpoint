@@ -1,0 +1,62 @@
+# Seeded flaws in bench/testdata/target-design/DESIGN.md. Design findings cite
+# unstable line numbers, so these seeds match on keywords alone (line: 0):
+# a seed is FOUND when at least `need` of its keywords appear in a finding's
+# title+description. Frozen: never fix these flaws.
+task: design
+seeds:
+  - id: D01
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [idempoten, duplicate, retry, "applied twice", resend, "double"]
+    note: "retrying the same POST after a timeout re-applies edits the server already wrote; no idempotency key"
+  - id: D02
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [transaction, "rows 1..N-1", partial, "roll", contradict, atomic]
+    note: "§5 claims one transaction per request AND that rows 1..N-1 survive a failed row — mutually exclusive"
+  - id: D03
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [clock, skew, last-write, "wall clock", wins, discarded, "silently", "lost"]
+    note: "conflict resolution by client wall clock silently discards edits, contradicting the never-lost goal"
+  - id: D04
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [wipe, 401, outbox, unsynced, refresh, "signs the user out", "local state"]
+    note: "a failed token refresh wipes notes.db including the unsynced outbox — data loss on an auth hiccup"
+  - id: D05
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [unbounded, cap, outbox, "one request", batch, chunk, "grows", backpressure]
+    note: "no outbox cap plus whole-outbox-in-one-POST: a long-offline device produces an unserviceable request"
+  - id: D06
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [SQLite, "two processes", locking, corrupt, concurrent, "both open"]
+    note: "desktop client and CLI open the same SQLite file with no locking story"
+  - id: D07
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [healthz, health, liveness, database, rotation, "load balancer", dependency]
+    note: "healthz checks process liveness only; an instance with a dead DB connection stays in rotation"
+  - id: D08
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [rolling, concurrently, migration, "old and new", overlap, "schema"]
+    note: "rolling deploys guarantee old/new overlap; 'deploys are quick' is not a mechanism, and migrating before start breaks the old version"

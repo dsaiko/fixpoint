@@ -1,0 +1,32 @@
+# Template for the bench candidate agent. bench/run.sh substitutes __MODEL__
+# and writes the result to config/agents/bench-candidate.yaml (gitignored).
+# Same claude-harness wrapping as kimi-ollama.yaml / deepseek-ollama.yaml --
+# the bench varies the MODEL and nothing else, or the comparison is void.
+model: __MODEL__
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - --output-format json
+  - -p
+  - --setting-sources user
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  error_status: api_error_status
+# No effort key: ollama drops the thinking budget (see config/agents/_README.md).
+# NO cost_usd: the wrapped harness fabricates Anthropic rate-card prices for
+# models Anthropic does not serve (measured ~93x off). Tokens are real.
+prompt_via: stdin
+timeout: 20m
+can_edit: false
+env:
+  pass:
+    - OLLAMA_HOST
+prompt_budget: 400000
