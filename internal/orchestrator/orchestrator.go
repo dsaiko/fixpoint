@@ -267,6 +267,12 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 	// A `gh pr checkout` invalidates the preflight's verdict on the target, so the
 	// gates run again the moment it lands -- before Prepare's own next git command.
 	o.collector.OnCheckout(o.recheckPreflightGuards)
+	// fixpoint's own git commands get the credential-stripped environment, the
+	// same one the verify gate gets: `git add` can execute a clean filter the
+	// tree names and the operator's global config defines, and that child
+	// process must not inherit the model and forge secrets withheld from every
+	// agent (review run 20260813-161029).
+	o.collector.UseGitEnv(o.verifyEnv)
 	// Exclude the template's literal prefix, not the rendered path: the rendered
 	// path changes every run (and every round), so only the static base is a
 	// stable pathspec for commits, clean checks, and collection.

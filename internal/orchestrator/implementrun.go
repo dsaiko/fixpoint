@@ -126,6 +126,16 @@ func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) 
 		return err
 	}
 	defer func() {
+		// Leave the project the way §8 promises Ctrl-C leaves it: "every
+		// committed task stands and was gated; nothing further is committed",
+		// and the repository is consistent as-is. On cancellation the in-flight
+		// attempt's edits are still in the tree -- checkInvariants fails on the
+		// dead context and returns before the discard ever runs -- so the
+		// cleanup happens HERE, on a fresh context, exactly as the collector's
+		// own commit path restores its index on the way out (review run
+		// 20260813-161029). Without it a canceled run left a dirty tree that
+		// -continue then refused, and the report said only "interrupted".
+		o.cleanUpInterrupted(ctx, prep)
 		if prep.release != nil {
 			prep.release()
 		}
@@ -292,10 +302,19 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 	if err != nil {
 		return err
 	}
+	// PLAN.md and PLAN.json are agent-authored text committed FOREVER into the
+	// delivered repository, so they go through the same redaction every
+	// published artifact does -- a planner asked by an injected design to copy
+	// a credential from a neighboring .env into a task goal must not have it
+	// recorded in the history (review run 20260813-161029). DESIGN.md is
+	// exempt and must stay byte-exact: its hash is what ties the project to
+	// the document review-design approved, and redacting it would break that
+	// match. The design is the operator's own asserted input (-trusted-target),
+	// which is precisely what the plan derived from it is not.
 	files := map[string][]byte{
-		"DESIGN.md":  p.designBytes, // byte-exact: the hash must match what review-design approved (§4.3)
-		"PLAN.md":    []byte(implement.RenderMarkdown(pl, implement.RenderHeader{Coverage: coverage, GateCommands: p.gateCommands})),
-		"PLAN.json":  append(planJSON, '\n'),
+		"DESIGN.md":  p.designBytes,
+		"PLAN.md":    []byte(agent.RedactSecrets(implement.RenderMarkdown(pl, implement.RenderHeader{Coverage: coverage, GateCommands: p.gateCommands}))),
+		"PLAN.json":  []byte(agent.RedactSecrets(string(planJSON)) + "\n"),
 		".gitignore": []byte(implement.GitignoreContent(o.cfg.Implement.GitignoreSeed)),
 	}
 	header := fmt.Sprintf("fixpoint: initialize implementation of %q", flattenField(pl.Project.Name))
@@ -311,24 +330,33 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 	}, "\n")
 
 	p.col = target.New(config.Target{Mode: config.ModeDirectory, Path: p.out})
-	sha, err := implement.Scaffold(ctx, p.col, p.out, files, header, body)
-	if err != nil {
-		return err
-	}
-	p.bootstrapSHA = sha
-	sum.Deliverable = p.out
-	// The repository exists now, so it can be claimed -- and must be: without
-	// the lock a concurrent fixpoint run finds an apparently free repository and
-	// commits into the same worktree, where checkInvariants would read its
-	// commit as the coder's, soft-reset it, and fold a stranger's changes into
-	// this task's commit under the wrong attribution (review run
-	// 20260813-124710). Held for the rest of the run; a fix run over the
-	// finished project takes it afterwards, exactly as it takes any other.
-	release, err := p.col.LockRepo(ctx)
+	// The write-target gets the credential-stripped environment AND has the
+	// operator's global and system git config switched off. Measured (review run
+	// 20260813-161029): a `.gitattributes` the coder writes plus a filter
+	// defined in global config makes `git add` execute that filter, and with
+	// global config off there is nowhere left to define one -- the repository's
+	// own config is covered by the §5.2 step 4 invariant. Safe here in a way it
+	// would not be over an operator's repository: Init writes this repository's
+	// identity locally, so nothing fixpoint does needs the global file.
+	p.col.UseGitEnv(append(o.verifyEnv,
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_ATTR_NOSYSTEM=1",
+	))
+	// Scaffold takes the repository lock the moment `git init` has made one --
+	// before it writes or commits anything -- and hands it back to be held for
+	// the rest of the run. Without the lock a concurrent fixpoint run finds an
+	// apparently free repository and commits into the same worktree, where
+	// checkInvariants would read its commit as the coder's, soft-reset it, and
+	// fold a stranger's changes into this task's commit under the wrong
+	// attribution (review runs 20260813-124710 and -161029).
+	sha, release, err := implement.Scaffold(ctx, p.col, p.out, files, agent.RedactSecrets(header), agent.RedactSecrets(body))
 	if err != nil {
 		return err
 	}
 	p.release = release
+	p.bootstrapSHA = sha
+	sum.Deliverable = p.out
 	if p.baseline, err = implement.SnapshotRepoState(ctx, p.out, "main"); err != nil {
 		return err
 	}
@@ -751,7 +779,11 @@ func (o *Orchestrator) commitTask(ctx context.Context, p *implementPrep, t imple
 	paths = append(paths, gatePaths...)
 	header := fmt.Sprintf("fixpoint: %s — %s", t.ID, flattenField(t.Title))
 	body := taskCommitBody(t, o.logs.RunID(), attempt, p, gateLabel, gatePaths)
-	sha, err := p.col.CommitExact(ctx, header, body, paths, false)
+	// Redacted like every other commit fixpoint makes: the body carries the
+	// planner's goal and acceptance criteria, and the planner read an untrusted
+	// design in a directory that may hold an .env beside it. The implement
+	// paths were the only ones skipping this (review run 20260813-161029).
+	sha, err := p.col.CommitExact(ctx, agent.RedactSecrets(header), agent.RedactSecrets(body), paths, false)
 	if err != nil {
 		return "", err
 	}
@@ -824,6 +856,34 @@ func (o *Orchestrator) checkInvariants(ctx context.Context, p *implementPrep, ta
 	return nil
 }
 
+// cleanUpInterrupted discards whatever an interrupted attempt left behind. It
+// runs on a FRESH, bounded context because the run's own is already dead: a
+// canceled context makes every git command fail instantly, which is precisely
+// how the residue came to be left.
+//
+// A failure here is logged rather than returned: the run is already ending,
+// and the operator needs to be told the tree is dirty far more than the caller
+// needs another error.
+func (o *Orchestrator) cleanUpInterrupted(ctx context.Context, p *implementPrep) {
+	if ctx.Err() == nil || p.col == nil {
+		return
+	}
+	fresh, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+	clean, err := p.col.GitClean(fresh)
+	if err != nil || clean {
+		return
+	}
+	o.logf("the run was interrupted with the tree dirty; discarding the in-flight attempt so the project stays consistent")
+	if _, err := p.col.StashDirty(fresh, fmt.Sprintf("fixpoint %s: interrupted (discarded)", o.logs.RunID())); err != nil {
+		o.logf("WARNING: could not discard the interrupted attempt (%v); %s is left dirty -- `git stash` there before continuing", err, p.out)
+		return
+	}
+	if clean, err := p.col.GitClean(fresh); err != nil || !clean {
+		o.logf("WARNING: %s is still dirty after the discard; inspect it before continuing", p.out)
+	}
+}
+
 // discardAttempt is the single exit for every attempt that does not reach a
 // commit (§5.3): stash tracked and untracked changes together, delete
 // session-created ignored paths, then assert the tree clean -- the assertion
@@ -863,7 +923,7 @@ func (o *Orchestrator) markerCommit(ctx context.Context, p *implementPrep, t imp
 	if reasonValue != "" {
 		lines = append(lines, "Fixpoint-Reason: "+flattenField(clampLine(reasonKey+"="+reasonValue)))
 	}
-	return p.col.CommitExact(ctx, header, strings.Join(lines, "\n"), nil, true)
+	return p.col.CommitExact(ctx, agent.RedactSecrets(header), agent.RedactSecrets(strings.Join(lines, "\n")), nil, true)
 }
 
 // cleanCheck clones HEAD and runs the gate in the clone (§7.2): the committed

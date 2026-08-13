@@ -88,10 +88,12 @@ func SnapshotRepoState(ctx context.Context, dir, excludeBranch string) (RepoStat
 	if s.InfoAttributesDigest, err = fileDigest(filepath.Join(gitDir, "info", "attributes")); err != nil {
 		return s, err
 	}
-	if _, err := os.Stat(filepath.Join(gitDir, "objects", "info", "alternates")); err == nil {
+	// Lstat: a symlink at either path is a present marker, and the point is
+	// presence, not content.
+	if _, err := os.Lstat(filepath.Join(gitDir, "objects", "info", "alternates")); err == nil {
 		s.HasAlternates = true
 	}
-	if _, err := os.Stat(filepath.Join(gitDir, "shallow")); err == nil {
+	if _, err := os.Lstat(filepath.Join(gitDir, "shallow")); err == nil {
 		s.IsShallow = true
 	}
 	return s, nil
@@ -134,11 +136,31 @@ func (s RepoState) Diff(prev RepoState) []string {
 // fileDigest hashes one file; a missing file digests to "" -- absence is a
 // known value, not an error, because Init writes these files empty and a
 // deleted file must read as a change.
+//
+// A SYMLINK digests to a distinct sentinel rather than to its destination's
+// bytes. Following it would let a session copy `.git/config` unchanged to an
+// external path, replace the repository's file with a link to that copy, and
+// pass the invariant with an identical digest -- then change the external file
+// afterwards, leaving the DELIVERED repository configured to run
+// attacker-controlled hooks or filters on the operator's next ordinary git
+// command (review run 20260813-161029). Git metadata is fixpoint's own; a link
+// where a file belongs is itself the change worth reporting.
 func fileDigest(path string) (string, error) {
-	b, err := os.ReadFile(path)
+	st, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
+	if err != nil {
+		return "", err
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		dest, _ := os.Readlink(path)
+		return "symlink:" + dest, nil
+	}
+	if !st.Mode().IsRegular() {
+		return "irregular:" + st.Mode().String(), nil
+	}
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
@@ -146,7 +168,15 @@ func fileDigest(path string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// dirEmpty reports whether path is a real, empty DIRECTORY. A symlink is not
+// one, however empty its destination: the hooks directory is what
+// core.hooksPath resolves to, so a link there points git at a tree nothing in
+// this repository controls (same finding as fileDigest's).
 func dirEmpty(path string) bool {
+	st, err := os.Lstat(path)
+	if err != nil || !st.Mode().IsDir() {
+		return false
+	}
 	entries, err := os.ReadDir(path)
 	return err == nil && len(entries) == 0
 }

@@ -21,9 +21,11 @@ func censusRepo(t *testing.T) string {
 		"tracked.txt": []byte("v1\n"),
 		".gitignore":  []byte(GitignoreContent([]string{"ignored/"})),
 	}
-	if _, err := Scaffold(t.Context(), col, out, files, "init", "-"); err != nil {
+	_, release, err := Scaffold(t.Context(), col, out, files, "init", "-")
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(release)
 	return out
 }
 

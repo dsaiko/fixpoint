@@ -22,10 +22,11 @@ func guardRepo(t *testing.T) (string, string) {
 		".gitignore": []byte(GitignoreContent([]string{"ignored/"})),
 		"src.txt":    []byte("source\n"),
 	}
-	sha, err := Scaffold(t.Context(), collectorFor(t, out), out, files, "init", "-")
+	sha, release, err := Scaffold(t.Context(), collectorFor(t, out), out, files, "init", "-")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(release)
 	return out, sha
 }
 

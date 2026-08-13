@@ -68,6 +68,18 @@ type Collector struct {
 	prMu   sync.Mutex
 	prText string
 	prRead bool
+	// gitEnv overrides the environment fixpoint's OWN git invocations run with.
+	// Empty means probeEnv().
+	//
+	// It exists because `git add` can execute code: a clean/smudge filter named
+	// by a `.gitattributes` in the tree and DEFINED in the operator's global git
+	// config runs as a child of our own git process, and measured, it inherited
+	// fixpoint's whole environment -- including the model and forge credentials
+	// deliberately withheld from every agent (review run 20260813-161029). The
+	// coder can already run commands; what it must never gain is the secrets
+	// fixpoint holds, so git gets the same credential-stripped environment the
+	// verify gate does.
+	gitEnv []string
 }
 
 // New returns a collector for the configured target.
@@ -86,6 +98,12 @@ func New(cfg config.Target) *Collector { return &Collector{cfg: cfg} }
 // base commit, which runs a credential helper or ssh command), so the re-check
 // cannot wait for Prepare to return. See orchestrator.recheckPreflightGuards.
 func (c *Collector) OnCheckout(fn func(context.Context) error) { c.afterCheckout = fn }
+
+// UseGitEnv sets the environment for every git command fixpoint runs against
+// this target. The caller passes agent.EnvWithoutCredentials(cfg.Agents) --
+// the same filter the verify gate gets -- optionally plus its own pins; the
+// git config hardening is applied on top here, so a caller cannot drop it.
+func (c *Collector) UseGitEnv(env []string) { c.gitEnv = env }
 
 // ExcludeLogs records the run's logs directory (as a target-relative slash
 // path) so Collect omits it from directory walks and untracked-file listings.
@@ -278,6 +296,25 @@ func (c *Collector) prepareDocument() error {
 		return fmt.Errorf("target.document %s is not a regular file", c.documentPath())
 	}
 	return nil
+}
+
+// readNoFollow reads a file, refusing to follow a symlink AT THE OPEN.
+//
+// prepareDocument already rejects a symlinked document, but a check and a
+// later open are two operations: whoever owns the target directory can swap
+// the checked regular file for a link in between, and the read would then
+// disclose the destination to every agent (review run 20260813-161029). O_NOFOLLOW
+// closes the window by making the refusal and the read one syscall.
+func readNoFollow(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%s became a symlink between the check and the read; fixpoint will not follow one", path)
+		}
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
 }
 
 // documentPath resolves target.document against target.path. Absolute stays
@@ -474,7 +511,7 @@ func (c *Collector) Collect(ctx context.Context) (string, error) {
 			// read the same bytes rather than each excerpting its own copy. It flows
 			// through the same fencing and defanging as a diff -- it is target-authored
 			// content like everything else between the material markers.
-			doc, err := os.ReadFile(c.documentPath())
+			doc, err := readNoFollow(c.documentPath())
 			if err != nil {
 				return "", fmt.Errorf("target.document: %w", err)
 			}
@@ -2631,6 +2668,10 @@ func (c *Collector) scopedConfigKeys(ctx context.Context) ([]configEntry, error)
 // into the reviewer/coder CLIs, which must keep the user's own locale for their
 // output encoding.
 func (c *Collector) probeEnv() []string {
+	if len(c.gitEnv) > 0 {
+		// Harden LAST so the config pins survive whatever the caller supplied.
+		return append(gitenv.Harden(c.gitEnv), "LC_ALL=C")
+	}
 	return append(gitenv.Harden(nil), "LC_ALL=C")
 }
 
