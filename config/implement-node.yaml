@@ -1,0 +1,29 @@
+# Implement a reviewed design as a new Node project, one task per commit.
+#
+#   fixpoint implement-node -target DESIGN.md -out ~/src/newapp -trusted-target
+#
+# See implement-go.yaml for the shape; only the stack differs. npm ci keeps
+# the lockfile honest, and package-lock.json is gate_generated: the gate may
+# create or update it, and the commit keeps it -- deleting a lockfile from
+# every commit is the exact failure the third category exists for.
+description: Implement a reviewed design as a new Node project, one task per commit. Needs -trusted-target and -out.
+
+extends: defaults
+
+roles:
+  planner: { agent: claude, prompt: implement-plan }
+  coder: { agent: claude-coder, prompt: implement-task }
+
+implement:
+  gitignore_seed: ["node_modules/", "dist/"]
+  gate_generated: ["package-lock.json"]
+
+verify:
+  policy: must_pass
+  commands:
+    - name: install
+      run: ["npm", "ci"]
+    - name: build
+      run: ["npm", "run", "build", "--if-present"]
+    - name: test
+      run: ["npm", "test", "--if-present"]

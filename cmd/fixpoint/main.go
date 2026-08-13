@@ -322,6 +322,17 @@ func checkOnly(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Co
 			len(cfg.Roles.Review.Agents), cfg.Roles.Editor.Agent, objections)
 		return 0
 	}
+	if cfg.IsImplement() {
+		// Same courtesy as create: an implement run has no lenses by design.
+		gate := "ungated (asserted)"
+		if n := len(cfg.Verify.Commands); n > 0 {
+			gate = fmt.Sprintf("%d gate command(s), clean_check %s", n, cfg.Implement.CleanCheck)
+		}
+		logf("configuration OK: implement pipeline -- planner %s, coder %s, %s",
+			cfg.Roles.Planner.Agent, cfg.Roles.Coder.Agent, gate)
+		logf("NOTE: an implement run needs -trusted-target (the design steers a coder) and -out <fresh directory>")
+		return 0
+	}
 	logf("configuration OK: %d review lens(es), %s, strategy %s",
 		len(cfg.Roles.Review.Prompts), who, cfg.Roles.Review.Strategy)
 	// --check is static, so the fix-trust gate has not fired -- but reporting

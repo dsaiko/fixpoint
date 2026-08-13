@@ -1578,7 +1578,8 @@ func implementConfig(t *testing.T) *Config {
 			"plan":  {Command: []string{"echo"}, PromptVia: "stdin"},
 			"coder": {Command: []string{"echo"}, PromptVia: "stdin", CanEdit: true},
 		},
-		Logs: Logs{Formats: []string{"md", "json", "raw"}},
+		Verify: Verify{Policy: VerifyMustPass, Commands: []VerifyCommand{{Name: "true", Run: []string{"true"}}}},
+		Logs:   Logs{Formats: []string{"md", "json", "raw"}},
 	}
 }
 
@@ -1621,6 +1622,9 @@ func TestValidateImplement(t *testing.T) {
 		{"gate_generated must stay inside the project", func(c *Config) {
 			c.Implement.GateGenerated = []string{"../outside"}
 		}, "relative path inside the project"},
+		{"no_regressions refused", func(c *Config) { c.Verify.Policy = VerifyNoRegressions }, "baseline tree is empty"},
+		{"empty gate must be asserted", func(c *Config) { c.Verify = Verify{Policy: VerifyMustPass} }, "has to be a statement"},
+		{"ungated as assertion accepted", func(c *Config) { c.Verify = Verify{Policy: VerifyOff} }, ""},
 		{"implement keys without planner refused", func(c *Config) {
 			c.Roles.Planner = RoleRef{}
 		}, "implement.* is set but roles.planner is not"},
