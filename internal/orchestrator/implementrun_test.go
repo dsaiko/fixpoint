@@ -707,3 +707,147 @@ func TestRunImplementRedactsSecretsInEveryCommittedArtifact(t *testing.T) {
 		t.Error("a commit message carries the credential verbatim")
 	}
 }
+
+// clean_check is the enforcement of the design's central claim, and `last` is
+// the SHIPPED DEFAULT -- yet the wiring was never exercised (review run
+// 20260813-161029, i38). A run whose commits satisfy the gate passes it; a run
+// whose gate only passes because of an uncommitted ignored file does not, and
+// says so.
+func TestRunImplementCleanCheck(t *testing.T) {
+	// The gate needs marker.txt. The coder writes it into an IGNORED directory
+	// and symlinks... no: simpler and truer to the failure -- it writes the
+	// file the gate needs under an ignore rule, so the working tree passes and
+	// a clone cannot.
+	gate := config.Verify{
+		Policy:   config.VerifyMustPass,
+		Timeout:  config.Duration(time.Minute),
+		Commands: []config.VerifyCommand{{Name: "needs", Run: []string{"test", "-f", "hidden/marker.txt"}}},
+	}
+	f := newImplementFixture(t, implementReply(
+		"mkdir -p hidden && printf 'x\\n' > hidden/marker.txt\nprintf 'work\\n' > src.txt\nsleep 1",
+		`{"status": "implemented", "notes": "done"}`), gate)
+	f.cfg.Implement.GitignoreSeed = []string{"hidden/"}
+	f.cfg.Implement.CleanCheck = config.CleanCheckLast
+
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	// The tasks themselves pass -- the gate runs in the working tree, where the
+	// ignored file exists. The clean check is what catches it.
+	if sum.Termination != model.TermIncomplete {
+		t.Errorf("termination = %q, want incomplete: HEAD does not build in a clean clone", sum.Termination)
+	}
+	if !strings.Contains(f.logs(), "clean clone") {
+		t.Errorf("the run did not report the clean-clone failure:\n%s", f.logs())
+	}
+}
+
+// A run whose commits genuinely satisfy the gate passes the same check, so the
+// default is not merely a way to fail.
+func TestRunImplementCleanCheckPassesOnASoundProject(t *testing.T) {
+	gate := config.Verify{
+		Policy:   config.VerifyMustPass,
+		Timeout:  config.Duration(time.Minute),
+		Commands: []config.VerifyCommand{{Name: "needs", Run: []string{"test", "-f", "src.txt"}}},
+	}
+	// Each session APPENDS a unique line, so the second task leaves the tree
+	// dirty too -- writing identical bytes would trip the "reported
+	// implementing but changed nothing" contract check instead.
+	f := newImplementFixture(t, implementReply("printf 'work %s\\n' \"$$-$(date +%s)\" >> src.txt\nsleep 1",
+		`{"status": "implemented", "notes": "done"}`), gate)
+	f.cfg.Implement.CleanCheck = config.CleanCheckLast
+
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if sum.Termination != model.TermImplemented {
+		t.Errorf("termination = %q, want implemented\nlog:\n%s", sum.Termination, f.logs())
+	}
+	if !strings.Contains(f.logs(), "a fresh clone of HEAD passes the gate") {
+		t.Error("a passing clean check went unreported")
+	}
+}
+
+// gate_generated is the third classification category (§5.2 step 7): a file the
+// GATE maintains is staged into the task commit with gate attribution, neither
+// a mutation failure nor removable output. Never exercised end to end (review
+// run 20260813-161029, i51).
+func TestRunImplementCommitsGateGeneratedFiles(t *testing.T) {
+	gate := config.Verify{
+		Policy:  config.VerifyMustPass,
+		Timeout: config.Duration(time.Minute),
+		// The "gate" behaves like `go mod tidy`: it writes the lockfile.
+		Commands: []config.VerifyCommand{{Name: "lock", Run: []string{"sh", "-c", "printf 'locked\\n' > go.sum"}}},
+	}
+	f := newImplementFixture(t, implementReply("printf 'work\\n' > src.txt\nsleep 1",
+		`{"status": "implemented", "notes": "done"}`), gate)
+	f.cfg.Implement.GateGenerated = []string{"go.sum"}
+
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if sum.Tasks[0].Outcome != outcomeImplemented {
+		t.Fatalf("T01 = %+v -- a gate-maintained file must not fail the task\nlog:\n%s", sum.Tasks[0], f.logs())
+	}
+	files := gitOutAt(t, f.out, "show", "--name-only", "--format=", sum.Tasks[0].SHA)
+	if !strings.Contains(files, "go.sum") {
+		t.Errorf("the gate-maintained lockfile was not committed:\n%s", files)
+	}
+	if body := gitOutAt(t, f.out, "log", "-1", "--format=%B", sum.Tasks[0].SHA); !strings.Contains(body, "Fixpoint-Gate-Wrote: go.sum") {
+		t.Errorf("the commit does not attribute the file to the gate:\n%s", body)
+	}
+}
+
+// A gate that rewrites the coder's SOURCES is a distinct failure class: tool
+// output must never land under the coder's attribution (§5.2 step 7).
+func TestRunImplementRefusesAGateThatRewritesSources(t *testing.T) {
+	gate := config.Verify{
+		Policy:  config.VerifyMustPass,
+		Timeout: config.Duration(time.Minute),
+		// A formatter in the gate: it rewrites the file the session just wrote.
+		Commands: []config.VerifyCommand{{Name: "format", Run: []string{"sh", "-c", "printf 'reformatted\\n' > src.txt"}}},
+	}
+	f := newImplementFixture(t, implementReply("printf 'work\\n' > src.txt\nsleep 1",
+		`{"status": "implemented", "notes": "done"}`), gate)
+
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if sum.Tasks[0].Outcome != outcomeFailed {
+		t.Errorf("T01 = %+v, want failed with gate-mutated-sources", sum.Tasks[0])
+	}
+	if !strings.Contains(f.logs(), "gate-mutated-sources") {
+		t.Errorf("the failure was not named:\n%s", f.logs())
+	}
+}
+
+// The §5.2 step-4 ladder: a coder that COMMITS is soft-reset back under
+// fixpoint's ownership and the work is kept; a coder that rewrites history
+// below the base stops the whole run. Neither branch had a pipeline test
+// (review run 20260813-161029, i37/i50).
+func TestRunImplementSoftResetsACoderCommit(t *testing.T) {
+	f := newImplementFixture(t, implementReply(
+		"printf 'work\\n' > src.txt\ngit add src.txt >/dev/null 2>&1\ngit -c user.name=c -c user.email=c@c commit -qm 'coder commit' >/dev/null 2>&1\nsleep 1",
+		`{"status": "implemented", "notes": "done"}`), config.Verify{Policy: config.VerifyOff})
+
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if sum.Tasks[0].Outcome != outcomeImplemented {
+		t.Fatalf("T01 = %+v -- the work must be kept\nlog:\n%s", sum.Tasks[0], f.logs())
+	}
+	// The commit is fixpoint's, not the coder's: one commit per task, with our
+	// subject and trailers.
+	subject := strings.TrimSpace(gitOutAt(t, f.out, "log", "-1", "--format=%s", sum.Tasks[0].SHA))
+	if !strings.HasPrefix(subject, "fixpoint: T01") {
+		t.Errorf("the coder's commit survived as %q", subject)
+	}
+	if !strings.Contains(f.logs(), "committed despite being told not to") {
+		t.Error("the contract deviation was not journalled")
+	}
+}
