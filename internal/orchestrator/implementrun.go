@@ -61,6 +61,13 @@ type implementPrep struct {
 	col          *target.Collector // over out; valid after SCAFFOLD
 	bootstrapSHA string
 	baseline     implement.RepoState
+	// outcomes is every processed task's recorded outcome, by id. Shared state
+	// rather than a buildPhase local because the coverage check needs it:
+	// "already_satisfied, covered by T04" is only true if T04 was IMPLEMENTED.
+	outcomes map[string]string
+	// release drops the write-target's repository lock; nil until SCAFFOLD has
+	// created the repository there is anything to lock.
+	release func()
 }
 
 // errRunStop is a repository-invariant failure: the run cannot reason about
@@ -71,14 +78,24 @@ func (e runStopError) Error() string { return "repository invariant failed: " + 
 
 // runPipeline dispatches the non-loop pipelines; handled=false means the run
 // is loop-shaped and run() continues.
+//
+// The logs-symlink guard runs here, BEFORE either pipeline writes its first
+// artifact: both write snapshots, prompts and raw agent output into an
+// artifact root that sits beside an assignment the target may own, and
+// checking only on the way out (the shape the first review of this code found,
+// run 20260813-124710) reports the redirect after those bytes have already
+// been written wherever the symlink pointed.
 func (o *Orchestrator) runPipeline(ctx context.Context, sum *model.RunSummary) (bool, error) {
-	switch {
-	case o.cfg.IsCreate():
-		return true, o.runCreate(ctx, sum)
-	case o.cfg.IsImplement():
-		return true, o.runImplement(ctx, sum)
+	if !o.cfg.IsCreate() && !o.cfg.IsImplement() {
+		return false, nil
 	}
-	return false, nil
+	if err := o.checkLogsNotSymlinked(); err != nil {
+		return true, err
+	}
+	if o.cfg.IsCreate() {
+		return true, o.runCreate(ctx, sum)
+	}
+	return true, o.runImplement(ctx, sum)
 }
 
 func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) error {
@@ -108,13 +125,18 @@ func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) 
 	if err := o.scaffoldPhase(ctx, sum, prep, pl); err != nil {
 		return err
 	}
+	defer func() {
+		if prep.release != nil {
+			prep.release()
+		}
+	}()
 	return o.buildPhase(ctx, sum, &rec, prep, pl, started)
 }
 
 // prepareImplement is every refusal that must fire before a session is paid
 // for: the write-target check, the design snapshot, and the outline.
 func (o *Orchestrator) prepareImplement(ctx context.Context) (*implementPrep, error) {
-	p := &implementPrep{out: o.cfg.Create.Out}
+	p := &implementPrep{out: o.cfg.Create.Out, outcomes: map[string]string{}}
 	if p.out == "" {
 		return nil, errors.New("implement: pass -out <directory>; the pipeline builds a new project and must be told where")
 	}
@@ -295,10 +317,22 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 	}
 	p.bootstrapSHA = sha
 	sum.Deliverable = p.out
+	// The repository exists now, so it can be claimed -- and must be: without
+	// the lock a concurrent fixpoint run finds an apparently free repository and
+	// commits into the same worktree, where checkInvariants would read its
+	// commit as the coder's, soft-reset it, and fold a stranger's changes into
+	// this task's commit under the wrong attribution (review run
+	// 20260813-124710). Held for the rest of the run; a fix run over the
+	// finished project takes it afterwards, exactly as it takes any other.
+	release, err := p.col.LockRepo(ctx)
+	if err != nil {
+		return err
+	}
+	p.release = release
 	if p.baseline, err = implement.SnapshotRepoState(ctx, p.out, "main"); err != nil {
 		return err
 	}
-	o.endPhase("SCAFFOLD  bootstrap %.12s (not gated, no sources)", sha)
+	o.endPhase("SCAFFOLD  bootstrap %.12s (not gated, no sources) · repository locked", sha)
 	return nil
 }
 
@@ -308,7 +342,6 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 // reaches the immutable history (§5.4).
 func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, rec *model.RoundRecord, p *implementPrep, pl implement.Plan, started time.Time) error {
 	o.phase("BUILD  %d task(s), serially", len(pl.Tasks))
-	outcomes := map[string]string{}
 	infraStrikes := 0
 	incomplete := false
 
@@ -321,15 +354,15 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 			incomplete = true
 			break
 		}
-		if blockedBy := blockedDependency(t, outcomes); blockedBy != "" {
-			outcomes[t.ID] = outcomeSkipped
+		if blockedBy := blockedDependency(t, p.outcomes); blockedBy != "" {
+			p.outcomes[t.ID] = outcomeSkipped
 			sum.Tasks = append(sum.Tasks, model.TaskOutcome{ID: t.ID, Title: t.Title, Outcome: outcomeSkipped, Reason: "dependency " + blockedBy})
 			o.journal("task_skipped", 1, map[string]any{"id": t.ID, "blocked_by": blockedBy})
 			o.logf("task %s skipped: dependency %s did not land", t.ID, blockedBy)
 			incomplete = true
 			continue
 		}
-		bad, stopLoop, err := o.processTask(ctx, sum, rec, p, pl, i, outcomes, &infraStrikes)
+		bad, stopLoop, err := o.processTask(ctx, sum, rec, p, pl, i, &infraStrikes)
 		if err != nil {
 			return err
 		}
@@ -359,7 +392,7 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 // processTask runs one plan entry to a recorded outcome and reports whether
 // the run got worse (bad) and whether the loop must stop (stopLoop). Split
 // from buildPhase for the complexity limit only.
-func (o *Orchestrator) processTask(ctx context.Context, sum *model.RunSummary, rec *model.RoundRecord, p *implementPrep, pl implement.Plan, i int, outcomes map[string]string, infraStrikes *int) (bad, stopLoop bool, err error) {
+func (o *Orchestrator) processTask(ctx context.Context, sum *model.RunSummary, rec *model.RoundRecord, p *implementPrep, pl implement.Plan, i int, infraStrikes *int) (bad, stopLoop bool, err error) {
 	t := pl.Tasks[i]
 	out, err := o.runTask(ctx, rec, p, pl, i, infraStrikes)
 	if err != nil {
@@ -374,7 +407,7 @@ func (o *Orchestrator) processTask(ctx context.Context, sum *model.RunSummary, r
 		}
 		return true, true, err
 	}
-	outcomes[t.ID] = out.Outcome
+	p.outcomes[t.ID] = out.Outcome
 	sum.Tasks = append(sum.Tasks, out)
 	if out.Outcome != outcomeImplemented && out.Outcome != outcomeSatisfied {
 		bad = true
@@ -386,8 +419,8 @@ func (o *Orchestrator) processTask(ctx context.Context, sum *model.RunSummary, r
 			return true, true, nil
 		}
 	}
-	if frac := vacuousFraction(sum.Tasks); frac > o.cfg.Implement.MaxVacuousFrac {
-		o.logf("BUILD: %.0f%% of processed tasks were already covered by earlier work, over max_vacuous_frac (%.0f%%); the plan was decomposed badly", frac*100, o.cfg.Implement.MaxVacuousFrac*100)
+	if n, frac := vacuousFraction(sum.Tasks, len(pl.Tasks)); frac > o.cfg.Implement.MaxVacuousFrac {
+		o.logf("BUILD: the plan was decomposed badly: %d of %d task(s) were already covered by earlier work, over max_vacuous_frac (%.0f%%)", n, len(pl.Tasks), o.cfg.Implement.MaxVacuousFrac*100)
 		return true, true, nil
 	}
 	return bad, false, nil
@@ -445,21 +478,34 @@ func (o *Orchestrator) runTask(ctx context.Context, rec *model.RoundRecord, p *i
 			// A blocked report has the largest blast radius in the taxonomy, so
 			// it gets what already_satisfied got: confirmation by a second,
 			// independent session before the marker is written (§5.4).
-			if !blockedOnce {
+			//
+			// Only when an attempt is actually left to spend. Under
+			// max_task_attempts: 1 the operator configured away the budget for a
+			// second opinion, and the honest answer is to believe the one
+			// session and SAY it was uncorroborated -- the first review of this
+			// code found the alternative (run 20260813-124710): the confirmation
+			// consumed the only attempt, the loop fell through, and a genuine
+			// blocked report was recorded as `failed` with a reason claiming a
+			// previous session that never ran.
+			if !blockedOnce && attempt < o.cfg.Implement.MaxTaskAttempts {
 				blockedOnce = true
 				priorFailure = "a previous session reported this task blocked on " + strings.Join(report.BlockedOn, ", ") + "; verify independently -- implement it if it can be implemented"
 				attempt++
 				continue
 			}
 			out.Outcome = outcomeBlocked
-			out.Reason = "design_conflict: " + strings.Join(report.BlockedOn, ", ")
+			reason := "design_conflict: " + strings.Join(report.BlockedOn, ", ")
+			if !blockedOnce {
+				reason += " (uncorroborated: max_task_attempts is 1, so no second session checked it)"
+			}
+			out.Reason = reason
 			out.Attempts = attempt
-			sha, err := o.markerCommit(ctx, p, t, outcomeBlocked, "blocked_on", strings.Join(report.BlockedOn, ","))
+			sha, err := o.markerCommit(ctx, p, t, outcomeBlocked, "blocked_on", reason)
 			if err != nil {
 				return out, err
 			}
 			out.SHA = sha
-			o.journal("task_finished", 1, map[string]any{"id": t.ID, "status": outcomeBlocked, "notes": flattenField(report.Notes)})
+			o.journal("task_finished", 1, map[string]any{"id": t.ID, "status": outcomeBlocked, "corroborated": blockedOnce, "notes": flattenField(report.Notes)})
 			return out, nil
 		default: // attemptFailed
 			*infraStrikes = 0
@@ -546,6 +592,18 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 	rec.Steps = append(rec.Steps, stepStat("task", coder, t.ID, len(text), res, perr != nil))
 	o.logStep("task", coder, t.ID, 1, perr == nil, report, taskMarkdown(t, report, perr), res, "")
 
+	// Step 4 FIRST, whatever the session's exit status: a session that commits
+	// and then dies -- a 429 after `git commit`, the timeout firing mid-turn --
+	// still moved HEAD, and the ladder is the only thing that notices. Running
+	// the infrastructure verdict before it (the shape the first review of this
+	// code found, run 20260813-124710) left that commit in the history,
+	// unowned: the discard then had nothing to stash, the clean assertion
+	// passed, and the next attempt built on top of a commit fixpoint never
+	// attributed.
+	if err := o.checkInvariants(ctx, p, t.ID, base, preState); err != nil {
+		return res, report, attemptVerdict{}, err
+	}
+
 	// Infrastructure is not an outcome (§5.4): the provider refused, or the
 	// session died leaving nothing.
 	if res.Err != nil && (res.ProviderStatus != 0 || strings.TrimSpace(res.Stdout) == "") {
@@ -553,11 +611,6 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 			return res, report, attemptVerdict{}, err
 		}
 		return res, report, attemptVerdict{kind: attemptInfra, why: fmt.Sprintf("provider status %d", res.ProviderStatus)}, nil
-	}
-
-	// Step 4: the invariant ladder -- HEAD first, then the repository.
-	if err := o.checkInvariants(ctx, p, t.ID, base, preState); err != nil {
-		return res, report, attemptVerdict{}, err
 	}
 
 	// Step 5: reconcile -- control artifacts first (§4.3).
@@ -596,7 +649,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 		return res, report, attemptVerdict{kind: attemptFailed, why: why}, nil
 	}
 
-	if verdict, why, done := reconcileReport(t, report, clean, pl, idx); done {
+	if verdict, why, done := reconcileReport(t, report, clean, pl, idx, p.outcomes); done {
 		if why != "" {
 			return fail(why)
 		}
@@ -708,7 +761,16 @@ func (o *Orchestrator) commitTask(ctx context.Context, p *implementPrep, t imple
 // reconcileReport is §5.2 step 5: the coder's claim against the tree's state.
 // done=false means "implemented, tree dirty: on to the gate"; otherwise the
 // verdict stands (why != "" fails the attempt).
-func reconcileReport(t implement.Task, report taskReport, clean bool, pl implement.Plan, idx int) (attemptVerdict, string, bool) {
+func reconcileReport(t implement.Task, report taskReport, clean bool, pl implement.Plan, idx int, outcomes map[string]string) (attemptVerdict, string, bool) {
+	// The report must be about THIS task. A stale or mismatched reply -- a
+	// harness replaying an earlier turn, a model answering the plan instead of
+	// the prompt -- would otherwise be committed under this task's trailers,
+	// and the first end-to-end test of this pipeline shipped a fixture that
+	// returned the wrong id without failing (review run 20260813-124710).
+	if id := strings.TrimSpace(report.Task); id != "" && id != t.ID {
+		return attemptVerdict{}, fmt.Sprintf("the session answered for task %q, not %q", id, t.ID), true
+	}
+
 	switch report.Status {
 	case outcomeSatisfied, outcomeBlocked:
 		if !clean {
@@ -720,8 +782,8 @@ func reconcileReport(t implement.Task, report taskReport, clean bool, pl impleme
 			}
 			return attemptVerdict{kind: attemptBlocked}, "", true
 		}
-		if !coveredByImplemented(report.CoveredBy, pl, idx) {
-			return attemptVerdict{}, "already_satisfied must name earlier tasks that actually implemented the work", true
+		if !coveredByImplemented(report.CoveredBy, pl, idx, outcomes) {
+			return attemptVerdict{}, "already_satisfied must name earlier tasks that were actually IMPLEMENTED -- a failed, blocked, skipped or itself-satisfied task covers nothing", true
 		}
 		return attemptVerdict{kind: attemptSatisfied}, "", true
 	case outcomeImplemented:
@@ -837,12 +899,17 @@ func blockedDependency(t implement.Task, outcomes map[string]string) string {
 	return ""
 }
 
-// vacuousFraction is already_satisfied over processed tasks (§5.4): planners
-// over-decompose, but a third of the plan being air means it was decomposed
-// badly.
-func vacuousFraction(tasks []model.TaskOutcome) float64 {
-	if len(tasks) == 0 {
-		return 0
+// vacuousFraction is already_satisfied over the WHOLE PLAN (§5.4: "N of M
+// tasks"), returning both numbers so the refusal can quote them.
+//
+// The denominator is the plan, not the tasks processed so far, and the first
+// review of this code found the running denominator (run 20260813-124710):
+// with it, the first legitimately-satisfied task at position 2 reads as 50%
+// and aborts a 40-task run over one over-decomposition. The guard exists to
+// catch a plan that is mostly air, which is only knowable against the plan.
+func vacuousFraction(tasks []model.TaskOutcome, planned int) (int, float64) {
+	if planned <= 0 {
+		return 0, 0
 	}
 	vac := 0
 	for _, t := range tasks {
@@ -850,13 +917,20 @@ func vacuousFraction(tasks []model.TaskOutcome) float64 {
 			vac++
 		}
 	}
-	return float64(vac) / float64(len(tasks))
+	return vac, float64(vac) / float64(planned)
 }
 
-// coveredByImplemented checks an already_satisfied report: every named id
-// must be an EARLIER task that actually produced a code commit (§5.2 step 5)
-// -- a marker is not an implementation.
-func coveredByImplemented(ids []string, pl implement.Plan, idx int) bool {
+// coveredByImplemented checks an already_satisfied report: every named id must
+// be an EARLIER task that actually produced a code commit (§5.2 step 5) -- a
+// marker is not an implementation.
+//
+// Both halves are load-bearing, and the first review of this code found the
+// second one missing (run 20260813-124710): checking only the position lets a
+// task cite an earlier FAILED task, collect an already_satisfied marker, and
+// release its own dependents even though nothing built the work. That is
+// exactly the hole the corroboration rule exists to close, reopened one field
+// away from where it was closed.
+func coveredByImplemented(ids []string, pl implement.Plan, idx int, outcomes map[string]string) bool {
 	if len(ids) == 0 {
 		return false
 	}
@@ -865,7 +939,7 @@ func coveredByImplemented(ids []string, pl implement.Plan, idx int) bool {
 		earlier[pl.Tasks[i].ID] = true
 	}
 	for _, id := range ids {
-		if !earlier[id] {
+		if !earlier[id] || outcomes[id] != outcomeImplemented {
 			return false
 		}
 	}

@@ -653,6 +653,9 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// trust gate runs inside runImplement -- the coder edits files steered by
 	// an untrusted document, exactly the assertion -trusted-target exists for
 	// (DESIGN.md §7.3).
+	//
+	// runPipeline runs the logs-symlink guard itself, before either pipeline
+	// writes its first artifact.
 	if handled, err := o.runPipeline(ctx, sum); handled {
 		return err
 	}
