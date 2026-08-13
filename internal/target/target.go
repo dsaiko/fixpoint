@@ -1916,6 +1916,32 @@ func (c *Collector) CommitExact(ctx context.Context, header, body string, paths 
 	return c.commitStaged(ctx, header, body, extra...)
 }
 
+// ResetSoft moves HEAD back to base keeping index and worktree -- the §5.2
+// step 4 response to a coder that committed despite being told not to: the
+// work is kept, fixpoint's ownership of the commit is kept.
+func (c *Collector) ResetSoft(ctx context.Context, base string) error {
+	out, err := c.git(ctx, "reset", "--soft", base)
+	if err != nil {
+		return fmt.Errorf("reset --soft %s: %w: %s", base, err, out)
+	}
+	return nil
+}
+
+// DiscardClean drops every un-ignored change without touching the object
+// database: checkout for tracked paths, clean for untracked ones. It exists
+// for the byte-bound breach (DESIGN.md §5.3), where stashing the oversized
+// tree into git objects is exactly the cost the ceiling refuses; every other
+// discard prefers StashDirty, which destroys nothing.
+func (c *Collector) DiscardClean(ctx context.Context) error {
+	if out, err := c.git(ctx, "checkout", "-q", "--", "."); err != nil {
+		return fmt.Errorf("checkout: %w: %s", err, out)
+	}
+	if out, err := c.git(ctx, "clean", "-qfd"); err != nil {
+		return fmt.Errorf("clean: %w: %s", err, out)
+	}
+	return nil
+}
+
 // commitStaged commits whatever is already in the index, returning the new SHA. It
 // is separate so Commit's excluded-path restoration runs on every exit from the
 // commit itself, including the cancellation-recovery paths below, and so

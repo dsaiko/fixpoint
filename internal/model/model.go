@@ -199,6 +199,19 @@ type RoundRecord struct {
 	Final bool `json:"final,omitempty"`
 }
 
+// TaskOutcome is one implement task's durable result, mirroring the marker
+// trailers (DESIGN.md §5.4): the reason codes are the normalized enum, and a
+// task that produced no commit still has a SHA -- its outcome marker's.
+type TaskOutcome struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Outcome  string `json:"outcome"` // implemented | already_satisfied | blocked | failed | skipped | carried
+	Reason   string `json:"reason,omitempty"`
+	SHA      string `json:"sha,omitempty"`
+	Attempts int    `json:"attempts,omitempty"`
+	Gate     string `json:"gate,omitempty"` // passed | failed:<check> | ungated | skipped
+}
+
 // StepStat records one agent invocation's size and duration figures, so runs
 // can be analyzed for cost and slowness (which lens/agent ate the wall clock,
 // how big the prompts really were).
@@ -313,6 +326,10 @@ type RunSummary struct {
 	// run. It is the file an operator reads, and on the posting path the exact
 	// bytes that were sent.
 	ReviewBody string `json:"review_body,omitempty"`
+	// Implement marks an implement-design run; Tasks carries its per-task
+	// outcomes for the scoreboard, in plan order.
+	Implement bool          `json:"implement,omitempty"`
+	Tasks     []TaskOutcome `json:"tasks,omitempty"`
 	// Create marks a create-design run, whose summary reads in that pipeline's
 	// vocabulary rather than the loop's, and Deliverable is where it published
 	// its document -- recorded so the summary can answer "where did it go"
@@ -365,9 +382,9 @@ type ReviewVerdict struct {
 // for that, not the exit status.
 func ExitCode(termination string) int {
 	switch termination {
-	case TermConverged, TermReviewOnly, TermCreated:
+	case TermConverged, TermReviewOnly, TermCreated, TermImplemented:
 		return 0
-	case TermMaxIterations:
+	case TermMaxIterations, TermIncomplete:
 		return 2
 	case TermAllRejected:
 		return 3
@@ -427,7 +444,9 @@ const (
 	TermMaxIterations = "max-iterations"
 	TermInterrupted   = "interrupted"
 	TermError         = "error"
-	TermCreated       = "created" // a create run published its deliverable
+	TermCreated       = "created"     // a create run published its deliverable
+	TermImplemented   = "implemented" // an implement run built every task
+	TermIncomplete    = "incomplete"  // an implement run finished with holes: failed/blocked/skipped tasks, the deadline, the vacuous guard, or a clean-check failure
 )
 
 // RunSources is the provenance of one run's configuration: which file each

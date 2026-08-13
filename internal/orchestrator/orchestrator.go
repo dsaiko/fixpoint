@@ -224,10 +224,8 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 		templates[name] = t
 		return nil
 	}
-	if cfg.Roles.Coder.Prompt != "" {
-		if err := load(cfg.Roles.Coder.Prompt, cfg.Roles.Coder.PromptFile(), prompt.FixData{}); err != nil {
-			return nil, err
-		}
+	if err := loadImplementTemplates(cfg, load); err != nil {
+		return nil, err
 	}
 	if cfg.Review.Refute != "" {
 		if err := load(cfg.Review.Refute, cfg.Review.RefutePath, prompt.RefuteData{}); err != nil {
@@ -291,6 +289,28 @@ func New(l *config.Loaded, logf func(string, ...any)) (*Orchestrator, error) {
 // every other template New loads: a missing one must fail before any agent
 // process starts, not mid-pipeline after the propose sessions were paid for.
 // Split out of New only for the complexity budget.
+// loadImplementTemplates parses the coder and planner prompts. The coder's
+// data type follows the pipeline: an implement coder builds tasks, a loop
+// coder fixes findings, and rendering with the wrong zero value would refuse
+// the right template at startup.
+func loadImplementTemplates(cfg *config.Config, load func(name, path string, data any) error) error {
+	if cfg.Roles.Coder.Prompt != "" {
+		var coderData any = prompt.FixData{}
+		if cfg.IsImplement() {
+			coderData = prompt.TaskData{}
+		}
+		if err := load(cfg.Roles.Coder.Prompt, cfg.Roles.Coder.PromptFile(), coderData); err != nil {
+			return err
+		}
+	}
+	if p := cfg.Roles.Planner; p.Prompt != "" {
+		if err := load(p.Prompt, p.PromptPath, prompt.PlanData{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func loadCreateTemplates(cfg *config.Config, load func(name, path string, data any) error) error {
 	if e := cfg.Roles.Editor; e.Prompt != "" {
 		if err := load(e.Prompt, e.PromptPath, prompt.EditorData{}); err != nil {
@@ -628,8 +648,13 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// nothing to act on), and its only write to the world is the deliverable,
 	// published atomically at the end. Everything from here down is loop
 	// machinery a create run does not have.
-	if o.cfg.IsCreate() {
-		return o.runCreate(ctx, sum)
+	// The create and implement pipelines dispatch here, before the loop
+	// machinery: neither has a pre-existing tree for it to act on. Implement's
+	// trust gate runs inside runImplement -- the coder edits files steered by
+	// an untrusted document, exactly the assertion -trusted-target exists for
+	// (DESIGN.md §7.3).
+	if handled, err := o.runPipeline(ctx, sum); handled {
+		return err
 	}
 
 	// Enforce the fix-round trust gate; see checkFixTrust for the rationale.
