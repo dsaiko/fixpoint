@@ -167,13 +167,27 @@ func (o Overrides) applyTarget(c *Config) error {
 		// the wrong root and reviewing whatever happens to be there.
 		return fmt.Errorf("-target %q must be an absolute path", o.Target)
 	}
-	info, err := os.Stat(o.Target)
+	// Lstat, not Stat: a document target is READ WHOLE and handed to every
+	// agent, so a symlink here is an exfiltration primitive -- an untrusted
+	// checkout can ship `DESIGN.md -> ~/.aws/credentials` and the panel reads
+	// the destination, past the directory collector's own symlink and
+	// mandatory-secret exclusions (review run 20260813-124710). The refusal
+	// names the link rather than silently resolving it, because an operator who
+	// meant the destination can pass the destination.
+	info, err := os.Lstat(o.Target)
 	if err != nil {
 		return fmt.Errorf("-target %s: %w", o.Target, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		dest, _ := os.Readlink(o.Target)
+		return fmt.Errorf("-target %s is a symlink (to %q); fixpoint reads a target's bytes and shows them to every agent, so it will not follow one -- pass the real path if you meant it", o.Target, dest)
 	}
 	if info.IsDir() {
 		c.Target.Path = o.Target
 		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("-target %s is not a regular file or a directory", o.Target)
 	}
 	c.Target.Path = filepath.Dir(o.Target)
 	c.Target.Document = filepath.Base(o.Target)
