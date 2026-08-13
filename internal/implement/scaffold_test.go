@@ -42,10 +42,17 @@ func TestScaffold(t *testing.T) {
 		"PLAN.json":  []byte("{}\n"),
 		".gitignore": []byte(GitignoreContent([]string{"dist/"})),
 	}
-	sha, err := Scaffold(t.Context(), col, out, files, "fixpoint: initialize", "Fixpoint-Phase: bootstrap")
+	sha, release, err := Scaffold(t.Context(), col, out, files, "fixpoint: initialize", "Fixpoint-Phase: bootstrap")
 	if err != nil {
 		t.Fatalf("Scaffold() = %v", err)
 	}
+	// The lock is taken by Scaffold itself, right after `git init` -- so a
+	// second run cannot claim the repository while this one is still writing
+	// into it (review run 20260813-161029, i33).
+	if release == nil {
+		t.Fatal("Scaffold returned no lock release")
+	}
+	t.Cleanup(release)
 	if sha == "" {
 		t.Fatal("no bootstrap SHA")
 	}
@@ -68,7 +75,7 @@ func TestScaffold(t *testing.T) {
 		}
 	}
 	// The claim is exclusive: a second scaffold into the same path refuses.
-	if _, err := Scaffold(t.Context(), col, out, files, "x", "y"); err == nil {
+	if _, _, err := Scaffold(t.Context(), col, out, files, "x", "y"); err == nil {
 		t.Error("scaffolding over an existing directory did not refuse")
 	}
 }
@@ -80,9 +87,11 @@ func TestCommitExact(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "repo")
 	col := target.New(config.Target{Mode: "directory", Path: out})
 	files := map[string][]byte{"a.txt": []byte("a\n"), "b.txt": []byte("b\n")}
-	if _, err := Scaffold(t.Context(), col, out, files, "init", "-"); err != nil {
+	_, release, err := Scaffold(t.Context(), col, out, files, "init", "-")
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(release)
 
 	// A session edits both files and stages one of them plus a stray; fixpoint
 	// commits ONLY the computed set {a.txt}.
@@ -142,9 +151,11 @@ func TestCommitExactStagesExactlyTheNamedPaths(t *testing.T) {
 	gitAvailable(t)
 	out := filepath.Join(t.TempDir(), "repo")
 	col := collectorFor(t, out)
-	if _, err := Scaffold(t.Context(), col, out, map[string][]byte{"README.md": []byte("x\n")}, "init", "-"); err != nil {
+	_, release, err := Scaffold(t.Context(), col, out, map[string][]byte{"README.md": []byte("x\n")}, "init", "-")
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(release)
 	// The glob-shaped name is ours; s.svelte is the file its character class
 	// would match and which must NOT enter this commit.
 	write(t, out, "src/routes/[slug].svelte", "ours\n")

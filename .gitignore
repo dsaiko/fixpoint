@@ -7,3 +7,4 @@ coverage.out
 # Generated per-run by bench/run.sh; a committed candidate would shadow a real agent.
 config/agents/bench-candidate.yaml
 bench/testdata/target-code/linkd
+bench/.run.lock

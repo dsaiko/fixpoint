@@ -154,9 +154,13 @@ func writeAgentScript(t *testing.T, name, body string) string {
 // it so the variants differ only in what the agents do and how the gate is
 // configured.
 type implementFixture struct {
-	cfg  *config.Config
-	out  string
-	logs func() string
+	cfg *config.Config
+	out string
+	// planJSON is what the scripted planner answers with; newImplementFixture
+	// sets the two-task default and a test may replace it before run().
+	planJSON string
+	planFile string
+	logs     func() string
 }
 
 const twoSectionDesign = "# Game\n\n## One\n\nbuild the one.\n\n## Two\n\nbuild the two.\n"
@@ -189,7 +193,10 @@ func newImplementFixture(t *testing.T, coderScript string, verify config.Verify)
 	if err := os.WriteFile(filepath.Join(designDir, "DESIGN.md"), []byte(twoSectionDesign), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	planner := writeAgentScript(t, "planner", "cat <<'REPLY'\n<plan>\n"+twoTaskPlanJSON+"\n</plan>\nREPLY\n")
+	// The planner's script reads its reply from a file the fixture owns, so a
+	// test can change the plan after construction.
+	planFile := filepath.Join(t.TempDir(), "plan.json")
+	planner := writeAgentScript(t, "planner", "cat <<'REPLY'\n<plan>\nREPLY\ncat "+planFile+"\ncat <<'REPLY'\n</plan>\nREPLY\n")
 	coder := writeAgentScript(t, "coder", coderScript)
 
 	promptDir := t.TempDir()
@@ -234,11 +241,14 @@ func newImplementFixture(t *testing.T, coderScript string, verify config.Verify)
 	cfg.Implement.MaxRunDuration = config.Duration(time.Hour)
 	cfg.Implement.MaxTaskBytes = 1 << 20
 	cfg.Implement.CleanCheck = config.CleanCheckOff
-	return &implementFixture{cfg: cfg, out: out}
+	return &implementFixture{cfg: cfg, out: out, planJSON: twoTaskPlanJSON, planFile: planFile}
 }
 
 func (f *implementFixture) run(t *testing.T) (*model.RunSummary, error) {
 	t.Helper()
+	if err := os.WriteFile(f.planFile, []byte(f.planJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	logf, logs := captureLog()
 	f.logs = logs
 	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
@@ -618,5 +628,82 @@ func TestRunImplementDeletesSessionCreatedIgnoredFiles(t *testing.T) {
 	}
 	if !strings.Contains(f.logs(), "ignored path(s) deleted before the gate") {
 		t.Error("the deletion was not journalled in words the operator can read")
+	}
+}
+
+// `git add` runs a clean filter that a .gitattributes in the tree names and a
+// git config defines, as a child of fixpoint's OWN git process. The
+// repository-invariant ladder covers the repo's own config, so the gap i27
+// named is the GLOBAL one: a coder writing $HOME/.gitconfig plus the attributes
+// file must get nothing executed, and must never see the credentials withheld
+// from every agent.
+//
+// Measured before the fix (review run 20260813-161029): the filter ran and
+// captured ANTHROPIC_API_KEY. HOME is redirected for the whole test, so the
+// fake global config is the one git reads and the operator's real one is never
+// touched.
+func TestRunImplementDoesNotRunGloballyDefinedGitFilters(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-secret-value")
+	work := t.TempDir()
+	canary := filepath.Join(work, "exfiltrated")
+
+	// A filter as a script file, not an inline command: git's config parser
+	// treats `;` and `"` in a value as its own syntax, and the point here is
+	// the execution, not the quoting.
+	filter := filepath.Join(work, "filter.sh")
+	if err := os.WriteFile(filter, []byte("#!/bin/sh\nprintf '%s' \"${ANTHROPIC_API_KEY:-none}\" > "+canary+"\ncat\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := "cat > .gitattributes <<'ATTRS'\n*.txt filter=evil\nATTRS\n" +
+		"cat > " + filepath.Join(home, ".gitconfig") + " <<'CONF'\n" +
+		"[filter \"evil\"]\n\tclean = " + filter + "\nCONF\n" +
+		"printf 'work\\n' > src.txt\nsleep 1\n"
+	f := newImplementFixture(t, implementReply(script,
+		`{"status": "implemented", "notes": "done"}`), config.Verify{Policy: config.VerifyOff})
+
+	if _, err := f.run(t); err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if b, err := os.ReadFile(canary); err == nil {
+		t.Fatalf("a globally-defined git filter executed during staging and captured %q", strings.TrimSpace(string(b)))
+	}
+}
+
+// Every commit and every published artifact of the implement pipeline goes
+// through agent.RedactSecrets, exactly as every other commit path in the tool
+// does. The plan is agent-authored text committed FOREVER into the delivered
+// repository, and the planner reads an untrusted design in a directory that may
+// hold an .env beside it (review run 20260813-161029, i22/i29).
+func TestRunImplementRedactsSecretsInEveryCommittedArtifact(t *testing.T) {
+	const secret = "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF0123456789"
+	// The planner leaks the credential into the project summary, a task goal
+	// and an acceptance criterion; the coder leaks it into a blocked reason.
+	plan := strings.ReplaceAll(twoTaskPlanJSON, `"summary": "a game"`,
+		`"summary": "a game, key `+secret+`"`)
+	plan = strings.ReplaceAll(plan, `"goal": "the one"`, `"goal": "use `+secret+`"`)
+	plan = strings.ReplaceAll(plan, `"acceptance": ["one exists"]`, `"acceptance": ["`+secret+` works"]`)
+
+	f := newImplementFixture(t, implementReply("printf 'work\\n' > src.txt\nsleep 1",
+		`{"status": "implemented", "notes": "done"}`), config.Verify{Policy: config.VerifyOff})
+	f.planJSON = plan
+
+	if _, err := f.run(t); err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	// Nothing in the delivered repository -- committed files or commit messages
+	// -- may carry the credential.
+	for _, name := range []string{"PLAN.md", "PLAN.json"} {
+		b, err := os.ReadFile(filepath.Join(f.out, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), secret) {
+			t.Errorf("%s carries the credential verbatim", name)
+		}
+	}
+	if log := gitOutAt(t, f.out, "log", "--format=%B"); strings.Contains(log, secret) {
+		t.Error("a commit message carries the credential verbatim")
 	}
 }
