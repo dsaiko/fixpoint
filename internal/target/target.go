@@ -1847,11 +1847,80 @@ func (c *Collector) SquashSince(ctx context.Context, base, header, body string, 
 	return sha, nil
 }
 
+// Init creates and hardens a fresh repository at the collector's path
+// (DESIGN.md §5.1): explicit default branch, hooks disabled via an empty
+// in-repo directory (`.git/fixpoint-hooks/` -- inside the repository, so the
+// delivered project never references a transient tree), an explicit fixpoint
+// committer identity rather than ambient global config, and the
+// census-bearing metadata (`.git/info/exclude`, `.git/info/attributes`)
+// written empty so the repository-invariant baseline starts from a known
+// value. fixpoint's own git calls additionally pin core.hooksPath=/dev/null
+// (gitenv.SafeConfigArgs); the repo-local setting is what covers the CODER's
+// git usage and the delivered repository's later life.
+func (c *Collector) Init(ctx context.Context) error {
+	if out, err := c.git(ctx, "-c", "init.defaultBranch=main", "init"); err != nil {
+		return fmt.Errorf("git init: %w: %s", err, out)
+	}
+	gitDir := filepath.Join(c.cfg.Path, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "fixpoint-hooks"), 0o700); err != nil {
+		return fmt.Errorf("hooks dir: %w", err)
+	}
+	for _, kv := range [][2]string{
+		{"core.hooksPath", ".git/fixpoint-hooks"},
+		{"user.name", "fixpoint"},
+		{"user.email", "fixpoint@localhost"},
+	} {
+		if out, err := c.git(ctx, "config", kv[0], kv[1]); err != nil {
+			return fmt.Errorf("git config %s: %w: %s", kv[0], err, out)
+		}
+	}
+	info := filepath.Join(gitDir, "info")
+	if err := os.MkdirAll(info, 0o700); err != nil {
+		return fmt.Errorf("info dir: %w", err)
+	}
+	for _, f := range []string{"exclude", "attributes"} {
+		if err := os.WriteFile(filepath.Join(info, f), nil, 0o600); err != nil {
+			return fmt.Errorf("write .git/info/%s: %w", f, err)
+		}
+	}
+	return nil
+}
+
+// CommitExact commits exactly the given paths (DESIGN.md §5.2 step 8): the
+// index is not trusted, so it is first reset to HEAD (worktree untouched) and
+// the computed path set staged from the worktree -- additions, modifications
+// and deletions alike, since `git add` stages a deletion too. allowEmpty is
+// for the outcome marker commits (§5.4), which change no tree bytes on
+// purpose. The commit itself goes through the same kill-recovery path as
+// every other fixpoint commit.
+func (c *Collector) CommitExact(ctx context.Context, header, body string, paths []string, allowEmpty bool) (string, error) {
+	// `git reset` resolves HEAD, which an unborn branch (the bootstrap commit's
+	// own case) does not have; a fresh repository's index is already empty.
+	if head, err := c.HeadSHA(ctx); err != nil {
+		return "", err
+	} else if head != "" {
+		if out, err := c.git(ctx, "reset", "-q"); err != nil {
+			return "", fmt.Errorf("reset index: %w: %s", err, out)
+		}
+	}
+	if len(paths) > 0 {
+		args := append([]string{"add", "--"}, paths...)
+		if out, err := c.git(ctx, args...); err != nil {
+			return "", fmt.Errorf("stage %d path(s): %w: %s", len(paths), err, out)
+		}
+	}
+	var extra []string
+	if allowEmpty {
+		extra = append(extra, "--allow-empty")
+	}
+	return c.commitStaged(ctx, header, body, extra...)
+}
+
 // commitStaged commits whatever is already in the index, returning the new SHA. It
 // is separate so Commit's excluded-path restoration runs on every exit from the
 // commit itself, including the cancellation-recovery paths below, and so
 // SquashSince can reuse it without re-staging.
-func (c *Collector) commitStaged(ctx context.Context, header, body string) (string, error) {
+func (c *Collector) commitStaged(ctx context.Context, header, body string, extra ...string) (string, error) {
 	// Capture HEAD before committing so a kill landing between the commit and the
 	// SHA lookup below can still be recognized as a successful commit. The
 	// failed-commit recovery reads "HEAD is not before" as "the commit landed", so
@@ -1875,7 +1944,8 @@ func (c *Collector) commitStaged(ctx context.Context, header, body string) (stri
 	// --no-verify skips pre-commit/commit-msg hooks explicitly (gitenv.SafeConfigArgs
 	// already disables them via core.hooksPath, so this is belt-and-suspenders):
 	// an attacker-supplied .git/hooks must never run during a round commit.
-	if out, err := c.git(ctx, "commit", "--no-verify", "-m", header, "-m", body); err != nil {
+	commitArgs := append(append([]string{"commit", "--no-verify"}, extra...), "-m", header, "-m", body)
+	if out, err := c.git(ctx, commitArgs...); err != nil {
 		// A kill landing AFTER git has updated the ref but before it exits cleanly
 		// makes cmd.Run report "signal: killed" even though the commit landed. That
 		// kill can come from ctx cancellation (KillProcessGroup SIGKILLs git) or from
