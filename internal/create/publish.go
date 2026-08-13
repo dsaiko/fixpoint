@@ -104,9 +104,19 @@ func sanitizeLine(s string) string {
 // draft.) A failed write leaves only the temp file, removed here or overwritten
 // by the next run -- it can never leave a truncated deliverable squatting on the
 // protected name.
+//
+// The temp file is created with O_EXCL under an unpredictable name, and both
+// halves of that are load-bearing (review run 20260813-124710 found the
+// original fixed `<path>.fixpoint-tmp` written with os.WriteFile): the
+// deliverable lands beside an ASSIGNMENT, whose directory an untrusted target
+// may own, so a pre-placed `DESIGN.md.fixpoint-tmp` symlink would have made
+// os.WriteFile follow it and truncate whatever it pointed at -- and a
+// pre-placed regular file would have donated its own permissions to bytes a
+// model influenced. O_EXCL refuses both: it never follows a final symlink and
+// never opens an existing file, so the mode we ask for is the mode we get.
 func Publish(path, content string) error {
-	tmp := path + ".fixpoint-tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+	tmp, err := writeTemp(path, content)
+	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(tmp) }()
@@ -117,6 +127,29 @@ func Publish(path, content string) error {
 		return err
 	}
 	return nil
+}
+
+// writeTemp writes the deliverable's destination-adjacent temp file: same
+// directory (so link(2) stays within one filesystem), unpredictable name,
+// O_EXCL, owner-only.
+//
+// os.CreateTemp is exactly this and is used rather than hand-rolled: it retries
+// on collision and opens with O_CREATE|O_EXCL|0600, so it never follows a
+// symlink and never inherits an existing file's permissions. The pattern keeps
+// the `.fixpoint-tmp` suffix so an interrupted run leaves something
+// recognizable behind. The name is returned even on a write error, so the
+// caller's deferred remove still cleans up a partial file.
+func writeTemp(path, content string) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.fixpoint-tmp")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
+		return name, err
+	}
+	return name, f.Close()
 }
 
 // DefaultOut is where the deliverable goes when -out is not given: DESIGN.md

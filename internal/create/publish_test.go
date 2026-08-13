@@ -86,3 +86,50 @@ func TestDefaultOut(t *testing.T) {
 		t.Errorf("dir assignment: %q", got)
 	}
 }
+
+// A pre-placed temp path must never be written through: the deliverable lands
+// beside an assignment whose directory an untrusted target may own, so a
+// symlink squatting on the temp name would otherwise truncate its destination
+// (review run 20260813-124710, the run's one critical finding).
+func TestPublishDoesNotFollowAPrePlacedTempSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("precious\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "DESIGN.md")
+	// The old fixed name, and a couple of nearby guesses.
+	for _, bait := range []string{out + ".fixpoint-tmp", out + ".0.fixpoint-tmp"} {
+		if err := os.Symlink(victim, bait); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Publish(out, "# design\n"); err != nil {
+		t.Fatalf("Publish() = %v", err)
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil || string(got) != "precious\n" {
+		t.Fatalf("the victim file was written through: %q, %v", got, err)
+	}
+	if b, err := os.ReadFile(out); err != nil || string(b) != "# design\n" {
+		t.Fatalf("deliverable = %q, %v", b, err)
+	}
+}
+
+// The temp file is owner-only regardless of what was there before, so a
+// pre-created world-readable file cannot donate its permissions to the
+// deliverable.
+func TestPublishDeliverableIsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "DESIGN.md")
+	if err := Publish(out, "x"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("deliverable mode = %v, want owner-only", perm)
+	}
+}

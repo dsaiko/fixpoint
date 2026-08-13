@@ -141,3 +141,27 @@ func TestJudgeAgentIsResolvedFromItsOwnFile(t *testing.T) {
 		t.Error("roles.judge.prompt_path is empty; the judge prompt was not resolved")
 	}
 }
+
+// A document target is read whole and shown to every agent, so a symlink is an
+// exfiltration primitive: an untrusted checkout ships `DESIGN.md ->
+// ~/.aws/credentials` and the panel reads the destination. Refused at the flag
+// (review run 20260813-124710).
+func TestTargetOverrideRefusesASymlink(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "DESIGN.md")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	err := Overrides{Target: link}.applyTarget(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("applyTarget(symlink) = %v, want a refusal naming the symlink", err)
+	}
+	if cfg.Target.Document != "" {
+		t.Errorf("the symlink was accepted as a document: %q", cfg.Target.Document)
+	}
+}

@@ -258,12 +258,24 @@ func (c *Collector) prepareDocument() error {
 	if c.cfg.Document == "" {
 		return nil
 	}
-	info, err := os.Stat(c.documentPath())
+	// Lstat: this file is read whole and shown to every agent, so following a
+	// symlink here would disclose its destination -- past the exclusions the
+	// directory collector applies (review run 20260813-124710). Checked here as
+	// well as at the -target flag, because target.document can also come from a
+	// config, and the choke point that reads the bytes is the one that must
+	// refuse.
+	info, err := os.Lstat(c.documentPath())
 	if err != nil {
 		return fmt.Errorf("target.document: %w", err)
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("target.document %s is a symlink; fixpoint shows a document's bytes to every agent and will not follow one", c.documentPath())
+	}
 	if info.IsDir() {
 		return fmt.Errorf("target.document %s is a directory; a document target is one file", c.documentPath())
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("target.document %s is not a regular file", c.documentPath())
 	}
 	return nil
 }
