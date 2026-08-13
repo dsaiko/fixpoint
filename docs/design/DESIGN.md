@@ -1,6 +1,7 @@
 > Drafted by an AI panel and synthesized by a single editor · run 20260809-175113
 > 2 proposal(s) from a pool of 2, 2 critique set(s) · this header is stamped by the tool, not written by the editor
 > Revision 2 · the operator folded in the 18 high findings of review-design run 20260812-183115 (the first review with repository access) · what changed and why is recorded at the end of §11
+> Revision 3 · the operator folded the mechanism-level findings of review-design run 20260813-003817 (the first four-reviewer round) and recorded the -continue trust cluster as open questions · §11 and §12
 
 # implement-design: plan first, one task per commit, two targets
 
@@ -64,16 +65,20 @@ separate them.
 | what | the design document (markdown file) | a new project directory |
 | trust | untrusted content; the operator asserts it is safe to act on | *created* by fixpoint, and re-checked after every coder session — see below |
 | git | may live anywhere; may not be a repo at all | a fresh repo fixpoint initialises |
-| written to | never | the only tree that is committed to |
+| written to | never — **except the run's artifact root `.fixpoint/`**, which lives here and keeps its hardening (below) | the only tree that is committed to |
 | clean-tree check | irrelevant | guaranteed at start (it did not exist) and **re-asserted before every task** |
 | `.fixpoint/` logs | here (existing behaviour, unchanged) | never — its history is only the implementation |
 | run lock | not claimed | claimed |
 
 Naming the split is what lets the *first-contact* hardening — `ensureCleanTree` over
-an operator's dirty tree, `checkLogsNotSymlinked`, the "this repository arrived
-carrying a hostile `.git/config`, a bundle, or hooks" guard, and the git-exclude
-dance — drop out of this pipeline: there is no pre-existing tree to harden, because
-fixpoint made it.
+an operator's dirty tree and the "this repository arrived carrying a hostile
+`.git/config`, a bundle, or hooks" guard — drop out of this pipeline: there is no
+pre-existing tree to harden, because fixpoint made it. **Scoped to the committed
+tree only** (review run 20260813-003817): the artifact root `.fixpoint/` did NOT
+move — it lives beside the design, in a pre-existing directory the operator named —
+so `checkLogsNotSymlinked` and the git-exclude dance stay, on whichever tree
+receives the artifacts, on every path including a fresh run. Newness excuses the
+tree fixpoint made; it excuses nothing about where the logs land.
 
 **What does not drop out is the same hardening applied *between* sessions.** The
 write-target is trusted at the moment it is created and not one minute longer: the
@@ -155,7 +160,13 @@ authoritative claim.
 - **`internal/target.Collector`** — reused, pointed at the write-target. `Commit`,
   `GitClean`, `HeadSHA`, `StashDirty`, `ChangedSince` already exist and are already
   hardened against trailer forging, closing-keyword injection and secret leakage.
-  Two additions: `Init(ctx)`, and an untracked-inclusive discard (§0).
+  Three additions: `Init(ctx)`, an untracked-inclusive discard (§0), and a
+  staged/empty commit primitive — `Commit` today makes no commit on a clean tree
+  and stages its own idea of the changes, while §5.2 step 8 needs to stage a
+  computed path set and §5.4's outcome markers need `--allow-empty`; the new
+  primitive (say `CommitStaged(msg, paths, allowEmpty)`) must preserve the
+  existing trailer, redaction and hardening behaviour, and it is **in scope for
+  this increment**, not assumed (review run 20260813-003817).
 - **config + prompts** — one new read-only role, one new config section, four
   shipped configs, two prompts.
 
@@ -218,7 +229,7 @@ That injection has a name and a shape, because §7.4's `-plan` flag has to check
   "design_sha256": "9f2c…",
   "planner": "claude/<configured-model-label>",
   "coder": "claude-coder/<configured-model-label>",
-  "verify_profile": "<digest of the configured gate commands, or \"ungated\">"
+  "verify_profile": "<digest of the EFFECTIVE gate: canonical serialization of commands, policy, per-command timeouts and gate_generated, or \"ungated\">"
 }
 ```
 
@@ -270,7 +281,13 @@ true, so that no later change "helpfully" starts executing acceptance criteria.
      `##`; a design whose sections are `#` outlines at `#`; a design with `# title`
      and `###` subsections outlines at `###`. The chosen level and the extracted
      headings are printed at preflight and recorded in `PLAN.md`'s provenance, so
-     the operator can see what the rule read before a session is spent.
+     the operator can see what the rule read before a session is spent. **Duplicate
+     headings at the outline level are a preflight refusal** naming them: heading
+     text is the join key shared by the extractor, `coverage` and `design_refs`,
+     and two sections with one name collapse into one identity — a plan could
+     cover one and silently drop the other (review run 20260813-003817). Renaming
+     a section costs the author a word; disambiguating a collision downstream
+     costs a schema.
    - **When it cannot read the document.** If no level qualifies — no headings at
      all, or a single heading and nothing else — the coverage rule has nothing to
      check, and an unchecked rule that reports success is worse than no rule. This
@@ -285,15 +302,20 @@ true, so that no later change "helpfully" starts executing acceptance criteria.
      the design."* Nothing in a run report may imply the check ran when it did not.
 7. **Fit.** The plan must be executable inside the run's deadline **at the worst
    case the configuration actually permits**, not at an optimistic one attempt:
-   `len(tasks) × max_task_attempts × (session_timeout + gate_timeout + 1 min)`
-   must not exceed `implement.max_run_duration`. Over it is a refusal naming all
-   five numbers — *"this plan needs at least 29h10m at 2 attempts per task;
-   max_run_duration is 16h. Raise it, cut the plan, lower max_task_attempts, or
-   split the design."* — costing one planner session and no coder session. The
-   number the refusal quotes and the number the run can spend are the same number;
-   an expected-case model here was rejected in review (run 20260812-183115) because
-   the common run — two or three tasks needing their second attempt — would still
-   hit the deadline mid-run, which is the exact failure this rule exists to refuse. If either timeout is unbounded or not reachable as a value
+   `len(tasks) × max_task_attempts × (session_timeout + gate_worst + 1 min)`
+   must not exceed `implement.max_run_duration`, where **`gate_worst` is the sum
+   of every configured command's timeout** — the verify executor applies the
+   timeout per command and runs them sequentially, so a three-command gate under a
+   10-minute timeout is a 30-minute worst case, not a 10-minute one (review run
+   20260813-003817; the earlier formula undercounted exactly this). Over it is a
+   refusal naming every number — *"this plan needs at least 50h50m at 2 attempts
+   per task and a 30m worst-case gate; max_run_duration is 32h. Raise it, cut the
+   plan, lower max_task_attempts, or tighten verify.timeout."* — costing one
+   planner session and no coder session. The number the refusal quotes and the
+   number the run can spend are the same number; an expected-case model here was
+   rejected in review (run 20260812-183115) because the common run — two or three
+   tasks needing their second attempt — would still hit the deadline mid-run,
+   which is the exact failure this rule exists to refuse. If either timeout is unbounded or not reachable as a value
    (§0), the check is **skipped and says so** in the same places coverage says so.
    This rule exists because the alternative, discovered in review, is a plan the
    validator calls legal that is arithmetically guaranteed to hit the deadline
@@ -322,6 +344,7 @@ was actually returned.
 | the plan as a human artifact | `<project>/PLAN.md`, committed **once**, never edited | the project | forever |
 | **every task's outcome, built or not** | the write-target's commit trailers (`Fixpoint-Task` + `Fixpoint-Outcome`, §5.4) | the project | forever |
 | live per-task status | `.fixpoint/<ts>/status.json` (rewritten per task) + journal | fixpoint | the run's artifacts |
+| **a continued run's artifacts** | `<project>/.fixpoint/<ts>/` — `-continue` has no read-target, so the project's own ignored scratch root is the only home; exempt from every ignored-path rule (§5.2) | fixpoint | the run's artifacts |
 | per-task outcome, timing, tokens | `journal.jsonl` + `RunSummary.Tasks` | fixpoint | the run's artifacts |
 | the repository-invariant baseline | `.fixpoint/<ts>/round-<n>/repostate.json` | fixpoint | the run's artifacts |
 | the implementation | the write-target's commits | the project | forever |
@@ -432,7 +455,7 @@ Fixpoint-Phase: bootstrap
 Design-SHA256: <digest>
 Planner: claude/<configured-model-label>
 Coder: claude-coder/<configured-model-label>
-Verify-Profile: <digest of the configured gate commands, or "ungated">
+Verify-Profile: <digest of the effective gate: commands, policy, timeouts, gate_generated -- or "ungated">
 Coverage-Check: "##" (7 headings) | unchecked
 ```
 
@@ -480,10 +503,15 @@ For each task in plan order:
    blocked, skip without spending a session and record *which* dependency stopped
    it.
 2. **Record the base.** `HeadSHA`, the repository-invariant snapshot, and the
-   **ignored-path census**: every ignored path with its size and mtime. A stat
-   walk, not a digest walk — `node_modules/` makes hashing the ignored tree
-   unaffordable, and creation/modification detection is all §5.2 step 6 needs from
-   it. All before the session starts.
+   **ignored-path census**: every ignored path, minus fixpoint's own artifact
+   root (`.fixpoint/` is the run's scratch on a continued run, and a census that
+   reads the run's own journal writes would fail every task on the tool's own
+   bookkeeping — review run 20260813-003817). A stat walk (path, size, mtime),
+   not a digest walk — `node_modules/` makes hashing the ignored tree
+   unaffordable — and honestly scoped: it reliably detects **creation**, and its
+   modification diff is a journal signal, not an enforcement mechanism, because
+   stat metadata can be restored by anything that can write the file (§5.2
+   step 6, §7.2). All before the session starts.
 3. **Coder session.** Prompt in §6. Working directory is the write-target. Attempt
    number 1.
 4. **Repository invariant.** After the session, HEAD first:
@@ -530,20 +558,28 @@ For each task in plan order:
    paths, because a task's new files are untracked by definition and a gate that
    rewrites one of them changes no path set at all. During the same walk, the
    **byte bound** is enforced: if the session's un-ignored changes exceed
-   `implement.max_task_bytes`, the attempt fails before anything is hashed, stashed
-   or gated — one runaway generation must not consume the object database, the
-   deadline and the disk (§7.1).
+   `implement.max_task_bytes`, the attempt fails before anything is hashed or
+   gated, and the oversized tree goes through a discard that **avoids the object
+   database** — checkout-and-clean semantics rather than a stash, since stashing
+   is exactly the cost the ceiling exists to refuse (§5.3; review run
+   20260813-003817 caught the earlier text skipping the cleanup along with the
+   hashing, which left a dirty tree that stopped the whole run at the next task's
+   step 0).
 
-   Then the ignored tree is compared against step 2's stat census, because a gate
-   must never pass on bytes HEAD does not contain (review run 20260812-183115):
-   - ignored paths the **session created** are deleted before the gate runs, with a
-     journal note. A coder that ran the build to test its work loses nothing the
-     gate does not recreate from committed sources.
-   - ignored paths the **session modified** fail the task with a distinct
-     `hidden-state` outcome naming them. There is no legitimate reason for a coder
-     to edit a build cache in place, and the illegitimate one — patching
-     `node_modules/` so the tests pass — is exactly what this rule exists to
-     refuse loudly instead of committing.
+   Then the ignored tree is compared against step 2's stat census — minus the
+   artifact root — and ignored paths the **session created** are deleted before
+   the gate runs, with a journal note: a coder that ran the build to test its
+   work loses nothing the gate does not recreate from committed sources.
+   Session-*modified* ignored paths are recorded in the journal and the task
+   report but fail nothing: an earlier revision made them a `hidden-state` task
+   failure, and the four-reviewer round killed it twice over — ordinary build
+   churn rewrites caches in place from task 2 onward (the coder running
+   `npm test` is behaviour §6 encourages), and stat metadata cannot carry an
+   integrity claim anyway, because a same-size write can restore its own mtime.
+   The property the rule was protecting — **the commits alone satisfy the
+   gate** — is enforced where it can actually be checked, by the clean-clone
+   check in §7.2, and the census diff remains as the pointer that tells an
+   operator *where* to look when that check fails.
 7. **Gate.** `verify.Run` over the write-target. Its output is target-authored
    text and is fenced, quoted and defanged before it reaches any prompt. Afterwards,
    the tree is compared against the step 6 census, and every difference is
@@ -629,8 +665,17 @@ For each task in plan order:
 
 - An attempt is **exactly one coder session and one gate run** — no correction
   pass inside it (§5.2 step 7).
-- If the attempt fails the gate, or the session dies, **all of its changes are
-  discarded** and attempt 2 is a *fresh* session from the last accepted commit,
+- **Every attempt that does not reach a commit exits through this discard** —
+  gate failure, dead session, contract violation, control-artifact edit,
+  gate-mutated-sources, byte-bound breach, all of them. Review run
+  20260813-003817 found the earlier text triggering the discard on only two of
+  the failure paths; each of the others left the failed attempt's residue in the
+  tree, where the next task's step 0 reported it as a fixpoint bug and stopped a
+  30-hour run over one failed task. One variant: the byte-bound breach discards
+  via checkout-and-clean instead of a stash (§5.2 step 6), because writing the
+  oversized tree into the object database is the cost the bound refuses.
+- On discard, **all of the attempt's changes are
+  discarded** and the next attempt is a *fresh* session from the last accepted commit,
   carrying the prior failure diagnostic as prompt text and **none** of the prior
   file changes. One commit stays attributable to one session; several sessions'
   partial output never collapses into one ambiguously attributed commit.
@@ -678,17 +723,38 @@ resets, so nothing is destroyed), but they never reach a commit.
 | `implemented` | code commit | proceed | 0 |
 | `already_satisfied` — corroborated by named earlier implemented tasks | empty marker | proceed | 0 |
 | `carried` — recorded by an earlier run of this plan, found by trailer on `-continue` | already there | per its outcome | 0 |
-| `blocked` — cannot be done as specified | empty marker | skipped | 2 |
-| `failed` — gate, contract violation, hidden state, gate mutation, or dead session after all attempts | empty marker | skipped | 2 |
+| `blocked` — cannot be done as specified, **confirmed by two independent sessions** | empty marker | skipped | 2 |
+| `failed` — gate, contract violation, or gate mutation, after all attempts | empty marker | skipped | 2 |
 | `skipped` — a dependency did not land | **none — derived** | skipped | 2 |
+| **infrastructure** — the agent or the gate could not run at all: provider refusal (the 402/429/5xx `error_status` path), dead session with no output, missing gate executable | **none — not terminal** | untouched | 2 |
+
+**Infrastructure failures are not task outcomes** (review run 20260813-003817).
+"The coder's work failed the gate" is a fact about the code; "fixpoint could not
+obtain a coder session" is a fact about the morning — and the earlier text let a
+two-minute provider outage burn both attempts, write a permanent `failed` marker,
+and kill the task's whole dependent subtree on every future `-continue`. Now: an
+attempt that dies from infrastructure does not count against
+`max_task_attempts`; two consecutive infrastructure failures trip a **circuit
+breaker** that stops the run incomplete (exit 2) with no marker for the task in
+flight, so `-continue` re-enters exactly there once the outage passes. Only
+results about the work — gate failures, contract violations, gate mutation —
+reach the immutable history.
 
 **Every processed task leaves exactly one commit**, because the commit trailers
 are the resume state (§5.5) and a state that cannot represent the outcomes §5.4
 defines breaks `-continue` on ordinary runs — review run 20260812-183115's most
 corroborated finding. A task that produced no code gets an empty, tool-authored
-**outcome marker commit** (§5.2 step 8) carrying `Fixpoint-Task`,
-`Fixpoint-Outcome` and the reason, so the full outcome vector is reconstructible
-from HEAD alone, on a machine where the run's artifacts never existed. Reverting a
+**outcome marker commit** (§5.2 step 8) with a **versioned trailer schema** —
+`Fixpoint-Marker: 1`, `Fixpoint-Task`, `Fixpoint-Outcome`, a normalized
+`Fixpoint-Reason` code (`covered_by`, `design_conflict`, `gate_failed:<check>`,
+`contract_violation`, `gate_mutated_sources`, `byte_bound`), the related ids
+(`Fixpoint-Covered-By: T04`, `Fixpoint-Blocked-On: §3,§5`), and one flattened,
+redacted, ≤200-character `Fixpoint-Detail` line — so the full outcome vector
+*and its reasons* are reconstructible from HEAD alone, on a machine where the
+run's artifacts never existed; a continued run's report derives from these
+durable fields and only decorates them from artifacts when it has any (review
+run 20260813-003817 — the earlier schema promised reasons the trailers could
+not carry). The unabridged detail lives in the journal. Reverting a
 marker is a no-op, so one-task-one-revert survives; a marker changes no tree
 bytes, so the rule §8 protects — no tool-authored *diff* enters the history
 between coder tasks — survives too, and the bootstrap commit already establishes
@@ -710,7 +776,16 @@ count toward the plan's denominator but never toward the vacuous numerator.
 
 `blocked` exists because a design can contradict itself, and the coder is the first
 thing in the pipeline positioned to notice. That is a real finding about the
-design and it must be loud.
+design and it must be loud. It is also a model's opinion with the largest blast
+radius in the taxonomy — one hallucinated "the design contradicts itself" on an
+early task permanently skips every transitive dependent — so it gets the same
+treatment `already_satisfied` got and for the same reason (review run
+20260813-003817): the report must **cite the design sections in conflict**
+(refused as a contract violation without them), and a first `blocked` is
+confirmed by the second attempt's fresh session before the marker is written.
+Two independent sessions agreeing that the design is self-contradictory, with
+citations, is a finding; one session saying so is a guess that would have cost
+the rest of a 40-task plan.
 
 ### 5.5 The run has a deadline, and the deadline has a continuation
 
@@ -830,11 +905,15 @@ four rules the fix prompt does not need:
 - **Do not touch `.git` — not the config, not the hooks, not the index, not any
   ref.** fixpoint checks this after every session and stops the whole run on a
   mismatch, so a stray `git config` costs the operator the rest of the run.
-- **Do not edit `DESIGN.md`, `PLAN.md`, `PLAN.json` or `.gitignore`, and do not
-  write into ignored paths.** The first four are restored and fail the task
-  (§4.3); an edit to an existing ignored path fails the task as hidden state, and
-  ignored files you create are deleted before the gate runs (§5.2 step 6) — work
-  hidden from the commit is work the gate must not see.
+- **Do not edit `DESIGN.md`, `PLAN.md`, `PLAN.json` or `.gitignore`.** They are
+  restored and the task fails (§4.3). Running the build or the tests to check
+  your work is fine — but ignored files you create are deleted before the gate
+  runs (§5.2 step 6), and nothing you place under an ignore rule can make the
+  gate pass: the run's final check clones HEAD and gates the clone (§7.2), so
+  work hidden from the commit is work that does not exist.
+- **`blocked` must cite the design sections in conflict.** A blocked report
+  without citations is a contract violation, and a first blocked report is
+  re-checked by a fresh session before it is believed (§5.4).
 - **Say so if this task is already satisfied** by earlier work, name the task ids
   that cover it, and change nothing. That is a legitimate answer, not a failure.
 
@@ -893,7 +972,7 @@ verify:
 Code-level defaults (config keys so a wrong guess is the operator's to correct,
 §12.2): `max_tasks: 40`, `max_files_per_task: 12`, `max_task_attempts: 2`,
 `max_vacuous_frac: 0.34`, `max_run_duration: 32h`, `max_task_bytes: 64MB`,
-`min_free_disk: 2GB`.
+`min_free_disk: 2GB`, `clean_check: last` (§7.2).
 
 The existing `verify` block is reused as-is. Proposal B introduced a parallel
 `implement_design.verification` block; Critic 1 killed it and is right — operators
@@ -917,6 +996,23 @@ commit.
   and the code path is the same one rather than a second one. The byte bound and
   the ignored-path reconciliation in step 6 are about the coder, not the gate, and
   apply unchanged.
+- **`implement.clean_check: last | every | off`, default `last`.** At the chosen
+  cadence, fixpoint clones HEAD into a run-owned temporary directory and runs the
+  gate in the clone. This is the enforcement of the design's central claim — the
+  committed bytes alone satisfy the gate — put where it can actually be checked
+  (review run 20260813-003817). The working tree cannot carry that claim: gates
+  legitimately read ignored caches the commits do not contain, coder-written
+  ignored bytes cannot be reliably distinguished from build churn by stat
+  metadata, and gate-created ignored state survives across tasks by design. The
+  clone check ignores all of it and asks the only question that matters at
+  handoff: *does a fresh checkout build?* `last` (one extra gate run per run)
+  catches accumulated hidden state at the end and cannot name the culprit task —
+  it says so, and `every` exists for when attribution is worth one gate run per
+  task. A `last` failure ends the run **incomplete (exit 2)**: "HEAD does not
+  pass the gate in a clean clone; the working tree carries state the commits do
+  not." Ungated runs force it `off` — there is nothing to run in the clone. The
+  per-task ignored-path census (§5.2) remains as the *pointer* — when the clone
+  check fails, its journal diffs say where the hidden state accumulated.
 - **`verify.policy: no_regressions` is refused.** A no-regressions baseline is
   captured on the pristine tree — and the pristine tree here is *empty*, so
   `go build ./...` fails in it, and that failure would exempt the build check for
@@ -955,6 +1051,13 @@ New config validation, each refusal carrying its reason:
   lenses belong to the `review-code` run that follows. (`roles.review.agents` is
   inherited from defaults and is simply unused; refusing it would break
   `extends: defaults`, and pretending otherwise would be a lie in the error text.)
+- **The run's active agent set is the planner and the coder, explicitly** —
+  never the inherited reviewer pool. "Simply unused" is not enough: the preflight
+  ping walks the active set, so an implement run that inherited the pool would
+  ping and bill four reviewers that never run, and die on an ollama quota
+  blackout before its first useful session (review run 20260813-003817 — the
+  same bug the create run shipped with and fixed in f424d9f; this time it is in
+  the design instead of the postmortem).
 - `roles.judge`, `roles.editor`, `roles.triage`, `review.refute`, every `create.*`
   key: refused as inert.
 - `loop.commit_policy` must be `per_fix`. Squashing per round or per run collapses
@@ -1006,9 +1109,13 @@ New config validation, each refusal carrying its reason:
     was written for this design."* The same digest is printed by preflight on every
     run and by `--check`. Asserting the pairing costs one line; omitting it never
     silently succeeds.
-  - Every other provenance field is re-injected by fixpoint for this run (run id,
-    agents, verify profile). Only the design hash is an assertion the file is
-    allowed to carry, because only that one is a claim about the file itself.
+  - Every *execution* provenance field is re-injected by fixpoint for this run
+    (run id, coder, verify profile). The **planner field is never forged**: a
+    plan supplied via `-plan` is stamped `planner: operator-supplied (-plan)`
+    plus the file's sha256 — recording the configured planner agent as the
+    author of a plan it never saw would make the audit trail state a falsehood
+    (review run 20260813-003817). Only the design hash is an assertion the file
+    is allowed to carry, because only that one is a claim about the file itself.
 - **`-no-coverage-check`** — proceed with a design whose outline the coverage rule
   cannot read (§4.2 rule 6), with the run's every report saying `coverage:
   unchecked`.
@@ -1051,10 +1158,11 @@ the panel on the plan after all.
 | the gate creates un-ignored output | that task | output excluded from the commit, deleted before it, named in the log with a `gitignore_seed` recommendation | the log line | add the seed entry so the next run stops paying for it |
 | the gate rewrites a `gate_generated` file (lockfile) | that task | staged into the commit, attributed to the gate in a trailer | the trailer | none needed — this is the designed path |
 | the coder edits a control artifact (`DESIGN.md`, `PLAN.md`, `PLAN.json`, `.gitignore`) | that task | restored from the bootstrap blob, task failed as contract violation | the journal event and the restored file | rerun the task |
-| the coder modifies an existing ignored path | that task | `hidden-state`, task failed, paths named | the ignored-path census diff | rerun the task; if the path is a legitimate committed file, it should not be ignored |
-| the coder's changes exceed `max_task_bytes` | that task | attempt failed before hashing or stashing, byte count named | the census walk's report | raise the bound, or fix the plan's task |
+| the coder's changes exceed `max_task_bytes` | that task | attempt failed before hashing or gating; tree discarded via checkout-and-clean (§5.3) | the census walk's report and the journal | raise the bound, or fix the plan's task |
+| the clean-clone check fails (`clean_check`, §7.2) | end of run (`last`) or that task (`every`) | run incomplete (exit 2): "HEAD does not pass the gate in a clean clone" | the clone's gate output; the per-task ignored-census diffs point at the accumulation | at `last`: rerun with `clean_check: every` to find the culprit task |
+| the agent or gate cannot run at all (provider refusal, dead session, missing executable) | that attempt | attempt not counted; two consecutive → circuit breaker, run stops incomplete (exit 2), **no marker** | the `error_status` in the step record | wait out the outage, `-continue` re-enters at the same task |
 | free disk below `min_free_disk` | preflight or between tasks | refusal / run stops incomplete (exit 2), threshold named | `df` | free space, `-continue` |
-| the coder dies mid-task | that task | changes discarded (tracked **and** untracked), attempt burned; next attempt starts clean | `git stash list`, attempt artifacts | the built tasks stand |
+| the coder dies mid-task | that task | changes discarded (tracked **and** untracked); an infrastructure death does not count against the attempts (§5.4), a mid-work crash with output does | `git stash list`, attempt artifacts, `error_status` | the built tasks stand |
 | the coder claims a task it did not do | that task | contract violation, task failed | the session artifact and the clean tree | rerun that task |
 | the coder committed on its own | that task | soft-reset to base, journal deviation, run continues | the journal event | none needed |
 | the coder rewrote history below base | that task | **run stops**, exit 1, repository-invariant failure with expected and actual SHAs | reflog | inspect by hand; fixpoint never resets user-visible history for you |
@@ -1109,7 +1217,9 @@ that built them. `sum.Deliverable` is the project path.
 `task_started{id,title,attempt}`, `task_finished{id,status,notes}`,
 `verify_finished` (exists), `gate_artifacts{id,excluded,removed}`,
 `task_committed{id,sha}`, `task_skipped{id,blocked_by}`,
-`contract_deviation{id,kind}`, `repo_invariant_failed{id,what}`.
+`contract_deviation{id,kind}`, `repo_invariant_failed{id,what}`,
+`ignored_paths_diff{id,created,modified}`, `infra_failure{id,status,strike}`,
+`clean_check_finished{cadence,passed}`.
 
 Run artifacts are created owner-only; environment values are never serialised, and
 secret-valued overrides appear only as key names with a redacted digest
@@ -1421,8 +1531,9 @@ recorded here because several reshape mechanisms rather than patch sentences:
    `-continue`.
 6. **Ignored paths join the transaction** (§5.2 steps 2 and 6, §5.3). Stat
    census; session-created ignored paths deleted before the gate and on discard;
-   session-modified ones are a `hidden-state` task failure — a gate must never
-   pass on bytes HEAD does not contain.
+   session-modified ones were made a `hidden-state` task failure — a gate must
+   never pass on bytes HEAD does not contain. (Round 2 killed the `hidden-state`
+   half and replaced it with the clean-clone check — see the round-2 record.)
 7. **The in-session correction pass is removed** (§5.2 step 7, §5.3). Under a
    one-shot agent interface it was a second session inside one attempt — breaking
    one-session-one-commit and contaminating its own census. An attempt is one
@@ -1443,6 +1554,58 @@ benefit: the between-tasks deadline check stands (per-session and per-gate
 timeouts already bound a hung task; a journal heartbeat is a nice-to-have), and
 exit 2 continues to mean both "finished with holes" and "deadline expired" (the
 scoreboard distinguishes them; a per-pipeline exit taxonomy stays out of scope).
+
+### Findings from review round 2 (run 20260813-003817), and what changed
+
+The first four-reviewer round (claude, codex, deepseek, kimi — the restored
+pool): 73 issues, 51 kept by the judge, 30 high. None of revision 2's folds
+reappeared; the round went one level deeper, into the mechanisms revision 2
+introduced. The mechanism-level findings are folded in this revision:
+
+1. **The `hidden-state` failure is gone** (§5.2 steps 2 and 6, §7.2). Killed
+   twice over: stat metadata cannot carry an integrity claim (a same-size write
+   restores its own mtime), and ordinary build churn — the coder running the
+   tests, behaviour §6 encourages — modifies caches in place from task 2 onward,
+   so the rule failed honest tasks. The property it protected is now enforced
+   where it is checkable: **`implement.clean_check`** clones HEAD and runs the
+   gate in the clone (default once per run, at the end). The census remains as
+   the diagnostic pointer.
+2. **Every non-committing attempt exits through the §5.3 discard** — the
+   earlier text covered two of six failure paths; the others left residue that
+   stopped the run at the next task's step 0. The byte-bound breach discards via
+   checkout-and-clean so the ceiling never writes the oversized tree into the
+   object database.
+3. **Infrastructure failures are not outcomes** (§5.4): no marker, no burned
+   attempt, a two-strike circuit breaker, `-continue` re-enters at the task. A
+   provider outage is a fact about the morning, not about the plan.
+4. **`blocked` needs corroboration** (§5.4, §6): citations of the conflicting
+   design sections, confirmed by a second independent session — the same
+   treatment `already_satisfied` got, for a bigger blast radius.
+5. **The artifact root keeps its hardening and is exempt from the census**
+   (§2, §4.3, §5.2 step 2): `.fixpoint/` never moved to the new tree, so
+   "fixpoint made it" never applied to it; and on `-continue` it is the run's
+   own scratch inside the project, which the census must not read as coder
+   activity.
+6. **Markers got a versioned schema** (§5.4) and the staged/empty commit
+   primitive is declared in scope (§0, §3) — `Collector.Commit` cannot express
+   either need today.
+7. **The fit formula counts the gate's real worst case** (§4.2 rule 7): the
+   verify executor times out per command, so a three-command gate is three
+   timeouts, not one.
+8. **The active agent set is planner + coder, explicitly** (§7.3) — the
+   inherited reviewer pool must never be pinged or billed; the create pipeline
+   shipped this exact bug (fixed in f424d9f) and the design now refuses it on
+   paper instead of in a postmortem.
+9. **Imported plans are never attributed to the configured planner** (§7.4),
+   and the **Verify-Profile digest covers the effective gate** — commands,
+   policy, timeouts, `gate_generated` — not the command strings alone.
+10. **Duplicate outline headings are a preflight refusal** (§4.2 rule 6) —
+    heading text is a join key, and a collision collapses two sections into one
+    coverable identity.
+
+The round's `-continue` trust cluster (7 findings) is deliberately NOT folded as
+mechanism; it is recorded in §12 as the design's known weakest joint, with the
+fix direction named and deferred until a live run hits it.
 
 ### Where the panel did not converge
 
@@ -1507,8 +1670,35 @@ scoreboard distinguishes them; a per-pipeline exit taxonomy stays out of scope).
 6. **`-continue -retry-failed`.** Carried `failed`/`blocked` outcomes are final
    (§5.5); a flag that re-opens them against the same plan would need to answer
    what a retry means for a task whose dependents already landed. Deferred until a
-   real run produces the need.
-7. **A machine-verifiable approval artifact from `review-design`.** This design
+   real run produces the need. (Softened by revision 3: infrastructure failures
+   never become `failed`, so the finality now covers only results about the
+   work.)
+7. **The `-continue` trust model is the design's weakest joint.** Review round 2
+   (run 20260813-003817) put seven high findings on it, and they share one root:
+   continuation authenticates history using only the history itself. Trailers
+   are self-asserting text any committer can write; the repository invariants
+   are re-baselined as trusted rather than re-verified against a record the
+   coder could not have authored; a dirty tree cannot resume — which is exactly
+   the crash and reboot case §5.5 advertises; a changed Verify-Profile strands a
+   half-built project with no path but a fresh directory; task records are not
+   bound to the committed plan's identity. v1 ships `-continue` narrow and says
+   so: `-trusted-target` is the operator asserting the tree was not tampered
+   with between runs, the same assertion every fix run already makes. If live
+   runs hit these limits, the fix direction is a **fixpoint-signed ledger**
+   (a signed note ref or trailer HMAC keyed outside the repository) plus a
+   `-continue -discard-dirty` that runs the §5.3 discard before admission —
+   recorded here so the implementer builds toward it rather than around it.
+8. **Implementation checks from round 2**, cheaper to list than to re-derive:
+   the two-target split needs an owning component (`target.path` is
+   single-valued today; decide whether `-out` stays flag-only); the shipped
+   stack configs must be validated against the real `verify` schema; task
+   `files` lists are advisory and boundary enforcement is not attempted in v1;
+   the census does not bind symlink *content* (a symlink whose target changes
+   is invisible to a path-and-digest walk over regular files); and the resource
+   bounds cover per-attempt bytes but not cumulative classes (stash growth
+   across forty tasks, journal size). Each is either an hour's work or a
+   documented non-goal — the wrong outcome is discovering them mid-build.
+9. **A machine-verifiable approval artifact from `review-design`.** This design
    records the design's path and hash but never claims the document was approved. If
    `review-design` later emits structured approval metadata, implement-design should
    accept it, preserve it in the bootstrap trailers and in `PLAN.json`'s provenance,
