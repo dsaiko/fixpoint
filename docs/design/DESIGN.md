@@ -346,8 +346,21 @@ was actually returned.
 | live per-task status | `.fixpoint/<ts>/status.json` (rewritten per task) + journal | fixpoint | the run's artifacts |
 | **a continued run's artifacts** | `<project>/.fixpoint/<ts>/` — `-continue` has no read-target, so the project's own ignored scratch root is the only home; exempt from every ignored-path rule (§5.2) | fixpoint | the run's artifacts |
 | per-task outcome, timing, tokens | `journal.jsonl` + `RunSummary.Tasks` | fixpoint | the run's artifacts |
-| the repository-invariant baseline | `.fixpoint/<ts>/round-<n>/repostate.json` | fixpoint | the run's artifacts |
+| the repository-invariant baseline, when it MOVED | `.fixpoint/<ts>/repostate.json` — before, after, and the named diff | fixpoint | the run's artifacts |
 | the implementation | the write-target's commits | the project | forever |
+
+**Three of these homes were named here and written by nothing** until review
+runs 20260813-180828 and 20260813-222753 (`plan.json`, `status.json`,
+`repostate.json`). They exist now, and the reason to build them rather than
+delete the promise is that each answers a question an operator actually asks:
+`status.json` is rewritten atomically after every task and is the only live view
+of a run that may last thirty hours unattended; `repostate.json` is written when
+an invariant moves, because §8 sends an operator diagnosing the loudest failure
+in the tool to exactly this file and a one-line journal string is not the
+pre-image; `plan.json` is the validated plan WITH its provenance, which the
+planner step artifact is not — that one is logged before provenance is injected.
+`repostate.json` is at the run root rather than under `round-<n>/` because an
+implement run has one round.
 
 Snapshotting the design earns its keep twice here: the run is long (tens of
 sessions), so the odds that someone edits `DESIGN.md` mid-run are real, and every
@@ -726,19 +739,39 @@ resets, so nothing is destroyed), but they never reach a commit.
 | `blocked` — cannot be done as specified, **confirmed by two independent sessions** | empty marker | skipped | 2 |
 | `failed` — gate, contract violation, or gate mutation, after all attempts | empty marker | skipped | 2 |
 | `skipped` — a dependency did not land | **none — derived** | skipped | 2 |
-| **infrastructure** — the agent or the gate could not run at all: provider refusal (the 402/429/5xx `error_status` path), dead session with no output, missing gate executable | **none — not terminal** | untouched | 2 |
+| **infrastructure** — provider refusal (the 402/429/5xx `error_status` path), dead session with no output, missing gate executable, or a gate command the operator declared `infra: true` exiting non-zero | **none — not terminal** | untouched | 2 |
 
 **Infrastructure failures are not task outcomes** (review run 20260813-003817).
 "The coder's work failed the gate" is a fact about the code; "fixpoint could not
 obtain a coder session" is a fact about the morning — and the earlier text let a
 two-minute provider outage burn both attempts, write a permanent `failed` marker,
-and kill the task's whole dependent subtree on every future `-continue`. Now: an
+and kill the task's whole dependent subtree on every future `-continue`. An
 attempt that dies from infrastructure does not count against
-`max_task_attempts`; two consecutive infrastructure failures trip a **circuit
-breaker** that stops the run incomplete (exit 2) with no marker for the task in
-flight, so `-continue` re-enters exactly there once the outage passes. Only
-results about the work — gate failures, contract violations, gate mutation —
-reach the immutable history.
+`max_task_attempts`, and only results about the work — gate failures, contract
+violations, gate mutation — reach the immutable history.
+
+**The gate's dependencies count too** (review run 20260813-222753). The rule
+above covered the AGENT's provider and stopped there, so a gate command that
+*ran* and exited non-zero because its own dependency was unreachable — `npm ci`
+against a registry returning 503 — was recorded as a verdict on the code. The
+shipped node config's first gate command is exactly that. A command the operator
+marks `infra: true` in `verify.commands` is therefore classified like a provider
+refusal: no attempt consumed, no marker, backed off and fed to the breaker.
+Opt-in and operator-declared, because fixpoint cannot tell a network failure
+from a real one by reading an exit code — only the person who wrote the command
+knows what it reaches.
+
+**Waiting comes before the breaker.** An infrastructure failure is retried with
+an increasing wait — 1m, 5m, 15m, 30m — and the run stops incomplete (exit 2)
+only when `implement.max_infra_tries` (default 4) is spent, with no marker for
+the task in flight. A strike is one try, not one exhausted ladder. The waits are
+journalled (`infra_backoff`) and charged against `max_run_duration`, so the
+deadline stays honest about time actually spent. `402` skips the ladder
+outright: the account is out of credit, and every retry buys the same answer
+more slowly. Without any wait at all — the first shape this shipped in — the
+second call landed inside the same rate-limit window as the first, so an
+overnight run could be dead four minutes after a routine 429 (review run
+20260813-180828).
 
 **Every processed task leaves exactly one commit**, because the commit trailers
 are the resume state (§5.5) and a state that cannot represent the outcomes §5.4
@@ -1112,12 +1145,54 @@ New config validation, each refusal carrying its reason:
   exist yet.) The same holds for `-continue`: the config comes from the operator's
   bundle, never from the project fixpoint built, because a coder session wrote
   files in that project.
+
+  **This rule needs its own flag, and finding out why took a review** (run
+  20260813-222753). Bundle discovery is anchored on the working directory, so
+  the natural invocation — `cd` into the repository holding the design, run the
+  implement config — makes that repository the first bundle searched. There is a
+  general guard for target-supplied policy, and it is cleared by *either*
+  `-trusted-bundle` or `-trusted-target` — while this section makes
+  `-trusted-target` **mandatory** for every implement run. The one flag an
+  operator cannot avoid was therefore admitting the design repository's own
+  `verify.commands` (argv fixpoint executes itself), agent definitions and
+  prompts, silently. The operator's assertion was that *this DESIGN.md is a
+  design you wrote or reviewed*; it was being spent on a second, unrelated claim
+  about arbitrary YAML beside it — and the gate is what §3 calls the only signal
+  in this tool no model authored. So an implement run gates policy resolved from
+  inside `target.path` **separately**, and only `-trusted-bundle` clears it.
+- **The gate executes model-authored build code and whatever it depends on**, and
+  that belongs here beside the other disclosures rather than being left implicit.
+  §5.2 step 7 makes a lockfile a designed happy path: the coder writes a manifest
+  from a document fixpoint did not author, the gate then resolves and installs
+  what that manifest names — up to `max_tasks × max_task_attempts` times in one
+  run — and fixpoint commits the resulting lockfile into the delivered project.
+  Nothing reviews that code inside this run: §9 is explicit that `review-code`
+  comes afterwards. One hallucinated or typosquatted dependency is therefore
+  code running as the operator, on the host, during the gate.
+
+  The stance, rather than only the disclosure: the shipped node stack installs
+  with `--ignore-scripts`, so a package's install hooks do not run by default and
+  a project that genuinely needs them fails the gate loudly instead of executing
+  quietly. And this pipeline is the strongest case in the tool for the
+  container/VM operation `docs/security.md` already recommends for untrusted
+  agent CLIs — it is the only pipeline that runs model-chosen third-party code.
 - Inherited-but-inert loop keys (`max_iterations`, `clean_rounds_to_stop`,
   `max_findings_per_round`, `max_final_passes`, `final_skip_run_edits`) are printed
   by `--check` as ignored. Refusing them is impossible for the same `extends`
   reason; saying nothing would let an operator tune a dial that does nothing.
 
 ### 7.4 Flags: three about the plan, one about the tree
+
+**None of the four flags in this subsection is implemented in this version.**
+The binary defines `-config`, `-target`, `-out`, `-trusted-target`,
+`-trusted-bundle`, `-allow-untrusted-fix` and the loop flags, and nothing else;
+`-plan-only`, `-plan`, `-no-coverage-check` and `-continue` (§5.5) are all
+specified here and unbuilt. What that costs today is stated where it lands: the
+coverage refusal in `internal/implement/outline.go` tells the operator in the
+error text that there is no flag to bypass it, and §8's recovery column names
+recoveries the tool can actually perform. This block stays because the rules
+below — above all the `design_sha256` refusal — are the part that must not be
+re-derived casually when the flags are built.
 
 - **`-plan-only`** — preflight, snapshot, plan, validate; write `plan.json` and a
   rendered `PLAN.md` **into the run's artifacts**; create no directory, claim no
@@ -1176,11 +1251,11 @@ the panel on the plan after all.
 | trust flag absent | preflight | the §7.3 refusal | — | pass `-trusted-target` |
 | design exceeds the planner's budget | preflight | refusal naming bytes and budget | — | split the design, or raise the budget |
 | design has no readable outline | preflight | refusal naming the heading count | — | add sections, or pass `-no-coverage-check` |
-| planner session fails | after 1 session | run fails, exit 1, no directory created | raw reply in `round-0/` | rerun, or hand-write a plan and use `-plan` (the refusal prints the digest to paste) |
-| plan invalid (cycle, 200 tasks, absolute path, uncovered section) | after 1 session | refusal naming the offending task and rule | `plan.json` holds what was returned verbatim | `-plan-only`, edit, `-plan` |
+| planner session fails | after 1 session | run fails, exit 1, no directory created | raw reply in `round-0/` | rerun; the design and the write-target are untouched (`-plan` is specified but not shipped, §7.4) |
+| plan invalid (cycle, 200 tasks, absolute path, uncovered section) | after 1 session | refusal naming the offending task and rule | `plan.json` at the run root holds what was returned verbatim | edit the design (or raise the limit the refusal names) and rerun; hand-correcting the plan needs `-plan`, which is not shipped (§7.4) |
 | plan cannot fit the deadline | after 1 session | refusal naming tasks, per-task budget, and `max_run_duration` | the plan | raise the deadline, or cut the plan |
 | `-plan` file lacks or mismatches `design_sha256` | preflight | refusal quoting the design's actual digest | — | paste the digest, or point at the right design |
-| `-out` appeared between preflight and `os.Mkdir` | scaffold | refusal; the planner session is already spent and its plan is in artifacts | the plan | rerun with `-plan` |
+| `-out` appeared between preflight and `os.Mkdir` | scaffold | refusal; the planner session is already spent and its plan is at the run root | `plan.json` | name a different `-out` and rerun -- the planner session is paid again (`-plan` would avoid it, §7.4) |
 | task 1 does not leave the project building | task 1's gate | task 1 fails after its attempts; everything depends on it, so everything is skipped; exit 2 | verify output per attempt; summary names the failing check | fix the plan's first task, rerun into a fresh directory |
 | a mid-run task fails the gate on every attempt | that task | task failed, changes stashed, dependents skipped, run continues, exit 2 | scoreboard and summary name the task, the check, and each skipped dependent | rerun that task by hand, or hand the project to `fix-code` |
 | the gate rewrites tracked sources, or the coder's new untracked sources | that task | `gate-mutated-sources`, task failed, paths named | the diff the gate produced | fix the gate config; a formatter belongs in a task, not a gate |
@@ -1190,14 +1265,14 @@ the panel on the plan after all.
 | the coder's changes exceed `max_task_bytes` | that task | attempt failed before hashing or gating; tree discarded via checkout-and-clean (§5.3) | the census walk's report and the journal | raise the bound, or fix the plan's task |
 | the coder creates a credential-shaped file (`.env`, `id_rsa`, `*.pem`, …) | that task | attempt failed, tree discarded via checkout-and-clean so nothing reaches the object database — not even a stash — paths named | the `credential_shaped_paths` journal event | if the project genuinely needs one, add it after the run: fixpoint will not commit a path its own mandatory exclude patterns would then hide from every reviewer |
 | the clean-clone check fails (`clean_check`, §7.2) | end of run (`last`) or that task (`every`) | run incomplete (exit 2): "HEAD does not pass the gate in a clean clone" | the clone's gate output; the per-task ignored-census diffs point at the accumulation | at `last`: rerun with `clean_check: every` to find the culprit task |
-| the agent or gate cannot run at all (provider refusal, dead session, missing executable) | that attempt | attempt not counted; retried with backoff (1m, 5m, 15m, 30m) and journalled, then the circuit breaker stops the run incomplete (exit 2), **no marker**. A 402 skips the backoff: waiting cannot fix payment | the `error_status` in the step record and the `infra_backoff` journal events | wait out the outage; the built tasks stand, the remainder needs a fresh run (no `-continue` yet, §5.5) |
+| the agent or gate cannot run at all (provider refusal, dead session, missing executable), **or a gate command declared `infra: true` exits non-zero** | that attempt | attempt not counted, no marker; retried with an increasing wait (1m, 5m, 15m, 30m) until `implement.max_infra_tries` is spent, then the circuit breaker stops the run incomplete (exit 2). A 402 skips the ladder: waiting cannot fix payment | the `error_status` in the step record and the `infra_backoff` journal events | wait out the outage; the built tasks stand, the remainder needs a fresh run (no `-continue` yet, §5.5) |
 | free disk below `min_free_disk` | preflight or between tasks | refusal / run stops incomplete (exit 2), threshold and free figure named; every unreached task is reported | `df`, the `disk_exhausted` journal event | free space, then a fresh run (no `-continue` yet, §5.5) |
 | the coder dies mid-task | that task | changes discarded (tracked **and** untracked); an infrastructure death does not count against the attempts (§5.4), a mid-work crash with output does | `git stash list`, attempt artifacts, `error_status` | the built tasks stand |
 | the coder claims a task it did not do | that task | contract violation, task failed | the session artifact and the clean tree | rerun that task |
 | the coder committed on its own | that task | soft-reset to base, journal deviation, run continues | the journal event | none needed |
 | the coder rewrote history below base | that task | **run stops**, exit 1, repository-invariant failure with expected and actual SHAs | reflog | inspect by hand; fixpoint never resets user-visible history for you |
-| the coder touched `.git/config`, hooks, other refs, or created a nested repo **in the un-ignored tree** | that task | **run stops**, exit 1, repository-invariant failure naming what changed | the journal's `what` list on the invariant event | inspect by hand; the committed tasks stand and were gated |
-| **the GATE** touched any of the same | that task | **run stops**, exit 1, before anything is staged: a gate runs coder-authored code, and a test that appends to `.git/info/exclude` would hide a source file from the census and the commit | the `gate_mutated_repository` journal event | fix the gate config; the committed tasks stand |
+| the coder touched `.git/config`, hooks, other refs, or created a nested repo **in the un-ignored tree** | that task | **run stops**, exit 1, repository-invariant failure naming what changed | `repostate.json` at the run root: the before, the after, and the named diff | inspect by hand; the committed tasks stand and were gated |
+| **the GATE** touched any of the same | that task | **run stops**, exit 1, before anything is staged: a gate runs coder-authored code, and a test that appends to `.git/info/exclude` would hide a source file from the census and the commit | the `gate_mutated_repository` journal event and `repostate.json` | fix the gate config; the committed tasks stand |
 | a nested repo appears under an IGNORED path (`node_modules/`, a vendored fixture) | nothing | ignored: only the un-ignored tree can reach a commit as a gitlink | — | none needed — installing a dependency from a git URL is ordinary |
 | the tree is dirty at the start of a task | that task | **run stops**, exit 1, repository-invariant failure naming the paths | the paths | a fixpoint bug; report it — the residue is fixpoint's, not the coder's |
 | `max_run_duration` reached | between tasks | run stops, exit 2, names the next unbuilt task; every task after it is reported `unreached` | summary | a fresh run for the remainder (no `-continue` yet, §5.5) |
@@ -1608,8 +1683,9 @@ introduced. The mechanism-level findings are folded in this revision:
    checkout-and-clean so the ceiling never writes the oversized tree into the
    object database.
 3. **Infrastructure failures are not outcomes** (§5.4): no marker, no burned
-   attempt, a two-strike circuit breaker, `-continue` re-enters at the task. A
-   provider outage is a fact about the morning, not about the plan.
+   attempt, `implement.max_infra_tries` retries with an increasing wait, then
+   the circuit breaker. A provider outage — or a registry one, for a gate
+   command declared `infra` — is a fact about the morning, not about the plan.
 4. **`blocked` needs corroboration** (§5.4, §6): citations of the conflicting
    design sections, confirmed by a second independent session — the same
    treatment `already_satisfied` got, for a bigger blast radius.

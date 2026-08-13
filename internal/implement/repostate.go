@@ -24,24 +24,24 @@ const gitDirName = ".git"
 // contains (review run 20260813-003817).
 type RepoState struct {
 	// ConfigDigest is the sha256 of .git/config.
-	ConfigDigest string
+	ConfigDigest string `json:"config_digest"`
 	// HooksPath is the effective core.hooksPath; HooksEmpty is whether the
 	// directory it names contains anything.
-	HooksPath  string
-	HooksEmpty bool
+	HooksPath  string `json:"hooks_path"`
+	HooksEmpty bool   `json:"hooks_empty"`
 	// RefsDigest covers `git for-each-ref` minus the branch HEAD rides
 	// (task commits legitimately move it; step 4 checks HEAD separately) plus
 	// the packed-refs file.
-	RefsDigest string
+	RefsDigest string `json:"refs_digest"`
 	// NestedGit lists any .git file or directory below the worktree root.
-	NestedGit []string
+	NestedGit []string `json:"nested_git,omitempty"`
 	// InfoExcludeDigest and InfoAttributesDigest cover the two metadata files
 	// Init wrote empty; "" means the file is absent, which is also a known value.
-	InfoExcludeDigest    string
-	InfoAttributesDigest string
+	InfoExcludeDigest    string `json:"info_exclude_digest"`
+	InfoAttributesDigest string `json:"info_attributes_digest"`
 	// HasAlternates and IsShallow must stay false for the lifetime of the run.
-	HasAlternates bool
-	IsShallow     bool
+	HasAlternates bool `json:"has_alternates"`
+	IsShallow     bool `json:"is_shallow"`
 }
 
 // SnapshotRepoState reads the invariant surface of the repository at dir.

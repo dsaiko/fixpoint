@@ -155,7 +155,7 @@ Flags:
 	}
 	cfg := loaded.Config
 	logSource(logf, loaded)
-	if !allowProjectSuppliedPolicy(loaded, logf) {
+	if !allowSuppliedPolicy(loaded, logf) {
 		return 1
 	}
 
@@ -721,6 +721,41 @@ func allowProjectSuppliedPolicy(l *config.Loaded, logf func(string, ...any)) boo
 		logf("  %s", s)
 	}
 	logf("Read those files, then pass -trusted-bundle to assert those files are trusted -- or point -config at a bundle outside the target. (-trusted-target also clears this, but it asserts more: that the target's own content is trusted, which in mode pr means the pull request's.)")
+	return false
+}
+
+// allowSuppliedPolicy runs both policy-provenance gates: the general one over
+// the project under review, and the implement pipeline's narrower one over the
+// design's own directory. Two rules, two flags, one call site.
+func allowSuppliedPolicy(l *config.Loaded, logf func(string, ...any)) bool {
+	return allowProjectSuppliedPolicy(l, logf) && allowDesignSuppliedPolicy(l, logf)
+}
+
+// allowDesignSuppliedPolicy is §7.3's rule, which nothing enforced until review
+// run 20260813-222753 pointed out why it mattered: an implement run must not
+// take the commands it EXECUTES from the design it was pointed at.
+//
+// Separate from allowProjectSuppliedPolicy because the flags that clear them
+// differ, and that is the whole point. -trusted-target is mandatory for every
+// implement run (the coder edits files with permission checks disabled), so
+// letting it also clear bundle trust meant the one flag an operator cannot
+// avoid silently admitted the design repository's verify.commands, agent
+// definitions and prompts. Only -trusted-bundle clears this one: the operator
+// has to say, separately and on purpose, that the YAML beside the design is
+// theirs to run.
+func allowDesignSuppliedPolicy(l *config.Loaded, logf func(string, ...any)) bool {
+	if !l.Config.IsImplement() || l.Config.Loop.TrustedBundle {
+		return true
+	}
+	supplied := l.TargetSuppliedPolicy()
+	if len(supplied) == 0 {
+		return true
+	}
+	logf("refusing to run: an implement run would take its policy from inside the design's own directory (%s):", l.Config.Target.Path)
+	for _, s := range supplied {
+		logf("  %s", s)
+	}
+	logf("verify.commands is argv fixpoint executes itself, and the gate is the only signal in this run no model authored -- so a design that ships its own bundle would choose how it is checked. Point -config at a bundle outside the design, or pass -trusted-bundle to assert those files are yours. (-trusted-target does NOT clear this: it says the design is safe to act on, not that the YAML beside it is safe to run.)")
 	return false
 }
 

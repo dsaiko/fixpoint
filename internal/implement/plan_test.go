@@ -231,3 +231,31 @@ func TestRenderMarkdown(t *testing.T) {
 		t.Error("an ungated, unchecked run must say both, verbatim")
 	}
 }
+
+// The deadline clock starts when the RUN starts -- before the ping, the design
+// snapshot and the planner session -- so the fit budget has to cover the same
+// interval or rule 7's claim that "the number the refusal quotes and the number
+// the run can spend are the same number" is false (review run 20260813-222753).
+func TestFitChargesThePlanningItIsClockedAgainst(t *testing.T) {
+	r := rules()
+	bare := r.RunWorst(5)
+	r.PlanOverhead = 35 * time.Minute
+	if got, want := r.RunWorst(5), bare+35*time.Minute; got != want {
+		t.Errorf("RunWorst with planning overhead = %v, want %v", got, want)
+	}
+	// And it must cost admissions, not just appear in a message: a run whose
+	// planner can spend half an hour has half an hour less for tasks.
+	r.PlanOverhead = 0
+	loose := r.Admitted(40)
+	r.PlanOverhead = 4 * time.Hour
+	if tight := r.Admitted(40); tight >= loose {
+		t.Errorf("four hours of planning admitted %d tasks, no fewer than %d", tight, loose)
+	}
+	// The refusal quotes it, so an operator can see where the time went.
+	r.PlanOverhead = 35 * time.Minute
+	r.MaxRunDuration = time.Hour
+	err := validateFit(1, r)
+	if err == nil || !strings.Contains(err.Error(), "spent on planning") {
+		t.Errorf("validateFit() = %v, want the planning term named", err)
+	}
+}

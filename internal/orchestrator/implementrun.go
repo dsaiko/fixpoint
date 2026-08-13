@@ -277,6 +277,10 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 		GateWorst:       implement.GateWorst(o.cfg.Verify),
 		MaxRunDuration:  o.cfg.Implement.MaxRunDuration.Std(),
 		CleanCheck:      o.cfg.Implement.CleanCheck,
+		// The deadline clock started before PREFLIGHT, so the budget has to cover
+		// the same interval: the planner's own timeout plus an allowance for the
+		// ping and the snapshot.
+		PlanOverhead: o.cfg.Agents[o.cfg.Roles.Planner.Agent].Timeout.Std() + planOverheadSlack,
 	}
 	// The cap quoted to the planner and the rule that will judge its answer are
 	// now the same arithmetic (Rules.Admitted), so the two cannot disagree.
@@ -331,12 +335,68 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 		Coder:         o.cfg.Roles.Coder.Agent,
 		VerifyProfile: p.profile,
 	}
+	// The canonical plan as an ARTIFACT, provenance included -- §4.3's
+	// `.fixpoint/<ts>/plan.json`. The step artifact logged above is the parsed
+	// value before provenance was injected, so it was not this; §4.3 named this
+	// home and nothing wrote it (review run 20260813-180828, i23).
+	if err := o.writePlanArtifact(pl); err != nil {
+		return pl, err
+	}
 	o.journal("plan_finished", 1, map[string]any{
 		"tasks":    len(pl.Tasks),
 		"coverage": fmt.Sprintf("%q (%d headings)", strings.Repeat("#", p.outline.Level), len(p.outline.Headings)),
 	})
 	o.endPhase("PLAN  %d task(s), coverage accounted", len(pl.Tasks))
 	return pl, nil
+}
+
+// writePlanArtifact records the validated, provenance-stamped plan at the run
+// root. Distinct from the project's committed PLAN.json: this one survives on
+// the machine that RAN the plan even when the project does not.
+func (o *Orchestrator) writePlanArtifact(pl implement.Plan) error {
+	b, err := json.MarshalIndent(pl, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = o.logs.RunState("plan.json", append(b, '\n'))
+	return err
+}
+
+// runStatus is `.fixpoint/<ts>/status.json`: the live view of a run in flight.
+type runStatus struct {
+	SchemaVersion int                 `json:"schema_version"`
+	RunID         string              `json:"run_id"`
+	Project       string              `json:"project"`
+	Planned       int                 `json:"planned"`
+	Processed     int                 `json:"processed"`
+	InFlight      string              `json:"in_flight,omitempty"`
+	Tasks         []model.TaskOutcome `json:"tasks"`
+}
+
+// writeRunState rewrites `.fixpoint/<ts>/status.json` -- the live per-task
+// state §4.3 promises, atomically, after every task. It is the only mutable
+// state a running implement pipeline exposes: without it the observability of a
+// multi-hour unattended run was a stderr line nobody was watching.
+//
+// A failure here is logged, never returned: losing the observability file must
+// not lose the run that was being observed.
+func (o *Orchestrator) writeRunState(sum *model.RunSummary, pl implement.Plan, inFlight string) {
+	state := runStatus{
+		SchemaVersion: 1,
+		RunID:         o.logs.RunID(),
+		Project:       pl.Project.Name,
+		Planned:       len(pl.Tasks),
+		Processed:     len(sum.Tasks),
+		InFlight:      inFlight,
+		Tasks:         sum.Tasks,
+	}
+	b, err := json.MarshalIndent(state, "", "  ")
+	if err == nil {
+		_, err = o.logs.RunState("status.json", append(b, '\n'))
+	}
+	if err != nil {
+		o.logf("WARNING: could not write status.json (%v); the run continues unobserved", err)
+	}
 }
 
 // planMarkdown renders the plan step's durable artifact.
@@ -457,10 +517,13 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 			incomplete = true
 			continue
 		}
+		o.writeRunState(sum, pl, t.ID)
 		bad, stopLoop, err := o.processTask(ctx, sum, rec, p, pl, i, &infraStrikes)
 		if err != nil {
+			o.writeRunState(sum, pl, "")
 			return err
 		}
+		o.writeRunState(sum, pl, "")
 		if bad {
 			incomplete = true
 		}
@@ -475,6 +538,7 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 	// the run printed "5 task(s) · 5 implemented" for a 20-task plan and nothing
 	// anywhere said what the other 15 were (review run 20260813-180828, i22).
 	o.recordUnreached(sum, pl, stoppedBefore)
+	o.writeRunState(sum, pl, "")
 	o.endPhase("BUILD  %d of %d task(s) processed", len(sum.Tasks), len(pl.Tasks))
 
 	if len(o.cfg.Verify.Commands) > 0 && o.cfg.Implement.CleanCheck == config.CleanCheckLast {
@@ -550,6 +614,10 @@ func (o *Orchestrator) recordUnreached(sum *model.RunSummary, pl implement.Plan,
 	}
 }
 
+// planOverheadSlack is the allowance for everything before the planner session
+// that the run is charged for: the agent ping and the design snapshot.
+const planOverheadSlack = 5 * time.Minute
+
 // errInfraBreaker trips after the infrastructure retry budget is spent: the
 // run stops incomplete with NO marker for the task in flight (§5.4).
 var errInfraBreaker = errors.New("infrastructure circuit breaker")
@@ -576,7 +644,22 @@ func (o *Orchestrator) backoffSchedule() []time.Duration {
 	if len(o.infraBackoff) > 0 {
 		return o.infraBackoff
 	}
-	return infraBackoff
+	// implement.max_infra_tries decides how many rungs are used. Beyond the
+	// declared ladder the last wait repeats, so raising the key never silently
+	// shortens the waits.
+	n := o.cfg.Implement.MaxInfraTries
+	if n <= 0 || n == len(infraBackoff) {
+		return infraBackoff
+	}
+	out := make([]time.Duration, n)
+	for i := range out {
+		if i < len(infraBackoff) {
+			out[i] = infraBackoff[i]
+			continue
+		}
+		out[i] = infraBackoff[len(infraBackoff)-1]
+	}
+	return out
 }
 
 // waitForInfra sleeps out the strike's backoff, refusing when the wait would
@@ -844,21 +927,12 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	}
 
 	// Step 6: the census, the byte bound, the ignored reconciliation.
-	census, err := p.git.TakeCensus(ctx, p.out, o.cfg.Implement.MaxTaskBytes.Int64())
-	var bb implement.ByteBoundError
-	if errors.As(err, &bb) {
-		// Checkout-and-clean, not a stash: the oversized tree must not enter
-		// the object database (§5.3).
-		if derr := p.col.DiscardClean(ctx); derr != nil {
-			return res, report, attemptVerdict{}, derr
-		}
-		if err := o.assertClean(ctx, p); err != nil {
-			return res, report, attemptVerdict{}, err
-		}
-		return res, report, attemptVerdict{kind: attemptFailed, why: bb.Error()}, nil
-	}
+	census, why, err := o.censusPhase(ctx, p)
 	if err != nil {
 		return res, report, attemptVerdict{}, err
+	}
+	if why != "" {
+		return res, report, attemptVerdict{kind: attemptFailed, why: why}, nil
 	}
 	why, cerr := o.refuseCredentialShaped(ctx, p, t.ID, census)
 	if cerr != nil {
@@ -884,6 +958,16 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 
 	// Step 7: the gate.
 	gateLabel, gatePaths, why, err := o.gatePhase(ctx, p, t.ID, census, before)
+	var infraGate infraGateError
+	if errors.As(err, &infraGate) {
+		// Discarded like any other unfinished attempt, but recorded as
+		// infrastructure: no attempt consumed, no marker, and the breaker gets
+		// the strike so a registry that is down does not spin the whole plan.
+		if derr := o.discardAttempt(ctx, p, t.ID, attempt); derr != nil {
+			return res, report, attemptVerdict{}, derr
+		}
+		return res, report, attemptVerdict{kind: attemptInfra, why: infraGate.Error()}, nil
+	}
 	if err != nil {
 		return res, report, attemptVerdict{}, err
 	}
@@ -930,6 +1014,25 @@ func (o *Orchestrator) refuseCredentialShaped(ctx context.Context, p *implementP
 		" -- these match the patterns that hide a path from every reviewer, so keeping them would bury a secret in the project's history", nil
 }
 
+// censusPhase is §5.2 step 6's census with its byte bound. A non-empty reason
+// fails the attempt: the oversized tree is discarded by checkout-and-clean
+// rather than stashed, so the ceiling never writes it into the object database
+// (§5.3).
+func (o *Orchestrator) censusPhase(ctx context.Context, p *implementPrep) (implement.Census, string, error) {
+	census, err := p.git.TakeCensus(ctx, p.out, o.cfg.Implement.MaxTaskBytes.Int64())
+	var bb implement.ByteBoundError
+	if errors.As(err, &bb) {
+		if derr := p.col.DiscardClean(ctx); derr != nil {
+			return census, "", derr
+		}
+		if derr := o.assertClean(ctx, p); derr != nil {
+			return census, "", derr
+		}
+		return census, bb.Error(), nil
+	}
+	return census, "", err
+}
+
 // gatePhase is §5.2 step 7: run the gate, classify every difference, remove
 // output after EVERY gate run (a failed gate's droppings must not sit in the
 // tree for the next attempt). A non-empty `why` fails the attempt.
@@ -971,10 +1074,34 @@ func (o *Orchestrator) gatePhase(ctx context.Context, p *implementPrep, taskID s
 	if len(diff.MutatedSources) > 0 {
 		return "", nil, "gate-mutated-sources: " + strings.Join(diff.MutatedSources, ", ") + " -- a formatter belongs in a task, not a gate", nil
 	}
+	// A command the operator declared environment-dependent failed: that is a
+	// fact about the registry, the proxy or the network, not about the code, and
+	// the design spent a whole revision establishing that such facts do not
+	// become permanent verdicts (review run 20260813-222753). Reported as
+	// infrastructure so the caller burns no attempt and writes no marker.
+	if bad := rep.InfraFailures(); len(bad) > 0 {
+		names := make([]string, 0, len(bad))
+		for _, r := range bad {
+			names = append(names, r.Name)
+		}
+		return "", nil, "", infraGateError{checks: names, detail: gateFailureSummary(rep)}
+	}
 	if !rep.Passed() {
 		return "", nil, "the gate failed: " + gateFailureSummary(rep), nil
 	}
 	return "passed", diff.GateGenerated, "", nil
+}
+
+// infraGateError carries a gate failure that is environmental rather than a
+// verdict on the work, so the attempt loop can route it exactly as it routes a
+// provider refusal.
+type infraGateError struct {
+	checks []string
+	detail string
+}
+
+func (e infraGateError) Error() string {
+	return "the gate's environment-dependent check(s) failed: " + strings.Join(e.checks, ", ") + " -- " + e.detail
 }
 
 // commitTask stages exactly the computed path set and asserts the tree clean
@@ -1066,9 +1193,41 @@ func (o *Orchestrator) checkInvariants(ctx context.Context, p *implementPrep, ta
 		return err
 	}
 	if diff := postState.Diff(preState); len(diff) > 0 {
+		// §8 tells an operator whose run stopped here to inspect the invariant
+		// snapshot, and named a file nothing wrote (review run 20260813-180828,
+		// i23). Both sides go down now, because the DIFF is the diagnosis and a
+		// one-line journal string is not the pre-image.
+		o.writeRepoState(taskID, "session", preState, postState, diff)
 		return runStopError{strings.Join(diff, "; ")}
 	}
 	return nil
+}
+
+// repoStateRecord is `.fixpoint/<ts>/repostate.json`: what the repository looked
+// like before, what it looks like now, and which invariants moved.
+type repoStateRecord struct {
+	SchemaVersion int                 `json:"schema_version"`
+	Task          string              `json:"task"`
+	When          string              `json:"when"`
+	Diff          []string            `json:"diff"`
+	Before        implement.RepoState `json:"before"`
+	After         implement.RepoState `json:"after"`
+}
+
+// writeRepoState persists an invariant comparison at the run root: what the
+// repository looked like before, what it looks like now, and which invariants
+// moved. Best-effort -- the run is already stopping, and the error that matters
+// is the one being reported.
+func (o *Orchestrator) writeRepoState(taskID, when string, before, after implement.RepoState, diff []string) {
+	b, err := json.MarshalIndent(repoStateRecord{
+		SchemaVersion: 1, Task: taskID, When: when, Diff: diff, Before: before, After: after,
+	}, "", "  ")
+	if err == nil {
+		_, err = o.logs.RunState("repostate.json", append(b, '\n'))
+	}
+	if err != nil {
+		o.logf("WARNING: could not write repostate.json (%v)", err)
+	}
 }
 
 // checkGateInvariants is the same comparison after the gate has run project
@@ -1090,6 +1249,7 @@ func (o *Orchestrator) checkGateInvariants(ctx context.Context, p *implementPrep
 	if len(diff) == 0 {
 		return nil
 	}
+	o.writeRepoState(taskID, "gate", before.repo, postState, diff)
 	o.journal("gate_mutated_repository", 1, map[string]any{"id": taskID, "what": diff})
 	return runStopError{"the gate changed the repository itself, not just the worktree: " + strings.Join(diff, "; ")}
 }
