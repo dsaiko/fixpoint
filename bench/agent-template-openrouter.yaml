@@ -1,0 +1,37 @@
+# Template for an OpenRouter bench candidate (model ids with a slash, e.g.
+# x-ai/grok-4.6). bench/run.sh substitutes __MODEL__ and writes the result to
+# config/agents/bench-candidate.yaml (gitignored). Same claude-harness
+# rewiring as kimi-openrouter.yaml: ANTHROPIC_BASE_URL points at OpenRouter
+# and ANTHROPIC_AUTH_TOKEN must hold the OpenRouter key (run.sh forwards
+# OPENROUTER_API_KEY into it). Unlike the ollama route this one CACHES, so
+# cache_read will carry real numbers -- and it bills a card, so mind the
+# per-model pricing before sweeping.
+model: __MODEL__
+command:
+  - claude
+  - --model {{model}}
+  - --output-format json
+  - -p
+  - --setting-sources user
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  error_status: api_error_status
+# NO cost_usd: the wrapped harness applies Anthropic's rate card to a model
+# Anthropic does not serve (measured ~93x off). Compute the real bill from the
+# token counts and the OpenRouter price list instead.
+prompt_via: stdin
+timeout: 20m
+can_edit: false
+env:
+  pass:
+    - ANTHROPIC_AUTH_TOKEN
+  set:
+    # No /v1 suffix: the harness appends /v1/messages itself (see
+    # kimi-openrouter.yaml for the 404 this prevents).
+    ANTHROPIC_BASE_URL: https://openrouter.ai/api
+prompt_budget: 400000
