@@ -1,4 +1,15 @@
-# Kimi via ollama, same claude-harness wrapping as glm-ollama. THE PANEL DEFAULT.
+# Kimi via ollama, same claude-harness wrapping as glm-ollama. OFF THE PANEL
+# since 2026-08-14, replaced by minimax-ollama; kept because the reasoning below
+# is what the replacement was measured against, and because a seat can come back.
+#
+# WHY IT LOST THE SEAT, since none of the argument below predicted it. Two live
+# review-design rounds over the fixpoint repository (runs 20260813-180828 and
+# 20260813-222753) had the judge drop 76% and then 85% of its findings -- 13 of
+# 17, then 22 of 26 -- while it produced the panel's largest finding count. On
+# the seeded bench it had scored 19/20 with zero unseeded findings, so precision
+# against planted defects said nothing about precision against a real codebase.
+# A rejected finding still costs a session, a prompt, and a share of the judge's
+# context to reject.
 #
 # It is on the panel despite caching nothing -- 0% hit rate, 29.0M fresh input
 # tokens across five sessions in one run -- because the alternative costs cash for

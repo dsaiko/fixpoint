@@ -8,7 +8,7 @@ pool:
     # defaults.yaml
     roles:
       review:
-        agents: [claude, kimi-ollama, deepseek-ollama]
+        agents: [claude, minimax-ollama, deepseek-ollama]
 
     # fix-code.yaml
     extends: defaults

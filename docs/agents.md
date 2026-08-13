@@ -150,12 +150,17 @@ call (99.1% cached).
 **And it did not fix the bill, which is the more useful half of the result.** At a
 98% hit rate one kimi session still cost ~$5, because it took 168 turns to
 claude's 37 on the same round: caching cut the price per token 4.9×, and the
-volume — the thing actually wrong — was untouched. So the shipped panel runs
-`kimi-ollama` after all. Prepaid quota absorbs that volume where a card bills it,
-and the quota ceiling is the price of the choice; it ended two runs early, which
-is why glm left the panel rather than moving to a cheaper route. Diagnose the
-resource before optimising it: this looked like a caching problem for a day and
-was a convergence problem all along.
+volume — the thing actually wrong — was untouched. So the panel took the ollama
+route. Prepaid quota absorbs that volume where a card bills it, and the quota
+ceiling is the price of the choice; it ended two runs early, which is why glm
+left the panel rather than moving to a cheaper route. Diagnose the resource
+before optimising it: this looked like a caching problem for a day and was a
+convergence problem all along.
+
+*(kimi itself later lost its seat to `minimax-ollama` — on precision, not on
+route: two live rounds had 76% and 85% of its findings dropped by the judge. The
+route argument above is unaffected and is why the replacement is also an ollama
+agent. See `config/defaults.yaml`.)*
 
 **ollama ignores `thinking.budget_tokens` the same way** — see
 [effort (claude)](../config/agents/_README.md) — so `effort` on an ollama agent

@@ -1,6 +1,8 @@
-# DeepSeek via ollama, same claude-harness wrapping as kimi-ollama. NOT on a
-# panel: it exists to be measured against kimi-ollama, which currently holds the
-# third reviewer slot.
+# DeepSeek via ollama, same claude-harness wrapping as minimax-ollama. ON THE
+# PANEL since 2026-08-12, when the seeded bench answered the open question this
+# file was written to pose: it scored a perfect 20/20 with zero unseeded
+# findings, and the "flash trades depth for latency" argument it had been passed
+# over for did not survive measurement.
 #
 # The pinned tag matters. `deepseek-v4-flash:cloud` and
 # `deepseek-v4-flash:0731-cloud` are NOT the same model -- the floating tag
@@ -13,7 +15,8 @@
 # models whose published strengths are object recognition, and a code reviewer
 # reading source wants neither.
 #
-# THE OPEN QUESTION. This model was passed over once already, on the argument that
+# THE OPEN QUESTION, AS IT WAS POSED (answered above; kept because the reasoning
+# is what the bench was built to settle). This model was passed over once, on the argument that
 # a "flash" tier trades depth for latency and depth was exactly what gemma4 lacked
 # (see kimi-ollama.yaml). That argument was made from a latency probe, not from
 # review output, so it was never actually tested. What has been learned since gives
@@ -75,6 +78,6 @@ env:
   # ollama needs to find its server; the wrapped claude harness needs nothing more.
     - OLLAMA_HOST
 
-# 400 kB, matching kimi-ollama: same route, same failure mode, measured maximum
+# 400 kB, matching the other ollama agents: same route, same failure mode, measured maximum
 # here 74 kB.
 prompt_budget: 400000

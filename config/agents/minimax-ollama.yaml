@@ -1,0 +1,101 @@
+# MiniMax via ollama, same claude-harness wrapping as deepseek-ollama. THE PANEL
+# DEFAULT, replacing kimi-ollama on 2026-08-14.
+#
+# It took kimi's seat on LIVE measurement, not on the bench. Across the two
+# review-design rounds over this repository (runs 20260813-180828 and
+# 20260813-222753) kimi had 76% and then 85% of its findings dropped by the judge
+# -- 13 of 17, then 22 of 26 -- while producing the panel's largest finding count.
+# A reviewer whose output is mostly rejected still costs a full session, a full
+# prompt and a share of the judge's context to reject, so that is a seat paying
+# out noise. The bench had not caught it: kimi scored 19/20 seeds there with zero
+# unseeded findings, which is the shape of a model that is precise on a target
+# with planted defects and unmoored on a real one.
+#
+# minimax's own bench numbers (bench/results.csv, run 20260813-001925/002114):
+# a perfect 20/20 across both suites -- 12/12 code seeds, 8/8 design seeds -- the
+# only ollama model besides deepseek-v4-flash, glm-5.2, deepseek-v4-pro and
+# kimi-k3 to manage it, and it did so in 127s and 66s.
+#
+# THE HONEST CAVEAT, because it is the same metric kimi failed on live: minimax
+# reported the MOST unseeded findings of any ollama model on the bench (3 on
+# code, 1 on design, against zero for glm-5.2 and deepseek-v4-flash). Extras are
+# not automatically noise -- claude reports 2-3 and is the panel's best reviewer,
+# because a real defect the manifest never seeded looks exactly like one -- but
+# it is the number that would have predicted kimi's rejection rate had anyone
+# read it that way. So this seat is on probation: if the next live round rejects
+# most of what it says, glm-5.2 (glm-ollama.yaml, 20/20 with zero extras) is the
+# standing alternative, exactly as defaults.yaml has said all along.
+#
+# Cost, stated because it is not free: on the code suite minimax spent 225k input
+# tokens to kimi's 105k for one more seed, so this seat roughly doubles the
+# ollama drawdown of the one it replaced. Under a weekly quota that matters more
+# than it looks -- see defaults.yaml on which agent to drop first.
+#
+# The tag is floating, not dated. deepseek-ollama.yaml pins `0731-cloud` and
+# explains why a floating tag makes a measurement unrepeatable; ollama publishes
+# no dated minimax-m3 tag today, so this is a known weakness of the comparison
+# rather than an oversight. Re-bench when one appears.
+#
+# Capabilities per `ollama show`: completion, tools, thinking, vision, and a
+# 524k context. The vision capability is incidental -- this is a general
+# reasoning model that also sees, not one of the vision-language models whose
+# published strengths are object recognition and which were disqualified for that
+# reason (see deepseek-ollama.yaml).
+model: minimax-m3:cloud
+# No `effort`, deliberately: it is Anthropic's setting, and ollama drops the
+# thinking budget the harness translates it into. Measured on kimi -- ~3428
+# thinking tokens under a 1024 budget, 3.3x over, and within half a percent of
+# what it produces with no budget at all. Setting it would validate, run, and
+# lie. See "effort (claude)" in _README.md.
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+#
+# NO cost_usd: ollama-served models are not billed by Anthropic, but the wrapped
+# claude harness applies Anthropic's rate card anyway and labels them provider
+# "firstParty" -- measured overstating a real bill by ~93x elsewhere. The
+# scoreboard shows "-" rather than money nobody was charged. Tokens ARE real and
+# still counted, and the cache_* paths will read 0 here: ollama discards
+# cache_control, which is a property of the route, not of this model.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
+
+prompt_via: stdin
+timeout: 20m # cloud-served models are slower; matched to the panel (see claude.yaml)
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+    # ollama needs to find its server; the wrapped claude harness needs nothing more.
+    - OLLAMA_HOST
+
+# 400 kB, matching the other ollama agents: same route, same failure mode --
+# `exit status 1: Prompt is too long`, returned after a full round of wall clock
+# and indistinguishable in the summary from a crashed agent. That failure is not
+# hypothetical here: deepseek hit it on this repository's design-data lens in run
+# 20260813-222753 and dropped the panel to quorum. Measured maximum on this route
+# is 74 kB.
+prompt_budget: 400000
