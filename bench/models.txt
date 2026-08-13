@@ -32,3 +32,7 @@ deepseek-v4-pro:cloud
 gpt-oss:120b-cloud
 nemotron-3-super:cloud
 qwen3.5:397b-cloud
+# OpenRouter candidates (a slash in the id selects the OpenRouter template;
+# bills a card at the listed per-token price -- x-ai/grok-4.6 is $2/M in,
+# $6/M out. This route caches, unlike ollama).
+x-ai/grok-4.6

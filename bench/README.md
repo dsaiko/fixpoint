@@ -90,7 +90,11 @@ make bench MODEL=glm-5.2:cloud                 # both tasks, 1 repeat
 make bench MODEL=kimi-k3:cloud TASK=code N=3   # one task, 3 repeats
 ```
 
-Candidates for the current sweep are listed in `models.txt`. Results append
+Candidates for the current sweep are listed in `models.txt`. Model names route
+the harness: an existing agent name (`claude`, `codex`) runs through its own
+yaml; a `claude-*` id runs claude.yaml with the model swapped; an id with a
+slash (`x-ai/grok-4.6`) runs the OpenRouter template (card-billed, cached;
+needs `OPENROUTER_API_KEY`); anything else runs the ollama template. Results append
 to `results.csv` (committed — measurements are project knowledge); per-run
 seed tables land in `results/`. Re-score an old run without re-paying for it:
 
