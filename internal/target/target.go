@@ -1916,7 +1916,15 @@ func (c *Collector) CommitExact(ctx context.Context, header, body string, paths 
 		}
 	}
 	if len(paths) > 0 {
-		args := append([]string{"add", "--"}, paths...)
+		// --literal-pathspecs, and it is load-bearing: git reads pathspec
+		// arguments as wildmatch patterns even after `--`, so a file named
+		// `src/routes/[slug].svelte` or `pages/[id].tsx` -- the dynamic-route
+		// convention of exactly the Next and SvelteKit projects the shipped
+		// implement-node and implement-web stacks target -- would be read as a
+		// character class, match nothing, and fail the whole commit (review run
+		// 20260813-124710). These paths come from `git status` output; they are
+		// names, never patterns.
+		args := append([]string{"--literal-pathspecs", "add", "--"}, paths...)
 		if out, err := c.git(ctx, args...); err != nil {
 			return "", fmt.Errorf("stage %d path(s): %w: %s", len(paths), err, out)
 		}

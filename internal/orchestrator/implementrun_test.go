@@ -45,35 +45,60 @@ func TestBlockedDependency(t *testing.T) {
 	}
 }
 
+// The vacuous guard is against the PLAN (§5.4: "N of M tasks"), not against
+// the tasks processed so far -- with a running denominator the first
+// legitimately satisfied task reads as 50% and aborts the run (review run
+// 20260813-124710, i2).
 func TestVacuousFraction(t *testing.T) {
 	tasks := []model.TaskOutcome{
-		{Outcome: "implemented"},
-		{Outcome: "already_satisfied"},
-		{Outcome: "already_satisfied"},
+		{Outcome: outcomeImplemented},
+		{Outcome: outcomeSatisfied},
+		{Outcome: outcomeSatisfied},
 	}
-	if got := vacuousFraction(tasks); got < 0.66 || got > 0.67 {
-		t.Errorf("vacuousFraction = %g", got)
+	n, frac := vacuousFraction(tasks, 40)
+	if n != 2 || frac < 0.049 || frac > 0.051 {
+		t.Errorf("vacuousFraction over a 40-task plan = %d, %g; want 2, 0.05", n, frac)
 	}
-	if vacuousFraction(nil) != 0 {
-		t.Error("empty run reported vacuous work")
+	// The early-run case the running denominator got wrong: one satisfied task
+	// out of three processed, in a plan of ten, is 10% -- under the 34% default.
+	if _, frac := vacuousFraction(tasks[:2], 10); frac > 0.34 {
+		t.Errorf("one satisfied task early in a 10-task plan tripped the guard at %g", frac)
+	}
+	if n, frac := vacuousFraction(nil, 0); n != 0 || frac != 0 {
+		t.Errorf("empty run reported vacuous work: %d, %g", n, frac)
 	}
 }
 
-// already_satisfied must name EARLIER tasks (§5.2 step 5); a later task, an
-// unknown id, or an empty list is a contract violation.
+// already_satisfied must name EARLIER tasks that were actually IMPLEMENTED
+// (§5.2 step 5). The position check alone is not enough -- citing an earlier
+// FAILED task would release the dependents of work nothing built -- and the
+// first version of this test asserted only the position, which is why the
+// production hole (review run 20260813-124710, i11) survived it.
 func TestCoveredByImplemented(t *testing.T) {
 	pl := twoTaskPlan()
-	if !coveredByImplemented([]string{"T01"}, pl, 1) {
-		t.Error("a legitimate earlier task was rejected")
+	implemented := map[string]string{"T01": outcomeImplemented}
+
+	if !coveredByImplemented([]string{"T01"}, pl, 1, implemented) {
+		t.Error("an earlier implemented task was rejected")
 	}
-	for name, ids := range map[string][]string{
-		"empty":   nil,
-		"later":   {"T03"},
-		"itself":  {"T02"},
-		"unknown": {"T99"},
-	} {
-		if coveredByImplemented(ids, pl, 1) {
-			t.Errorf("coveredBy %s (%v) accepted", name, ids)
+	cases := map[string]struct {
+		ids      []string
+		outcomes map[string]string
+	}{
+		"empty":          {nil, implemented},
+		"later task":     {[]string{"T03"}, map[string]string{"T03": outcomeImplemented}},
+		"itself":         {[]string{"T02"}, map[string]string{"T02": outcomeImplemented}},
+		"unknown id":     {[]string{"T99"}, map[string]string{"T99": outcomeImplemented}},
+		"earlier fail":   {[]string{"T01"}, map[string]string{"T01": outcomeFailed}},
+		"earlier block":  {[]string{"T01"}, map[string]string{"T01": outcomeBlocked}},
+		"earlier skip":   {[]string{"T01"}, map[string]string{"T01": outcomeSkipped}},
+		"earlier marker": {[]string{"T01"}, map[string]string{"T01": outcomeSatisfied}},
+		"unprocessed":    {[]string{"T01"}, map[string]string{}},
+		"one of two":     {[]string{"T01", "T02"}, implemented},
+	}
+	for name, tc := range cases {
+		if coveredByImplemented(tc.ids, pl, 1, tc.outcomes) {
+			t.Errorf("coverage by %s (%v, outcomes %v) was accepted", name, tc.ids, tc.outcomes)
 		}
 	}
 }
@@ -151,7 +176,7 @@ func TestRunImplementEndToEnd(t *testing.T) {
 	// Each coder session writes one unique source file and reports implemented.
 	coder := writeAgentScript(t, "coder",
 		"printf 'work\\n' > \"src_$$_$(date +%s).txt\"\nsleep 1\n"+
-			"cat <<'REPLY'\n<implement>\n{\"task\": \"T\", \"status\": \"implemented\", \"notes\": \"done\", \"files_touched\": []}\n</implement>\nREPLY\n")
+			"cat <<'REPLY'\n<implement>\n{\"status\": \"implemented\", \"notes\": \"done\", \"files_touched\": []}\n</implement>\nREPLY\n")
 
 	promptDir := t.TempDir()
 	planPrompt := filepath.Join(promptDir, "implement-plan.md")

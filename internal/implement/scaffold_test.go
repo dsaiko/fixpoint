@@ -131,3 +131,40 @@ func TestGitignoreContent(t *testing.T) {
 		}
 	}
 }
+
+// git reads pathspecs as wildmatch patterns even after `--`, so a
+// dynamic-route filename -- the Next/SvelteKit convention the shipped stacks
+// target -- is a PATTERN unless staged literally. Measured: `git add --
+// 'src/routes/[slug].svelte'` also stages `src/routes/s.svelte`, a file the
+// caller never named, which breaks the one promise CommitExact makes (review
+// run 20260813-124710 found the defect; this is the sharper case).
+func TestCommitExactStagesExactlyTheNamedPaths(t *testing.T) {
+	gitAvailable(t)
+	out := filepath.Join(t.TempDir(), "repo")
+	col := collectorFor(t, out)
+	if _, err := Scaffold(t.Context(), col, out, map[string][]byte{"README.md": []byte("x\n")}, "init", "-"); err != nil {
+		t.Fatal(err)
+	}
+	// The glob-shaped name is ours; s.svelte is the file its character class
+	// would match and which must NOT enter this commit.
+	write(t, out, "src/routes/[slug].svelte", "ours\n")
+	write(t, out, "src/routes/s.svelte", "not ours\n")
+	write(t, out, "pages/[id].tsx", "ours\n")
+	write(t, out, "docs/what?.md", "ours\n")
+
+	named := []string{"src/routes/[slug].svelte", "pages/[id].tsx", "docs/what?.md"}
+	if _, err := col.CommitExact(t.Context(), "fixpoint: T01", "Fixpoint-Task: T01", named, false); err != nil {
+		t.Fatalf("CommitExact() = %v", err)
+	}
+	committed := strings.Fields(gitOut(t, out, "show", "--name-only", "--format=", "HEAD"))
+	want := map[string]bool{"src/routes/[slug].svelte": true, "pages/[id].tsx": true, "docs/what?.md": true}
+	for _, c := range committed {
+		if !want[c] {
+			t.Errorf("the commit carries %q, which was never in the computed path set", c)
+		}
+		delete(want, c)
+	}
+	for missing := range want {
+		t.Errorf("%q was named but not committed", missing)
+	}
+}
