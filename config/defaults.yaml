@@ -54,17 +54,31 @@ roles:
   # RESTORED 2026-08-12, after the quota reset and the seeded-target benchmark
   # (bench/README.md, bench/results.csv, 16 models). deepseek-v4-flash scored a
   # perfect 20/20 seeds with zero noise -- the "flash trades depth for latency"
-  # concern it was once passed over for did not survive measurement. kimi keeps
-  # its seat at 19/20 with the best tokens-per-finding of any ollama reviewer
-  # (108 found/Mtok to deepseek's 83). glm-5.2 also scored 20/20 and is the
-  # standing alternative if either seat underperforms live; the rest of the
-  # 2026-08 sweep disqualified itself (timeouts, contract failures, or half the
-  # recall at multiples of the tokens). If the weekly limit is hit again, drop
-  # kimi first (2.2x deepseek's weekly drawdown in production), then deepseek --
-  # a dead ollama agent burns its full 20m timeout and can flip quorum to
-  # INCONCLUSIVE, so a spent limit means a smaller panel, never a waiting one.
+  # concern it was once passed over for did not survive measurement. The rest of
+  # the 2026-08 sweep disqualified itself (timeouts, contract failures, or half
+  # the recall at multiples of the tokens).
+  #
+  # kimi REPLACED BY minimax 2026-08-14, and the reason is worth keeping because
+  # the bench did not predict it. kimi held its seat on 19/20 seeds with zero
+  # unseeded findings; then two live rounds over this repository (runs
+  # 20260813-180828 and 20260813-222753) had the judge drop 76% and then 85% of
+  # what it reported -- 13 of 17, then 22 of 26 -- while it produced the largest
+  # finding count on the panel. Rejected findings are not free: each one costs a
+  # session, a prompt, and a share of the judge's context to throw away. Recall
+  # against planted defects turned out not to predict precision against a real
+  # codebase, which is the single most useful thing the panel has learned about
+  # its own benchmark. minimax-m3 takes the seat on a perfect 20/20 across both
+  # suites -- see minimax-ollama.yaml for what it costs and the one number that
+  # argues against it.
+  #
+  # glm-5.2 remains the standing alternative if either seat underperforms live
+  # (20/20 with zero extras, glm-ollama.yaml). If the weekly limit is hit again,
+  # drop minimax first (it spends ~2x kimi's input tokens on the code suite),
+  # then deepseek -- a dead ollama agent burns its full 20m timeout and can flip
+  # quorum to INCONCLUSIVE, so a spent limit means a smaller panel, never a
+  # waiting one.
   review:
-    agents: [claude, codex, deepseek-ollama, kimi-ollama]
+    agents: [claude, codex, deepseek-ollama, minimax-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds

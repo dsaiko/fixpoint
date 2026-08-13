@@ -560,7 +560,7 @@ func TestImplementActiveAgentsAreThePlannerAndTheCoder(t *testing.T) {
 			Planner: config.RoleRef{Agent: "planner", Prompt: "p"},
 			Coder:   config.RoleRef{Agent: "coder", Prompt: "c"},
 			// Inherited from defaults.yaml and inert here.
-			Review: config.Review{Strategy: "all", Agents: []string{"claude", "codex", "deepseek-ollama", "kimi-ollama"}},
+			Review: config.Review{Strategy: "all", Agents: []string{"claude", "codex", "deepseek-ollama", "minimax-ollama"}},
 		},
 	}
 	o := &Orchestrator{cfg: cfg}

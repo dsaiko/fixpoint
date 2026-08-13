@@ -90,12 +90,14 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 	// A rename or an extension change must not turn this into a test that
 	// silently inspects nothing.
 	//
-	// 9: claude, claude-coder, four ollama-routed reviewers (kimi, deepseek, glm,
-	// gemma4) and three OpenRouter-routed ones (kimi, glm, qwen). The same model
-	// appearing under two routes is deliberate -- the route changes caching and
-	// reasoning behavior that no other field records -- and both routes drive the
-	// claude CLI, so both must carry --setting-sources.
-	if want := 9; checked != want {
+	// 10: claude, claude-coder, five ollama-routed reviewers (minimax, deepseek,
+	// kimi, glm, gemma4) and three OpenRouter-routed ones (kimi, glm, qwen). The
+	// same model appearing under two routes is deliberate -- the route changes
+	// caching and reasoning behavior that no other field records -- and both
+	// routes drive the claude CLI, so both must carry --setting-sources. Agents
+	// that lost their panel seat stay in the bundle: the seat is decided in
+	// defaults.yaml, and a measured alternative is worth keeping ready.
+	if want := 10; checked != want {
 		t.Errorf("checked %d claude-backed agents, want %d -- update this test if the bundle gained or lost one", checked, want)
 	}
 }
@@ -133,6 +135,7 @@ func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 		"gemma4-ollama":   remote,
 		"glm-ollama":      remote,
 		"kimi-ollama":     remote,
+		"minimax-ollama":  remote,
 		"glm-openrouter":  remote,
 		"kimi-openrouter": remote,
 		"qwen-openrouter": remote,
