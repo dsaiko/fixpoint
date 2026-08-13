@@ -1310,3 +1310,82 @@ section with your reason for standing firm. The section must remain present.
 
 The <design> block must be the LAST thing you print. Everything outside it is
 discarded.`
+
+// PlanData feeds the implement-plan template: the planner reads the design
+// whole (fenced and defanged by the caller) plus the operator's actual gate
+// commands, and returns the ordered task plan (DESIGN.md §6).
+type PlanData struct {
+	// Design is the document, fenced and defanged.
+	Design string
+	// OutlineHeadings is the exact heading list fixpoint extracted (§4.2 rule
+	// 6), quoted so the planner matches the same strings the validator will;
+	// empty means the coverage check is off and the template says so.
+	OutlineHeadings []string
+	// Gate is the operator's configured commands verbatim, or empty for an
+	// ungated run (the template asks for a runnable first task anyway).
+	Gate []string
+	// MaxTasks is what the run deadline admits (§4.2 rule 7) -- computed and
+	// quoted, never left as a cap the planner discovers by being refused.
+	MaxTasks       int
+	OutputContract string
+}
+
+// TaskData feeds the implement-task template: this task only, the plan's
+// shape so the coder knows what exists, and the prior attempt's diagnostic
+// when this is attempt two or later (DESIGN.md §6).
+type TaskData struct {
+	ID         string
+	Title      string
+	Goal       string
+	Acceptance []string
+	DesignRefs []string
+	// PlanShape lists every task id, title, and current status, one per line.
+	PlanShape string
+	// PriorFailure is the previous attempt's gate diagnostic, fenced; empty on
+	// attempt one.
+	PriorFailure   string
+	Attempt        int
+	OutputContract string
+}
+
+// PlanContract is the output contract for the planner session.
+const PlanContract = `## Required output format
+End your response with exactly one <plan> block containing ONLY JSON:
+
+<plan>
+{
+  "schema_version": 1,
+  "project":  { "name": "<short-name>", "summary": "<one sentence>" },
+  "coverage": [
+    { "heading": "## <a design section>", "tasks": ["T01"] },
+    { "heading": "## <another>", "tasks": [], "out_of_scope": "<why>" }
+  ],
+  "tasks": [
+    { "id": "T01",
+      "title": "<imperative, one line>",
+      "goal": "<prose: what must be true when this task is done>",
+      "acceptance": ["<a criterion a reader could check>"],
+      "files": ["<relative/path>"],
+      "depends_on": [],
+      "design_refs": ["## <a design section>"] }
+  ]
+}
+</plan>
+
+Dependencies may name only EARLIER task ids. Do not emit a "provenance" key;
+it is not yours to write. Do not name build, test or install commands
+anywhere -- there is no field for them and anything you write elsewhere is
+ignored.`
+
+// ImplementContract is the output contract for a coder task session.
+const ImplementContract = `## Required output format
+End your response with exactly one <implement> block containing ONLY JSON:
+
+<implement>
+{ "task": "<the task id>",
+  "status": "implemented | already_satisfied | blocked",
+  "covered_by": ["<earlier task ids, required when already_satisfied>"],
+  "blocked_on": ["<the design sections in conflict, required when blocked>"],
+  "notes": "<one short paragraph>",
+  "files_touched": ["<relative/path>"] }
+</implement>`

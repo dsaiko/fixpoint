@@ -32,3 +32,11 @@ func gitRun(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	return string(out), nil
 }
+
+// IsAncestor reports whether base is an ancestor of head -- the §5.2 step 4
+// distinction between "the coder committed on top" (recoverable by soft
+// reset) and "the coder rewrote history" (a run stop).
+func IsAncestor(ctx context.Context, dir, base, head string) bool {
+	_, err := gitRun(ctx, dir, "merge-base", "--is-ancestor", base, head)
+	return err == nil
+}
