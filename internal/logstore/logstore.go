@@ -228,6 +228,41 @@ func (s *Store) ReviewBody(text string) (string, error) {
 	return name, nil
 }
 
+// RunState writes one of the run's live state files at the run root, ATOMICALLY
+// -- written to a temp file in the same directory and renamed over its
+// predecessor, so a reader that opens it mid-write sees the previous version
+// whole rather than a truncated one.
+//
+// Atomic because these are the files an operator reads WHILE a multi-hour run
+// is in flight, which is exactly when a plain rewrite is half-written. The
+// implement pipeline's status.json is rewritten after every task; §4.3 named
+// these homes and nothing wrote them, so the observability of a 30-hour
+// unattended run was stderr alone, and §8 sent an operator diagnosing the
+// loudest failure to a repostate.json that never existed (review runs
+// 20260813-180828 and 20260813-222753).
+func (s *Store) RunState(name string, content []byte) (string, error) {
+	if err := s.ensureDir(); err != nil {
+		return "", err
+	}
+	final := filepath.Join(s.runDir, name)
+	tmp, err := os.CreateTemp(s.runDir, name+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }() // no-op once the rename succeeds
+	if _, err := tmp.WriteString(agent.RedactSecrets(string(content))); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return "", err
+	}
+	return final, os.Rename(tmp.Name(), final)
+}
+
 // ScratchDir claims and returns a run-owned directory for transient working
 // state -- today the create pipeline's assignment snapshot. Under the run
 // directory so it inherits the owner-only permissions and the gitignore, and so

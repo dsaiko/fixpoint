@@ -225,6 +225,18 @@ type Implement struct {
 	// clean_check: every. Raising this without touching the timeouts buys
 	// proportionally more tasks; it is not a number to change on its own.
 	MaxRunDuration Duration `yaml:"max_run_duration"`
+	// MaxInfraTries is how many times an infrastructure failure -- a provider
+	// refusal, a dead session, a gate command declared `infra` -- is retried
+	// before the circuit breaker stops the run incomplete. Each retry waits
+	// longer than the last (1m, 5m, 15m, 30m at the default of 4), and the wait
+	// is charged against max_run_duration.
+	//
+	// A key rather than a constant because it is one of §12.2's guessed numbers:
+	// how long an outage has to last before finishing later beats waiting is a
+	// property of the operator's provider, not of this tool. It shipped as a
+	// bare "two consecutive failures" with no wait at all, which meant the
+	// second call landed inside the same rate-limit window as the first.
+	MaxInfraTries int `yaml:"max_infra_tries"`
 	// MaxTaskBytes bounds one attempt's un-ignored changes, checked during the
 	// census walk before anything is hashed or gated.
 	MaxTaskBytes ByteSize `yaml:"max_task_bytes"`
@@ -270,6 +282,9 @@ func (i *Implement) applyDefaults() {
 	}
 	if i.MaxVacuousFrac == 0 {
 		i.MaxVacuousFrac = 0.34
+	}
+	if i.MaxInfraTries == 0 {
+		i.MaxInfraTries = 4
 	}
 	if i.MaxRunDuration == 0 {
 		i.MaxRunDuration = Duration(32 * time.Hour)
@@ -2528,6 +2543,8 @@ func (i Implement) validate() error {
 		return fmt.Errorf("implement.max_task_attempts: must be at least 1, got %d", i.MaxTaskAttempts)
 	case i.MaxVacuousFrac < 0 || i.MaxVacuousFrac > 1:
 		return fmt.Errorf("implement.max_vacuous_frac: must be within 0..1, got %g", i.MaxVacuousFrac)
+	case i.MaxInfraTries < 1:
+		return fmt.Errorf("implement.max_infra_tries: must be at least 1, got %d", i.MaxInfraTries)
 	case i.MaxRunDuration < 0:
 		return fmt.Errorf("implement.max_run_duration: must not be negative, got %s", i.MaxRunDuration.Std())
 	case i.MaxTaskBytes < 0:
@@ -2590,7 +2607,7 @@ func (i Implement) validateReservedNames() error {
 func (c *Config) refusePartialImplement() error {
 	i := c.Implement
 	if i.MaxTasks != 0 || i.MaxFilesPerTask != 0 || i.MaxTaskAttempts != 0 ||
-		i.MaxVacuousFrac != 0 || i.MaxRunDuration != 0 || i.MaxTaskBytes != 0 ||
+		i.MaxVacuousFrac != 0 || i.MaxInfraTries != 0 || i.MaxRunDuration != 0 || i.MaxTaskBytes != 0 ||
 		i.MinFreeDisk != 0 || i.CleanCheck != "" || len(i.GitignoreSeed) > 0 ||
 		len(i.GateGenerated) > 0 {
 		return errors.New("implement.* is set but roles.planner is not; an implement run is defined by having a plan made")
@@ -2642,6 +2659,24 @@ type VerifyCommand struct {
 	// Optional records the result without ever failing the round. For a check
 	// that is informative but not a gate (a linter mid-cleanup, say).
 	Optional bool `yaml:"optional"`
+	// Infra marks a command whose failure is a fact about the ENVIRONMENT rather
+	// than about the code: it reaches a network, a registry, a proxy or a cache
+	// that the project does not control. `npm ci` is the shipped example.
+	//
+	// It exists because the infrastructure/result split covered the agent's
+	// provider and not the gate's dependencies (review run 20260813-222753). A
+	// provider refusal is "a fact about the morning" and costs no attempt; a
+	// five-minute registry 503 exiting non-zero from `npm ci` was a verdict on
+	// code nobody found fault with -- it burned both attempts, wrote a PERMANENT
+	// failed marker, skipped the task's whole dependent subtree, and (with
+	// -continue unbuilt) cost the rest of the run. Marking a command infra
+	// routes its failure exactly as a provider refusal: no attempt consumed, no
+	// marker written, backed off and fed to the circuit breaker.
+	//
+	// Only meaningful in an implement config, and deliberately opt-in: fixpoint
+	// cannot tell a network failure from a real one by reading an exit code, so
+	// the operator -- who knows what each command reaches -- declares it.
+	Infra bool `yaml:"infra"`
 }
 
 // Enabled reports whether verification will run. No commands means off, whatever

@@ -22,12 +22,26 @@ verify:
   policy: must_pass
   # Per command; see implement-go.yaml for why this number decides how many
   # tasks a run admits. Longer than go's because `npm ci` on a cold cache with
-  # a real dependency tree genuinely takes minutes, and it is the first of the
-  # three commands: a timeout there fails the task on the registry's behalf.
+  # a real dependency tree genuinely takes minutes.
   timeout: 8m
   commands:
+    # infra: this command reaches the registry, so its failure is a fact about
+    # the network and not about the code. Without the flag a five-minute 503
+    # burned both attempts, wrote a PERMANENT failed marker and skipped every
+    # dependent task -- the design's own infrastructure/result split applied to
+    # the agent's provider but not to the gate's (review run 20260813-222753).
+    #
+    # --ignore-scripts: the packages installed here are named by a model that
+    # read an untrusted design, and an install script runs as the operator, on
+    # the host, up to eighty times a run -- with nothing reviewing the code
+    # until review-code afterwards. One typosquatted name would otherwise be
+    # arbitrary execution, pinned into the delivered lockfile. The cost is real:
+    # a package needing a native build (node-gyp) will fail the gate here. That
+    # is the intended direction -- fail loudly rather than execute quietly --
+    # and an operator who needs those scripts drops the flag knowingly.
     - name: install
-      run: ["npm", "ci"]
+      infra: true
+      run: ["npm", "ci", "--ignore-scripts"]
     - name: build
       run: ["npm", "run", "build", "--if-present"]
     - name: test

@@ -1637,3 +1637,82 @@ func (w *watchWriter) Write(p []byte) (int, error) {
 	}
 	return w.w.Write(p)
 }
+
+// §7.3 rules that an implement run must not take its policy from the design's
+// own directory, and nothing enforced it: bundle discovery is cwd-anchored, so
+// running the config from inside the design's repository made that repository
+// the first bundle searched -- and -trusted-target, which §7.3 makes MANDATORY
+// for every implement run, cleared the general guard that would have caught it
+// (review run 20260813-222753). verify.commands is argv fixpoint executes
+// itself, so the design would have chosen how it was checked.
+func TestDesignSuppliedPolicyNeedsTheNarrowFlag(t *testing.T) {
+	design := t.TempDir()
+	inside := filepath.Join(design, "config", "implement.yaml")
+	outside := filepath.Join(t.TempDir(), "bundle", "implement.yaml")
+	// Both files must EXIST: withinTree deliberately fails closed when a path
+	// cannot be canonicalized, so a fixture of bare strings would report every
+	// bundle as design-resident and the "outside" case would pass for the wrong
+	// reason.
+	for _, f := range []string{inside, outside} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("description: t\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	loaded := func(configPath string, trustTarget, trustBundle bool) *config.Loaded {
+		return &config.Loaded{
+			Config: &config.Config{
+				Target: config.Target{Mode: config.ModeDirectory, Path: design, Document: "DESIGN.md"},
+				Roles: config.Roles{
+					Planner: config.RoleRef{Agent: "claude", Prompt: "implement-plan"},
+					Coder:   config.RoleRef{Agent: "claude-coder", Prompt: "implement-task"},
+				},
+				Loop: config.Loop{TrustedTarget: trustTarget, TrustedBundle: trustBundle},
+			},
+			Source:      config.Source{Config: configPath},
+			ProjectRoot: design,
+		}
+	}
+	discard := func(string, ...any) {}
+
+	cases := []struct {
+		name       string
+		configPath string
+		target     bool
+		bundle     bool
+		want       bool
+	}{
+		{"design-resident bundle refused with the mandatory flag alone", inside, true, false, false},
+		{"design-resident bundle allowed by the narrow flag", inside, true, true, true},
+		{"a bundle outside the design is never in scope", outside, true, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := allowDesignSuppliedPolicy(loaded(tc.configPath, tc.target, tc.bundle), discard); got != tc.want {
+				t.Fatalf("allowDesignSuppliedPolicy() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// The refusal has to say which file and which flag, or the operator cannot act.
+	var lines []string
+	allowDesignSuppliedPolicy(loaded(inside, true, false), func(f string, a ...any) {
+		lines = append(lines, fmt.Sprintf(f, a...))
+	})
+	msg := strings.Join(lines, "\n")
+	for _, want := range []string{inside, "-trusted-bundle", "verify.commands"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the refusal does not mention %q:\n%s", want, msg)
+		}
+	}
+
+	// A review run is untouched: this gate is the implement pipeline's alone.
+	l := loaded(inside, true, false)
+	l.Config.Roles.Planner = config.RoleRef{}
+	if !allowDesignSuppliedPolicy(l, discard) {
+		t.Error("a non-implement run was gated by the implement-only rule")
+	}
+}

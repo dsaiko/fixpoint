@@ -101,6 +101,15 @@ type Rules struct {
 	// executor applies the timeout per command and runs them sequentially.
 	GateWorst      time.Duration
 	MaxRunDuration time.Duration
+	// PlanOverhead is what the run spends BEFORE the first task: the preflight
+	// ping, the design snapshot and the planner session. Counted because the
+	// deadline clock starts when the run starts, not when BUILD does, so a
+	// budget that omitted this was measuring a shorter interval than the clock
+	// enforced -- and rule 7's own claim is that "the number the refusal quotes
+	// and the number the run can spend are the same number" (review run
+	// 20260813-222753). A slow planner could otherwise eat a task's worth of a
+	// deadline the plan was admitted against.
+	PlanOverhead time.Duration
 	// CleanCheck is implement.clean_check, because it BUYS GATE RUNS the
 	// arithmetic must count: "every" adds a full clone gate after each
 	// implemented task, "last" adds one after the loop. Left out of the formula
@@ -126,7 +135,7 @@ func (r Rules) PerTaskWorst() time.Duration {
 // RunWorst is what a plan of n tasks may cost end to end: every task's worst
 // case plus the clean-clone gate runs clean_check buys.
 func (r Rules) RunWorst(n int) time.Duration {
-	total := time.Duration(n) * r.PerTaskWorst()
+	total := r.PlanOverhead + time.Duration(n)*r.PerTaskWorst()
 	switch r.CleanCheck {
 	case "every":
 		total += time.Duration(n) * r.GateWorst
@@ -311,8 +320,8 @@ func validateFit(tasks int, r Rules) error {
 	}
 	need := r.RunWorst(tasks)
 	if need > r.MaxRunDuration {
-		return fmt.Errorf("plan: %d tasks need at least %s at %d attempt(s) per task, a %s worst-case gate and clean_check %q; implement.max_run_duration is %s -- raise it, cut the plan, lower max_task_attempts, or tighten verify.timeout",
-			tasks, need.Round(time.Minute), r.MaxTaskAttempts, r.GateWorst, r.CleanCheck, r.MaxRunDuration)
+		return fmt.Errorf("plan: %d tasks need at least %s at %d attempt(s) per task, a %s worst-case gate, clean_check %q and %s already spent on planning; implement.max_run_duration is %s -- raise it, cut the plan, lower max_task_attempts, or tighten verify.timeout",
+			tasks, need.Round(time.Minute), r.MaxTaskAttempts, r.GateWorst, r.CleanCheck, r.PlanOverhead.Round(time.Minute), r.MaxRunDuration)
 	}
 	return nil
 }

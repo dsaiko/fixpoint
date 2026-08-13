@@ -54,6 +54,20 @@ func (r Report) Passed() bool {
 	return true
 }
 
+// InfraFailures returns the non-optional commands declared environment-dependent
+// (verify.commands[].infra) that did not pass. Their failure says nothing about
+// the code, so an implement task treats it as infrastructure rather than as a
+// verdict (review run 20260813-222753).
+func (r Report) InfraFailures() []Result {
+	var out []Result
+	for _, res := range r.Results {
+		if !res.Optional && !res.Passed && res.Infra {
+			out = append(out, res)
+		}
+	}
+	return out
+}
+
 // Failures returns the non-optional commands that did not pass.
 func (r Report) Failures() []Result {
 	var out []Result
@@ -161,7 +175,7 @@ func Run(ctx context.Context, cfg config.Verify, dir string, env []string) Repor
 }
 
 func runOne(ctx context.Context, c config.VerifyCommand, timeout time.Duration, dir string, env []string) Result {
-	res := Result{Name: c.Name, Argv: c.Run, Optional: c.Optional}
+	res := Result{Name: c.Name, Argv: c.Run, Optional: c.Optional, Infra: c.Infra}
 
 	// Config validation rejects an empty run list, so reaching here means the
 	// command was built some other way. Record it as a command that could not run

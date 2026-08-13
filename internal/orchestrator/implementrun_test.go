@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -1013,5 +1014,126 @@ func TestRunImplementReportsEveryPlannedTask(t *testing.T) {
 		if task.Reason == "" {
 			t.Errorf("task %s is reported as %q with no reason", task.ID, task.Outcome)
 		}
+	}
+}
+
+// A gate command the operator declared environment-dependent is not a verdict
+// on the code. Before this, a registry 503 exiting non-zero from `npm ci`
+// burned both attempts, wrote a PERMANENT failed marker and skipped every
+// dependent task (review run 20260813-222753).
+func TestRunImplementTreatsInfraGateFailureAsInfrastructure(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'ok\\n' > src.txt\nsleep 1",
+			`{"status": "implemented", "notes": "done"}`),
+		config.Verify{
+			Policy:  config.VerifyMustPass,
+			Timeout: config.Duration(time.Minute),
+			Commands: []config.VerifyCommand{
+				{Name: "install", Run: []string{"false"}, Infra: true},
+			},
+		})
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	// No marker, and nothing judged: the history must stay re-enterable.
+	if n := strings.Count(gitOutAt(t, f.out, "log", "--format=%s"), "\n"); n != 1 {
+		t.Errorf("a registry outage reached the history (%d commits):\n%s", n, gitOutAt(t, f.out, "log", "--format=%s"))
+	}
+	for _, task := range sum.Tasks {
+		if task.Outcome == outcomeFailed {
+			t.Errorf("task %s was permanently failed by an environment-dependent check", task.ID)
+		}
+	}
+	if !strings.Contains(f.logs(), "environment-dependent check") {
+		t.Errorf("the run did not name the failure as environmental:\n%s", f.logs())
+	}
+}
+
+// The same command WITHOUT the flag stays a verdict: the classification is the
+// operator's declaration, not a guess from the exit code.
+func TestRunImplementStillFailsOnAnUndeclaredGateFailure(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'ok\\n' > src.txt\nsleep 1",
+			`{"status": "implemented", "notes": "done"}`),
+		config.Verify{
+			Policy:   config.VerifyMustPass,
+			Timeout:  config.Duration(time.Minute),
+			Commands: []config.VerifyCommand{{Name: "install", Run: []string{"false"}}},
+		})
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	var failed bool
+	for _, task := range sum.Tasks {
+		if task.Outcome == outcomeFailed {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Errorf("an ordinary gate failure stopped being a task failure: %+v", sum.Tasks)
+	}
+}
+
+// §4.3 names three homes for run state; all three were promises nothing kept.
+// status.json is the one that matters while a thirty-hour run is in flight.
+func TestRunImplementWritesTheRunStateArtifacts(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'work\\n' > \"src_$$_$(date +%s).txt\"\nsleep 1",
+			`{"status": "implemented", "notes": "done"}`),
+		config.Verify{Policy: config.VerifyOff})
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	// logs.dir is ".../logs/{timestamp}/round-{round}"; the run root is two up.
+	runDir := filepath.Dir(filepath.Dir(f.cfg.Logs.Dir))
+	entries, err := os.ReadDir(runDir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no run directory under %s: %v", runDir, err)
+	}
+	root := filepath.Join(runDir, entries[0].Name())
+
+	var status struct {
+		Planned   int    `json:"planned"`
+		Processed int    `json:"processed"`
+		Project   string `json:"project"`
+		Tasks     []struct {
+			ID      string `json:"id"`
+			Outcome string `json:"outcome"`
+		} `json:"tasks"`
+	}
+	b, err := os.ReadFile(filepath.Join(root, "status.json"))
+	if err != nil {
+		t.Fatalf("status.json: %v", err)
+	}
+	if err := json.Unmarshal(b, &status); err != nil {
+		t.Fatalf("status.json is not valid JSON: %v", err)
+	}
+	if status.Planned != 2 || len(status.Tasks) != len(sum.Tasks) {
+		t.Errorf("status.json planned=%d tasks=%d, want 2 and %d", status.Planned, len(status.Tasks), len(sum.Tasks))
+	}
+	if status.Project != "game" {
+		t.Errorf("status.json project = %q", status.Project)
+	}
+
+	// plan.json carries the provenance the step artifact cannot: it is logged
+	// before fixpoint injects it.
+	var plan struct {
+		Provenance *struct {
+			RunID        string `json:"run_id"`
+			DesignSHA256 string `json:"design_sha256"`
+		} `json:"provenance"`
+	}
+	b, err = os.ReadFile(filepath.Join(root, "plan.json"))
+	if err != nil {
+		t.Fatalf("plan.json: %v", err)
+	}
+	if err := json.Unmarshal(b, &plan); err != nil {
+		t.Fatalf("plan.json is not valid JSON: %v", err)
+	}
+	if plan.Provenance == nil || plan.Provenance.DesignSHA256 == "" {
+		t.Errorf("the canonical plan artifact carries no provenance: %s", b)
 	}
 }

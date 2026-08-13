@@ -463,9 +463,12 @@ type RunSources struct {
 // round record, and the logs -- and keeping it here also stops model from
 // depending on a package that runs subprocesses.
 type VerifyResult struct {
-	Name     string        `json:"name"`
-	Argv     []string      `json:"argv"`
-	Optional bool          `json:"optional,omitempty"`
+	Name     string   `json:"name"`
+	Argv     []string `json:"argv"`
+	Optional bool     `json:"optional,omitempty"`
+	// Infra marks the command as environment-dependent (config.VerifyCommand.Infra),
+	// so a caller can tell "the registry was down" from "the code is wrong".
+	Infra    bool          `json:"infra,omitempty"`
 	ExitCode int           `json:"exit_code"`
 	Passed   bool          `json:"passed"`
 	Output   string        `json:"output,omitempty"` // combined stdout+stderr, capped and redacted

@@ -621,9 +621,45 @@ func (l *Loaded) ProjectSuppliedPolicy() []string {
 	if l.ProjectRoot == "" {
 		return nil
 	}
+	return l.policyFrom(l.fromProject)
+}
+
+// TargetSuppliedPolicy is the narrower list: policy files that resolved from
+// inside target.path itself, ignoring the invoking project root.
+//
+// The two differ for exactly the case that matters to an implement run. §7.3
+// rules that "config discovery for this command must not load files from the
+// design's directory or from -out", because the gate is what §3 calls the only
+// signal in the tool no model authored -- and verify.commands is argv fixpoint
+// executes itself. Nothing implemented that rule (review run 20260813-222753):
+// bundle discovery is anchored on the cwd, so the natural invocation -- cd into
+// the repository holding the design, run the implement config -- makes the
+// design's own repository the first bundle searched, and the -trusted-target
+// that §7.3 makes MANDATORY for every implement run then cleared the guard that
+// would have caught it. One flag, asserting "this DESIGN.md is a design you
+// wrote or reviewed", was silently spending itself on a second claim about
+// arbitrary YAML beside it.
+//
+// So an implement run gates on this list separately, and only -trusted-bundle
+// -- the assertion that says exactly what this list is about -- clears it.
+// Fixpoint's own bundle, resolved from the operator's checkout, is not on it.
+func (l *Loaded) TargetSuppliedPolicy() []string {
+	root := l.Config.Target.Path
+	if root == "" {
+		return nil
+	}
+	return l.policyFrom(func(path string) bool {
+		return path != "" && withinTree(path, root)
+	})
+}
+
+// policyFrom lists every policy-bearing file the run was built from that
+// satisfies within. One walk for both callers, so a new kind of policy file
+// cannot be added to one list and forgotten in the other.
+func (l *Loaded) policyFrom(within func(string) bool) []string {
 	var out []string
 	add := func(kind, name, path string) {
-		if path == "" || !l.fromProject(path) {
+		if path == "" || !within(path) {
 			return
 		}
 		if name == "" {
