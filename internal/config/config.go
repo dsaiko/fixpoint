@@ -38,6 +38,9 @@ type Config struct {
 	Logs   Logs             `yaml:"logs"`
 	Verify Verify           `yaml:"verify"`
 	Create Create           `yaml:"create"`
+	// Implement configures the implement-design pipeline; inert (and refused)
+	// unless roles.planner is set. See docs/design/DESIGN.md.
+	Implement Implement `yaml:"implement"`
 
 	// PingAgents: before a run, invoke every agent used by the run with a
 	// trivial prompt (in parallel) and abort if any fails. Catches expired
@@ -121,6 +124,17 @@ type Roles struct {
 	// an untrusted assignment, and the decision-maker must not be the thing that
 	// can also act.
 	Editor RoleRef `yaml:"editor"`
+	// Planner is the decomposer of an IMPLEMENT run: the read-only agent that
+	// reads the design document once and returns the ordered task plan the coder
+	// then executes one session at a time. Setting it is what makes a config an
+	// implement config (IsImplement).
+	//
+	// Read-only for the same reason as the judge and the editor: the plan decides
+	// what forty coder sessions will build, it is derived entirely from an
+	// untrusted document, and the thing that decides must not be the thing that
+	// can act. The plan itself is data, never executed -- see
+	// docs/design/DESIGN.md §4.
+	Planner RoleRef `yaml:"planner"`
 	// Triage is the optional arbiter for the pull request's OPEN CONVERSATIONS: a
 	// read-only agent that reads every unresolved comment and decides, one by one,
 	// whether it names real work.
@@ -144,6 +158,14 @@ type Roles struct {
 // than a review/fix loop. The discriminator is create.propose: a create run is
 // defined by having proposals to make.
 func (c *Config) IsCreate() bool { return c.Create.Propose != "" }
+
+// IsImplement reports whether this config runs the implement-design pipeline: a
+// planner decomposes a design document into tasks and a coder builds them, one
+// session and one commit per task. The discriminator is roles.planner -- an
+// implement run is defined by having a plan made.
+func (c *Config) IsImplement() bool {
+	return c.Roles.Planner.Agent != "" || c.Roles.Planner.Prompt != ""
+}
 
 // Create configures the create-design pipeline: a panel drafts independent
 // proposals, critiques each other's anonymously, and the editor synthesizes the
@@ -170,6 +192,89 @@ type Create struct {
 	// shipped config sets 1, and more than 1 is refused -- an objection loop
 	// does not converge, the same measurement behind max_final_passes.
 	Objections int `yaml:"objections"`
+}
+
+// Implement configures the implement-design pipeline: a planner decomposes a
+// reviewed design document into ordered tasks, and the coder builds them into a
+// fresh repository, one session and one gated commit per task. Setting
+// roles.planner is what makes a config an IMPLEMENT config; the full pipeline
+// shape is docs/design/DESIGN.md. Every number here is a guess recorded as a
+// config key on purpose (§12.2 there): a wrong one surfaces as a refusal at
+// startup, never as a truncated run.
+type Implement struct {
+	// MaxTasks caps the plan; over it is a refusal ("split the design"), not a
+	// truncation. The deadline usually binds first (§4.2 rule 7).
+	MaxTasks int `yaml:"max_tasks"`
+	// MaxFilesPerTask bounds one task's advisory file list.
+	MaxFilesPerTask int `yaml:"max_files_per_task"`
+	// MaxTaskAttempts is how many fresh sessions a task gets before it is
+	// failed. An attempt is one session and one gate run; infrastructure
+	// failures do not consume attempts (§5.4).
+	MaxTaskAttempts int `yaml:"max_task_attempts"`
+	// MaxVacuousFrac ends the run incomplete when more than this fraction of
+	// tasks report already_satisfied -- a badly decomposed plan, not progress.
+	MaxVacuousFrac float64 `yaml:"max_vacuous_frac"`
+	// MaxRunDuration is the whole run's deadline, checked between tasks and
+	// enforced against the plan's WORST case at plan time (§4.2 rule 7).
+	MaxRunDuration Duration `yaml:"max_run_duration"`
+	// MaxTaskBytes bounds one attempt's un-ignored changes, checked during the
+	// census walk before anything is hashed or gated.
+	MaxTaskBytes ByteSize `yaml:"max_task_bytes"`
+	// MinFreeDisk refuses at preflight and stops incomplete between tasks when
+	// the write-target's filesystem drops under it.
+	MinFreeDisk ByteSize `yaml:"min_free_disk"`
+	// CleanCheck is when fixpoint clones HEAD and runs the gate in the clone,
+	// proving the committed bytes alone satisfy it: "last" (default; once, at
+	// the end of the run), "every" (after every task commit, for attribution),
+	// or "off". Forced off on an ungated run.
+	CleanCheck string `yaml:"clean_check"`
+	// GitignoreSeed is the stack's ignore entries, written by fixpoint into the
+	// bootstrap commit's .gitignore -- a control artifact no session may edit.
+	GitignoreSeed []string `yaml:"gitignore_seed"`
+	// GateGenerated names committed files the GATE maintains (go.sum,
+	// package-lock.json): staged into the task commit with gate attribution,
+	// neither a mutation failure nor removable output (§5.2 step 7).
+	GateGenerated []string `yaml:"gate_generated"`
+}
+
+// CleanCheck cadences.
+const (
+	CleanCheckLast  = "last"
+	CleanCheckEvery = "every"
+	CleanCheckOff   = "off"
+)
+
+// applyDefaults fills the implement numbers in code -- a stack config carries
+// only what an operator would edit (DESIGN.md §7.1), because the loader's
+// one-level extends is deliberate and a shared implement-design.yaml base would
+// need a second. Each is a guess (§12.2 there): a key, so a wrong one is the
+// operator's to correct, and zero-only defaulting so Validate still rejects
+// negatives.
+func (i *Implement) applyDefaults() {
+	if i.MaxTasks == 0 {
+		i.MaxTasks = 40
+	}
+	if i.MaxFilesPerTask == 0 {
+		i.MaxFilesPerTask = 12
+	}
+	if i.MaxTaskAttempts == 0 {
+		i.MaxTaskAttempts = 2
+	}
+	if i.MaxVacuousFrac == 0 {
+		i.MaxVacuousFrac = 0.34
+	}
+	if i.MaxRunDuration == 0 {
+		i.MaxRunDuration = Duration(32 * time.Hour)
+	}
+	if i.MaxTaskBytes == 0 {
+		i.MaxTaskBytes = 64 << 20
+	}
+	if i.MinFreeDisk == 0 {
+		i.MinFreeDisk = 2 << 30
+	}
+	if i.CleanCheck == "" {
+		i.CleanCheck = CleanCheckLast
+	}
 }
 
 // RoleRef points one role at an agent and a prompt, both by BARE NAME:
@@ -1326,6 +1431,54 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 // Std converts to the standard library's time.Duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
+// ByteSize wraps a byte count for YAML ("64MB", "2GB", "512KB", or a bare
+// integer of bytes). Suffixes are 1024-based -- the numbers gate file sizes and
+// disk headroom, where the powers-of-two convention is what an operator's `df`
+// and `du` already speak.
+type ByteSize int64
+
+// UnmarshalYAML parses "<number><KB|MB|GB>" (case-insensitive) or bare bytes.
+func (b *ByteSize) UnmarshalYAML(node *yaml.Node) error {
+	var s string
+	if err := node.Decode(&s); err != nil {
+		return err
+	}
+	t := strings.TrimSpace(strings.ToUpper(s))
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(t, "GB"):
+		mult, t = 1<<30, strings.TrimSuffix(t, "GB")
+	case strings.HasSuffix(t, "MB"):
+		mult, t = 1<<20, strings.TrimSuffix(t, "MB")
+	case strings.HasSuffix(t, "KB"):
+		mult, t = 1<<10, strings.TrimSuffix(t, "KB")
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid byte size %q (want e.g. 64MB, 2GB, or bytes): %w", s, err)
+	}
+	*b = ByteSize(n * mult)
+	return nil
+}
+
+// Int64 is the plain byte count.
+func (b ByteSize) Int64() int64 { return int64(b) }
+
+// String renders the size the way an operator wrote it: the largest suffix
+// that divides it evenly, so refusal messages quote "64MB", not 67108864.
+func (b ByteSize) String() string {
+	n := int64(b)
+	switch {
+	case n >= 1<<30 && n%(1<<30) == 0:
+		return fmt.Sprintf("%dGB", n/(1<<30))
+	case n >= 1<<20 && n%(1<<20) == 0:
+		return fmt.Sprintf("%dMB", n/(1<<20))
+	case n >= 1<<10 && n%(1<<10) == 0:
+		return fmt.Sprintf("%dKB", n/(1<<10))
+	}
+	return strconv.FormatInt(n, 10)
+}
+
 // Load reads, defaults, and validates a single configuration file, with no bundle
 // resolution and no `extends`. A run uses LoadBundle instead; this is for the
 // narrow case of checking one file on its own.
@@ -1357,6 +1510,9 @@ func (c *Config) applyDefaults() {
 	// value that means what a create run does.
 	if c.IsCreate() && c.Roles.Review.Strategy == "" {
 		c.Roles.Review.Strategy = StrategyAll
+	}
+	if c.IsImplement() {
+		c.Implement.applyDefaults()
 	}
 	// Default only the absent (zero) case; a negative value is invalid operator
 	// input, not "unset", and Validate rejects it rather than silently masking it
@@ -1464,7 +1620,16 @@ func (c *Config) Validate() error {
 			return errors.New("roles.editor: both agent and prompt are required when either is set")
 		}
 	}
+	// The pipeline discriminators are mutually exclusive, and the refusal must
+	// fire before either pipeline's own shape rules get a chance to complain
+	// about the other's missing parts.
+	if c.IsCreate() && c.IsImplement() {
+		return errors.New("create.propose and roles.planner are both set; a config is one pipeline -- create drafts a design, implement builds one")
+	}
 	if err := c.validateCreate(); err != nil {
+		return err
+	}
+	if err := c.validateImplement(); err != nil {
 		return err
 	}
 	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
@@ -1492,39 +1657,18 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if len(c.Roles.Review.Prompts) == 0 && !c.IsCreate() {
+	if len(c.Roles.Review.Prompts) == 0 && !c.IsCreate() && !c.IsImplement() {
 		return errors.New("roles.review.prompts: at least one review lens is required. A config with no lenses is a base meant to be inherited with `extends`, not run directly -- `fixpoint --list` marks which configs are runnable")
 	}
-	switch c.Roles.Review.Strategy {
-	case StrategyFixed:
-		for _, l := range c.Roles.Review.Prompts {
-			if l.Agent == "" {
-				return fmt.Errorf("roles.review: strategy fixed requires every lens to pin an agent (%s does not)", l.Prompt)
-			}
+	// An implement config with the strategy unset skips the check: it has no
+	// panel -- no lenses (refused above), and the inherited pool is inert by
+	// design (§7.3) -- so a strategy over nothing is nothing to validate, and
+	// forcing a value would imply a schedule that never runs. A set strategy is
+	// still validated, wherever it appears.
+	if !c.IsImplement() || c.Roles.Review.Strategy != "" {
+		if err := c.validateReviewStrategy(); err != nil {
+			return err
 		}
-	case StrategyRotate, StrategyAll:
-		if len(c.Roles.Review.Agents) == 0 {
-			return fmt.Errorf("roles.review.agents: strategy %s requires a non-empty agent pool", c.Roles.Review.Strategy)
-		}
-		// Reject blank pool entries directly: ActiveAgents (which drives the
-		// binary/prompt_via checks below and the preflight ping) silently drops
-		// empty names, so a pool like [""] would otherwise pass validation, yet
-		// assignments still selects it and agent.Run would index an empty argv.
-		seenAgent := map[string]int{}
-		for i, a := range c.Roles.Review.Agents {
-			if strings.TrimSpace(a) == "" {
-				return fmt.Errorf("roles.review.agents: entry %d is empty; every agent pool entry must name a defined agent", i)
-			}
-			// A duplicate pool entry produces duplicate assignments: under strategy
-			// all the same agent is invoked twice per lens, recording the same review
-			// twice (with distinct IDs) so the coder receives and counts it twice.
-			if j, dup := seenAgent[a]; dup {
-				return fmt.Errorf("roles.review.agents: entries %d and %d both name %q; pool entries must be distinct so a reviewer is not assigned (and its findings counted) twice", j, i, a)
-			}
-			seenAgent[a] = i
-		}
-	default:
-		return fmt.Errorf("roles.review.strategy: unknown strategy %q (want fixed | rotate | all)", c.Roles.Review.Strategy)
 	}
 
 	// once and final are contradictory schedules: one pins the lens to the first
@@ -1540,9 +1684,9 @@ func (c *Config) Validate() error {
 	// once (round 1 only) nor final (after the loop). If EVERY lens is one of those,
 	// the rounds in between have no reviewers, the fix is "verified" by an empty
 	// review, and the run converges without any finding ever being re-checked.
-	// review-only runs are a single round, so this does not apply -- and a create
-	// run has no lenses at all.
-	if !c.Loop.ReviewOnly && !c.IsCreate() {
+	// review-only runs are a single round, so this does not apply -- and create
+	// and implement runs have no lenses at all.
+	if !c.Loop.ReviewOnly && !c.IsCreate() && !c.IsImplement() {
 		recurring := false
 		for _, l := range c.Roles.Review.Prompts {
 			if !l.Once && !l.Final {
@@ -1754,6 +1898,17 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("roles.editor.agent: %q declares can_edit; the editor writes the deliverable through fixpoint, never files -- it must be read-only", e.Agent)
 		}
 	}
+	if p := c.Roles.Planner; p.Agent != "" {
+		if err := check("roles.planner", p.Agent); err != nil {
+			return err
+		}
+		// The planner decides what forty coder sessions will build, from an
+		// untrusted document. Same rule, same reason as the judge and the editor:
+		// the thing that decides must not be the thing that can act.
+		if c.Agents[p.Agent].CanEdit {
+			return fmt.Errorf("roles.planner.agent: %q declares can_edit; the planner only decomposes -- it must be read-only", p.Agent)
+		}
+	}
 	if j := c.Roles.Judge; j.Agent != "" {
 		if err := check("roles.judge", j.Agent); err != nil {
 			return err
@@ -1805,6 +1960,9 @@ func (c *Config) Validate() error {
 	}
 	if j := c.Roles.Judge; j.Prompt != "" {
 		refs = append(refs, promptRef{j.Prompt, j.PromptFile()})
+	}
+	if p := c.Roles.Planner; p.Prompt != "" {
+		refs = append(refs, promptRef{p.Prompt, p.PromptFile()})
 	}
 	for _, l := range c.Roles.Review.Prompts {
 		refs = append(refs, promptRef{l.Prompt, l.PromptFile()})
@@ -2262,6 +2420,121 @@ func (c *Config) validateCreate() error {
 	}
 	if len(c.Roles.Review.Agents) == 0 {
 		return errors.New("roles.review.agents: a create config needs the pool -- it is who proposes and critiques")
+	}
+	return nil
+}
+
+// validateReviewStrategy checks the lens/pool schedule; split out of Validate
+// so the one shape with no panel at all (implement) can skip it whole.
+func (c *Config) validateReviewStrategy() error {
+	switch c.Roles.Review.Strategy {
+	case StrategyFixed:
+		for _, l := range c.Roles.Review.Prompts {
+			if l.Agent == "" {
+				return fmt.Errorf("roles.review: strategy fixed requires every lens to pin an agent (%s does not)", l.Prompt)
+			}
+		}
+	case StrategyRotate, StrategyAll:
+		if len(c.Roles.Review.Agents) == 0 {
+			return fmt.Errorf("roles.review.agents: strategy %s requires a non-empty agent pool", c.Roles.Review.Strategy)
+		}
+		// Reject blank pool entries directly: ActiveAgents (which drives the
+		// binary/prompt_via checks below and the preflight ping) silently drops
+		// empty names, so a pool like [""] would otherwise pass validation, yet
+		// assignments still selects it and agent.Run would index an empty argv.
+		seenAgent := map[string]int{}
+		for i, a := range c.Roles.Review.Agents {
+			if strings.TrimSpace(a) == "" {
+				return fmt.Errorf("roles.review.agents: entry %d is empty; every agent pool entry must name a defined agent", i)
+			}
+			// A duplicate pool entry produces duplicate assignments: under strategy
+			// all the same agent is invoked twice per lens, recording the same review
+			// twice (with distinct IDs) so the coder receives and counts it twice.
+			if j, dup := seenAgent[a]; dup {
+				return fmt.Errorf("roles.review.agents: entries %d and %d both name %q; pool entries must be distinct so a reviewer is not assigned (and its findings counted) twice", j, i, a)
+			}
+			seenAgent[a] = i
+		}
+	default:
+		return fmt.Errorf("roles.review.strategy: unknown strategy %q (want fixed | rotate | all)", c.Roles.Review.Strategy)
+	}
+	return nil
+}
+
+// validateImplement is every rule about the implement-design pipeline's shape.
+// The inert-key refusals are the house rule: an implement run plans and builds
+// -- no panel reviews, no judge filters, no editor writes -- so those keys in
+// the config would describe a run that does not happen.
+func (c *Config) validateImplement() error {
+	if !c.IsImplement() {
+		return c.refusePartialImplement()
+	}
+	if c.Roles.Planner.Agent == "" || c.Roles.Planner.Prompt == "" {
+		return errors.New("roles.planner: both agent and prompt are required in an implement config -- the planner is what turns a design into tasks")
+	}
+	if c.Roles.Coder.Agent == "" || c.Roles.Coder.Prompt == "" {
+		return errors.New("roles.coder: required in an implement config -- the coder is the only role that builds")
+	}
+	if len(c.Roles.Review.Prompts) > 0 {
+		return errors.New("roles.review.prompts is set in an implement config; nothing reviews during implementation -- the lenses belong to the review-code run that follows")
+	}
+	if c.Roles.Judge.Agent != "" || c.Roles.Judge.Prompt != "" {
+		return errors.New("roles.judge is set in an implement config; there are no findings to filter here")
+	}
+	if c.Roles.Editor.Agent != "" || c.Roles.Editor.Prompt != "" {
+		return errors.New("roles.editor is set in an implement config; the deliverable is a repository, not a document")
+	}
+	if c.Review.Refute != "" {
+		return errors.New("review.refute is set in an implement config; refutation runs over findings, which an implement run does not produce")
+	}
+	if c.Loop.CommitPolicy != CommitPerFix {
+		return fmt.Errorf("loop.commit_policy: an implement run is %q only -- squashing collapses one-task-one-revert, the property the pipeline exists to provide (got %q)", CommitPerFix, c.Loop.CommitPolicy)
+	}
+	if c.Loop.ReviewOnly {
+		return errors.New("loop.review_only is set in an implement config; an implement run builds -- for a run that only plans, pass -plan-only")
+	}
+	return c.Implement.validate()
+}
+
+// validate checks the implement section's own numbers; the pipeline-shape rules
+// stay in validateImplement, split only for the complexity limit.
+func (i Implement) validate() error {
+	switch {
+	case i.MaxTasks < 1:
+		return fmt.Errorf("implement.max_tasks: must be at least 1, got %d", i.MaxTasks)
+	case i.MaxFilesPerTask < 1:
+		return fmt.Errorf("implement.max_files_per_task: must be at least 1, got %d", i.MaxFilesPerTask)
+	case i.MaxTaskAttempts < 1:
+		return fmt.Errorf("implement.max_task_attempts: must be at least 1, got %d", i.MaxTaskAttempts)
+	case i.MaxVacuousFrac < 0 || i.MaxVacuousFrac > 1:
+		return fmt.Errorf("implement.max_vacuous_frac: must be within 0..1, got %g", i.MaxVacuousFrac)
+	case i.MaxRunDuration < 0:
+		return fmt.Errorf("implement.max_run_duration: must not be negative, got %s", i.MaxRunDuration.Std())
+	case i.MaxTaskBytes < 0:
+		return fmt.Errorf("implement.max_task_bytes: must not be negative, got %s", i.MaxTaskBytes)
+	case i.MinFreeDisk < 0:
+		return fmt.Errorf("implement.min_free_disk: must not be negative, got %s", i.MinFreeDisk)
+	}
+	if cc := i.CleanCheck; cc != CleanCheckLast && cc != CleanCheckEvery && cc != CleanCheckOff {
+		return fmt.Errorf("implement.clean_check: want %s | %s | %s, got %q", CleanCheckLast, CleanCheckEvery, CleanCheckOff, cc)
+	}
+	for n, g := range i.GateGenerated {
+		if g == "" || strings.HasPrefix(g, "/") || strings.Contains(g, "..") {
+			return fmt.Errorf("implement.gate_generated[%d]: %q must be a relative path inside the project", n, g)
+		}
+	}
+	return nil
+}
+
+// refusePartialImplement rejects implement.* keys in a config that is not an
+// implement config -- the same inert-key refusal as refusePartialCreate.
+func (c *Config) refusePartialImplement() error {
+	i := c.Implement
+	if i.MaxTasks != 0 || i.MaxFilesPerTask != 0 || i.MaxTaskAttempts != 0 ||
+		i.MaxVacuousFrac != 0 || i.MaxRunDuration != 0 || i.MaxTaskBytes != 0 ||
+		i.MinFreeDisk != 0 || i.CleanCheck != "" || len(i.GitignoreSeed) > 0 ||
+		len(i.GateGenerated) > 0 {
+		return errors.New("implement.* is set but roles.planner is not; an implement run is defined by having a plan made")
 	}
 	return nil
 }

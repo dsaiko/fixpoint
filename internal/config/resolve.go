@@ -529,6 +529,10 @@ func probe(path string) (runnable bool, description, extends string) {
 			Review struct {
 				Prompts []yaml.Node `yaml:"prompts"`
 			} `yaml:"review"`
+			Planner struct {
+				Agent  string `yaml:"agent"`
+				Prompt string `yaml:"prompt"`
+			} `yaml:"planner"`
 		} `yaml:"roles"`
 		Create struct {
 			Propose string `yaml:"propose"`
@@ -537,10 +541,11 @@ func probe(path string) (runnable bool, description, extends string) {
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return true, "", ""
 	}
-	// Runnable means "defines work of its own": review lenses, or a create
-	// pipeline -- a create config has no lenses by design and must not be listed
-	// as a base for others to inherit.
-	runnable = len(p.Roles.Review.Prompts) > 0 || strings.TrimSpace(p.Create.Propose) != ""
+	// Runnable means "defines work of its own": review lenses, a create
+	// pipeline, or an implement pipeline -- neither of the latter two has lenses
+	// by design and must not be listed as a base for others to inherit.
+	runnable = len(p.Roles.Review.Prompts) > 0 || strings.TrimSpace(p.Create.Propose) != "" ||
+		strings.TrimSpace(p.Roles.Planner.Agent) != "" || strings.TrimSpace(p.Roles.Planner.Prompt) != ""
 	return runnable, strings.TrimSpace(p.Description), strings.TrimSpace(p.Extends)
 }
 
