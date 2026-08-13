@@ -92,10 +92,19 @@ def main():
     tok_cache = sum(s.get("usage", {}).get("cache_read_tokens", 0) for s in steps)
     duration_s = sum(s.get("duration_ms", 0) for s in steps) / 1000
     sessions = len(steps)
-    # A session that produced no finding AND no parseable output is an error;
-    # fixpoint's summary carries errors per reviewer only in the table, so the
-    # observable here is: sessions whose output_bytes are 0.
-    errors = sum(1 for s in steps if s.get("output_bytes", 0) == 0)
+    # Contract compliance is the benchmark's disqualifier, so it reads the
+    # field fixpoint already sets: StepStat.failed, true whenever a session
+    # errored, timed out, or broke the output contract. Counting only
+    # zero-byte output (the first version of this scorer) recorded a malformed
+    # NON-EMPTY reply as a success and could promote an unreliable reviewer --
+    # exactly what the disqualifier exists to prevent (review run
+    # 20260813-124710).
+    errors = sum(1 for s in steps if s.get("failed") or s.get("output_bytes", 0) == 0)
+    # A run that never reached its panel (a preflight refusal, a dead agent at
+    # startup) has no steps at all. That is a contract failure too -- the
+    # loudest kind -- and must not read as a clean zero.
+    if not steps:
+        errors = 1
     mtok = (tok_in + tok_out) / 1e6
     eff = round(found / mtok, 2) if mtok else 0.0
 

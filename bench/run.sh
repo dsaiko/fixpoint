@@ -81,6 +81,13 @@ run_task() {
     design) cfg=bench-design target=bench/testdata/target-design manifest=bench/manifest-design.yaml ;;
     esac
     echo "bench: $MODEL / $task / repeat $rep"
+    # Remember what existed BEFORE this invocation: the summary to score is the
+    # one this run created, never merely the newest on disk. Scoring the newest
+    # (the first version of this script) silently attributed a previous run's
+    # results to the current model whenever startup failed before a summary was
+    # written -- fabricated numbers, in the file that decides panel seats
+    # (review run 20260813-124710).
+    marker=$(mktemp)
     ./fixpoint "$cfg" -target "$target" --trusted-target --trusted-bundle || {
         # exit 4 is review-only's normal termination; anything else is the
         # candidate failing, which the bench records rather than hides.
@@ -89,9 +96,17 @@ run_task() {
             echo "bench: run exited $code (recorded; a model that cannot finish a run cannot hold a seat)" >&2
         fi
     }
-    summary=$(ls -t .fixpoint/*/summary-*.json 2>/dev/null | head -1)
+    rundir=$(ls -dt .fixpoint/*/ 2>/dev/null | while read -r d; do
+        [ "$d" -nt "$marker" ] && echo "$d"
+    done | head -1)
+    rm -f "$marker"
+    if [ -z "$rundir" ]; then
+        echo "bench: this invocation created no run directory; nothing to score" >&2
+        return 1
+    fi
+    summary=$(ls -t "$rundir"summary-*.json 2>/dev/null | head -1)
     if [ -z "$summary" ]; then
-        echo "bench: no summary produced; nothing to score" >&2
+        echo "bench: $rundir has no summary (the run died before writing one); nothing to score" >&2
         return 1
     fi
     python3 bench/score.py "$manifest" "$summary" "$MODEL" "$rep"
