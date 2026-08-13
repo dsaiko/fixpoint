@@ -150,7 +150,13 @@ func (o *Orchestrator) prepareImplement(ctx context.Context) (*implementPrep, er
 	if err != nil {
 		return nil, err
 	}
-	snap, err := create.Snapshot(p.designPath, scratch, nil, 0)
+	// The snapshot budget is the planner's prompt budget: a design that cannot
+	// fit the planner's prompt fails HERE, before any session is paid for.
+	budget := int64(o.cfg.Agents[o.cfg.Roles.Planner.Agent].PromptBudget)
+	if budget <= 0 {
+		budget = 1 << 40 // no declared limit: bounded only against a runaway file
+	}
+	snap, err := create.Snapshot(p.designPath, scratch, nil, budget)
 	if err != nil {
 		return nil, err
 	}

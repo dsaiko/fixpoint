@@ -11,7 +11,7 @@ GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v
 STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench \
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench implement-go implement-node implement-web \
         fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help
 
 all: build
@@ -133,6 +133,13 @@ review-design: build
 create-design: build
 	@test -n "$(TARGET)" || { echo "usage: make create-design TARGET=<file-or-dir> [OUT=<file>]"; exit 2; }
 	./$(BINARY) create-design -target "$(TARGET)" $(if $(OUT),-out "$(OUT)") --trusted-bundle
+
+## implement-go / implement-node / implement-web: build a reviewed design
+## into a new project, one task per commit
+##   make implement-go TARGET=docs/DESIGN.md OUT=~/src/newproject
+implement-go implement-node implement-web: build
+	@test -n "$(TARGET)" -a -n "$(OUT)" || { echo "usage: make $@ TARGET=<design.md> OUT=<fresh-dir>"; exit 2; }
+	./$(BINARY) $@ -target "$(TARGET)" -out "$(OUT)" --trusted-target --trusted-bundle
 
 ## bench: measure one model as a reviewer against the seeded targets;
 ## methodology and decision rule in bench/README.md

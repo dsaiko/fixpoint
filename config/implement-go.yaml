@@ -1,0 +1,38 @@
+# Implement a reviewed design as a new Go project, one task per commit.
+#
+#   fixpoint implement-go -target DESIGN.md -out ~/src/newproject -trusted-target
+#
+# The planner decomposes the design into ordered tasks; the coder builds them
+# one session and one gated commit at a time; the gate below runs after every
+# task. Quality comes AFTERWARDS, from review-code/fix-code over the produced
+# project -- this run only makes it exist. Pipeline: docs/design/DESIGN.md.
+#
+# Self-contained on purpose: the loader's `extends` is one level deep, so
+# there is no shared implement-design.yaml base -- the shared shape numbers
+# (max_tasks 40, attempts 2, 32h deadline, 64MB per attempt, clean_check
+# last, ...) live in code and `fixpoint implement-go --check` prints them.
+description: Implement a reviewed design as a new Go project, one task per commit. Needs -trusted-target and -out.
+
+extends: defaults
+
+roles:
+  planner: { agent: claude, prompt: implement-plan } # read-only: the thing that decides must not act
+  coder: { agent: claude-coder, prompt: implement-task }
+
+implement:
+  # go builds no in-tree artifacts worth seeding; the gate's cache lives
+  # outside the project.
+  gitignore_seed: []
+  # Files the GATE maintains and the commit must keep: staged with gate
+  # attribution, neither a mutation failure nor removable output.
+  gate_generated: ["go.sum"]
+
+verify:
+  policy: must_pass # no baseline: the pristine tree is empty (see DESIGN.md §7.2)
+  commands:
+    - name: build
+      run: ["go", "build", "./..."]
+    - name: vet
+      run: ["go", "vet", "./..."]
+    - name: test
+      run: ["go", "test", "./..."]

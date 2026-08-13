@@ -32,10 +32,10 @@ func RenderRunTable(sum *model.RunSummary) string {
 	// The bundle name comes from a filename that may live inside the target, so it
 	// is escaped here as it is in the row below and in `--list`.
 	title := fmt.Sprintf("fixpoint · %s · %s", agent.EscapeTerminal(configName(sum)), sum.Termination)
-	// A create run has one pipeline, not rounds -- its single RoundRecord exists to
-	// bill the steps, and "created after 1 round(s)" would dress that bookkeeping
-	// up as loop vocabulary.
-	if n := len(sum.Rounds) - st.finalRounds; n > 0 && !sum.Create {
+	// Create and implement runs have one pipeline, not rounds -- their single
+	// RoundRecord exists to bill the steps, and "created after 1 round(s)"
+	// would dress that bookkeeping up as loop vocabulary.
+	if n := len(sum.Rounds) - st.finalRounds; n > 0 && !sum.Create && !sum.Implement {
 		title += fmt.Sprintf(" after %d round(s)", n)
 	}
 	// The closing round is named separately: it runs after the outcome is decided,
@@ -525,6 +525,8 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 	switch {
 	case sum.Create:
 		mode = "create (a design is drafted; nothing is edited)"
+	case sum.Implement:
+		mode = "implement (a project is built, one task per commit)"
 	case sum.ReviewOnly:
 		mode = "review only (the coder never runs)"
 	}
@@ -534,15 +536,15 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 	// leaving its absence to be inferred from a missing field.
 	if sum.MaxFindingsPerRound > 0 {
 		strategy += fmt.Sprintf(" · cap %d issue(s)/round", sum.MaxFindingsPerRound)
-	} else if !sum.ReviewOnly && !sum.Create {
+	} else if !sum.ReviewOnly && !sum.Create && !sum.Implement {
 		strategy += " · no per-round cap"
 	}
 	// A review-only run has exactly one round by design, so "max 5 round(s)" would
 	// describe a cap that can never bind -- same correction as the round banner.
 	switch {
-	case sum.Create:
-		// One pipeline, not rounds: propose -> critique -> synthesize -> object ->
-		// revise. Loop numbers would describe machinery a create run does not have.
+	case sum.Create, sum.Implement:
+		// One pipeline, not rounds: loop numbers would describe machinery
+		// neither a create nor an implement run has.
 	case sum.ReviewOnly:
 		strategy += " · 1 round"
 	case sum.MaxIterations > 0:
@@ -570,6 +572,38 @@ func runFacts(sum *model.RunSummary, st *runStats) [][2]string {
 	return out
 }
 
+// implementOutcome is the implement run's closing block: the project's path
+// and the outcome vector (§5.4 vocabulary, straight from the markers).
+func implementOutcome(sum *model.RunSummary) [][2]string {
+	var out [][2]string
+	if sum.Deliverable != "" {
+		out = append(out, [2]string{"project", agent.EscapeTerminal(sum.Deliverable)})
+	}
+	if line := taskOutcomeLine(sum.Tasks); line != "" {
+		out = append(out, [2]string{"tasks", line})
+	}
+	return out
+}
+
+// taskOutcomeLine renders the implement run's outcome vector, in §5.4's
+// vocabulary and its order.
+func taskOutcomeLine(tasks []model.TaskOutcome) string {
+	if len(tasks) == 0 {
+		return ""
+	}
+	counts := map[string]int{}
+	for _, t := range tasks {
+		counts[t.Outcome]++
+	}
+	line := fmt.Sprintf("%d task(s)", len(tasks))
+	for _, k := range []string{"implemented", "already_satisfied", "blocked", "failed", "skipped", "carried"} {
+		if counts[k] > 0 {
+			line += fmt.Sprintf(" · %d %s", counts[k], k)
+		}
+	}
+	return line
+}
+
 // runOutcome is the "what happened" block that closes the table.
 func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 	out := [][2]string{}
@@ -587,6 +621,8 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 		if sum.Deliverable != "" {
 			out = append(out, [2]string{"deliverable", agent.EscapeTerminal(sum.Deliverable)})
 		}
+	case sum.Implement:
+		out = append(out, implementOutcome(sum)...)
 	case sum.ReviewOnly:
 		out = append(out, [2]string{"coder", "not invoked (review-only run)"})
 	default:

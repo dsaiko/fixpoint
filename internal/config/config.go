@@ -2493,6 +2493,18 @@ func (c *Config) validateImplement() error {
 	if c.Loop.ReviewOnly {
 		return errors.New("loop.review_only is set in an implement config; an implement run builds -- for a run that only plans, pass -plan-only")
 	}
+	// Gate policy (DESIGN.md §7.2): a no-regressions baseline is captured on
+	// the pristine tree, which is EMPTY here, so every check would be exempted
+	// for the whole run -- a gate that can never block, worse than none. And an
+	// empty command list must be an assertion, not an accident: on an existing
+	// repository silence is tolerable, on a project that does not exist yet it
+	// is far more likely a half-finished config.
+	if c.Verify.Policy == VerifyNoRegressions {
+		return errors.New("verify.policy: no_regressions is refused in an implement config -- the baseline tree is empty, so the gate could never block; use must_pass (defaults.yaml's policy does not carry over usefully here)")
+	}
+	if len(c.Verify.Commands) == 0 && c.Verify.Policy != VerifyOff {
+		return errors.New("verify.commands is empty; an implement config must either configure the gate or assert `verify.policy: off` -- an ungated new project has to be a statement, not a half-finished config")
+	}
 	return c.Implement.validate()
 }
 

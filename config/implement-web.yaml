@@ -1,0 +1,24 @@
+# Implement a reviewed design as a plain web project (html + js, no build),
+# one task per commit.
+#
+#   fixpoint implement-web -target DESIGN.md -out ~/src/game -trusted-target
+#
+# UNGATED, as an assertion rather than an accident: verify.policy: off is the
+# one-line statement that this stack has nothing to run (DESIGN.md §7.2).
+# Commits land ungated, exactly as the fix loop does on such projects, and
+# every trailer says `Verification: skipped` -- never "passed". The clean-clone
+# check is forced off with it: there is nothing to run in the clone.
+description: Implement a reviewed design as a plain web project (no build gate), one task per commit. Needs -trusted-target and -out.
+
+extends: defaults
+
+roles:
+  planner: { agent: claude, prompt: implement-plan }
+  coder: { agent: claude-coder, prompt: implement-task }
+
+implement:
+  gitignore_seed: []
+
+verify:
+  policy: off
+  commands: []
