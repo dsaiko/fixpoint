@@ -484,7 +484,7 @@ func (c *Config) resolveAgents(r *Resolver, into map[string]string) error {
 // unconditional env.inherit_all refusal. Unset roles contribute an empty name,
 // which resolveAgents and the refusal loop already skip.
 func (c *Config) referencedAgents() []string {
-	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent, c.Roles.Judge.Agent, c.Roles.Triage.Agent, c.Roles.Editor.Agent)
+	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent, c.Roles.Judge.Agent, c.Roles.Triage.Agent, c.Roles.Editor.Agent, c.Roles.Planner.Agent)
 }
 
 // resolvePrompts turns every bare prompt name into a concrete file path, stored
@@ -506,51 +506,30 @@ func (c *Config) resolvePrompts(r *Resolver, into map[string]string) error {
 		into[name] = p
 		return p, nil
 	}
-	if c.Roles.Coder.Prompt != "" {
-		p, err := resolve(c.Roles.Coder.Prompt)
-		if err != nil {
-			return err
-		}
-		c.Roles.Coder.PromptPath = p
-	}
-	for i := range c.Roles.Review.Prompts {
-		p, err := resolve(c.Roles.Review.Prompts[i].Prompt)
-		if err != nil {
-			return err
-		}
-		c.Roles.Review.Prompts[i].PromptPath = p
-	}
-	if c.Roles.Judge.Prompt != "" {
-		p, err := resolve(c.Roles.Judge.Prompt)
-		if err != nil {
-			return err
-		}
-		c.Roles.Judge.PromptPath = p
-	}
-	if c.Roles.Triage.Prompt != "" {
-		p, err := resolve(c.Roles.Triage.Prompt)
-		if err != nil {
-			return err
-		}
-		c.Roles.Triage.PromptPath = p
-	}
-	if c.Roles.Editor.Prompt != "" {
-		p, err := resolve(c.Roles.Editor.Prompt)
-		if err != nil {
-			return err
-		}
-		c.Roles.Editor.PromptPath = p
-	}
-	// The create prompts resolve like every other: eagerly, so a missing one
-	// fails before any agent process starts.
-	for _, pp := range []struct {
+	// Every role and pipeline prompt resolves the same way: eagerly, so a
+	// missing one fails before any agent process starts. One table, one loop --
+	// the pairs are (name, where the resolved path lands).
+	pairs := []struct {
 		name string
 		into *string
 	}{
+		{c.Roles.Coder.Prompt, &c.Roles.Coder.PromptPath},
+		{c.Roles.Judge.Prompt, &c.Roles.Judge.PromptPath},
+		{c.Roles.Triage.Prompt, &c.Roles.Triage.PromptPath},
+		{c.Roles.Planner.Prompt, &c.Roles.Planner.PromptPath},
+		{c.Roles.Editor.Prompt, &c.Roles.Editor.PromptPath},
 		{c.Create.Propose, &c.Create.ProposePath},
 		{c.Create.Critique, &c.Create.CritiquePath},
 		{c.Create.Object, &c.Create.ObjectPath},
-	} {
+		{c.Review.Refute, &c.Review.RefutePath},
+	}
+	for i := range c.Roles.Review.Prompts {
+		pairs = append(pairs, struct {
+			name string
+			into *string
+		}{c.Roles.Review.Prompts[i].Prompt, &c.Roles.Review.Prompts[i].PromptPath})
+	}
+	for _, pp := range pairs {
 		if pp.name == "" {
 			continue
 		}
@@ -559,13 +538,6 @@ func (c *Config) resolvePrompts(r *Resolver, into map[string]string) error {
 			return err
 		}
 		*pp.into = p
-	}
-	if c.Review.Refute != "" {
-		p, err := resolve(c.Review.Refute)
-		if err != nil {
-			return err
-		}
-		c.Review.RefutePath = p
 	}
 	return nil
 }

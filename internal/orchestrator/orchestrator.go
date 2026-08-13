@@ -2855,6 +2855,17 @@ func (o *Orchestrator) activeAgentNames() []string {
 	if !o.cfg.Loop.ReviewOnly && o.cfg.Roles.Coder.Agent != "" {
 		add(o.cfg.Roles.Coder.Agent)
 	}
+	// An implement run's active set is the planner and the coder, EXPLICITLY --
+	// the reviewer pool inherited from defaults is inert here, and pinging it
+	// would bill four reviewers that never run and die on a quota blackout
+	// before the first useful session. The create pipeline shipped this exact
+	// bug (fixed in f424d9f); DESIGN.md §7.3 refuses it on paper, and this is
+	// the refusal.
+	if o.cfg.IsImplement() {
+		add(o.cfg.Roles.Planner.Agent)
+		sort.Strings(names)
+		return names
+	}
 	for _, a := range o.cfg.Roles.Review.ActiveAgents() {
 		add(a)
 	}

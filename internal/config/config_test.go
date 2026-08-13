@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestArgv(t *testing.T) {
@@ -1559,5 +1561,152 @@ func TestValidateCreate(t *testing.T) {
 				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func implementConfig(t *testing.T) *Config {
+	t.Helper()
+	p := writePrompt(t)
+	return &Config{
+		Target: Target{Mode: "directory", Path: "."},
+		Loop:   Loop{CommitPolicy: CommitPerFix},
+		Roles: Roles{
+			Planner: RoleRef{Agent: "plan", Prompt: p},
+			Coder:   RoleRef{Agent: "coder", Prompt: p},
+		},
+		Agents: map[string]Agent{
+			"plan":  {Command: []string{"echo"}, PromptVia: "stdin"},
+			"coder": {Command: []string{"echo"}, PromptVia: "stdin", CanEdit: true},
+		},
+		Logs: Logs{Formats: []string{"md", "json", "raw"}},
+	}
+}
+
+// An implement config is validated like every other shape: required parts
+// required, inert keys refused. The panel, judge, editor and refutation
+// refusals are the house inert-key rule -- an implement run plans and builds,
+// so review machinery in the config would describe a run that does not happen.
+func TestValidateImplement(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"valid", func(*Config) {}, ""},
+		{"planner pairing", func(c *Config) { c.Roles.Planner.Prompt = "" }, "both agent and prompt"},
+		{"planner must be read-only", func(c *Config) {
+			a := c.Agents["plan"]
+			a.CanEdit = true
+			c.Agents["plan"] = a
+		}, "must be read-only"},
+		{"coder required", func(c *Config) { c.Roles.Coder = RoleRef{} }, "roles.coder: required in an implement config"},
+		{"lenses refused", func(c *Config) {
+			c.Roles.Review.Prompts = []ReviewLens{{Prompt: writePrompt(t)}}
+		}, "nothing reviews during implementation"},
+		{"judge refused", func(c *Config) {
+			c.Roles.Judge = RoleRef{Agent: "plan", Prompt: writePrompt(t)}
+		}, "roles.judge is set in an implement config"},
+		{"editor refused", func(c *Config) {
+			c.Roles.Editor = RoleRef{Agent: "plan", Prompt: writePrompt(t)}
+		}, "roles.editor is set in an implement config"},
+		{"one pipeline per config", func(c *Config) {
+			c.Create = Create{Propose: writePrompt(t), Critique: writePrompt(t)}
+		}, "one pipeline"},
+		{"refute refused", func(c *Config) { c.Review.Refute = "refute" }, "review.refute is set in an implement config"},
+		{"squash refused", func(c *Config) { c.Loop.CommitPolicy = CommitPerRound }, "one-task-one-revert"},
+		{"review_only refused", func(c *Config) { c.Loop.ReviewOnly = true }, "pass -plan-only"},
+		{"vacuous fraction bounded", func(c *Config) { c.Implement.MaxVacuousFrac = 1.5 }, "within 0..1"},
+		{"negative task bytes", func(c *Config) { c.Implement.MaxTaskBytes = -1 }, "must not be negative"},
+		{"clean_check enum", func(c *Config) { c.Implement.CleanCheck = "sometimes" }, "implement.clean_check"},
+		{"gate_generated must stay inside the project", func(c *Config) {
+			c.Implement.GateGenerated = []string{"../outside"}
+		}, "relative path inside the project"},
+		{"implement keys without planner refused", func(c *Config) {
+			c.Roles.Planner = RoleRef{}
+		}, "implement.* is set but roles.planner is not"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := implementConfig(t)
+			// Give the partial-implement case a key to trip over.
+			cfg.Implement.GitignoreSeed = []string{"dist/"}
+			tc.mutate(cfg)
+			cfg.applyDefaults()
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// The implement defaults are code, not YAML (the one-level extends rule), so
+// the values the design names are asserted here -- a drifted default would
+// otherwise change every stack config silently.
+func TestImplementDefaults(t *testing.T) {
+	cfg := implementConfig(t)
+	cfg.applyDefaults()
+	i := cfg.Implement
+	if i.MaxTasks != 40 || i.MaxFilesPerTask != 12 || i.MaxTaskAttempts != 2 {
+		t.Errorf("shape defaults = %d/%d/%d, want 40/12/2", i.MaxTasks, i.MaxFilesPerTask, i.MaxTaskAttempts)
+	}
+	if i.MaxVacuousFrac != 0.34 {
+		t.Errorf("MaxVacuousFrac = %g, want 0.34", i.MaxVacuousFrac)
+	}
+	if i.MaxRunDuration.Std() != 32*time.Hour {
+		t.Errorf("MaxRunDuration = %s, want 32h", i.MaxRunDuration.Std())
+	}
+	if i.MaxTaskBytes != 64<<20 || i.MinFreeDisk != 2<<30 {
+		t.Errorf("byte defaults = %s/%s, want 64MB/2GB", i.MaxTaskBytes, i.MinFreeDisk)
+	}
+	if i.CleanCheck != CleanCheckLast {
+		t.Errorf("CleanCheck = %q, want %q", i.CleanCheck, CleanCheckLast)
+	}
+	// A non-implement config gets no implement defaults at all.
+	plain := validConfig(t)
+	plain.applyDefaults()
+	if plain.Implement.MaxTasks != 0 {
+		t.Errorf("non-implement config gained implement defaults: MaxTasks = %d", plain.Implement.MaxTasks)
+	}
+}
+
+// ByteSize is operator-facing syntax; each form the docs promise must parse,
+// and the String round-trip is what refusal messages quote.
+func TestByteSize(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"64MB", 64 << 20},
+		{"2GB", 2 << 30},
+		{"512kb", 512 << 10},
+		{" 1 GB ", 1 << 30},
+		{"1048576", 1 << 20},
+	}
+	for _, tc := range cases {
+		var b ByteSize
+		if err := yaml.Unmarshal([]byte("v: "+tc.in), &struct {
+			V *ByteSize `yaml:"v"`
+		}{&b}); err != nil {
+			t.Fatalf("parse %q: %v", tc.in, err)
+		}
+		if b.Int64() != tc.want {
+			t.Errorf("%q = %d, want %d", tc.in, b.Int64(), tc.want)
+		}
+	}
+	var b ByteSize
+	if err := yaml.Unmarshal([]byte("v: 64 potatoes"), &struct {
+		V *ByteSize `yaml:"v"`
+	}{&b}); err == nil {
+		t.Error("nonsense size parsed without error")
+	}
+	if got := ByteSize(64 << 20).String(); got != "64MB" {
+		t.Errorf("String() = %q, want 64MB", got)
 	}
 }
