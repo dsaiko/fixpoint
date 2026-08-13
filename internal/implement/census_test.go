@@ -46,9 +46,9 @@ func TestTakeCensus(t *testing.T) {
 	write(t, dir, "tracked.txt", "v2\n")
 	write(t, dir, "ignored/cache.bin", "blob\n")
 
-	c, err := TakeCensus(t.Context(), dir, 0)
+	c, err := testGit.TakeCensus(t.Context(), dir, 0)
 	if err != nil {
-		t.Fatalf("TakeCensus() = %v", err)
+		t.Fatalf("testGit.TakeCensus() = %v", err)
 	}
 	if _, ok := c.Untracked["new.txt"]; !ok {
 		t.Errorf("new.txt not censused as untracked: %+v", c)
@@ -65,7 +65,7 @@ func TestTakeCensus(t *testing.T) {
 
 	// A deletion is a recorded state: empty digest, not absence.
 	os.Remove(filepath.Join(dir, "tracked.txt"))
-	c, err = TakeCensus(t.Context(), dir, 0)
+	c, err = testGit.TakeCensus(t.Context(), dir, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestTakeCensus(t *testing.T) {
 func TestCensusByteBound(t *testing.T) {
 	dir := censusRepo(t)
 	write(t, dir, "big.txt", strings.Repeat("x", 4096))
-	_, err := TakeCensus(t.Context(), dir, 1024)
+	_, err := testGit.TakeCensus(t.Context(), dir, 1024)
 	var bb ByteBoundError
 	if !errors.As(err, &bb) {
 		t.Fatalf("want ByteBoundError, got %v", err)
@@ -92,9 +92,9 @@ func TestIgnoredCensusAndDiff(t *testing.T) {
 	dir := censusRepo(t)
 	write(t, dir, "ignored/old.bin", "old\n")
 	write(t, dir, ".fixpoint/journal.jsonl", "{}\n")
-	pre, err := TakeIgnoredCensus(t.Context(), dir)
+	pre, err := testGit.TakeIgnoredCensus(t.Context(), dir)
 	if err != nil {
-		t.Fatalf("TakeIgnoredCensus() = %v", err)
+		t.Fatalf("testGit.TakeIgnoredCensus() = %v", err)
 	}
 	if _, ok := pre["ignored/old.bin"]; !ok {
 		t.Errorf("ignored file missing from the census: %v", pre)
@@ -111,7 +111,7 @@ func TestIgnoredCensusAndDiff(t *testing.T) {
 	write(t, dir, "ignored/old.bin", "OLD\n")
 	os.Chtimes(filepath.Join(dir, "ignored", "old.bin"), future, future)
 
-	post, err := TakeIgnoredCensus(t.Context(), dir)
+	post, err := testGit.TakeIgnoredCensus(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}

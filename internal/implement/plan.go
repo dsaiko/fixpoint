@@ -88,8 +88,10 @@ func StripProvenance(p *Plan) bool {
 type Rules struct {
 	MaxTasks        int
 	MaxFilesPerTask int
-	// Outline is the design's extracted skeleton; CoverageChecked false (the
-	// -no-coverage-check flag) skips rule 6, and every report says so.
+	// Outline is the design's extracted skeleton; CoverageChecked false skips
+	// rule 6, and every report says so. Nothing sets it false yet: §7.4's
+	// -no-coverage-check is specified but not implemented, so the field is the
+	// seam the flag will land on rather than a switch anything flips today.
 	Outline         Outline
 	CoverageChecked bool
 	// Fit inputs: the worst case the configuration permits (§4.2 rule 7).
@@ -99,6 +101,53 @@ type Rules struct {
 	// executor applies the timeout per command and runs them sequentially.
 	GateWorst      time.Duration
 	MaxRunDuration time.Duration
+	// CleanCheck is implement.clean_check, because it BUYS GATE RUNS the
+	// arithmetic must count: "every" adds a full clone gate after each
+	// implemented task, "last" adds one after the loop. Left out of the formula
+	// when it shipped, which re-opened the exact trap rule 7 exists to close --
+	// a 15-task plan the validator called legal needed ~38h against a 32h
+	// deadline at clean_check: every, so it hit the deadline around task 12,
+	// after the money was spent (review run 20260813-180828, i43).
+	CleanCheck string
+}
+
+// PerTaskWorst is the worst case one task may cost: every attempt the
+// configuration permits, each paying a full session, a full gate and the
+// bookkeeping allowance.
+//
+// Exported and used by BOTH the validator and the planner prompt's cap.
+// They used to compute it separately from the same formula, so a change to
+// either drifted: the planner would be told a plan fits that the validator then
+// refused, and the refusal would quote arithmetic the run never used (i13).
+func (r Rules) PerTaskWorst() time.Duration {
+	return time.Duration(r.MaxTaskAttempts) * (r.SessionTimeout + r.GateWorst + taskOverhead)
+}
+
+// RunWorst is what a plan of n tasks may cost end to end: every task's worst
+// case plus the clean-clone gate runs clean_check buys.
+func (r Rules) RunWorst(n int) time.Duration {
+	total := time.Duration(n) * r.PerTaskWorst()
+	switch r.CleanCheck {
+	case "every":
+		total += time.Duration(n) * r.GateWorst
+	case "last":
+		total += r.GateWorst
+	}
+	return total
+}
+
+// Admitted is the largest task count that fits the deadline -- the number the
+// planner is given as its cap, computed from the same arithmetic that will
+// judge what it returns. Returns ceiling when the fit rule is skipped.
+func (r Rules) Admitted(ceiling int) int {
+	if r.FitSkipped() {
+		return ceiling
+	}
+	n := 0
+	for n < ceiling && r.RunWorst(n+1) <= r.MaxRunDuration {
+		n++
+	}
+	return n
 }
 
 // taskOverhead is the per-task bookkeeping allowance in the fit arithmetic:
@@ -223,6 +272,31 @@ func validateCoverage(p Plan, r Rules) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("plan: coverage does not account for %s -- every design section is mapped to tasks or explicitly ruled out of scope", strings.Join(missing, ", "))
 	}
+	return validateDesignRefs(p, r)
+}
+
+// validateDesignRefs holds design_refs to the same key coverage is held to.
+//
+// The design makes heading text an identity three parties share -- the
+// extractor, coverage, and design_refs -- and refuses duplicate outline
+// headings for exactly that reason. Validation enforced it on ONE side: a
+// planner emitting `design_refs: ["## Networking"]` for a design whose section
+// is "## Network protocol" passed, and the unresolvable pointer then reached
+// the coder verbatim as the whole of its design context beyond a one-line goal
+// (review run 20260813-180828, i20). A wrong ref cost a session and appeared
+// nowhere in the report, the journal or the trailers.
+func validateDesignRefs(p Plan, r Rules) error {
+	known := make(map[string]bool, len(r.Outline.Headings))
+	for _, h := range r.Outline.FormattedHeadings() {
+		known[h] = true
+	}
+	for _, t := range p.Tasks {
+		for _, ref := range t.DesignRefs {
+			if !known[strings.TrimSpace(ref)] {
+				return fmt.Errorf("plan: task %s cites design section %q, which is not one of the document's headings -- a reference the coder cannot resolve is the only design context it gets beyond its goal", t.ID, ref)
+			}
+		}
+	}
 	return nil
 }
 
@@ -232,14 +306,13 @@ func validateCoverage(p Plan, r Rules) error {
 // resolve the numbers; the check is skipped and the CALLER says so, in the
 // same places coverage says so.
 func validateFit(tasks int, r Rules) error {
-	if r.SessionTimeout <= 0 || r.MaxRunDuration <= 0 {
+	if r.FitSkipped() {
 		return nil
 	}
-	perTask := time.Duration(r.MaxTaskAttempts) * (r.SessionTimeout + r.GateWorst + taskOverhead)
-	need := time.Duration(tasks) * perTask
+	need := r.RunWorst(tasks)
 	if need > r.MaxRunDuration {
-		return fmt.Errorf("plan: %d tasks need at least %s at %d attempt(s) per task and a %s worst-case gate; implement.max_run_duration is %s -- raise it, cut the plan, lower max_task_attempts, or tighten verify.timeout",
-			tasks, need.Round(time.Minute), r.MaxTaskAttempts, r.GateWorst, r.MaxRunDuration)
+		return fmt.Errorf("plan: %d tasks need at least %s at %d attempt(s) per task, a %s worst-case gate and clean_check %q; implement.max_run_duration is %s -- raise it, cut the plan, lower max_task_attempts, or tighten verify.timeout",
+			tasks, need.Round(time.Minute), r.MaxTaskAttempts, r.GateWorst, r.CleanCheck, r.MaxRunDuration)
 	}
 	return nil
 }

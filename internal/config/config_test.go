@@ -1615,13 +1615,31 @@ func TestValidateImplement(t *testing.T) {
 		}, "one pipeline"},
 		{"refute refused", func(c *Config) { c.Review.Refute = "refute" }, "review.refute is set in an implement config"},
 		{"squash refused", func(c *Config) { c.Loop.CommitPolicy = CommitPerRound }, "one-task-one-revert"},
-		{"review_only refused", func(c *Config) { c.Loop.ReviewOnly = true }, "pass -plan-only"},
+		{"review_only refused", func(c *Config) { c.Loop.ReviewOnly = true }, "an implement run builds"},
 		{"vacuous fraction bounded", func(c *Config) { c.Implement.MaxVacuousFrac = 1.5 }, "within 0..1"},
 		{"negative task bytes", func(c *Config) { c.Implement.MaxTaskBytes = -1 }, "must not be negative"},
 		{"clean_check enum", func(c *Config) { c.Implement.CleanCheck = "sometimes" }, "implement.clean_check"},
 		{"gate_generated must stay inside the project", func(c *Config) {
 			c.Implement.GateGenerated = []string{"../outside"}
 		}, "relative path inside the project"},
+		// gate_generated and gitignore_seed are two lists about the same files and
+		// had no rule keeping them consistent: an ignored lockfile means the gate
+		// writes a file no commit can carry, and the clean-clone check then fails
+		// a project whose every task passed (review run 20260813-180828, i60).
+		{"ignored gate_generated refused", func(c *Config) {
+			c.Implement.GateGenerated = []string{"package-lock.json"}
+			c.Implement.GitignoreSeed = []string{"node_modules/", "package-lock.json"}
+		}, "the gate would write a file no commit could ever carry"},
+		{"ignored control artifact refused", func(c *Config) {
+			c.Implement.GitignoreSeed = []string{"PLAN.json"}
+		}, "a control artifact fixpoint writes and protects"},
+		{"gate_generated control artifact refused", func(c *Config) {
+			c.Implement.GateGenerated = []string{".gitignore"}
+		}, "a control artifact no gate may maintain"},
+		{"disjoint lists accepted", func(c *Config) {
+			c.Implement.GateGenerated = []string{"package-lock.json"}
+			c.Implement.GitignoreSeed = []string{"node_modules/", "dist/"}
+		}, ""},
 		{"no_regressions refused", func(c *Config) { c.Verify.Policy = VerifyNoRegressions }, "baseline tree is empty"},
 		{"empty gate must be asserted", func(c *Config) { c.Verify = Verify{Policy: VerifyMustPass} }, "has to be a statement"},
 		{"ungated as assertion accepted", func(c *Config) { c.Verify = Verify{Policy: VerifyOff} }, ""},

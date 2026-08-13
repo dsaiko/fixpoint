@@ -1,6 +1,7 @@
 package implement
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,12 @@ func TestValidate(t *testing.T) {
 			p.Coverage = append(p.Coverage, CoverageEntry{Heading: "## Rendering", Tasks: []string{"T01"}})
 		}, func(*Rules) {}, "repeats heading"},
 		{"coverage skipped when unchecked", func(p *Plan) { p.Coverage = nil }, func(r *Rules) { r.CoverageChecked = false }, ""},
+		// design_refs is the same join key coverage uses, and was validated on
+		// only one side: an unresolvable pointer reached the coder as the whole
+		// of its design context (review run 20260813-180828, i20).
+		{"design_refs names a ghost section", func(p *Plan) { p.Tasks[1].DesignRefs = []string{"## Persistence"} }, func(*Rules) {}, "not one of the document's headings"},
+		{"design_refs misspells a real section", func(p *Plan) { p.Tasks[1].DesignRefs = []string{"## rendering"} }, func(*Rules) {}, "not one of the document's headings"},
+		{"design_refs unchecked with coverage", func(p *Plan) { p.Tasks[1].DesignRefs = []string{"## Nope"} }, func(r *Rules) { r.CoverageChecked = false }, ""},
 		{"fit refusal quotes the arithmetic", func(*Plan) {}, func(r *Rules) { r.MaxRunDuration = time.Hour }, "worst-case gate"},
 		{"fit skipped without timings", func(*Plan) {}, func(r *Rules) {
 			r.SessionTimeout = 0
@@ -110,6 +117,51 @@ func TestFitArithmetic(t *testing.T) {
 	err := Validate(p, r)
 	if err == nil || !strings.Contains(err.Error(), "4h4m") {
 		t.Fatalf("Validate() = %v, want the 4h4m worst case quoted", err)
+	}
+}
+
+// clean_check buys GATE RUNS, and the fit rule has to count them or it is
+// back to admitting plans that are arithmetically guaranteed to hit the
+// deadline mid-run -- the trap rule 7 exists to close (review run
+// 20260813-180828, i43). `every` costs one clone gate per task; `last` costs
+// one for the run.
+func TestFitCountsCleanCheckCloneRuns(t *testing.T) {
+	r := rules() // 30m session, 30m gate, 2 attempts -> 2h02m per task
+	base := r.RunWorst(10)
+	r.CleanCheck = "last"
+	if got, want := r.RunWorst(10), base+30*time.Minute; got != want {
+		t.Errorf("clean_check last: RunWorst(10) = %v, want %v", got, want)
+	}
+	r.CleanCheck = "every"
+	if got, want := r.RunWorst(10), base+10*30*time.Minute; got != want {
+		t.Errorf("clean_check every: RunWorst(10) = %v, want %v", got, want)
+	}
+
+	// And the cap the planner is quoted must shrink with it, because it is the
+	// same arithmetic: quoting a cap the validator would then refuse is the
+	// drift this shares its implementation to prevent (i13).
+	r.MaxRunDuration = 32 * time.Hour
+	r.CleanCheck = ""
+	loose := r.Admitted(40)
+	r.CleanCheck = "every"
+	tight := r.Admitted(40)
+	if tight >= loose {
+		t.Errorf("clean_check every admitted %d, no fewer than %d without it", tight, loose)
+	}
+	// Whatever it admits, that plan must actually pass validation -- the cap and
+	// the rule agreeing is the whole point.
+	p := validPlan()
+	for len(p.Tasks) < tight {
+		id := fmt.Sprintf("T%02d", len(p.Tasks)+1)
+		p.Tasks = append(p.Tasks, Task{ID: id, Title: id, Goal: "g", Acceptance: []string{"a"}, Files: []string{id + ".go"}})
+		p.Coverage[0].Tasks = append(p.Coverage[0].Tasks, id)
+	}
+	r.MaxTasks = 40
+	if err := validateFit(len(p.Tasks), r); err != nil {
+		t.Errorf("the admitted count (%d) does not fit the rule that computed it: %v", tight, err)
+	}
+	if err := validateFit(tight+1, r); err == nil {
+		t.Errorf("one task over the admitted count (%d) was accepted", tight)
 	}
 }
 

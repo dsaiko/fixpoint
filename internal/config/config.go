@@ -216,6 +216,14 @@ type Implement struct {
 	MaxVacuousFrac float64 `yaml:"max_vacuous_frac"`
 	// MaxRunDuration is the whole run's deadline, checked between tasks and
 	// enforced against the plan's WORST case at plan time (§4.2 rule 7).
+	//
+	// It decides how many tasks a run may plan, so it and the stack's
+	// verify.timeout are one number in two places: the worst case is
+	// tasks x attempts x (session + SUM of per-command timeouts + 1m), plus the
+	// clone gate runs clean_check buys. At the shipped 32h the stacks admit 20
+	// (go), 17 (node) and 30 (web) tasks -- and three fewer each at
+	// clean_check: every. Raising this without touching the timeouts buys
+	// proportionally more tasks; it is not a number to change on its own.
 	MaxRunDuration Duration `yaml:"max_run_duration"`
 	// MaxTaskBytes bounds one attempt's un-ignored changes, checked during the
 	// census walk before anything is hashed or gated.
@@ -2491,7 +2499,7 @@ func (c *Config) validateImplement() error {
 		return fmt.Errorf("loop.commit_policy: an implement run is %q only -- squashing collapses one-task-one-revert, the property the pipeline exists to provide (got %q)", CommitPerFix, c.Loop.CommitPolicy)
 	}
 	if c.Loop.ReviewOnly {
-		return errors.New("loop.review_only is set in an implement config; an implement run builds -- for a run that only plans, pass -plan-only")
+		return errors.New("loop.review_only is set in an implement config; an implement run builds. (§7.4's -plan-only, which would plan without building, is specified but not implemented in this version -- there is no flag for it yet)")
 	}
 	// Gate policy (DESIGN.md §7.2): a no-regressions baseline is captured on
 	// the pristine tree, which is EMPTY here, so every check would be exempted
@@ -2533,6 +2541,45 @@ func (i Implement) validate() error {
 	for n, g := range i.GateGenerated {
 		if g == "" || strings.HasPrefix(g, "/") || strings.Contains(g, "..") {
 			return fmt.Errorf("implement.gate_generated[%d]: %q must be a relative path inside the project", n, g)
+		}
+	}
+	return i.validateReservedNames()
+}
+
+// implementControlArtifacts are the four files fixpoint owns in the project it
+// builds (DESIGN.md §4.3). Named here rather than imported: internal/implement
+// depends on this package, so the reverse is impossible, and one list refusing
+// what the other protects is the point.
+var implementControlArtifacts = []string{"DESIGN.md", "PLAN.md", "PLAN.json", ".gitignore"}
+
+// validateReservedNames refuses the two ways gate_generated and gitignore_seed
+// can contradict each other or the control artifacts.
+//
+// Neither had a rule (review run 20260813-180828, i60). An ignored
+// gate_generated lockfile is the sharp one: the gate writes package-lock.json,
+// .gitignore hides it, the commit omits it, and the final clean-clone check
+// then fails on a project whose every task passed -- a whole run lost to two
+// lines of stack config that never looked wrong. Naming a control artifact in
+// either list is the other: it would put a file fixpoint owns under a rule
+// fixpoint also enforces, in opposite directions.
+func (i Implement) validateReservedNames() error {
+	ignored := make(map[string]bool, len(i.GitignoreSeed))
+	for _, s := range i.GitignoreSeed {
+		ignored[strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "/"))] = true
+	}
+	for _, g := range i.GateGenerated {
+		if ignored[g] {
+			return fmt.Errorf("implement.gate_generated names %q and implement.gitignore_seed ignores it -- the gate would write a file no commit could ever carry, and the clean-clone check would fail a project whose every task passed", g)
+		}
+	}
+	for _, reserved := range implementControlArtifacts {
+		if ignored[reserved] {
+			return fmt.Errorf("implement.gitignore_seed names %q, a control artifact fixpoint writes and protects (§4.3)", reserved)
+		}
+		for _, g := range i.GateGenerated {
+			if g == reserved {
+				return fmt.Errorf("implement.gate_generated names %q, a control artifact no gate may maintain (§4.3)", reserved)
+			}
 		}
 	}
 	return nil

@@ -13,6 +13,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/create"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 	"github.com/dsaiko/fixpoint/internal/implement"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
@@ -36,6 +37,11 @@ const (
 	outcomeBlocked     = "blocked"
 	outcomeFailed      = "failed"
 	outcomeSkipped     = "skipped"
+	// outcomeUnreached is for a task the loop never got to -- the deadline, the
+	// breaker, the disk bound or Ctrl-C stopped the run first. Not a judgment
+	// about the work: it is what §1's "recorded in the run's report as not
+	// built, with a reason" means for the tail of an interrupted plan.
+	outcomeUnreached = "unreached"
 )
 
 // taskReport is the coder's structured reply.
@@ -59,6 +65,16 @@ type implementPrep struct {
 	profile      string // the effective-gate digest
 	gateCommands []string
 	col          *target.Collector // over out; valid after SCAFFOLD
+	// gitEnv is the ONE hardened environment every git command against the
+	// write-target runs with, and git is the read path's handle onto it. Both
+	// the Collector and the implement package are handed this same slice: the
+	// two used to build their own, and the read path's was weaker (review run
+	// 20260813-180828, i12).
+	gitEnv []string
+	git    implement.Git
+	// deadline is when max_run_duration expires, set at BUILD. Zero before
+	// then, which is what the backoff reads as "no deadline to overrun".
+	deadline     time.Time
 	bootstrapSHA string
 	baseline     implement.RepoState
 	// outcomes is every processed task's recorded outcome, by id. Shared state
@@ -68,6 +84,15 @@ type implementPrep struct {
 	// release drops the write-target's repository lock; nil until SCAFFOLD has
 	// created the repository there is anything to lock.
 	release func()
+}
+
+// attemptBase is what the repository and its ignored tree looked like at §5.2
+// step 2, carried through the attempt so both the session and the GATE can be
+// compared against the same before-picture.
+type attemptBase struct {
+	head    string
+	repo    implement.RepoState
+	ignored map[string]implement.IgnoredStat
 }
 
 // errRunStop is a repository-invariant failure: the run cannot reason about
@@ -147,6 +172,17 @@ func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) 
 // for: the write-target check, the design snapshot, and the outline.
 func (o *Orchestrator) prepareImplement(ctx context.Context) (*implementPrep, error) {
 	p := &implementPrep{out: o.cfg.Create.Out, outcomes: map[string]string{}}
+	// Built here, before anything touches the write-target, so no code path can
+	// reach git without it: the credential-stripped base with the operator's
+	// global and system git config switched off. Safe over this repository in a
+	// way it would not be over the operator's, because Init writes the
+	// repository's identity locally -- and load-bearing, because a
+	// `.gitattributes` the coder writes names a filter whose definition would
+	// otherwise come from the operator's global file. NoOperatorConfig returns a
+	// fresh slice; o.verifyEnv is shared with every gate run and must not be
+	// appended to in place.
+	p.gitEnv = gitenv.NoOperatorConfig(o.verifyEnv)
+	p.git = implement.NewGit(p.gitEnv)
 	if p.out == "" {
 		return nil, errors.New("implement: pass -out <directory>; the pipeline builds a new project and must be told where")
 	}
@@ -175,6 +211,18 @@ func (o *Orchestrator) prepareImplement(ctx context.Context) (*implementPrep, er
 		return nil, errors.New("implement: the target must be a design document file (-target DESIGN.md)")
 	}
 	p.designPath = filepath.Join(o.cfg.Target.Path, o.cfg.Target.Document)
+
+	// The pipeline with the largest bill was the only one that never checked its
+	// agents were reachable (review run 20260813-180828, i5): runPipeline
+	// dispatches implement before run()'s own preflight, and runImplement had no
+	// copy of it. An expired login or a quota blackout was therefore discovered
+	// only after the planner session was paid for and the write-target had been
+	// created and locked -- the coder then died twice as infrastructure, the
+	// breaker tripped, and the operator was left holding a scaffolded, half-built
+	// repository. Placed after the cheap local refusals, before the first spend.
+	if err := o.preflightPing(ctx); err != nil {
+		return nil, err
+	}
 
 	// SNAPSHOT: every phase reads the same bytes (§4.3); the run is long and
 	// the odds someone edits the design mid-run are real.
@@ -228,15 +276,20 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 		SessionTimeout:  o.cfg.Agents[o.cfg.Roles.Coder.Agent].Timeout.Std(),
 		GateWorst:       implement.GateWorst(o.cfg.Verify),
 		MaxRunDuration:  o.cfg.Implement.MaxRunDuration.Std(),
+		CleanCheck:      o.cfg.Implement.CleanCheck,
 	}
-	admitted := o.cfg.Implement.MaxTasks
-	if !rules.FitSkipped() {
-		perTask := time.Duration(rules.MaxTaskAttempts) * (rules.SessionTimeout + rules.GateWorst + time.Minute)
-		if n := int(rules.MaxRunDuration / perTask); n < admitted {
-			admitted = n
-		}
-	} else {
+	// The cap quoted to the planner and the rule that will judge its answer are
+	// now the same arithmetic (Rules.Admitted), so the two cannot disagree.
+	admitted := rules.Admitted(o.cfg.Implement.MaxTasks)
+	if rules.FitSkipped() {
 		o.logf("plan: the fit check is skipped (a session or gate timeout is not available as a number); the deadline is enforced between tasks only")
+	} else {
+		o.logf("plan: at most %d task(s) fit implement.max_run_duration (%s) -- %s per task at %d attempt(s), clean_check %q",
+			admitted, o.cfg.Implement.MaxRunDuration.Std(), rules.PerTaskWorst().Round(time.Minute), rules.MaxTaskAttempts, rules.CleanCheck)
+	}
+	if admitted == 0 {
+		return pl, fmt.Errorf("implement: no plan can fit implement.max_run_duration (%s): one task alone needs %s at %d attempt(s) per task and a %s worst-case gate -- raise max_run_duration, lower max_task_attempts, or tighten verify.timeout",
+			o.cfg.Implement.MaxRunDuration.Std(), rules.RunWorst(1).Round(time.Minute), rules.MaxTaskAttempts, rules.GateWorst)
 	}
 
 	d := prompt.PlanData{
@@ -338,11 +391,7 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 	// own config is covered by the §5.2 step 4 invariant. Safe here in a way it
 	// would not be over an operator's repository: Init writes this repository's
 	// identity locally, so nothing fixpoint does needs the global file.
-	p.col.UseGitEnv(append(o.verifyEnv,
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_ATTR_NOSYSTEM=1",
-	))
+	p.col.UseGitEnv(p.gitEnv)
 	// Scaffold takes the repository lock the moment `git init` has made one --
 	// before it writes or commits anything -- and hands it back to be held for
 	// the rest of the run. Without the lock a concurrent fixpoint run finds an
@@ -357,7 +406,7 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 	p.release = release
 	p.bootstrapSHA = sha
 	sum.Deliverable = p.out
-	if p.baseline, err = implement.SnapshotRepoState(ctx, p.out, "main"); err != nil {
+	if p.baseline, err = p.git.SnapshotRepoState(ctx, p.out, "main"); err != nil {
 		return err
 	}
 	o.endPhase("SCAFFOLD  bootstrap %.12s (not gated, no sources) · repository locked", sha)
@@ -372,6 +421,8 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 	o.phase("BUILD  %d task(s), serially", len(pl.Tasks))
 	infraStrikes := 0
 	incomplete := false
+	p.deadline = started.Add(o.cfg.Implement.MaxRunDuration.Std())
+	stoppedBefore := ""
 
 	for i, t := range pl.Tasks {
 		if ctx.Err() != nil {
@@ -379,6 +430,22 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 		}
 		if elapsed := time.Since(started); elapsed > o.cfg.Implement.MaxRunDuration.Std() {
 			o.logf("BUILD: max_run_duration (%s) reached after %s; stopping before %s", o.cfg.Implement.MaxRunDuration.Std(), elapsed.Round(time.Second), t.ID)
+			stoppedBefore = t.ID
+			incomplete = true
+			break
+		}
+		// The between-task disk check §8 documents and the code never had
+		// (review run 20260813-180828, i46). Disk is the one resource this
+		// pipeline grows and never releases -- build output, one stash per
+		// failed attempt, the journal -- and running out mid-task surfaces as an
+		// opaque git error from a commit or a discard, or as a half-finished
+		// discard that the NEXT task reports as fixpoint corrupting its own tree.
+		// Named here instead, while the diagnosis is still available.
+		if free, ok := implement.DiskFree(p.out); ok && free < o.cfg.Implement.MinFreeDisk.Int64() {
+			o.logf("BUILD: %s has %s free, under implement.min_free_disk (%s); stopping before %s",
+				p.out, config.ByteSize(free), o.cfg.Implement.MinFreeDisk, t.ID)
+			o.journal("disk_exhausted", 1, map[string]any{"id": t.ID, "free": free, "min": o.cfg.Implement.MinFreeDisk.Int64()})
+			stoppedBefore = t.ID
 			incomplete = true
 			break
 		}
@@ -398,9 +465,16 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 			incomplete = true
 		}
 		if stopLoop {
+			stoppedBefore = t.ID
 			break
 		}
 	}
+	// Every task the loop never reached is recorded, with the reason it was
+	// never reached. §1's contract is that a task either has a gated commit or
+	// is in the report with a reason, and an early exit used to satisfy neither:
+	// the run printed "5 task(s) · 5 implemented" for a 20-task plan and nothing
+	// anywhere said what the other 15 were (review run 20260813-180828, i22).
+	o.recordUnreached(sum, pl, stoppedBefore)
 	o.endPhase("BUILD  %d of %d task(s) processed", len(sum.Tasks), len(pl.Tasks))
 
 	if len(o.cfg.Verify.Commands) > 0 && o.cfg.Implement.CleanCheck == config.CleanCheckLast {
@@ -454,9 +528,82 @@ func (o *Orchestrator) processTask(ctx context.Context, sum *model.RunSummary, r
 	return bad, false, nil
 }
 
-// errInfraBreaker trips after two consecutive infrastructure failures: the
+// recordUnreached appends an outcome for every planned task the loop never
+// processed, so the report's denominator is the PLAN and not just what was
+// attempted. stoppedBefore is the task the run stopped at, when it stopped for
+// a reason rather than finishing.
+func (o *Orchestrator) recordUnreached(sum *model.RunSummary, pl implement.Plan, stoppedBefore string) {
+	seen := make(map[string]bool, len(sum.Tasks))
+	for _, t := range sum.Tasks {
+		seen[t.ID] = true
+	}
+	reason := "the run ended before this task"
+	if stoppedBefore != "" {
+		reason = "the run stopped at " + stoppedBefore
+	}
+	for _, t := range pl.Tasks {
+		if seen[t.ID] {
+			continue
+		}
+		sum.Tasks = append(sum.Tasks, model.TaskOutcome{ID: t.ID, Title: t.Title, Outcome: outcomeUnreached, Reason: reason})
+		o.journal("task_unreached", 1, map[string]any{"id": t.ID, "reason": reason})
+	}
+}
+
+// errInfraBreaker trips after the infrastructure retry budget is spent: the
 // run stops incomplete with NO marker for the task in flight (§5.4).
 var errInfraBreaker = errors.New("infrastructure circuit breaker")
+
+// infraBackoff is what an infrastructure failure waits before the next try,
+// indexed by how many have happened in a row. The budget is deliberately
+// bounded and deliberately not instant.
+//
+// The shipped breaker counted two consecutive failures and retried with NO wait
+// between them (review run 20260813-180828, i42), so the second call landed
+// inside the same rate-limit window as the first: for a pipeline whose premise
+// is a 32-hour unattended run, the most common transient failure of its primary
+// dependency ended the run within seconds. An overnight run started at 22:00
+// could be dead at 22:04 with one task built.
+//
+// Four tries, ~51 minutes of total waiting, then the breaker. Long enough to
+// ride out an ordinary 429 burst or a provider blip; short enough that a real
+// outage does not silently consume the deadline it is charged against.
+var infraBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute}
+
+// backoffSchedule is the orchestrator's copy, so a test can shrink the waits
+// without a package-level variable two tests could race over.
+func (o *Orchestrator) backoffSchedule() []time.Duration {
+	if len(o.infraBackoff) > 0 {
+		return o.infraBackoff
+	}
+	return infraBackoff
+}
+
+// waitForInfra sleeps out the strike's backoff, refusing when the wait would
+// run past the run's own deadline -- the wait is charged against
+// max_run_duration, so it must not silently overrun it. Returns false when the
+// run must stop instead of retrying.
+func (o *Orchestrator) waitForInfra(ctx context.Context, p *implementPrep, taskID string, strike int) bool {
+	schedule := o.backoffSchedule()
+	if strike > len(schedule) {
+		return false
+	}
+	wait := schedule[strike-1]
+	if !p.deadline.IsZero() && time.Now().Add(wait).After(p.deadline) {
+		o.logf("task %s: infrastructure failure and %s of backoff would pass max_run_duration; stopping instead of waiting", taskID, wait)
+		return false
+	}
+	o.logf("task %s: infrastructure failure (%d of %d); waiting %s before trying again", taskID, strike, len(schedule), wait)
+	o.journal("infra_backoff", 1, map[string]any{"id": taskID, "strike": strike, "wait": wait.String()})
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
 
 // runTask processes one task to a terminal outcome, attempts included.
 func (o *Orchestrator) runTask(ctx context.Context, rec *model.RoundRecord, p *implementPrep, pl implement.Plan, idx int, infraStrikes *int) (model.TaskOutcome, error) {
@@ -475,10 +622,18 @@ func (o *Orchestrator) runTask(ctx context.Context, rec *model.RoundRecord, p *i
 		case attemptInfra:
 			*infraStrikes++
 			o.journal("infra_failure", 1, map[string]any{"id": t.ID, "status": res.ProviderStatus, "strike": *infraStrikes})
-			if *infraStrikes >= 2 {
+			o.logf("task %s: infrastructure failure (%s); the attempt is not counted", t.ID, verdict.why)
+			// 402 is the one status where waiting cannot help: the account is out
+			// of credit or the plan is exhausted, and every retry buys the same
+			// answer more slowly. Distinguished from 429/5xx, which are exactly
+			// what the backoff exists for.
+			if res.ProviderStatus == 402 {
+				o.logf("task %s: the provider returned 402 -- no amount of waiting fixes payment; stopping now", t.ID)
 				return out, errInfraBreaker
 			}
-			o.logf("task %s: infrastructure failure (%s); the attempt is not counted", t.ID, verdict.why)
+			if !o.waitForInfra(ctx, p, t.ID, *infraStrikes) {
+				return out, errInfraBreaker
+			}
 			continue // same attempt number: infrastructure is not the task's fault
 		case attemptImplemented:
 			*infraStrikes = 0
@@ -590,14 +745,18 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 	if err != nil {
 		return agent.Result{}, report, attemptVerdict{}, err
 	}
-	preState, err := implement.SnapshotRepoState(ctx, p.out, "main")
+	preState, err := p.git.SnapshotRepoState(ctx, p.out, "main")
 	if err != nil {
 		return agent.Result{}, report, attemptVerdict{}, err
 	}
-	preIgnored, err := implement.TakeIgnoredCensus(ctx, p.out)
+	preIgnored, err := p.git.TakeIgnoredCensus(ctx, p.out)
 	if err != nil {
 		return agent.Result{}, report, attemptVerdict{}, err
 	}
+	// What the repository looked like before the session -- and, because the
+	// ladder below either finds HEAD unmoved or resets it back to base, what it
+	// must still look like when the gate has finished too.
+	before := attemptBase{head: base, repo: preState, ignored: preIgnored}
 
 	// Step 3: the coder session.
 	d := prompt.TaskData{
@@ -642,10 +801,10 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 	}
 
 	// Step 5: reconcile -- control artifacts first (§4.3).
-	if changed, err := implement.ControlArtifactsChanged(ctx, p.out, p.bootstrapSHA); err != nil {
+	if changed, err := p.git.ControlArtifactsChanged(ctx, p.out, p.bootstrapSHA); err != nil {
 		return res, report, attemptVerdict{}, err
 	} else if len(changed) > 0 {
-		if err := implement.RestoreControlArtifacts(ctx, p.out, p.bootstrapSHA, changed); err != nil {
+		if err := p.git.RestoreControlArtifacts(ctx, p.out, p.bootstrapSHA, changed); err != nil {
 			return res, report, attemptVerdict{}, err
 		}
 		o.journal("contract_deviation", 1, map[string]any{"id": t.ID, "kind": "control-artifact-edit", "paths": changed})
@@ -660,11 +819,11 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 		}
 		return res, report, attemptVerdict{kind: attemptFailed, why: "the session broke the output contract: " + perr.Error()}, nil
 	}
-	return o.reconcileAttempt(ctx, p, pl, idx, attempt, preIgnored, res, report)
+	return o.reconcileAttempt(ctx, p, pl, idx, attempt, before, res, report)
 }
 
 // reconcileAttempt is §5.2 steps 5-8 for a session that returned a report.
-func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, pl implement.Plan, idx, attempt int, preIgnored map[string]implement.IgnoredStat, res agent.Result, report taskReport) (agent.Result, taskReport, attemptVerdict, error) {
+func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, pl implement.Plan, idx, attempt int, before attemptBase, res agent.Result, report taskReport) (agent.Result, taskReport, attemptVerdict, error) {
 	t := pl.Tasks[idx]
 	clean, err := p.col.GitClean(ctx)
 	if err != nil {
@@ -685,7 +844,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	}
 
 	// Step 6: the census, the byte bound, the ignored reconciliation.
-	census, err := implement.TakeCensus(ctx, p.out, o.cfg.Implement.MaxTaskBytes.Int64())
+	census, err := p.git.TakeCensus(ctx, p.out, o.cfg.Implement.MaxTaskBytes.Int64())
 	var bb implement.ByteBoundError
 	if errors.As(err, &bb) {
 		// Checkout-and-clean, not a stash: the oversized tree must not enter
@@ -701,11 +860,18 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	if err != nil {
 		return res, report, attemptVerdict{}, err
 	}
-	postIgnored, err := implement.TakeIgnoredCensus(ctx, p.out)
+	why, cerr := o.refuseCredentialShaped(ctx, p, t.ID, census)
+	if cerr != nil {
+		return res, report, attemptVerdict{}, cerr
+	}
+	if why != "" {
+		return res, report, attemptVerdict{kind: attemptFailed, why: why}, nil
+	}
+	postIgnored, err := p.git.TakeIgnoredCensus(ctx, p.out)
 	if err != nil {
 		return res, report, attemptVerdict{}, err
 	}
-	created, modified := implement.DiffIgnored(preIgnored, postIgnored)
+	created, modified := implement.DiffIgnored(before.ignored, postIgnored)
 	for _, path := range created {
 		_ = os.RemoveAll(filepath.Join(p.out, path))
 	}
@@ -717,7 +883,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	}
 
 	// Step 7: the gate.
-	gateLabel, gatePaths, why, err := o.gatePhase(ctx, p, t.ID, census)
+	gateLabel, gatePaths, why, err := o.gatePhase(ctx, p, t.ID, census, before)
 	if err != nil {
 		return res, report, attemptVerdict{}, err
 	}
@@ -733,15 +899,64 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	return res, report, attemptVerdict{kind: attemptImplemented, sha: sha, gate: gateLabel}, nil
 }
 
+// refuseCredentialShaped fails an attempt whose census names a file the
+// target's exclude patterns match -- the config's own list plus the mandatory
+// credential patterns no config can drop. A non-empty reason fails the attempt.
+//
+// Checked before the gate so the gate is not paid for first, and failed rather
+// than silently dropped: a project that genuinely needs an .env needs the
+// operator to say so, and a task whose work quietly lost a file it wrote would
+// miss its acceptance criteria for no stated reason.
+//
+// Discarded with checkout-and-clean rather than the ordinary stash, for the
+// same reason the byte bound uses it (§5.3): a stash is a commit, so stashing a
+// secret still writes it into the delivered repository -- buried under
+// refs/stash instead of main, which is not the promise. Measured while fixing
+// this: the first version routed the failure through the stash and the .env was
+// still reachable in the project's history.
+func (o *Orchestrator) refuseCredentialShaped(ctx context.Context, p *implementPrep, taskID string, census implement.Census) (string, error) {
+	hit, err := p.col.ExcludedPaths(census.Paths())
+	if err != nil || len(hit) == 0 {
+		return "", err
+	}
+	o.journal("credential_shaped_paths", 1, map[string]any{"id": taskID, "paths": hit})
+	if err := p.col.DiscardClean(ctx); err != nil {
+		return "", err
+	}
+	if err := o.assertClean(ctx, p); err != nil {
+		return "", err
+	}
+	return "the session created credential-shaped file(s), discarded unstashed: " + strings.Join(hit, ", ") +
+		" -- these match the patterns that hide a path from every reviewer, so keeping them would bury a secret in the project's history", nil
+}
+
 // gatePhase is §5.2 step 7: run the gate, classify every difference, remove
 // output after EVERY gate run (a failed gate's droppings must not sit in the
 // tree for the next attempt). A non-empty `why` fails the attempt.
-func (o *Orchestrator) gatePhase(ctx context.Context, p *implementPrep, taskID string, census implement.Census) (label string, gatePaths []string, why string, err error) {
+func (o *Orchestrator) gatePhase(ctx context.Context, p *implementPrep, taskID string, census implement.Census, before attemptBase) (label string, gatePaths []string, why string, err error) {
 	if len(o.cfg.Verify.Commands) == 0 {
 		return "ungated", nil, "", nil
 	}
 	rep := verify.Run(ctx, o.cfg.Verify, p.out, agent.EnvWithoutCredentials(o.cfg.Agents))
-	post, err := implement.TakeCensus(ctx, p.out, 0)
+	// The gate EXECUTES code the coder wrote, so it gets the same scrutiny the
+	// session does -- and it shipped without any (review run 20260813-180828,
+	// i48): the step 4 ladder ran before the gate and post-gate reconciliation
+	// looked only at worktree files, so a test could edit .git/config, plant a
+	// hooks directory, or add one line to .git/info/exclude that makes a source
+	// file invisible to `git status`. The commit then omits that file while the
+	// gate that "verified" it passed, which is the one claim this pipeline
+	// exists to make. Worse, nothing noticed later: the next attempt and the
+	// next task re-snapshot at step 2 and would adopt the altered metadata as
+	// their own baseline.
+	//
+	// Stricter than the session's ladder on purpose: a session that commits is
+	// merely disobedient and gets a soft reset, but a GATE is fixpoint's own
+	// configured command, and every difference here -- HEAD included -- means
+	// the run can no longer reason about the repository.
+	if err := o.checkGateInvariants(ctx, p, taskID, before); err != nil {
+		return "", nil, "", err
+	}
+	post, err := p.git.TakeCensus(ctx, p.out, 0)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -837,7 +1052,7 @@ func (o *Orchestrator) checkInvariants(ctx context.Context, p *implementPrep, ta
 		return err
 	}
 	if head != base {
-		if !isAncestor(ctx, p.out, base, head) {
+		if !p.git.IsAncestor(ctx, p.out, base, head) {
 			return runStopError{fmt.Sprintf("HEAD moved from %.12s to %.12s and the base is not its ancestor", base, head)}
 		}
 		o.journal("contract_deviation", 1, map[string]any{"id": taskID, "kind": "coder-committed"})
@@ -846,7 +1061,7 @@ func (o *Orchestrator) checkInvariants(ctx context.Context, p *implementPrep, ta
 			return err
 		}
 	}
-	postState, err := implement.SnapshotRepoState(ctx, p.out, "main")
+	postState, err := p.git.SnapshotRepoState(ctx, p.out, "main")
 	if err != nil {
 		return err
 	}
@@ -854,6 +1069,29 @@ func (o *Orchestrator) checkInvariants(ctx context.Context, p *implementPrep, ta
 		return runStopError{strings.Join(diff, "; ")}
 	}
 	return nil
+}
+
+// checkGateInvariants is the same comparison after the gate has run project
+// code, with no ladder: the gate is not supposed to touch the repository at all,
+// so HEAD moving is itself a mutation rather than something to reset away.
+func (o *Orchestrator) checkGateInvariants(ctx context.Context, p *implementPrep, taskID string, before attemptBase) error {
+	head, err := p.col.HeadSHA(ctx)
+	if err != nil {
+		return err
+	}
+	postState, err := p.git.SnapshotRepoState(ctx, p.out, "main")
+	if err != nil {
+		return err
+	}
+	diff := postState.Diff(before.repo)
+	if head != before.head {
+		diff = append(diff, fmt.Sprintf("the gate moved HEAD from %.12s to %.12s", before.head, head))
+	}
+	if len(diff) == 0 {
+		return nil
+	}
+	o.journal("gate_mutated_repository", 1, map[string]any{"id": taskID, "what": diff})
+	return runStopError{"the gate changed the repository itself, not just the worktree: " + strings.Join(diff, "; ")}
 }
 
 // cleanUpInterrupted discards whatever an interrupted attempt left behind. It
@@ -933,7 +1171,7 @@ func (o *Orchestrator) cleanCheck(ctx context.Context, p *implementPrep) error {
 	if err != nil {
 		return err
 	}
-	rep, err := implement.CleanCheck(ctx, p.out, scratch, o.cfg.Verify, agent.EnvWithoutCredentials(o.cfg.Agents))
+	rep, err := p.git.CleanCheck(ctx, p.out, scratch, o.cfg.Verify, agent.EnvWithoutCredentials(o.cfg.Agents))
 	passed := err == nil && rep.Passed()
 	o.journal("clean_check_finished", 1, map[string]any{"cadence": o.cfg.Implement.CleanCheck, "passed": passed})
 	if err != nil {
@@ -1013,11 +1251,6 @@ func isControlArtifact(path string) bool {
 		}
 	}
 	return false
-}
-
-// isAncestor reports whether base is an ancestor of head.
-func isAncestor(ctx context.Context, dir, base, head string) bool {
-	return implement.IsAncestor(ctx, dir, base, head)
 }
 
 // planShape lists every task with its position relative to idx, so the coder

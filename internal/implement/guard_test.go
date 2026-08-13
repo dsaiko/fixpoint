@@ -36,7 +36,7 @@ func guardRepo(t *testing.T) (string, string) {
 func TestControlArtifactsChangedAndRestored(t *testing.T) {
 	dir, sha := guardRepo(t)
 
-	if changed, err := ControlArtifactsChanged(t.Context(), dir, sha); err != nil || len(changed) != 0 {
+	if changed, err := testGit.ControlArtifactsChanged(t.Context(), dir, sha); err != nil || len(changed) != 0 {
 		t.Fatalf("a clean tree reported %v, %v", changed, err)
 	}
 
@@ -51,7 +51,7 @@ func TestControlArtifactsChangedAndRestored(t *testing.T) {
 	// on ordinary work.
 	write(t, dir, "src.txt", "edited by the coder\n")
 
-	changed, err := ControlArtifactsChanged(t.Context(), dir, sha)
+	changed, err := testGit.ControlArtifactsChanged(t.Context(), dir, sha)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +66,8 @@ func TestControlArtifactsChangedAndRestored(t *testing.T) {
 		t.Errorf("an edit to %s went unnoticed", missing)
 	}
 
-	if err := RestoreControlArtifacts(t.Context(), dir, sha, changed); err != nil {
-		t.Fatalf("RestoreControlArtifacts() = %v", err)
+	if err := testGit.RestoreControlArtifacts(t.Context(), dir, sha, changed); err != nil {
+		t.Fatalf("testGit.RestoreControlArtifacts() = %v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "DESIGN.md")); string(got) != "# design\n" {
 		t.Errorf("DESIGN.md after restore = %q", got)
@@ -79,7 +79,7 @@ func TestControlArtifactsChangedAndRestored(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(dir, "src.txt")); string(got) != "edited by the coder\n" {
 		t.Errorf("the restore reverted the session's source edit: %q", got)
 	}
-	if changed, err := ControlArtifactsChanged(t.Context(), dir, sha); err != nil || len(changed) != 0 {
+	if changed, err := testGit.ControlArtifactsChanged(t.Context(), dir, sha); err != nil || len(changed) != 0 {
 		t.Errorf("after restore the guard still reports %v, %v", changed, err)
 	}
 }
@@ -104,9 +104,9 @@ func TestCleanCheck(t *testing.T) {
 		Timeout:  config.Duration(30_000_000_000),
 		Commands: []config.VerifyCommand{{Name: "needs-file", Run: []string{"test", "-f", "needed.txt"}}},
 	}
-	rep, err := CleanCheck(t.Context(), dir, scratch, vcfg, nil)
+	rep, err := testGit.CleanCheck(t.Context(), dir, scratch, vcfg, nil)
 	if err != nil {
-		t.Fatalf("CleanCheck() = %v", err)
+		t.Fatalf("testGit.CleanCheck() = %v", err)
 	}
 	if !rep.Passed() {
 		t.Fatalf("a committed dependency failed in the clone: %+v", rep.Results)
@@ -123,9 +123,9 @@ func TestCleanCheck(t *testing.T) {
 	}
 	write(t, dir, "ignored/needed.txt", "hidden\n")
 	write(t, dir, "needed.txt", "hidden in the tree only\n")
-	rep, err = CleanCheck(t.Context(), dir, scratch, vcfg, nil)
+	rep, err = testGit.CleanCheck(t.Context(), dir, scratch, vcfg, nil)
 	if err != nil {
-		t.Fatalf("CleanCheck() = %v", err)
+		t.Fatalf("testGit.CleanCheck() = %v", err)
 	}
 	if rep.Passed() {
 		t.Error("the clone passed on a file only the working tree has; hidden state would ship undetected")

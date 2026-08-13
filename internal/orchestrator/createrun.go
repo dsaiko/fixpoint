@@ -599,13 +599,8 @@ func (o *Orchestrator) prepareCreate(ctx context.Context, sum *model.RunSummary)
 	}
 	sum.Deliverable = out
 
-	if o.cfg.Ping() {
-		o.phase("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
-		if err := o.Ping(ctx); err != nil {
-			o.endPhase("PREFLIGHT  failed")
-			return "", snap, 0, "", err
-		}
-		o.endPhase("PREFLIGHT  every agent responded")
+	if err := o.preflightPing(ctx); err != nil {
+		return "", snap, 0, "", err
 	}
 
 	// The snapshot is what every phase runs against; the caps bound what the

@@ -1,6 +1,7 @@
 package implement
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,5 +178,54 @@ func TestCommitExactStagesExactlyTheNamedPaths(t *testing.T) {
 	}
 	for missing := range want {
 		t.Errorf("%q was named but not committed", missing)
+	}
+}
+
+// fakeRepo is the Repo interface with no git: the cleanup contract is about the
+// DIRECTORY, and a real repository would only add a dependency to the assertion.
+type fakeRepo struct{ commitErr error }
+
+func (f *fakeRepo) Init(context.Context) error { return nil }
+func (f *fakeRepo) LockRepo(context.Context) (func(), error) {
+	return func() {}, nil
+}
+func (f *fakeRepo) CommitExact(_ context.Context, _, _ string, _ []string, _ bool) (string, error) {
+	return "deadbeef", f.commitErr
+}
+
+// A scaffold that fails after claiming the directory removes it again. The
+// design sells plan-before-scaffold partly on "a planning failure leaves no
+// orphan directory to explain", and the same has to hold when SCAFFOLD itself
+// fails: -out must not exist, so a leftover half-initialized .git makes the
+// retry refuse on fixpoint's own droppings, with the planner session already
+// paid for (review run 20260813-180828, i47).
+func TestScaffoldRemovesTheDirectoryItClaimedOnFailure(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	// An unsafe name refuses AFTER the claim and the init, which is the window.
+	_, _, err := Scaffold(t.Context(), &fakeRepo{}, out, map[string][]byte{"../escape": []byte("x")}, "h", "b")
+	if err == nil {
+		t.Fatal("an unsafe name was accepted")
+	}
+	if _, serr := os.Stat(out); serr == nil {
+		t.Errorf("%s survived a failed scaffold; the retry would refuse on fixpoint's own leftovers", out)
+	}
+	// And the retry works, which is the point of removing it.
+	if _, release, err := Scaffold(t.Context(), &fakeRepo{}, out, map[string][]byte{"a.txt": []byte("x")}, "h", "b"); err != nil {
+		t.Errorf("the retry after a cleaned-up failure refused: %v", err)
+	} else {
+		release()
+	}
+}
+
+// A scaffold that SUCCEEDS keeps its directory: it is the run's product.
+func TestScaffoldKeepsTheRepositoryItBuilt(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	_, release, err := Scaffold(t.Context(), &fakeRepo{}, out, map[string][]byte{"a.txt": []byte("x")}, "h", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if _, err := os.Stat(filepath.Join(out, "a.txt")); err != nil {
+		t.Errorf("the scaffolded project was removed: %v", err)
 	}
 }

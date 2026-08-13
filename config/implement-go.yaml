@@ -29,6 +29,16 @@ implement:
 
 verify:
   policy: must_pass # no baseline: the pristine tree is empty (see DESIGN.md §7.2)
+  # Per command, and it is load-bearing arithmetic, not just a runaway guard:
+  # the fit rule's worst case is attempts x (session + SUM of the per-command
+  # timeouts + 1m), so the inherited 10m defaults would spend 30m of gate
+  # against a 30m session and let a 32h run admit only 15 tasks while the
+  # planner was asked for up to 25 (review run 20260813-180828, i41).
+  #
+  # 5m is generous for what this gate does: build, vet and test over a project
+  # this pipeline built itself. A `go test ./...` past five minutes here is a
+  # hang, not a slow suite -- and the deadline is what pays for the difference.
+  timeout: 5m
   commands:
     - name: build
       run: ["go", "build", "./..."]

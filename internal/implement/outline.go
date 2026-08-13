@@ -19,11 +19,13 @@ type Outline struct {
 
 // NoOutlineError reports a document the coverage rule cannot read: no heading
 // level occurs more than once. The caller turns this into a preflight refusal
-// or, under -no-coverage-check, into a stated "coverage: unchecked".
+// or, under the -no-coverage-check of §7.4, into a stated "coverage:
+// unchecked" -- a flag the design specifies and this version does not ship, so
+// the refusal below is unconditional and says so.
 type NoOutlineError struct{ HeadingsFound int }
 
 func (e NoOutlineError) Error() string {
-	return fmt.Sprintf("the design has no section outline fixpoint can use for coverage checking (headings found: %d); add sections, or pass -no-coverage-check to run without this check", e.HeadingsFound)
+	return fmt.Sprintf("the design has no section outline fixpoint can use for coverage checking (headings found: %d) -- give the document sections at one heading level, each with a distinct title. In this version the check is unconditional: -no-coverage-check is specified in DESIGN.md §7.4 but is NOT implemented, so there is no flag to bypass it with", e.HeadingsFound)
 }
 
 // ExtractOutline reads the document's headings and picks the outline level:

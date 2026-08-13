@@ -72,6 +72,62 @@ func SafeConfigArgs() []string {
 	return out
 }
 
+// operatorConfigOff is the set that takes the OPERATOR's git configuration out
+// of play, as opposed to the repository's. safeConfig pins keys by name, which
+// only works for keys whose names are static; the dangerous ones here have
+// dynamic names -- filter.<name>.clean/smudge, diff.<driver>.command -- so they
+// cannot be pinned, only starved of a place to be defined. Switching the global
+// and system files off does exactly that: a .gitattributes in the tree names a
+// filter, and the definition it needs is no longer readable.
+//
+// GIT_ATTR_NOSYSTEM completes it by ignoring the system-wide attributes file,
+// so the tree's own .gitattributes is the only one in effect.
+var operatorConfigOff = []string{
+	"GIT_CONFIG_GLOBAL=/dev/null",
+	"GIT_CONFIG_SYSTEM=/dev/null",
+	"GIT_ATTR_NOSYSTEM=1",
+}
+
+// NoOperatorConfig returns env with the operator's global and system git config
+// switched off, replacing any values env already carries for those variables so
+// the result is unambiguous whatever the caller passed.
+//
+// Only ever right for a repository FIXPOINT created: nothing there needs the
+// operator's identity or aliases, because Init writes that repository's identity
+// locally. Over an operator's own repository it would change what their git
+// does, which is why this is a named helper and not part of Harden.
+//
+// It lives beside Harden for the reason Harden's own comment gives: two callers
+// that cannot import each other need the same pins, and the second copy is the
+// bug. The write path (internal/target.Collector, staging and committing) and
+// the read path (internal/implement's status, clone and checkout) both need
+// these, and shipped with only the write path covered -- review run
+// 20260813-180828 found the read path's `git clone` executing a
+// globally-defined filter with fixpoint's credentials in its environment.
+func NoOperatorConfig(env []string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	out := make([]string, 0, len(env)+len(operatorConfigOff))
+	for _, e := range env {
+		if isOperatorConfigVar(e) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return append(out, operatorConfigOff...)
+}
+
+func isOperatorConfigVar(entry string) bool {
+	for _, pin := range operatorConfigOff {
+		name, _, _ := strings.Cut(pin, "=")
+		if strings.HasPrefix(entry, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 // Harden returns env plus GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n
 // entries that apply safeConfig to EVERY git process started with it, including
 // ones fixpoint never builds a command line for: the git calls gh makes

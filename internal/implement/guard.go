@@ -19,10 +19,10 @@ import (
 // changed names; the caller restores them and fails the task as a contract
 // violation -- session-scoped, because the authoritative bytes were never
 // lost.
-func ControlArtifactsChanged(ctx context.Context, dir, bootstrapSHA string) ([]string, error) {
+func (g Git) ControlArtifactsChanged(ctx context.Context, dir, bootstrapSHA string) ([]string, error) {
 	var changed []string
 	for _, name := range ControlArtifacts {
-		blob, err := gitRun(ctx, dir, "show", bootstrapSHA+":"+name)
+		blob, err := g.run(ctx, dir, "show", bootstrapSHA+":"+name)
 		if err != nil {
 			// Absent from the bootstrap commit: nothing to protect.
 			continue
@@ -37,12 +37,12 @@ func ControlArtifactsChanged(ctx context.Context, dir, bootstrapSHA string) ([]s
 
 // RestoreControlArtifacts puts the bootstrap commit's version of the named
 // control artifacts back into the worktree.
-func RestoreControlArtifacts(ctx context.Context, dir, bootstrapSHA string, names []string) error {
+func (g Git) RestoreControlArtifacts(ctx context.Context, dir, bootstrapSHA string, names []string) error {
 	if len(names) == 0 {
 		return nil
 	}
 	args := append([]string{"checkout", "-q", bootstrapSHA, "--"}, names...)
-	if out, err := gitRun(ctx, dir, args...); err != nil {
+	if out, err := g.run(ctx, dir, args...); err != nil {
 		return fmt.Errorf("restore control artifacts: %w: %s", err, out)
 	}
 	return nil
@@ -52,17 +52,22 @@ func RestoreControlArtifacts(ctx context.Context, dir, bootstrapSHA string, name
 // clone (§7.2): the enforcement of the design's central claim -- the
 // committed bytes alone satisfy the gate -- put where it can actually be
 // checked. The working tree cannot carry that claim; a fresh checkout can.
-func CleanCheck(ctx context.Context, repoDir, scratchDir string, vcfg config.Verify, env []string) (verify.Report, error) {
+//
+// Two environments, deliberately: the clone runs under the handle's hardened
+// git env (a clone CHECKS OUT, so it applies whatever filters the cloned
+// .gitattributes names), while gateEnv is what the gate commands themselves
+// run with.
+func (g Git) CleanCheck(ctx context.Context, repoDir, scratchDir string, vcfg config.Verify, gateEnv []string) (verify.Report, error) {
 	clone := filepath.Join(scratchDir, "clean-check")
 	if err := os.RemoveAll(clone); err != nil {
 		return verify.Report{}, err
 	}
 	// --no-hardlinks: the clone must not share object files with a repository a
 	// gate command is about to run inside.
-	if out, err := gitRun(ctx, scratchDir, "clone", "-q", "--no-hardlinks", repoDir, clone); err != nil {
+	if out, err := g.run(ctx, scratchDir, "clone", "-q", "--no-hardlinks", repoDir, clone); err != nil {
 		return verify.Report{}, fmt.Errorf("clean-check clone: %w: %s", err, out)
 	}
-	return verify.Run(ctx, vcfg, clone, env), nil
+	return verify.Run(ctx, vcfg, clone, gateEnv), nil
 }
 
 // GateWorst is the fit rule's gate term: the SUM of every configured
