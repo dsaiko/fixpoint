@@ -34,8 +34,10 @@ that follows.
   or by an explicit out-of-scope reason. The exact headings the validator
   will check against:
 {{range .OutlineHeadings}}  - {{.}}
-{{end}}{{end}}- Prefer 8-25 tasks. **At most {{.MaxTasks}}** -- that is what the run's
-  deadline admits at the configured attempts and gate; over it the plan is
-  refused, not truncated.
+{{end}}{{end}}- **At most {{.MaxTasks}} tasks** -- that is what the run's deadline admits at
+  the configured attempts, gate and clean-check; over it the plan is refused,
+  not truncated. Aim for the number the design actually needs, not the cap:
+  each task is one session, so a task too large for one session times out and
+  a task too small spends a session on nothing.
 
 {{.OutputContract}}

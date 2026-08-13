@@ -20,6 +20,11 @@ implement:
 
 verify:
   policy: must_pass
+  # Per command; see implement-go.yaml for why this number decides how many
+  # tasks a run admits. Longer than go's because `npm ci` on a cold cache with
+  # a real dependency tree genuinely takes minutes, and it is the first of the
+  # three commands: a timeout there fails the task on the registry's behalf.
+  timeout: 8m
   commands:
     - name: install
       run: ["npm", "ci"]

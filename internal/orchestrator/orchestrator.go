@@ -91,6 +91,10 @@ type Orchestrator struct {
 	// running them with everything the agents deliberately do not see is the one
 	// place the env filtering could be walked around. Computed once at startup.
 	verifyEnv []string
+	// infraBackoff overrides the implement pipeline's retry waits; empty means
+	// the shipped schedule. Set only by tests, which must not sleep for real
+	// minutes to exercise the breaker.
+	infraBackoff []time.Duration
 	// ledger groups raw observations into issues and carries their state across
 	// rounds, so a problem two agents both reported costs one slot, not two.
 	ledger *issue.Ledger
@@ -5670,4 +5674,26 @@ func looksLikeCommit(s string) bool {
 		}
 	}
 	return true
+}
+
+// preflightPing is the agent-reachability check every pipeline runs before it
+// spends anything, in one place so a fourth pipeline inherits it instead of
+// re-deriving it. runPipeline dispatches create and implement BEFORE run()'s
+// own preflight, so each needs its own call -- and implement shipped without
+// one (review run 20260813-180828, i5).
+//
+// A no-op when ping_agents is off; the active set is already narrowed per
+// pipeline by activeAgentNames, so an implement run pings its planner and coder
+// and never the inert reviewer pool.
+func (o *Orchestrator) preflightPing(ctx context.Context) error {
+	if !o.cfg.Ping() {
+		return nil
+	}
+	o.phase("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
+	if err := o.Ping(ctx); err != nil {
+		o.endPhase("PREFLIGHT  failed")
+		return err
+	}
+	o.endPhase("PREFLIGHT  every agent responded")
+	return nil
 }

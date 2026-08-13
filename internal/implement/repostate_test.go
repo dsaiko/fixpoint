@@ -33,9 +33,9 @@ func stateRepo(t *testing.T) string {
 // task commit on the working branch must not (§5.2 step 4).
 func TestRepoStateDiff(t *testing.T) {
 	dir := stateRepo(t)
-	base, err := SnapshotRepoState(t.Context(), dir, "main")
+	base, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
 	if err != nil {
-		t.Fatalf("SnapshotRepoState() = %v", err)
+		t.Fatalf("testGit.SnapshotRepoState() = %v", err)
 	}
 	if got := base.Diff(base); len(got) != 0 {
 		t.Fatalf("self-diff = %v", got)
@@ -46,7 +46,7 @@ func TestRepoStateDiff(t *testing.T) {
 	if _, err := collectorFor(t, dir).CommitExact(t.Context(), "c", "-", []string{"a.txt"}, false); err != nil {
 		t.Fatal(err)
 	}
-	after, err := SnapshotRepoState(t.Context(), dir, "main")
+	after, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,12 +92,12 @@ func TestRepoStateDiff(t *testing.T) {
 	}
 	for _, m := range mutations {
 		t.Run(m.name, func(t *testing.T) {
-			pre, err := SnapshotRepoState(t.Context(), dir, "main")
+			pre, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
 			if err != nil {
 				t.Fatal(err)
 			}
 			m.do()
-			post, err := SnapshotRepoState(t.Context(), dir, "main")
+			post, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -171,12 +171,12 @@ func TestRepoStateRefusesSymlinkedMetadata(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := stateRepo(t)
 			external := t.TempDir()
-			base, err := SnapshotRepoState(t.Context(), dir, "main")
+			base, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
 			if err != nil {
 				t.Fatal(err)
 			}
 			tc.do(t, dir, external)
-			after, err := SnapshotRepoState(t.Context(), dir, "main")
+			after, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,5 +185,49 @@ func TestRepoStateRefusesSymlinkedMetadata(t *testing.T) {
 				t.Fatalf("diff = %v, want it to name %q", diff, tc.want)
 			}
 		})
+	}
+}
+
+// A nested .git under an IGNORED path is ordinary dependency installation, not
+// tampering. `npm ci` pulling a package straight from a git URL leaves one
+// under node_modules/; before the scoping that stopped the RUN, reported as the
+// session having rewritten the repository's metadata (review run
+// 20260813-180828, i45). Under an un-ignored path it still stops the run: that
+// one can reach a commit as a gitlink, which is the rule's whole purpose.
+func TestNestedGitIsScopedToTheUnignoredTree(t *testing.T) {
+	dir := stateRepo(t)
+	write(t, dir, ".gitignore", "node_modules/\n")
+
+	base, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The ignored case: a whole vendored repository, exactly as a package
+	// manager would leave it.
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "left-pad", ".git", "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, filepath.Join("node_modules", "left-pad", ".git", "HEAD"), "ref: refs/heads/main\n")
+	ignored, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := ignored.Diff(base); len(diff) > 0 {
+		t.Errorf("a nested .git under an ignored path stopped the run: %v", diff)
+	}
+
+	// The un-ignored case: same shape, a path a commit could reach.
+	if err := os.MkdirAll(filepath.Join(dir, "vendor", "dep", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, filepath.Join("vendor", "dep", ".git", "HEAD"), "ref: refs/heads/main\n")
+	visible, err := testGit.SnapshotRepoState(t.Context(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff := visible.Diff(base)
+	if len(diff) == 0 || !strings.Contains(strings.Join(diff, "; "), "vendor/dep/.git") {
+		t.Errorf("a nested .git a commit could reach was not reported: %v", diff)
 	}
 }

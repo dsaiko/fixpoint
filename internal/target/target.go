@@ -1935,6 +1935,35 @@ func (c *Collector) Init(ctx context.Context) error {
 	return nil
 }
 
+// ExcludedPaths returns those of paths the target's effective excludes match --
+// the config's own list plus the mandatory credential patterns no config can
+// drop. Slash-relative paths, as `git status` reports them.
+//
+// It exists because exclusion had an owner on the READ side only: the patterns
+// govern what a reviewer is shown, and nothing consulted them on the way IN.
+// The implement pipeline writes a repository, and a coder that scaffolds an
+// .env, a fixture id_rsa or a config/*.pem had it committed into the delivered
+// project's permanent history -- where these same patterns then hid it from
+// every later review-code run, making it durable and invisible at once (review
+// run 20260813-180828, i3). The caller decides what to do about a match; this
+// only answers the question, and answers it from the one pattern list.
+func (c *Collector) ExcludedPaths(paths []string) ([]string, error) {
+	excludes, err := compileGlobs(c.cfg.EffectiveExcludes())
+	if err != nil {
+		return nil, fmt.Errorf("target.exclude: %w", err)
+	}
+	var hit []string
+	for _, p := range paths {
+		// Both spellings, because a directory pattern ("**/.direnv/**") is
+		// written to match what is UNDER it while `git status` names the files.
+		if matchAny(excludes, p) || matchAny(excludes, p+"/") {
+			hit = append(hit, p)
+		}
+	}
+	sort.Strings(hit)
+	return hit, nil
+}
+
 // CommitExact commits exactly the given paths (DESIGN.md §5.2 step 8): the
 // index is not trusted, so it is first reset to HEAD (worktree untouched) and
 // the computed path set staged from the worktree -- additions, modifications

@@ -11,6 +11,10 @@ import (
 	"strings"
 )
 
+// gitDirName is the marker whose presence below the worktree root means a
+// nested repository.
+const gitDirName = ".git"
+
 // RepoState is the repository-invariant snapshot of §5.2 step 4: everything a
 // coder session could change about the repository ITSELF -- as opposed to the
 // worktree -- captured before the session and compared after it. The list
@@ -44,9 +48,9 @@ type RepoState struct {
 // excludeBranch is the branch HEAD is expected to move on (normally "main");
 // its ref is left out of the digest so an ordinary task commit does not read
 // as a ref-list mutation.
-func SnapshotRepoState(ctx context.Context, dir, excludeBranch string) (RepoState, error) {
+func (g Git) SnapshotRepoState(ctx context.Context, dir, excludeBranch string) (RepoState, error) {
 	var s RepoState
-	gitDir := filepath.Join(dir, ".git")
+	gitDir := filepath.Join(dir, gitDirName)
 
 	var err error
 	if s.ConfigDigest, err = fileDigest(filepath.Join(gitDir, "config")); err != nil {
@@ -56,7 +60,7 @@ func SnapshotRepoState(ctx context.Context, dir, excludeBranch string) (RepoStat
 	// (gitenv.SafeConfigArgs), and a plain `git config` would read that pin
 	// back instead of the repository's durable setting -- which is the thing a
 	// session could have edited and the thing the delivered project keeps.
-	hooks, err := gitRun(ctx, dir, "config", "--local", "core.hooksPath")
+	hooks, err := g.run(ctx, dir, "config", "--local", "core.hooksPath")
 	if err != nil {
 		// An unset key exits 1; the effective path is then .git/hooks.
 		hooks = ".git/hooks"
@@ -64,7 +68,7 @@ func SnapshotRepoState(ctx context.Context, dir, excludeBranch string) (RepoStat
 	s.HooksPath = strings.TrimSpace(hooks)
 	s.HooksEmpty = dirEmpty(filepath.Join(dir, filepath.FromSlash(s.HooksPath)))
 
-	refs, err := gitRun(ctx, dir, "for-each-ref", "--format=%(refname) %(objectname)")
+	refs, err := g.run(ctx, dir, "for-each-ref", "--format=%(refname) %(objectname)")
 	if err != nil {
 		return s, err
 	}
@@ -79,7 +83,7 @@ func SnapshotRepoState(ctx context.Context, dir, excludeBranch string) (RepoStat
 	sum := sha256.Sum256([]byte(strings.Join(keep, "\n") + "\x00" + string(packed)))
 	s.RefsDigest = hex.EncodeToString(sum[:])
 
-	if s.NestedGit, err = findNestedGit(dir); err != nil {
+	if s.NestedGit, err = g.findNestedGit(ctx, dir); err != nil {
 		return s, err
 	}
 	if s.InfoExcludeDigest, err = fileDigest(filepath.Join(gitDir, "info", "exclude")); err != nil {
@@ -181,22 +185,42 @@ func dirEmpty(path string) bool {
 	return err == nil && len(entries) == 0
 }
 
-// findNestedGit walks the worktree for .git entries below the root -- a
-// nested repository would turn a stage into a gitlink nothing gated.
-func findNestedGit(root string) ([]string, error) {
+// findNestedGit walks the UN-IGNORED worktree for .git entries below the root
+// -- a nested repository there would turn a stage into a gitlink nothing gated.
+//
+// Scoped to the un-ignored tree because that is the only part that can reach a
+// commit, which is the rule's whole reason for existing. Unscoped it made
+// ordinary dependency installation look like tampering (review run
+// 20260813-180828, i45): a `.git` under node_modules/ -- any package installed
+// from a git URL, any vendored fixture repository -- read as "a nested .git
+// appeared" and stopped the RUN, the design's most severe outcome, blaming the
+// session for rewriting repository metadata. The trigger is behavior §6
+// explicitly encourages. Ignored paths are exempt from every other census rule
+// for the same reason (§5.2 step 2): fixpoint cannot reason about build state.
+//
+// Skipping those subtrees also stops the walk from descending node_modules
+// twice per attempt -- ~160 full traversals over a 40-task run.
+func (g Git) findNestedGit(ctx context.Context, root string) ([]string, error) {
+	ignored, err := g.ignoredDirs(ctx, root)
+	if err != nil {
+		return nil, err
+	}
 	var found []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
-		}
-		if d.Name() != ".git" {
-			return nil
 		}
 		rel, rerr := filepath.Rel(root, path)
 		if rerr != nil {
 			return rerr
 		}
-		if rel == ".git" {
+		if d.IsDir() && d.Name() != gitDirName && ignored[filepath.ToSlash(rel)] {
+			return filepath.SkipDir
+		}
+		if d.Name() != gitDirName {
+			return nil
+		}
+		if rel == gitDirName {
 			return filepath.SkipDir // the repository's own
 		}
 		found = append(found, rel)
@@ -206,4 +230,25 @@ func findNestedGit(root string) ([]string, error) {
 		return nil
 	})
 	return found, err
+}
+
+// ignoredDirs is the set of wholly-ignored directories, as git reports them.
+// --directory collapses a fully-ignored directory to the directory itself, so
+// the walk can prune at the top instead of listing every file beneath it.
+func (g Git) ignoredDirs(ctx context.Context, dir string) (map[string]bool, error) {
+	out, err := g.run(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		return nil, err
+	}
+	set := map[string]bool{
+		// fixpoint's own scratch inside the project, which is not the coder's
+		// and is exempt from the census for the same reason.
+		".fixpoint": true,
+	}
+	for _, p := range strings.Split(strings.Trim(out, "\x00"), "\x00") {
+		if p = strings.TrimSuffix(p, "/"); p != "" {
+			set[p] = true
+		}
+	}
+	return set, nil
 }

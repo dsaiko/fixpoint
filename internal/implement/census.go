@@ -26,6 +26,20 @@ type Census struct {
 	Bytes int64
 }
 
+// Paths is every path the census names, untracked and modified together,
+// sorted: the set a caller must decide about before any of it is staged.
+func (c Census) Paths() []string {
+	out := make([]string, 0, len(c.Untracked)+len(c.Modified))
+	for p := range c.Untracked {
+		out = append(out, p)
+	}
+	for p := range c.Modified {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ByteBoundError reports a session whose changes exceed implement.
 // max_task_bytes; the attempt fails BEFORE anything is hashed or gated, and
 // the caller routes the oversized tree through the checkout-and-clean discard
@@ -42,9 +56,9 @@ func (e ByteBoundError) Error() string {
 // TakeCensus records the un-ignored changes at dir. maxBytes > 0 enforces the
 // byte bound during the walk, sizes first, so an oversized tree refuses
 // before a single file is hashed.
-func TakeCensus(ctx context.Context, dir string, maxBytes int64) (Census, error) {
+func (g Git) TakeCensus(ctx context.Context, dir string, maxBytes int64) (Census, error) {
 	c := Census{Untracked: map[string]string{}, Modified: map[string]string{}}
-	out, err := gitRun(ctx, dir, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
+	out, err := g.run(ctx, dir, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
 	if err != nil {
 		return c, err
 	}
@@ -135,8 +149,8 @@ type IgnoredStat struct {
 // root -- on a continued run `.fixpoint/` is the run's scratch inside the
 // project, and a census that reads the run's own journal writes would fail
 // every task on the tool's bookkeeping (review run 20260813-003817).
-func TakeIgnoredCensus(ctx context.Context, dir string) (map[string]IgnoredStat, error) {
-	out, err := gitRun(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+func (g Git) TakeIgnoredCensus(ctx context.Context, dir string) (map[string]IgnoredStat, error) {
+	out, err := g.run(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
 	}

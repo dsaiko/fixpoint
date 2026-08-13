@@ -586,7 +586,13 @@ func implementOutcome(sum *model.RunSummary) [][2]string {
 }
 
 // taskOutcomeLine renders the implement run's outcome vector, in §5.4's
-// vocabulary and its order.
+// vocabulary and its order, against the PLAN as denominator.
+//
+// "18 of 20" and not just "18": a run that stops early used to print only what
+// it processed, so a 20-task plan that stopped after five reported "5 task(s) ·
+// 5 implemented" and nothing anywhere said the other fifteen existed (review
+// run 20260813-180828, i22). Every planned task now carries an outcome, so the
+// count of rows IS the plan -- the denominator is stated rather than implied.
 func taskOutcomeLine(tasks []model.TaskOutcome) string {
 	if len(tasks) == 0 {
 		return ""
@@ -595,8 +601,8 @@ func taskOutcomeLine(tasks []model.TaskOutcome) string {
 	for _, t := range tasks {
 		counts[t.Outcome]++
 	}
-	line := fmt.Sprintf("%d task(s)", len(tasks))
-	for _, k := range []string{"implemented", "already_satisfied", "blocked", "failed", "skipped", "carried"} {
+	line := fmt.Sprintf("%d of %d task(s) implemented", counts["implemented"], len(tasks))
+	for _, k := range []string{"already_satisfied", "blocked", "failed", "skipped", "unreached", "carried"} {
 		if counts[k] > 0 {
 			line += fmt.Sprintf(" · %d %s", counts[k], k)
 		}

@@ -798,19 +798,48 @@ Two things make the deadline honest rather than a trap:
 
 **It is checked against the plan before any coder session runs.** §4.2 rule 7
 refuses a plan that cannot fit, naming the arithmetic — and the arithmetic is the
-worst case the configuration permits, not the happy path. The default of 32h is
-chosen to admit the whole 8–25 task range the planner prompt asks for at the
-default `max_task_attempts: 2` (25 × 2 × ~35 min ≈ 29.2 h); an earlier draft's
-16h admitted the same range only at one attempt each, so the common run — a few
-tasks needing their second session — was arithmetically guaranteed to hit the
-deadline mid-run, the exact trap rule 7 exists to refuse (review run
-20260812-183115). A 40-task plan — legal under `max_tasks` — does *not* fit 32h
-and is refused at plan time with instructions to raise the deadline or split the
-design. An operator running smaller plans lowers the deadline; the fit rule keeps
-whichever number is set honest.
+worst case the configuration permits, not the happy path:
 
-**An expired run can be continued, not only rerun.** `-continue <project>` resumes
-into a repository fixpoint itself built:
+```
+tasks × attempts × (session_timeout + Σ per-command gate timeouts + 1 min)
+      + the clone gate runs clean_check buys (one per task at `every`, one at `last`)
+```
+
+Both correction terms were learned the hard way. The per-command sum replaced a
+single gate timeout in revision 3 (review run 20260812-183115); the clean-check
+term was missing until review run 20260813-180828 found that a 15-task plan the
+validator called legal needed ~38h against a 32h deadline at `clean_check:
+every`, hitting the deadline around task 12 — the exact trap rule 7 exists to
+refuse, re-opened by the check §8 tells operators to switch on.
+
+The same arithmetic produces the cap quoted to the planner, because it is
+literally the same function (`Rules.Admitted`). It has to be: when the two were
+computed separately the prompt asked for "8–25 tasks" beside a computed "at most
+15", and the planner — the only agent that decides task size — resolved the
+contradiction by making tasks too big for one session.
+
+At the shipped 32h and `clean_check: last`, that admits **20** tasks for
+implement-go (30m session, 3 × 5m gate), **17** for implement-node (3 × 8m), and
+**30** for the ungated implement-web; three fewer each at `clean_check: every`.
+`max_tasks: 40` is the absolute ceiling, reachable only by raising the deadline
+or shortening the gate. An operator running smaller plans lowers the deadline;
+the fit rule keeps whichever number is set honest.
+
+**An expired run can be continued, not only rerun — specified here, NOT YET
+IMPLEMENTED.** Everything in the rest of this subsection describes `-continue`,
+which this version does not ship: `cmd/fixpoint` defines no such flag and
+nothing reads the trailers back. It is specified because the *write* side is
+built to it — the committed `PLAN.json`, the bootstrap trailers and §5.4's
+outcome markers all exist to be replayed — and because the read side is a
+self-contained increment on top of them.
+
+Until it lands, the honest recovery for every stop below is: **the committed
+tasks stand and were gated; the remainder must be rebuilt by a fresh run into a
+fresh directory**, or finished by hand with `fix-code` over the half-built
+project. §8's recovery column says so, and the messages the run prints when it
+stops say so. Nothing in the tool claims re-entry it cannot perform.
+
+`-continue <project>` will resume into a repository fixpoint itself built:
 
 ```sh
 fixpoint implement-go -continue ~/src/prsi -trusted-target
@@ -1159,17 +1188,20 @@ the panel on the plan after all.
 | the gate rewrites a `gate_generated` file (lockfile) | that task | staged into the commit, attributed to the gate in a trailer | the trailer | none needed — this is the designed path |
 | the coder edits a control artifact (`DESIGN.md`, `PLAN.md`, `PLAN.json`, `.gitignore`) | that task | restored from the bootstrap blob, task failed as contract violation | the journal event and the restored file | rerun the task |
 | the coder's changes exceed `max_task_bytes` | that task | attempt failed before hashing or gating; tree discarded via checkout-and-clean (§5.3) | the census walk's report and the journal | raise the bound, or fix the plan's task |
+| the coder creates a credential-shaped file (`.env`, `id_rsa`, `*.pem`, …) | that task | attempt failed, tree discarded via checkout-and-clean so nothing reaches the object database — not even a stash — paths named | the `credential_shaped_paths` journal event | if the project genuinely needs one, add it after the run: fixpoint will not commit a path its own mandatory exclude patterns would then hide from every reviewer |
 | the clean-clone check fails (`clean_check`, §7.2) | end of run (`last`) or that task (`every`) | run incomplete (exit 2): "HEAD does not pass the gate in a clean clone" | the clone's gate output; the per-task ignored-census diffs point at the accumulation | at `last`: rerun with `clean_check: every` to find the culprit task |
-| the agent or gate cannot run at all (provider refusal, dead session, missing executable) | that attempt | attempt not counted; two consecutive → circuit breaker, run stops incomplete (exit 2), **no marker** | the `error_status` in the step record | wait out the outage, `-continue` re-enters at the same task |
-| free disk below `min_free_disk` | preflight or between tasks | refusal / run stops incomplete (exit 2), threshold named | `df` | free space, `-continue` |
+| the agent or gate cannot run at all (provider refusal, dead session, missing executable) | that attempt | attempt not counted; retried with backoff (1m, 5m, 15m, 30m) and journalled, then the circuit breaker stops the run incomplete (exit 2), **no marker**. A 402 skips the backoff: waiting cannot fix payment | the `error_status` in the step record and the `infra_backoff` journal events | wait out the outage; the built tasks stand, the remainder needs a fresh run (no `-continue` yet, §5.5) |
+| free disk below `min_free_disk` | preflight or between tasks | refusal / run stops incomplete (exit 2), threshold and free figure named; every unreached task is reported | `df`, the `disk_exhausted` journal event | free space, then a fresh run (no `-continue` yet, §5.5) |
 | the coder dies mid-task | that task | changes discarded (tracked **and** untracked); an infrastructure death does not count against the attempts (§5.4), a mid-work crash with output does | `git stash list`, attempt artifacts, `error_status` | the built tasks stand |
 | the coder claims a task it did not do | that task | contract violation, task failed | the session artifact and the clean tree | rerun that task |
 | the coder committed on its own | that task | soft-reset to base, journal deviation, run continues | the journal event | none needed |
 | the coder rewrote history below base | that task | **run stops**, exit 1, repository-invariant failure with expected and actual SHAs | reflog | inspect by hand; fixpoint never resets user-visible history for you |
-| the coder touched `.git/config`, hooks, other refs, or created a nested repo | that task | **run stops**, exit 1, repository-invariant failure naming what changed | the invariant snapshot in `round-<n>/repostate.json` | inspect by hand; the committed tasks stand and were gated |
+| the coder touched `.git/config`, hooks, other refs, or created a nested repo **in the un-ignored tree** | that task | **run stops**, exit 1, repository-invariant failure naming what changed | the journal's `what` list on the invariant event | inspect by hand; the committed tasks stand and were gated |
+| **the GATE** touched any of the same | that task | **run stops**, exit 1, before anything is staged: a gate runs coder-authored code, and a test that appends to `.git/info/exclude` would hide a source file from the census and the commit | the `gate_mutated_repository` journal event | fix the gate config; the committed tasks stand |
+| a nested repo appears under an IGNORED path (`node_modules/`, a vendored fixture) | nothing | ignored: only the un-ignored tree can reach a commit as a gitlink | — | none needed — installing a dependency from a git URL is ordinary |
 | the tree is dirty at the start of a task | that task | **run stops**, exit 1, repository-invariant failure naming the paths | the paths | a fixpoint bug; report it — the residue is fixpoint's, not the coder's |
-| `max_run_duration` reached | between tasks | run stops, exit 2, names the next unbuilt task | summary | `-continue` into the same project |
-| Ctrl-C | between sessions | run stops; every committed task stands and was gated; **nothing further is committed** | summary written to artifacts | `-continue`, or leave it — the repository is consistent as-is |
+| `max_run_duration` reached | between tasks | run stops, exit 2, names the next unbuilt task; every task after it is reported `unreached` | summary | a fresh run for the remainder (no `-continue` yet, §5.5) |
+| Ctrl-C | between sessions | run stops; every committed task stands and was gated; **nothing further is committed**; the in-flight attempt is discarded so the tree is left clean | summary written to artifacts | leave it — the repository is consistent as-is; the remainder needs a fresh run (no `-continue` yet, §5.5) |
 
 Three of these deserve their reasons stated.
 

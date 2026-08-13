@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,6 +162,10 @@ type implementFixture struct {
 	planJSON string
 	planFile string
 	logs     func() string
+	// backoff overrides the infrastructure retry schedule; nil means the
+	// millisecond default every test gets so the breaker is exercised without
+	// spending the shipped ~51 minutes.
+	backoff []time.Duration
 }
 
 const twoSectionDesign = "# Game\n\n## One\n\nbuild the one.\n\n## Two\n\nbuild the two.\n"
@@ -255,6 +260,12 @@ func (f *implementFixture) run(t *testing.T) (*model.RunSummary, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The shipped schedule waits ~51 minutes across four tries; a test asserting
+	// the breaker must exercise the same code without spending them.
+	o.infraBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
+	if f.backoff != nil {
+		o.infraBackoff = f.backoff
+	}
 	var sum model.RunSummary
 	return &sum, o.runImplement(t.Context(), &sum)
 }
@@ -339,6 +350,71 @@ func TestRunImplementWithAPassingGate(t *testing.T) {
 	}
 	if body := gitOutAt(t, f.out, "log", "-1", "--format=%B"); !strings.Contains(body, "Verification: passed") {
 		t.Errorf("a gated commit must record the gate:\n%s", body)
+	}
+}
+
+// The mandatory credential patterns are the one safety property a config must
+// not be able to forget -- and they governed only what agents READ. The
+// implement pipeline writes a repository, so a coder that scaffolds an .env
+// (ordinary behavior for a node or web project, and steerable from an
+// untrusted design) had it committed into the delivered history, where the same
+// patterns then hid it from every later review (review run 20260813-180828,
+// i3). The attempt fails and names the path instead.
+func TestRunImplementRefusesToCommitCredentialShapedFiles(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'ok\\n' > src.txt\nprintf 'TOKEN=sk-live\\n' > .env\nsleep 1",
+			`{"status": "implemented", "notes": "scaffolded", "files_touched": []}`),
+		config.Verify{Policy: config.VerifyOff})
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if !strings.Contains(f.logs(), "credential-shaped file(s)") || !strings.Contains(f.logs(), ".env") {
+		t.Errorf("the refusal must name the path it refused:\n%s", f.logs())
+	}
+	for _, task := range sum.Tasks {
+		if task.Outcome == outcomeImplemented {
+			t.Errorf("task %s was implemented despite the .env in its census", task.ID)
+		}
+	}
+	// The decisive assertion: nothing in the delivered history carries it.
+	if files := gitOutAt(t, f.out, "log", "--all", "--name-only", "--format="); strings.Contains(files, ".env") {
+		t.Errorf("a credential-shaped path reached the project's permanent history:\n%s", files)
+	}
+}
+
+// The gate executes code the coder wrote, so a gate that changes the
+// REPOSITORY -- not the worktree -- must stop the run. This is the sharpest
+// shape of it (review run 20260813-180828, i48): one line appended to
+// .git/info/exclude makes a source file invisible to `git status`, so the
+// census that decides what gets committed cannot see it. The gate then passes,
+// the commit omits the file, and the pipeline's one claim -- these bytes passed
+// the gate -- is false about a tree nobody can reconstruct.
+//
+// Before the fix the ladder ran only BEFORE the gate and post-gate
+// reconciliation looked at worktree files alone, so this was silent, and the
+// next task adopted the altered metadata as its own baseline.
+func TestRunImplementStopsWhenTheGateMutatesTheRepository(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'ok\\n' > src.txt\nprintf 'hidden\\n' > secret.txt\nsleep 1",
+			`{"status": "implemented", "notes": "done", "files_touched": []}`),
+		config.Verify{
+			Policy:  config.VerifyMustPass,
+			Timeout: config.Duration(time.Minute),
+			Commands: []config.VerifyCommand{{
+				Name: "hide", Run: []string{"sh", "-c", "printf 'secret.txt\\n' >> .git/info/exclude"},
+			}},
+		})
+	sum, err := f.run(t)
+	if err == nil {
+		t.Fatalf("a gate that edited .git/info/exclude was allowed to commit; tasks %+v\nlog:\n%s", sum.Tasks, f.logs())
+	}
+	var stop runStopError
+	if !errors.As(err, &stop) {
+		t.Fatalf("runImplement() = %v, want a repository-invariant run stop", err)
+	}
+	if !strings.Contains(err.Error(), "the gate changed the repository itself") {
+		t.Errorf("the stop must name the gate as the mutator, got: %v", err)
 	}
 }
 
@@ -568,16 +644,58 @@ func TestRunImplementInfrastructureBreaker(t *testing.T) {
 	if sum.Termination != model.TermIncomplete {
 		t.Errorf("termination = %q, want incomplete", sum.Termination)
 	}
-	if len(sum.Tasks) != 0 {
-		t.Errorf("an infrastructure outage recorded task outcomes: %+v -- a later run could never re-enter", sum.Tasks)
+	// Every task is REPORTED, and none is judged: an outage says nothing about
+	// the work, so the report says "unreached" rather than leaving the tail of
+	// the plan absent from the artifacts entirely (i22).
+	for _, task := range sum.Tasks {
+		if task.Outcome != outcomeUnreached {
+			t.Errorf("an infrastructure outage judged task %s as %q", task.ID, task.Outcome)
+		}
 	}
 	// Only the bootstrap commit exists: no marker was written for the task in
-	// flight, so -continue re-enters exactly there.
+	// flight, which is what makes the stop re-enterable at all.
 	if n := strings.Count(gitOutAt(t, f.out, "log", "--format=%s"), "\n"); n != 1 {
 		t.Errorf("history has %d commit(s), want only the bootstrap:\n%s", n, gitOutAt(t, f.out, "log", "--format=%s"))
 	}
 	if !strings.Contains(f.logs(), "infrastructure failure") {
 		t.Error("the run did not name the infrastructure failure")
+	}
+	// The breaker is the terminal case AFTER the retry budget, not instead of
+	// it: the shipped code retried with no wait at all, so the second call
+	// landed in the same rate-limit window and a 32h run died in seconds
+	// (review run 20260813-180828, i42).
+	if !strings.Contains(f.logs(), "before trying again") {
+		t.Errorf("the run struck out with no backoff between tries:\n%s", f.logs())
+	}
+	if n := strings.Count(f.logs(), "infrastructure failure ("); n < len(infraBackoff) {
+		t.Errorf("only %d infrastructure tries before the breaker, want the whole %d-step budget", n, len(infraBackoff))
+	}
+}
+
+// 402 is the one provider status where waiting cannot help: the account is out
+// of credit, so every retry buys the same answer more slowly. It skips the
+// backoff entirely and stops at once.
+func TestRunImplementDoesNotWaitOutAPaymentFailure(t *testing.T) {
+	f := newImplementFixture(t, "exit 1\n", config.Verify{Policy: config.VerifyOff})
+	// Long enough that a run which waited would visibly hang the test.
+	f.backoff = []time.Duration{time.Hour, time.Hour, time.Hour, time.Hour}
+	// A coder whose CLI reports its PROVIDER refused: a usage envelope carrying
+	// the status, which is exactly how the shipped claude agent reports a 429.
+	coder := f.cfg.Agents["coder"]
+	coder.Command = []string{writeAgentScript(t, "coder402",
+		"printf '{\"api_error_status\": 402, \"result\": \"\"}\\n'\nexit 1\n")}
+	coder.Usage = config.AgentUsage{Format: "json", Text: "result", ErrorStatus: "api_error_status"}
+	f.cfg.Agents["coder"] = coder
+
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = f.run(t) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a 402 was retried with backoff instead of stopping the run")
+	}
+	if !strings.Contains(f.logs(), "402") {
+		t.Errorf("the stop did not name the payment failure:\n%s", f.logs())
 	}
 }
 
@@ -849,5 +967,51 @@ func TestRunImplementSoftResetsACoderCommit(t *testing.T) {
 	}
 	if !strings.Contains(f.logs(), "committed despite being told not to") {
 		t.Error("the contract deviation was not journalled")
+	}
+}
+
+// The pipeline with the largest bill must not discover an unreachable agent
+// after the planner session is paid for and the write-target is created and
+// locked. runPipeline dispatches implement before run()'s own preflight, so
+// implement needs its own call -- and shipped without one (review run
+// 20260813-180828, i5).
+func TestRunImplementPingsBeforeItSpends(t *testing.T) {
+	f := newImplementFixture(t, implementReply("printf 'x\\n' > a.txt\nsleep 1",
+		`{"status": "implemented", "notes": "done"}`), config.Verify{Policy: config.VerifyOff})
+	ping := true
+	f.cfg.PingAgents = &ping
+	// A planner that cannot start at all: the ping must catch it.
+	planner := f.cfg.Agents["planner"]
+	planner.Command = []string{filepath.Join(t.TempDir(), "not-installed")}
+	f.cfg.Agents["planner"] = planner
+
+	if _, err := f.run(t); err == nil {
+		t.Fatal("an unreachable planner was not caught by preflight")
+	}
+	if !strings.Contains(f.logs(), "PREFLIGHT") {
+		t.Errorf("the implement pipeline never pinged:\n%s", f.logs())
+	}
+	// Nothing was paid for and nothing was claimed: the refusal came first.
+	if _, err := os.Stat(f.out); err == nil {
+		t.Errorf("%s was created despite the preflight failure", f.out)
+	}
+}
+
+// §1's contract is that every task either has a gated commit or is in the
+// report with a reason. An early exit used to satisfy neither for the tail of
+// the plan (review run 20260813-180828, i22).
+func TestRunImplementReportsEveryPlannedTask(t *testing.T) {
+	f := newImplementFixture(t, "exit 1\n", config.Verify{Policy: config.VerifyOff})
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if len(sum.Tasks) != 2 {
+		t.Fatalf("the report covers %d of the plan's 2 tasks: %+v", len(sum.Tasks), sum.Tasks)
+	}
+	for _, task := range sum.Tasks {
+		if task.Reason == "" {
+			t.Errorf("task %s is reported as %q with no reason", task.ID, task.Outcome)
+		}
 	}
 }
