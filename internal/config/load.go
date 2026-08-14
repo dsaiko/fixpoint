@@ -638,8 +638,9 @@ func (l *Loaded) ProjectSuppliedPolicy() []string {
 	return l.policyFrom(l.fromProject)
 }
 
-// TargetSuppliedPolicy is the narrower list: policy files that resolved from
-// inside target.path itself, ignoring the invoking project root.
+// TargetSuppliedPolicy is the implement pipeline's list: policy files that
+// resolved from inside the DESIGN'S OWN CHECKOUT -- its target directory, and
+// the project root that bundle discovery was anchored to.
 //
 // The two differ for exactly the case that matters to an implement run. §7.3
 // rules that "config discovery for this command must not load files from the
@@ -656,15 +657,57 @@ func (l *Loaded) ProjectSuppliedPolicy() []string {
 //
 // So an implement run gates on this list separately, and only -trusted-bundle
 // -- the assertion that says exactly what this list is about -- clears it.
-// Fixpoint's own bundle, resolved from the operator's checkout, is not on it.
+//
+// BOTH roots, and the second one is the whole point (review run 20260814-024946).
+// Scoped to target.path alone this gate fired only when the design sat at the
+// repository root: applyTarget sets Target.Path to filepath.Dir(-target), so
+// `-target <repo>/docs/design/DESIGN.md` yields `<repo>/docs/design`, while
+// bundle discovery is anchored on ProjectRoot and searches `<repo>/config`
+// FIRST. A hostile repository shipping config/implement-go.yaml beside
+// docs/DESIGN.md therefore supplied verify.commands, agents and prompts, the
+// list came back empty, and the gate returned true -- for the documented layout,
+// which is the one fixpoint's own design uses. The union closes it: policy
+// resolved anywhere in the design's checkout needs the narrow flag.
+//
+// This does NOT collapse into ProjectSuppliedPolicy. That one is cleared by
+// -trusted-target, which §7.3 makes mandatory here; this one is not, which is
+// the entire distinction. An operator running from their own bundle with the
+// design elsewhere still reports nothing.
 func (l *Loaded) TargetSuppliedPolicy() []string {
-	root := l.Config.Target.Path
-	if root == "" {
+	roots := make([]string, 0, 2)
+	if p := l.Config.Target.Path; p != "" {
+		roots = append(roots, p)
+	}
+	if l.ProjectRoot != "" && l.designInProjectRoot() {
+		roots = append(roots, l.ProjectRoot)
+	}
+	if len(roots) == 0 {
 		return nil
 	}
 	return l.policyFrom(func(path string) bool {
-		return path != "" && withinTree(path, root)
+		if path == "" {
+			return false
+		}
+		for _, root := range roots {
+			if withinTree(path, root) {
+				return true
+			}
+		}
+		return false
 	})
+}
+
+// designInProjectRoot reports whether the design being implemented lies inside
+// the checkout bundle discovery was anchored to -- the case where the operator
+// ran from the design's own repository, and the only one in which that root's
+// bundle is the design's to supply.
+//
+// When the design is elsewhere (the operator's own bundle, someone else's
+// design), the project root is the OPERATOR's and gating on it would demand
+// -trusted-bundle for fixpoint's own shipped config on every run.
+func (l *Loaded) designInProjectRoot() bool {
+	target := l.Config.Target.Path
+	return target != "" && withinTree(target, l.ProjectRoot)
 }
 
 // policyFrom lists every policy-bearing file the run was built from that
@@ -790,45 +833,72 @@ func (l *Loaded) fromProject(path string) bool {
 // primitive, and an operator who meant the destination can pass the destination
 // (review run 20260813-124710).
 //
-// The ANCESTORS: a path that looks local but leaves the directory the operator
-// is working in. Lstat resolves every parent before it stats the leaf, so the
-// leaf rule alone left the hole one level up (review run 20260814-012440): a
-// checkout shipping `assignment -> ../../.aws` and a documented
-// `-target assignment/credentials` passes -- credentials really is a regular
-// file -- while the bytes read are the operator's cloud keys.
+// The ANCESTORS: the path must not leave the directory it was named in. Lstat
+// resolves every parent before it stats the leaf, so the leaf rule alone left
+// the hole one level up (review run 20260813-180828): a checkout shipping
+// `assignment -> ../../.aws` and a `-target assignment/credentials` passes --
+// credentials really is a regular file -- while the bytes read are the
+// operator's cloud keys.
 //
-// The ancestor rule is about ESCAPE, not about symlinks, and the first attempt
-// got that wrong: refusing any symlinked ancestor refuses every path on macOS,
-// where /var is itself a link to private/var. fixpoint cannot police the
-// machine's own layout; it can police the tree the operator is standing in,
-// which is where an untrusted checkout lives. So the test is: a target that
-// lies inside the working directory must still lie inside it once resolved.
+// UNCONDITIONAL, and getting there took two wrong turns worth recording. The
+// first attempt refused any symlinked ancestor, which refuses every path on
+// macOS, where /var is itself a link to private/var. The second made the check
+// conditional on the target lying under the working directory, reasoning that an
+// absolute path elsewhere was named on purpose -- but that conflates "the
+// operator named the destination" with "the target is outside cwd", and the
+// case this rule exists for is precisely a path INSIDE an untrusted checkout
+// that does not happen to sit under cwd: `cd ~/fixpoint && fixpoint
+// review-design -target /srv/untrusted/spec/id_rsa`, or a relative
+// `../assignment/credentials` from a project subdirectory. Three reviewers
+// reported that independently (review run 20260814-024946).
+//
+// So the anchor is the target's OWN named parent, not the process's location:
+// resolve both and require containment. /var -> private/var cannot read as an
+// escape because both sides are canonicalized, and a link that stays inside the
+// directory the operator named redirects nothing they did not already name.
+//
+// It remains a check, not a capability: an attacker who can rewrite the tree
+// between this and the open can still swap an ancestor. Closing that needs
+// openat2(RESOLVE_BENEATH) and a retained descriptor, which is recorded as an
+// open question rather than pretended at here -- readNoFollow covers the leaf.
 func refuseSymlinkedPath(target string) error {
 	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		dest, _ := os.Readlink(target)
 		return fmt.Errorf("-target %s is a symlink (to %q); fixpoint reads a target's bytes and shows them to every agent, so it will not follow one -- pass the real path if you meant it", target, dest)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil //nolint:nilerr // no cwd means no "looks local" to betray
-	}
 	clean := filepath.Clean(target)
-	if !within(clean, cwd) {
-		// Named from outside the working tree: the operator wrote an absolute path
-		// somewhere else on purpose, and there is no "looks local" to betray.
-		return nil
+	walked := ""
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part == "" {
+			walked = string(filepath.Separator)
+			continue
+		}
+		parent := walked
+		walked = filepath.Join(walked, part)
+		info, err := os.Lstat(walked)
+		if err != nil {
+			// Missing: the Lstat that follows reports it far better than a symlink
+			// refusal naming an unrelated ancestor would.
+			return nil //nolint:nilerr // a missing target is not a symlink refusal
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		// A symlink is fine as long as it does not LEAVE the directory it sits in.
+		// Both sides canonicalized, which is what keeps an ordinary system link --
+		// /var -> private/var, whose parent is / -- from reading as an escape.
+		resolved, rerr := filepath.EvalSymlinks(walked)
+		anchor, aerr := filepath.EvalSymlinks(parent)
+		if rerr != nil || aerr != nil {
+			return nil //nolint:nilerr // an unresolvable component cannot prove an escape
+		}
+		if within(resolved, anchor) {
+			continue
+		}
+		dest, _ := os.Readlink(walked)
+		return fmt.Errorf("-target %s reaches its destination through %s, a symlink to %q that leaves the directory it sits in (%s); fixpoint reads a target's bytes and shows them to every agent, so it will not follow one out of the tree -- pass the real path if you meant it", target, walked, dest, parent)
 	}
-	resolved, err := filepath.EvalSymlinks(clean)
-	if err != nil {
-		// Missing or unreadable: the Lstat that follows reports it far better than
-		// a symlink refusal naming an unrelated ancestor would.
-		return nil //nolint:nilerr // a missing target is not a symlink refusal
-	}
-	resolvedCwd, err := filepath.EvalSymlinks(cwd)
-	if err != nil || within(resolved, resolvedCwd) {
-		return nil //nolint:nilerr // an unresolvable cwd cannot prove an escape
-	}
-	return fmt.Errorf("-target %s resolves to %s, outside the directory you are running in -- a symlink on the way out of %s redirects it. fixpoint reads a target's bytes and shows them to every agent, so it will not follow one out of the tree; pass the real path if you meant it", target, resolved, cwd)
+	return nil
 }
 
 // withinTree reports whether path lies inside root either lexically or with every

@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 )
 
 // testGit is the handle the package's tests run git through. Deliberately the
@@ -104,14 +106,44 @@ func TestReadPathDoesNotRunGloballyDefinedGitFilters(t *testing.T) {
 	}
 }
 
-// The plumbing reads carry the same environment, so a filter cannot reach them
-// either -- and the read path must not carry credentials it has no use for.
-func TestReadPathCarriesNoCredentials(t *testing.T) {
+// The read path must carry no credential it has no use for -- and that has to be
+// asserted about the SUBPROCESS, not about the slice handed to the constructor.
+//
+// The first version of this test scanned NewGit's argument, which is
+// `return Git{env: env}`, so it inspected its own two-element literal and never
+// called run(). Reverting gitrun.go to the pre-fix `cmd.Env = gitenv.Harden(nil)`
+// -- the exact regression that was measured capturing ANTHROPIC_API_KEY -- left
+// it green. Three reviewers reported that independently (review run
+// 20260814-024946) and reverting the line confirmed it.
+//
+// A stub named `git` on PATH reports what it actually received. gitenv.Tool
+// resolves live while PinTools has not run, so the stub is what executes.
+func TestReadPathSubprocessCarriesNoCredentials(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-secret-value")
-	g := NewGit([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()})
-	for _, e := range g.env {
-		if strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
-			t.Fatal("the read path was handed a credential")
-		}
+	t.Setenv("GITHUB_TOKEN", "ghp_secret-value")
+
+	bin := t.TempDir()
+	stub := "#!/bin/sh\nprintf 'KEY=%s TOKEN=%s GLOBAL=%s\\n' \"${ANTHROPIC_API_KEY:-none}\" \"${GITHUB_TOKEN:-none}\" \"${GIT_CONFIG_GLOBAL:-unset}\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	// Built exactly as prepareImplement builds it.
+	g := NewGit(gitenv.NoOperatorConfig(agent.EnvWithoutCredentials(nil)))
+	out, err := g.run(t.Context(), t.TempDir(), "status")
+	if err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if !strings.Contains(out, "KEY=none") {
+		t.Errorf("the read path handed a git subprocess an agent credential: %q", strings.TrimSpace(out))
+	}
+	if !strings.Contains(out, "TOKEN=none") {
+		t.Errorf("the read path handed a git subprocess the forge token: %q", strings.TrimSpace(out))
+	}
+	// The same call must still pin the operator's config off -- the two halves of
+	// the i12 fix, so neither can be reverted without this failing.
+	if !strings.Contains(out, "GLOBAL=/dev/null") {
+		t.Errorf("the operator-config pin did not reach the subprocess: %q", strings.TrimSpace(out))
 	}
 }

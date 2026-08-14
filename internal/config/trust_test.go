@@ -575,10 +575,11 @@ func TestTargetSuppliedPolicy(t *testing.T) {
 			wantAny: "",
 		},
 		{
-			// Fixpoint's own bundle, resolved from the operator's checkout, is
-			// project-supplied but NOT design-supplied: the two lists differ exactly
-			// here, which is why the flags that clear them differ.
-			name: "bundle inside the project root but outside the design",
+			// Fixpoint's own bundle, resolved from the OPERATOR's checkout with the
+			// design somewhere else entirely, is project-supplied but not
+			// design-supplied: the two lists differ exactly here, which is why the
+			// flags that clear them differ.
+			name: "operator's own bundle, design elsewhere, reports nothing",
 			setup: func(t *testing.T) ([]string, string, string, string) {
 				t.Helper()
 				root := t.TempDir()
@@ -589,6 +590,33 @@ func TestTargetSuppliedPolicy(t *testing.T) {
 				return []string{dir}, root, design, "task"
 			},
 			wantAny: "",
+		},
+		{
+			// THE CASE THIS GATE EXISTS FOR, and the one an earlier version of this
+			// table asserted as intended behavior (review run 20260814-024946).
+			// The operator cds into the repository holding the design and runs the
+			// implement config. Bundle discovery is anchored on the project root, so
+			// <repo>/config wins resolution -- while the design sits in a
+			// subdirectory, which is the layout the README documents and fixpoint's
+			// own docs/design/DESIGN.md uses. Scoped to the design's directory alone,
+			// the gate saw an empty list and let the design's own verify.commands
+			// through.
+			name: "bundle at the design repository's root, design in a subdirectory",
+			setup: func(t *testing.T) ([]string, string, string, string) {
+				t.Helper()
+				repo := t.TempDir()
+				docs := filepath.Join(repo, "docs", "design")
+				if err := os.MkdirAll(docs, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				dir := bundle(t, filepath.Join(repo, projectBundleDir), map[string]string{
+					"task": "target: {mode: directory}\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, []string{"mock"})
+				// Project root and design checkout are the same tree: the operator is
+				// standing in it.
+				return []string{dir}, repo, docs, "task"
+			},
+			wantAny: "agent mock",
 		},
 	}
 

@@ -76,7 +76,11 @@ type implementPrep struct {
 	// then, which is what the backoff reads as "no deadline to overrun".
 	deadline     time.Time
 	bootstrapSHA string
-	baseline     implement.RepoState
+	// attributed is the last commit FIXPOINT made -- the bootstrap, a task
+	// commit, an outcome marker. Anything past it at HEAD is a session's own,
+	// unverified and unattributed, and must not survive an interrupted run.
+	attributed string
+	baseline   implement.RepoState
 	// outcomes is every processed task's recorded outcome, by id. Shared state
 	// rather than a buildPhase local because the coverage check needs it:
 	// "already_satisfied, covered by T04" is only true if T04 was IMPLEMENTED.
@@ -465,6 +469,7 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 	}
 	p.release = release
 	p.bootstrapSHA = sha
+	p.attributed = sha
 	sum.Deliverable = p.out
 	if p.baseline, err = p.git.SnapshotRepoState(ctx, p.out, "main"); err != nil {
 		return err
@@ -1169,6 +1174,7 @@ func (o *Orchestrator) commitTask(ctx context.Context, p *implementPrep, t imple
 	if err != nil {
 		return "", err
 	}
+	p.attributed = sha
 	return sha, o.assertClean(ctx, p)
 }
 
@@ -1308,6 +1314,24 @@ func (o *Orchestrator) cleanUpInterrupted(ctx context.Context, p *implementPrep)
 	}
 	fresh, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
+	// HEAD FIRST, because a clean tree is not the same as an unchanged history.
+	// A session that committed and then died -- or was canceled before the step 4
+	// ladder could soft-reset it -- leaves its work IN a commit, so GitClean
+	// returns true and the discard below never runs. The repository was then
+	// unlocked with an unverified, unattributed commit at HEAD, contradicting the
+	// §8 promise that only previously gated commits remain (review run
+	// 20260814-024946). Soft-reset back to what fixpoint last attributed; the
+	// bytes become working-tree changes and the discard takes them from there.
+	if p.attributed != "" {
+		if head, err := p.col.HeadSHA(fresh); err == nil && head != p.attributed {
+			o.logf("the run was interrupted after a session committed on its own; resetting HEAD from %.12s back to %.12s, the last commit fixpoint attributed", head, p.attributed)
+			o.journal("interrupted_reset", 1, map[string]any{"from": head, "to": p.attributed})
+			if err := p.col.ResetSoft(fresh, p.attributed); err != nil {
+				o.logf("WARNING: could not reset HEAD to %.12s (%v); %s carries a commit fixpoint did not make -- inspect it before continuing", p.attributed, err, p.out)
+				return
+			}
+		}
+	}
 	clean, err := p.col.GitClean(fresh)
 	if err != nil || clean {
 		return
@@ -1361,7 +1385,11 @@ func (o *Orchestrator) markerCommit(ctx context.Context, p *implementPrep, t imp
 	if reasonValue != "" {
 		lines = append(lines, "Fixpoint-Reason: "+flattenField(clampLine(reasonKey+"="+reasonValue)))
 	}
-	return p.col.CommitExact(ctx, agent.RedactSecrets(header), agent.RedactSecrets(strings.Join(lines, "\n")), nil, true)
+	sha, err := p.col.CommitExact(ctx, agent.RedactSecrets(header), agent.RedactSecrets(strings.Join(lines, "\n")), nil, true)
+	if err == nil {
+		p.attributed = sha
+	}
+	return sha, err
 }
 
 // cleanCheck clones HEAD and runs the gate in the clone (§7.2): the committed
@@ -1376,6 +1404,21 @@ func (o *Orchestrator) cleanCheck(ctx context.Context, p *implementPrep) error {
 	o.journal("clean_check_finished", 1, map[string]any{"cadence": o.cfg.Implement.CleanCheck, "passed": passed})
 	if err != nil {
 		return err
+	}
+	// An environment-dependent check failing here says nothing about the commits,
+	// exactly as it says nothing during a task (§5.4). The clean check was the one
+	// gate that never consulted the classification, so a registry 503 during the
+	// final clone turned a completed run into an incomplete one and told the
+	// operator their history did not build (review run 20260814-024946).
+	if bad := rep.InfraFailures(); len(bad) > 0 {
+		names := make([]string, 0, len(bad))
+		for _, r := range bad {
+			names = append(names, r.Name)
+		}
+		o.journal("clean_check_infra", 1, map[string]any{"checks": names})
+		o.logf("clean-check: the environment-dependent check(s) %s could not complete (%s); the clone proves nothing either way, so the run's verdict is unchanged",
+			strings.Join(names, ", "), gateFailureSummary(rep))
+		return nil
 	}
 	if !rep.Passed() {
 		return fmt.Errorf("HEAD does not pass the gate in a clean clone; the working tree carries state the commits do not (%s) -- rerun with implement.clean_check: every to find the culprit task", gateFailureSummary(rep))

@@ -170,9 +170,16 @@ func TestTargetOverrideRefusesASymlink(t *testing.T) {
 // leaf, so a checkout shipping `assignment -> ../../.aws` and a documented
 // `-target assignment/credentials` passed -- the leaf really is a regular file
 // -- while the bytes handed to every agent were the operator's cloud keys
-// (review run 20260814-012440).
+// (review run 20260813-180828).
+//
+// The check is UNCONDITIONAL. An earlier version ran only when the target lay
+// under the working directory, on the reasoning that an absolute path elsewhere
+// was named on purpose; three reviewers pointed out that this conflates "the
+// operator named the destination" with "the target is outside cwd", and that
+// the case the rule exists for is a path inside an UNTRUSTED checkout which
+// need not sit under cwd at all (review run 20260814-024946). Both shapes are
+// asserted here, from a working directory that has nothing to do with either.
 func TestTargetOverrideRefusesAPathThatEscapesThroughASymlinkedParent(t *testing.T) {
-	root := t.TempDir()
 	secrets := filepath.Join(t.TempDir(), "dotaws")
 	if err := os.MkdirAll(secrets, 0o755); err != nil {
 		t.Fatal(err)
@@ -180,30 +187,39 @@ func TestTargetOverrideRefusesAPathThatEscapesThroughASymlinkedParent(t *testing
 	if err := os.WriteFile(filepath.Join(secrets, "credentials"), []byte("[default]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	checkout := filepath.Join(root, "checkout")
-	if err := os.MkdirAll(checkout, 0o755); err != nil {
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	if err := os.MkdirAll(filepath.Join(checkout, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(secrets, filepath.Join(checkout, "assignment")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	// The operator is standing in the checkout, which is what makes the path look
-	// local; that is the whole shape of the attack.
-	t.Chdir(checkout)
+	escaping := filepath.Join(checkout, "assignment", "credentials")
 
+	// Somewhere with no relationship to the checkout: the operator is sitting in
+	// their own tree and naming an absolute path into someone else's.
+	t.Chdir(t.TempDir())
 	var cfg Config
-	err := Overrides{Target: filepath.Join(checkout, "assignment", "credentials")}.applyTarget(&cfg)
+	err := Overrides{Target: escaping}.applyTarget(&cfg)
 	if err == nil {
-		t.Fatalf("a path escaping through a symlinked parent was accepted; target.path = %q", cfg.Target.Path)
+		t.Fatalf("an absolute path escaping through a symlinked parent was accepted; target.path = %q", cfg.Target.Path)
 	}
-	if !strings.Contains(err.Error(), "outside the directory you are running in") {
-		t.Errorf("the refusal must say the path left the tree: %v", err)
+	if !strings.Contains(err.Error(), "leaves the directory it sits in") {
+		t.Errorf("the refusal must name the link that left its tree: %v", err)
+	}
+
+	// From a project SUBDIRECTORY, reaching back out: outside cwd, inside the
+	// project, and the shape the cwd precondition let through.
+	t.Chdir(filepath.Join(checkout, "src"))
+	var sub Config
+	if err := (Overrides{Target: escaping}).applyTarget(&sub); err == nil {
+		t.Errorf("a relative escape from a project subdirectory was accepted; target.path = %q", sub.Target.Path)
 	}
 
 	// The rule is about ESCAPE, not about symlinks: a link that stays inside the
-	// tree redirects nothing the operator did not already name, and refusing
-	// every symlinked ancestor would refuse every path on macOS, where /var is
-	// itself a link to private/var.
+	// directory it sits in redirects nothing the operator did not already name,
+	// and refusing every symlinked ancestor would refuse every path on macOS,
+	// where /var is itself a link to private/var.
 	inside := filepath.Join(checkout, "docs")
 	if err := os.MkdirAll(inside, 0o755); err != nil {
 		t.Fatal(err)
