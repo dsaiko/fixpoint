@@ -514,3 +514,112 @@ func TestProjectSuppliedPolicyCoversTargetOutsideProjectRoot(t *testing.T) {
 		t.Fatalf("ProjectSuppliedPolicy() reported nothing; the bundle lies inside the reviewed target %s", elsewhere)
 	}
 }
+
+// TargetSuppliedPolicy is §7.3's narrower control: an implement run must not
+// take the commands it EXECUTES from the design's own directory. Its only test
+// lived in cmd/fixpoint and built a Loaded literal setting Source.Config alone,
+// so of policyFrom's four legs only the config path was ever exercised for the
+// design-scoped list -- while the refusal message names agents and prompts
+// (review run 20260814-012440). These go through LoadBundle, so the
+// Source.Agents/Source.Prompts population that feeds the list is covered too.
+func TestTargetSuppliedPolicy(t *testing.T) {
+	const inlineAgent = "agents:\n  mock:\n    command: [true]\n    can_edit: true\n"
+
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T) (bundles []string, root, target, cfgName string)
+		wantAny string
+	}{
+		{
+			// The case the cmd-level test never reached: the operator points -config
+			// at their own bundle, and the DESIGN's repository shadows one agent file.
+			name: "agent file inside the design, config outside it",
+			setup: func(t *testing.T) ([]string, string, string, string) {
+				t.Helper()
+				design := t.TempDir()
+				outside := t.TempDir()
+				bundle(t, filepath.Join(design, projectBundleDir), nil, nil, []string{"mock"})
+				out := bundle(t, outside, map[string]string{
+					"task": "target: {mode: directory}\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				return []string{out, filepath.Join(design, projectBundleDir)}, outside, design, "task"
+			},
+			wantAny: "agent mock",
+		},
+		{
+			// A prompt inside the design is the coder's instruction stream, written
+			// by the document being implemented.
+			name: "prompt inside the design, config outside it",
+			setup: func(t *testing.T) ([]string, string, string, string) {
+				t.Helper()
+				design := t.TempDir()
+				outside := t.TempDir()
+				bundle(t, filepath.Join(design, projectBundleDir), nil, []string{"review-bugs"}, nil)
+				out := bundle(t, outside, map[string]string{
+					"task": "target: {mode: directory}\n" + inlineAgent + taskBody,
+				}, []string{"fix"}, nil)
+				return []string{out, filepath.Join(design, projectBundleDir)}, outside, design, "task"
+			},
+			wantAny: "prompt review-bugs",
+		},
+		{
+			name: "whole bundle outside the design reports nothing",
+			setup: func(t *testing.T) ([]string, string, string, string) {
+				t.Helper()
+				design := t.TempDir()
+				out := bundle(t, t.TempDir(), map[string]string{
+					"task": "target: {mode: directory}\n" + inlineAgent + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				return []string{out}, t.TempDir(), design, "task"
+			},
+			wantAny: "",
+		},
+		{
+			// Fixpoint's own bundle, resolved from the operator's checkout, is
+			// project-supplied but NOT design-supplied: the two lists differ exactly
+			// here, which is why the flags that clear them differ.
+			name: "bundle inside the project root but outside the design",
+			setup: func(t *testing.T) ([]string, string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				design := t.TempDir()
+				dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+					"task": "target: {mode: directory}\n" + taskBody,
+				}, []string{"fix", "review-bugs"}, []string{"mock"})
+				return []string{dir}, root, design, "task"
+			},
+			wantAny: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bundles, root, target, name := tc.setup(t)
+			l, err := LoadBundle(&Resolver{Bundles: bundles}, name, root, Overrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The design is the target; the pipeline shape is what selects this gate.
+			l.Config.Target.Path = target
+			got := l.TargetSuppliedPolicy()
+			if tc.wantAny == "" {
+				if len(got) != 0 {
+					t.Fatalf("TargetSuppliedPolicy() = %v, want nothing: no file came from the design", got)
+				}
+				return
+			}
+			if len(got) == 0 {
+				t.Fatalf("TargetSuppliedPolicy() reported nothing; the run is steered by a file inside %s", target)
+			}
+			found := false
+			for _, s := range got {
+				if strings.Contains(s, tc.wantAny) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("TargetSuppliedPolicy() = %v, want an entry containing %q", got, tc.wantAny)
+			}
+		})
+	}
+}

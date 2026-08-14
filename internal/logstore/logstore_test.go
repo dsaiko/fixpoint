@@ -780,3 +780,58 @@ func TestCustomDirTemplateLayout(t *testing.T) {
 		t.Errorf("summary not at the run root: %v", err)
 	}
 }
+
+// RunState is the atomic writer behind status.json / repostate.json / plan.json.
+// It shipped with no test at all (review run 20260814-012440): it applies
+// RedactSecrets -- status.json carries planner-authored task titles and failure
+// reasons from a planner that read an untrusted design directory -- chmods 0600,
+// and does the temp-file-plus-rename its own doc comment calls the whole point.
+// None of that was pinned, and TestFilesAreOwnerOnly walks only round-N.
+func TestRunStateRedactsIsOwnerOnlyAndReplacesCleanly(t *testing.T) {
+	s, _ := newStore(t)
+	secret := "sk-ant-api03-" + strings.Repeat("A", 40)
+
+	path, err := s.RunState("status.json", []byte(`{"note": "`+secret+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), secret) {
+		t.Errorf("RunState published a credential:\n%s", b)
+	}
+	if !strings.Contains(string(b), "REDACTED") {
+		t.Errorf("the redaction left no marker:\n%s", b)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Errorf("mode = %04o, want 0600 -- run-root files are outside TestFilesAreOwnerOnly's walk", perm)
+	}
+
+	// Rewritten in place, with no temp file left behind: this is the file an
+	// operator tails during a thirty-hour run.
+	again, err := s.RunState("status.json", []byte(`{"note": "second"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != path {
+		t.Errorf("RunState moved from %s to %s", path, again)
+	}
+	if b, err = os.ReadFile(path); err != nil || !strings.Contains(string(b), "second") {
+		t.Errorf("the rewrite did not land: %v %s", err, b)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("a temp file survived: %s", e.Name())
+		}
+	}
+}

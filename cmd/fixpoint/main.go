@@ -21,6 +21,7 @@ import (
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/orchestrator"
@@ -87,6 +88,10 @@ Flags:
 	// relative path in the configuration resolves against it, so the same command
 	// reviews the whole project whether it is run from the root or three
 	// directories down.
+	// Resolve git/gh/glab now, before a target has been fetched or written, so a
+	// PATH entry inside the reviewed content cannot become the answer later
+	// (review run 20260814-012440).
+	gitenv.PinTools()
 	cwd, err := os.Getwd()
 	if err != nil {
 		logf("working directory: %v", err)

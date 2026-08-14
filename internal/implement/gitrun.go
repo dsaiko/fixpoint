@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/gitenv"
 )
 
@@ -47,19 +48,46 @@ type Git struct {
 // Collector is given.
 func NewGit(env []string) Git { return Git{env: env} }
 
+// maxGitOutput caps each stream. A census of a large tree is the biggest of
+// these by far; 4 MB matches what the write path allows itself.
+const maxGitOutput = 4 << 20
+
 // run executes one git command in dir under the handle's environment.
+//
+// Through agent.Supervise, like every other subprocess in the program, and the
+// two things that buys are not optional here (review run 20260814-012440):
+//
+// Containment. Supervise sets Setpgid, cancels by killing the GROUP, and sets
+// WaitDelay. The first version used exec.CommandContext plus CombinedOutput,
+// which owns neither: os/exec creates the pipes, cmd.Wait joins its copy
+// goroutines, and with WaitDelay at its zero default that join is unbounded. A
+// `git clone` whose index-pack child (or a smudge filter the cloned
+// .gitattributes named) still holds the pipe's write end therefore blocks
+// forever -- past gitOpTimeout, past max_run_duration, past the operator's first
+// Ctrl-C -- and the surviving child keeps writing into the very tree CleanCheck
+// is about to run the gate over.
+//
+// Separated streams. Every caller here parses the result as machine-readable
+// data: NUL-delimited `status --porcelain`, `ls-files -z`, a bare
+// `config --local core.hooksPath` that lands straight in RepoState. Folding
+// stderr in meant one git warning on a SUCCESSFUL command corrupted a parsed
+// value. target.Collector.runInput documents this same hazard and has always
+// kept the streams apart; this path was written without it.
 func (g Git) run(ctx context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitOpTimeout)
 	defer cancel()
 	full := append(gitenv.SafeConfigArgs(), args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd := exec.CommandContext(ctx, gitenv.Tool("git"), full...)
 	cmd.Dir = dir
 	cmd.Env = gitenv.Harden(gitenv.NoOperatorConfig(g.env))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	outBuf := agent.NewBoundedBuffer(maxGitOutput, agent.TruncationMarker(maxGitOutput))
+	errBuf := agent.NewBoundedBuffer(maxGitOutput, agent.TruncationMarker(maxGitOutput))
+	if _, err := agent.Supervise(ctx, cmd, outBuf, errBuf); err != nil {
+		// stderr on the failure path only, where it is the diagnosis rather than
+		// something a parser will read.
+		return outBuf.String(), fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errBuf.String()))
 	}
-	return string(out), nil
+	return outBuf.String(), nil
 }
 
 // IsAncestor reports whether base is an ancestor of head -- the §5.2 step 4

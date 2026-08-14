@@ -165,3 +165,57 @@ func TestTargetOverrideRefusesASymlink(t *testing.T) {
 		t.Errorf("the symlink was accepted as a document: %q", cfg.Target.Document)
 	}
 }
+
+// The leaf rule is not enough: Lstat resolves every parent before it stats the
+// leaf, so a checkout shipping `assignment -> ../../.aws` and a documented
+// `-target assignment/credentials` passed -- the leaf really is a regular file
+// -- while the bytes handed to every agent were the operator's cloud keys
+// (review run 20260814-012440).
+func TestTargetOverrideRefusesAPathThatEscapesThroughASymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	secrets := filepath.Join(t.TempDir(), "dotaws")
+	if err := os.MkdirAll(secrets, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secrets, "credentials"), []byte("[default]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkout := filepath.Join(root, "checkout")
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secrets, filepath.Join(checkout, "assignment")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// The operator is standing in the checkout, which is what makes the path look
+	// local; that is the whole shape of the attack.
+	t.Chdir(checkout)
+
+	var cfg Config
+	err := Overrides{Target: filepath.Join(checkout, "assignment", "credentials")}.applyTarget(&cfg)
+	if err == nil {
+		t.Fatalf("a path escaping through a symlinked parent was accepted; target.path = %q", cfg.Target.Path)
+	}
+	if !strings.Contains(err.Error(), "outside the directory you are running in") {
+		t.Errorf("the refusal must say the path left the tree: %v", err)
+	}
+
+	// The rule is about ESCAPE, not about symlinks: a link that stays inside the
+	// tree redirects nothing the operator did not already name, and refusing
+	// every symlinked ancestor would refuse every path on macOS, where /var is
+	// itself a link to private/var.
+	inside := filepath.Join(checkout, "docs")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inside, "DESIGN.md"), []byte("# d\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, filepath.Join(checkout, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	var ok Config
+	if err := (Overrides{Target: filepath.Join(checkout, "linked", "DESIGN.md")}).applyTarget(&ok); err != nil {
+		t.Errorf("a symlink that stays inside the tree was refused: %v", err)
+	}
+}

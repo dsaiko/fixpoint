@@ -501,7 +501,7 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 		// opaque git error from a commit or a discard, or as a half-finished
 		// discard that the NEXT task reports as fixpoint corrupting its own tree.
 		// Named here instead, while the diagnosis is still available.
-		if free, ok := implement.DiskFree(p.out); ok && free < o.cfg.Implement.MinFreeDisk.Int64() {
+		if free, ok := o.freeSpace(p.out); ok && free < o.cfg.Implement.MinFreeDisk.Int64() {
 			o.logf("BUILD: %s has %s free, under implement.min_free_disk (%s); stopping before %s",
 				p.out, config.ByteSize(free), o.cfg.Implement.MinFreeDisk, t.ID)
 			o.journal("disk_exhausted", 1, map[string]any{"id": t.ID, "free": free, "min": o.cfg.Implement.MinFreeDisk.Int64()})
@@ -590,6 +590,14 @@ func (o *Orchestrator) processTask(ctx context.Context, sum *model.RunSummary, r
 		return true, true, nil
 	}
 	return bad, false, nil
+}
+
+// freeSpace reports free bytes at path, through the test seam.
+func (o *Orchestrator) freeSpace(path string) (int64, bool) {
+	if o.diskFree != nil {
+		return o.diskFree(path)
+	}
+	return implement.DiskFree(path)
 }
 
 // recordUnreached appends an outcome for every planned task the loop never
@@ -688,6 +696,17 @@ func (o *Orchestrator) waitForInfra(ctx context.Context, p *implementPrep, taskI
 	}
 }
 
+// infraStop distinguishes the two reasons waitForInfra gives up. Both used to
+// return errInfraBreaker, so Ctrl-C during a backoff was reported as an
+// incomplete run at exit 2 instead of an interruption at exit 1 -- the operator
+// who stopped the run was told the provider had (review run 20260814-012440).
+func infraStop(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errInfraBreaker
+}
+
 // runTask processes one task to a terminal outcome, attempts included.
 func (o *Orchestrator) runTask(ctx context.Context, rec *model.RoundRecord, p *implementPrep, pl implement.Plan, idx int, infraStrikes *int) (model.TaskOutcome, error) {
 	t := pl.Tasks[idx]
@@ -715,7 +734,7 @@ func (o *Orchestrator) runTask(ctx context.Context, rec *model.RoundRecord, p *i
 				return out, errInfraBreaker
 			}
 			if !o.waitForInfra(ctx, p, t.ID, *infraStrikes) {
-				return out, errInfraBreaker
+				return out, infraStop(ctx)
 			}
 			continue // same attempt number: infrastructure is not the task's fault
 		case attemptImplemented:
@@ -946,8 +965,12 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 		return res, report, attemptVerdict{}, err
 	}
 	created, modified := implement.DiffIgnored(before.ignored, postIgnored)
-	for _, path := range created {
-		_ = os.RemoveAll(filepath.Join(p.out, path))
+	// The failures used to be discarded while the log said the paths had been
+	// deleted. Ignored paths are invisible to the census and to GitClean, so a
+	// path that survived affected the gate and the next attempt with nothing
+	// anywhere recording it (review run 20260814-012440).
+	if stuck := removeAll(p.out, created); len(stuck) > 0 {
+		return res, report, attemptVerdict{}, fmt.Errorf("could not delete session-created ignored path(s) before the gate: %s -- they would be measured as part of the work and carried into the next attempt", strings.Join(stuck, ", "))
 	}
 	if len(created) > 0 || len(modified) > 0 {
 		o.journal("ignored_paths_diff", 1, map[string]any{"id": t.ID, "created": created, "modified": modified})
@@ -1014,6 +1037,19 @@ func (o *Orchestrator) refuseCredentialShaped(ctx context.Context, p *implementP
 		" -- these match the patterns that hide a path from every reviewer, so keeping them would bury a secret in the project's history", nil
 }
 
+// removeAll deletes each repo-relative path and returns the ones that survived.
+// A path that cannot be removed is reported rather than assumed gone: everything
+// this deletes is invisible to the census, so nothing downstream would notice.
+func removeAll(root string, paths []string) []string {
+	var stuck []string
+	for _, path := range paths {
+		if err := os.RemoveAll(filepath.Join(root, path)); err != nil {
+			stuck = append(stuck, fmt.Sprintf("%s (%v)", path, err))
+		}
+	}
+	return stuck
+}
+
 // censusPhase is §5.2 step 6's census with its byte bound. A non-empty reason
 // fails the attempt: the oversized tree is discarded by checkout-and-clean
 // rather than stashed, so the ceiling never writes it into the object database
@@ -1037,7 +1073,11 @@ func (o *Orchestrator) censusPhase(ctx context.Context, p *implementPrep) (imple
 // output after EVERY gate run (a failed gate's droppings must not sit in the
 // tree for the next attempt). A non-empty `why` fails the attempt.
 func (o *Orchestrator) gatePhase(ctx context.Context, p *implementPrep, taskID string, census implement.Census, before attemptBase) (label string, gatePaths []string, why string, err error) {
-	if len(o.cfg.Verify.Commands) == 0 {
+	// Enabled(), not just a non-empty list: a config with `verify.policy: off`
+	// and commands inherited from its base ran them anyway and could fail tasks
+	// on them, while VerifyOff is documented as running nothing (review run
+	// 20260814-012440).
+	if !o.cfg.Verify.Enabled() {
 		return "ungated", nil, "", nil
 	}
 	rep := verify.Run(ctx, o.cfg.Verify, p.out, agent.EnvWithoutCredentials(o.cfg.Agents))
@@ -1064,8 +1104,8 @@ func (o *Orchestrator) gatePhase(ctx context.Context, p *implementPrep, taskID s
 		return "", nil, "", err
 	}
 	diff := implement.ClassifyGateDiff(census, post, o.cfg.Implement.GateGenerated)
-	for _, path := range diff.Output {
-		_ = os.RemoveAll(filepath.Join(p.out, path))
+	if stuck := removeAll(p.out, diff.Output); len(stuck) > 0 {
+		return "", nil, "", fmt.Errorf("could not delete gate output: %s -- it would be committed as if the session had written it", strings.Join(stuck, ", "))
 	}
 	if len(diff.Output) > 0 {
 		o.journal("gate_artifacts", 1, map[string]any{"id": taskID, "removed": diff.Output})
