@@ -1,35 +1,199 @@
 # fixpoint
 
-An agent-agnostic, automated code-review loop. Reviewer agents inspect a
-target in parallel — each through a focused review "lens" (bugs, security,
-concurrency, tests, maintainability, design) — a coder agent validates and
-fixes the findings, the orchestrator commits each fix round, and the cycle
-repeats until reviews come back clean.
+An agent-agnostic automation loop for writing, reviewing and fixing code with
+AI panels — where every claim a model makes is checked by something that is not
+a model.
+
+A panel of reviewer agents inspects a target in parallel, each through one
+focused lens (bugs, security, concurrency, tests, design). Their findings are
+deduplicated, contested by a refutation round, and filtered by a judge. A coder
+agent then fixes what survives, and fixpoint runs your project's own build and
+tests **itself** before anything is committed. That gate is the point: without
+it, "fixed" means an agent said so, and "clean" means other agents said they saw
+nothing.
 
 The name is the termination condition: the loop iterates review→fix until the
 code stops changing — a [fixed point](https://en.wikipedia.org/wiki/Fixed_point_(mathematics)),
-reached when a full reviewer panel reports nothing left to fix.
+reached when a full panel reports nothing left to fix.
 
-Any agentic CLI works as a reviewer or coder: an agent is just a command that
-receives a prompt and prints text to stdout. The shipped configuration mixes
-Claude Code, Codex, models served via ollama (Kimi, GLM), and — in an agent file
-you can enable — anything on OpenRouter, but nothing in the code is
+Any agentic CLI can be a reviewer or a coder: an agent is just a command that
+receives a prompt and prints text to stdout. The shipped panel mixes Claude
+Code, Codex and models served through ollama, and nothing in the code is
 provider-specific.
+
+---
+
+## What you can use it for
+
+Three things, in increasing scope. Every command below is real and ships in the
+box.
+
+### 1. Review code that already exists
+
+Nothing is modified. The panel reads, the findings land in
+`.fixpoint/<run>/review-body.md`, and the run's exit code carries the verdict.
+
+```sh
+make review-code                      # the whole project
+make review-branch                    # only what this branch changed
+make review-pr PR=170                 # a GitHub pull request
+make review-design TARGET=docs/DESIGN.md   # a design document, or an architecture
+```
+
+Use it when you want a second opinion and nothing else: before a release,
+after a big merge, or on somebody else's branch. `review-design` is the odd one
+out — it reads a *document* (or a whole project as an architecture) and asks
+about structure, data ownership and failure modes rather than about lines.
+
+Cost first, always:
+
+```sh
+./fixpoint review-code --check        # what it would review, and how much material
+./fixpoint review-code --check-live   # …and ping every agent, so a dead login surfaces first
+```
+
+### 2. Let it fix what it finds
+
+The autonomous cycle: review → fix → verify → commit, repeated until the panel
+comes back clean or the iteration cap is reached. Each fix is its own commit,
+naming the issue it closed, and **every commit has passed your gate**.
+
+```sh
+make fix-code                         # the whole project
+make fix-branch                       # only this branch's changes
+make fix-pr PR=170                    # a pull request, conversations included
+```
+
+These edit your working tree with an agent whose permission checks are
+disabled, so they refuse to start without an explicit trust assertion on the
+command line — `--trusted-target`, or `--allow-untrusted-fix` for a pull
+request, whose content is somebody else's. The assertion is a flag and never a
+config key, because the first bundle on the search path belongs to the target:
+see [Security model](docs/security.md).
+
+A round that fails the gate is **discarded**, not committed — edits stashed for
+you to inspect — because committing them would put every later round on a
+broken base.
+
+### 3. Design → review → build a whole project
+
+The full cycle, from a paragraph of intent to a repository with a gated commit
+per task. Each stage is a separate command, so you read the product of each one
+before paying for the next.
+
+```
+   assignment.md
+        │
+        ▼
+   create-design ──────► DESIGN.md          a panel proposes independently,
+        │                                   critiques anonymously, one editor
+        │                                   synthesizes, dissent recorded
+        ▼
+   review-design ─────► findings            structure, data, failure modes
+        │                                   — read them, revise the design
+        │  (repeat until the design holds)
+        ▼
+   implement-go ──────► a new repository    one planner session decomposes it,
+   implement-node                           the coder builds one task per
+   implement-web                            gated commit
+        │
+        ▼
+   review-code ───────► findings            now review the code that was built
+   fix-code   ────────► fixes               …and let it fix them
+        │
+        ▼
+   review-pr / fix-pr ► a reviewed PR       when the work goes out for merge
+```
+
+**Building an application** — a browser game, no build step, gate asserted off:
+
+```sh
+make create-design TARGET=assignment.md OUT=docs/DESIGN.md
+make review-design TARGET=docs/DESIGN.md          # read the findings, revise, repeat
+make implement-web TARGET=docs/DESIGN.md OUT=~/src/prsi
+
+cd ~/src/prsi && ~/src/fixpoint/fixpoint review-code --trusted-target
+```
+
+**Building a library or a tool** — a Go module with a real gate:
+
+```sh
+make create-design TARGET=assignment.md OUT=docs/DESIGN.md
+make review-design TARGET=docs/DESIGN.md
+make implement-go TARGET=docs/DESIGN.md OUT=~/src/newtool
+
+cd ~/src/newtool && ~/src/fixpoint/fixpoint fix-code --trusted-target
+```
+
+The difference between the two is the **gate**, and it is the only difference
+that matters. `implement-go` runs `go build`, `go vet` and `go test` after every
+task, so a task commits only if the project still builds. `implement-web` is
+plain HTML and JavaScript with no build step and therefore no gate — which is a
+statement the config has to make out loud (`verify.policy: off`), because on a
+project that does not exist yet, silence is far more likely to be a
+half-finished config than a decision. Quality for an ungated stack comes
+afterwards, from `review-code` over the produced repository.
+
+The last step of each example runs the **binary by path**, because the make
+targets live in this repository and the project you just built does not have
+them. Reviewing other projects regularly is worth a one-time setup: copy
+`config/` to `~/.fixpoint/` and put the binary on your PATH, and then
+`fixpoint review-code` works from anywhere — see
+[config/README.md](config/README.md) for the search path.
+
+A run that stops early — deadline, provider outage, Ctrl-C — leaves every
+committed task standing and gated, but **cannot be resumed**: `-continue` is
+specified in the design and not yet built, so finishing means a fresh run into a
+fresh directory. Specification: [docs/design/DESIGN.md](docs/design/DESIGN.md).
+
+---
 
 ## Where to read what
 
 | | |
 |---|---|
-| **[Getting started](#getting-started)** | Install, the make targets, and the exact commands for reviewing or fixing a pull request. |
-| **[How it works](#how-it-works)** | One round, end to end, in a diagram. |
+| **[Getting started](#getting-started)** | Requirements, install, and the make targets. |
+| **[How a round works](#how-a-round-works)** | One review→fix round, end to end. |
 | **[What a run actually does](docs/concepts.md)** | Target modes, the review round in detail, how observations become issues, one fix per commit. |
+| **[Pull requests](docs/pull-requests.md)** | Reviewing and fixing a PR, and everything publishing a review under your identity is bound by. |
 | **[Review lenses](docs/lenses.md)** | What a lens is, how to write one, and how they are assigned to agents. |
 | **[Agents](docs/agents.md)** | Adding an agent, borrowing a harness for a model with no CLI, why the route matters, environment filtering. |
 | **[Logs and artifacts](docs/logs.md)** | What a run writes, the end-of-run table, the run journal. |
 | **[Security model](docs/security.md)** | What is trusted, what is not, and why the trust gates are flags rather than config keys. |
 | **[Configuration](#configuration)** | Bundles and the shipped configs. The reference for every setting is [config/README.md](config/README.md) and the comments in [config/defaults.yaml](config/defaults.yaml). |
 
-## How it works
+## Getting started
+
+Requirements:
+
+- Linux or macOS. **Windows is not supported yet** — see [Platform support](#platform-support).
+- Go 1.26+
+- git (and `gh` for pull-request mode)
+- at least one agentic CLI installed and authenticated (e.g. `claude`, `codex`,
+  `ollama`) — verify the flags in `config/agents/*.yaml` match what your
+  installed versions expect
+
+```sh
+make build          # compile the fixpoint binary
+make check          # static validation of the configuration (no agents invoked)
+make check-live     # static validation + ping every configured agent
+make help           # every target, including one per shipped config
+```
+
+There is one make target per shipped config, so the command says which one it is
+going to spend money on. (There is deliberately no `make run`: it took its config
+from a variable, which made the two-hour run and the five-minute one look
+identical.)
+
+Or call the binary directly, which is how you reach the flags the make targets
+do not expose:
+
+```sh
+./fixpoint <config-name> [flags]      # e.g. ./fixpoint review-code
+./fixpoint --config path/to/task.yaml [flags]
+```
+
+## How a round works
 
 ```
 one round:
@@ -42,287 +206,62 @@ one round:
 repeat until a full reviewer panel reports nothing
 ```
 
-1. **Validate.** Before anything runs, the configuration is statically
-   checked: all referenced agents are defined, their binaries exist on PATH,
-   prompt files parse and their placeholders resolve, the coder's agent has
-   `can_edit: true`, and the lens-assignment strategy is satisfiable. Any
-   failure aborts before a single agent is invoked. Optionally
-   (`ping_agents: true`, the default) every agent used by the run is also
-   pinged with a trivial prompt so expired logins and broken CLIs surface
-   before tokens are spent or git is touched.
-2. **Review.** Each review lens (a prompt file) is assigned to an agent per
-   the configured strategy and all reviewers run in parallel, each reporting
-   structured observations (category, severity, file/line, description,
-   suggestion).
+1. **Validate.** Before anything runs, the configuration is statically checked:
+   every referenced agent is defined, its binary exists on PATH, prompt files
+   parse and their placeholders resolve, the coder's agent has `can_edit: true`,
+   and the lens-assignment strategy is satisfiable. Any failure aborts before a
+   single agent is invoked. With `ping_agents` (the default) every agent the run
+   will use is also pinged with a trivial prompt, so expired logins and broken
+   CLIs surface before tokens are spent or git is touched.
+2. **Review.** Each lens is assigned to an agent per the configured strategy and
+   all reviewers run in parallel, each reporting structured observations
+   (category, severity, file/line, description, suggestion).
 3. **Aggregate.** Observations are grouped into **issues** — see
-   [Observations and issues](docs/concepts.md#observations-and-issues). Several reviewers
-   reporting one problem produce one issue, so agreement between agents raises
-   confidence instead of consuming the round's budget twice.
-4. **Fix.** The issues are handed to the coder agent, which validates each one:
-   it fixes the genuine ones by editing files directly and rejects the rest with
-   a reason.
-5. **Verify.** fixpoint then runs the project's own configured build, test, and
-   static checks *itself* — see `verify` in the config. This is the only signal
-   in the loop that no model produced: without it, "fixed" means an agent said
-   it fixed something and "converged" means other agents said they saw nothing.
-   A round that fails the gate gets one bounded correction attempt from the
-   coder; if it still fails, the round is **discarded** (edits stashed, not
-   committed), because committing them would put later rounds on a broken base.
-   Under the default `no_regressions` policy a check that was already failing
-   before the run may keep failing — only newly broken checks block.
+   [Observations and issues](docs/concepts.md#observations-and-issues). Several
+   reviewers reporting one problem produce one issue, so agreement between
+   agents raises confidence instead of consuming the round's budget twice.
+4. **Fix.** The issues go to the coder agent, which validates each one: it fixes
+   the genuine ones by editing files directly and rejects the rest with a reason.
+5. **Verify.** fixpoint runs the project's own build, test and static checks
+   *itself* — see `verify` in the config. This is the only signal in the loop
+   that no model produced. A round that fails the gate gets one bounded
+   correction attempt from the coder; if it still fails, the round is discarded
+   (edits stashed, not committed). Under the default `no_regressions` policy a
+   check that was already failing before the run may keep failing — only newly
+   broken checks block.
 6. **Commit.** Each fix lands as its own commit, naming the issue it closed.
-   `loop.commit_policy` decides whether those commits stay separate (`per_fix`,
-   the default) or are squashed per round or per run.
+   `loop.commit_policy` decides whether those stay separate (`per_fix`, the
+   default) or are squashed per round or per run.
 7. **Repeat.** Each round, reviewers receive the history of prior issues and
    coder verdicts, so a rejected issue is not re-reported forever. The loop ends
    after a configurable number of consecutive clean rounds, when the coder
    rejects everything in a round, or at the iteration cap.
 
-If the coder dies mid-round (timeout, session limit, malformed output) after
-editing files, its partial work is put through the same verification gate as a
-normal round. If it passes, it is committed as a "partial" round and the loop
-continues — the next round re-reviews everything, so the run self-heals instead of
-stranding valid edits. If it fails, the edits are stashed for you to inspect
-(`git stash pop`) and the run stops rather than building later rounds on a base
-that is known to be broken. A coder that died mid-edit is the case most likely to
-leave a tree that does not compile, so this is the path that most needs the gate;
-reviewers are models reading content, not a substitute for a compiler.
+Three behaviours are worth knowing before you read a run:
+
+**A coder that dies mid-round** (timeout, session limit, malformed output) after
+editing files has its partial work put through the same gate as a normal round.
+If it passes, it is committed as a "partial" round and the loop continues — the
+next round re-reviews everything, so the run self-heals instead of stranding
+valid edits. If it fails, the edits are stashed for you to inspect (`git stash
+pop`) and the run stops rather than building later rounds on a broken base.
 
 **Reviewers are told not to build or test.** They were doing it — `go test ./...`
 inside a *review* — and every line of that output returns as input tokens on the
-next turn of a session whose turn count is already what drives the bill. It buys
-nothing either: the gate above is fixpoint's own run, and a reviewer's private one
-does not feed it. The rule lives in code (`prompt.ReviewWorkingRules`) so a new lens
-inherits it, and it rides in the shared prelude so it costs nothing per lens.
+next turn of a session whose turn count is what drives the bill. It buys nothing
+either: the gate above is fixpoint's own run, and a reviewer's private one does
+not feed it. The rule lives in code (`prompt.ReviewWorkingRules`) so a new lens
+inherits it.
 
 **A reply that breaks the format gets one chance to restate it.** When an agent
-exits cleanly but its `<review>` block is missing or malformed, fixpoint asks it to
-emit the findings again in the required shape — without re-sending the material and
-without letting it redo the review, so the second pass cannot quietly report
-different findings. The alternative is what used to happen: a whole agentic session
-discarded over its punctuation, plus a reviewer error that resets the convergence
-streak and denies the run a clean round it had earned. Both attempts' usage is
-billed to the one step. A crashed, timed-out or rate-limited agent is *not* retried
-this way — it has nothing to restate.
-
-## Getting started
-
-Requirements:
-
-- Linux or macOS. **Windows is not supported yet** — see Platform support below.
-- Go 1.26+
-- git (and `gh` for `pr` mode)
-- at least one agentic CLI installed and authenticated (e.g. `claude`,
-  `codex`, `ollama`) — verify the flags in `config/agents/*.yaml` match what your
-  installed versions expect
-
-```sh
-make build          # compile the fixpoint binary
-make check          # static validation of the configuration (no agents invoked)
-make check-live     # static validation + ping every configured agent
-make help           # every target, including one per shipped config
-```
-
-There is one target per shipped config, so the command says which one it is
-going to spend money on. (There is no `make run`: it took its config from a
-variable, which made the two-hour run and the five-minute one look identical.)
-
-```sh
-make review-code            # review the whole project, no edits
-make review-branch          # review only what this branch changed, no edits
-make review-pr PR=170       # review a pull request
-make fix-code               # review -> fix -> verify -> commit, whole project
-make fix-branch             # the same cycle over this branch's changes
-```
-
-Or directly:
-
-```sh
-./fixpoint <config-name> [flags]      # e.g. ./fixpoint review-code
-./fixpoint --config path/to/task.yaml [flags]
-```
-
-### Fixing a pull request
-
-```sh
-./fixpoint review-pr -pr 170                        # read it first
-./fixpoint fix-pr -pr 170 --allow-untrusted-fix     # then let it edit
-./fixpoint fix-pr -pr 170 --allow-untrusted-fix -post   # …and answer the threads
-```
-
-`fix-pr` also **triages the pull request's open comments**: a read-only agent
-decides each one before any fixing starts, accepted ones become ordinary issues
-with their own session, gate and commit, and declined ones are answered with the
-reason. Every conversation gets a decision: a declined one is answered straight
-away, an accepted one once its fix commits — and if the coder then rejects that
-issue or its gate fails, nothing is claimed and the thread is left for a later
-run to decide again. That lets PR comments
-direct work, which is a real widening of what untrusted text can ask for — see
-[config/README.md](config/README.md#letting-the-comments-commission-work) for what
-bounds it.
-
-Conversations are read **whole**, replies included, and one whose last word is
-already this tool's answer is left alone — otherwise every later run would answer
-the same comment again, since replying does not resolve a thread. When a person
-writes back, the thread is live again and the agent sees the entire exchange,
-including what it said last time.
-
-`fix-pr` is the most dangerous config in the bundle and its flag says so: it edits
-a working tree holding **externally authored** code, with an agent whose
-permission checks are disabled. A payload in the diff, in a commit message, or in
-a review comment reaches the coder. It is also shown the pull request's
-unresolved conversations and may answer the ones its work addressed — see
-[config/README.md](config/README.md#answering-a-pull-requests-conversations). A
-reply is posted only once that session's fix has been **committed**: it goes out
-under your identity as a claim that the work landed, and a session whose gate failed
-or whose issue was rejected has its edits withdrawn or stashed, so a reply about it
-would be a claim about work that does not exist.
-
-### Reviewing a pull request
-
-```sh
-# 1. See what it would review, and what it would cost, before spending anything.
-./fixpoint review-pr -pr 170 --check
-
-# 2. Review it. The result is written to .fixpoint/<run>/review-body.md and
-#    nothing leaves this machine.
-./fixpoint review-pr -pr 170
-
-# 3. Read that file. Then publish THOSE bytes as a comment -- no approval, no
-#    block, no second review, and no agent invoked:
-./fixpoint -post-run .fixpoint/<run-timestamp>
-
-# 4. Or let the published review carry its verdict, approving or requesting
-#    changes:
-./fixpoint -post-run .fixpoint/<run-timestamp> -post-verdict
-```
-
-Step 3 is `-post-run` and not a second `review-pr -pr 170 -post` because the two
-are not the same act. `-post` publishes the review the run in front of it just
-produced, so on its own it publishes a review nobody has read; re-running to post
-what you read would re-review everything, cost the same again, and publish a
-*different* review — the panel is not deterministic, and two runs over one pull
-request here produced 34 findings and then 49. `-post-run` takes the run directory
-and posts the body off disk, with the anchors that run computed. That is what makes
-reading the file first mean anything. It refuses a run that has no verdict (a fix
-run), one that did not review a pull request, one from before the PR number was
-recorded, one that did not finish — the verdict is written before the round
-checks whether it was interrupted, so a review stopped part-way leaves an approval
-on disk that the run itself refused to post and exited non-zero over — and one
-that has *already* been published, so `-post` followed by `-post-run` cannot leave
-two identical reviews on the pull request. Publishing also leaves a `review-posted`
-receipt in the run directory, so a second `-post-run` over the same run refuses
-too — including after a submission that failed *after* it was sent, which the forge
-may well have accepted; the receipt says so, and only you can decide whether the
-review is there.
-
-It also refuses a run directory that is **tracked by git**. A run directory is only
-files, so a pull request can commit a lookalike `.fixpoint/<run>` next to your own:
-a plausible `review-body.md` to read, and a summary whose fields choose a different
-pull request, an approval, and inline comments of its own — none of which are in the
-file you inspected. fixpoint commits no run artifacts, so a tracked file there means
-the directory came in with the code under review rather than from a run on this
-machine, and nothing is published. Every anchor's file and line is also logged
-before the submission goes out, because the line comments are separate bytes from
-`review-body.md` and reading that file does not show them.
-
-Either way, the review is bound to the **commit it was about**. A run records the
-head it reviewed, and posting reads the pull request's current head first: if the
-author has pushed since — while the panel ran, or in the days between a run and its
-`-post-run` — nothing is published. A forge applies a review to whatever the pull
-request points at now, so without that check an approval could clear code no
-reviewer ever read: push something clean, collect the approval, push the payload.
-On GitHub the submission also names that commit (`commit_id`), so the review is
-recorded against it and its comments are marked outdated if the branch moves
-afterwards.
-
-The **approval itself is not**, and no client can make it so. A forge counts an
-approval toward its merge requirements until something clears it, so once fixpoint
-has exited an author can push and merge on an approval given for the commit before
-— exactly what the check above refuses *during* the run. Only the repository can
-close that: on GitHub enable *Dismiss stale pull request approvals when new commits
-are pushed*, on GitLab *Remove all approvals when commits are added to the source
-branch*. Turn it on before you let anything approve with `-post-verdict`, machine
-or human — every approval fixpoint publishes says so in the log, naming the commit
-it was for.
-
-It is bound to the **repository** it was about too. A commit is not a destination:
-the run directory records the path it ran in, and `-post-run` submits through
-whatever checkout is at that path when you run it — which, days later, may have been
-reused for another repository on the same forge or had its remotes rewritten. Pull
-request 170 of *that* repository would then receive the review, and the head check
-would not notice, because the reviewed commit is public and anyone can open a pull
-request proposing it. So a run also records the repository `gh` resolved for the
-checkout, and `-post-run` refuses unless the checkout still resolves to it — or
-cannot say what it resolves to at all.
-
-`-post`/`-post-run` and `-post-verdict` are separate flags because they are
-separate acts. The first makes a machine review visible; the second approves
-somebody's change or formally blocks it. None of them can be set from a config
-file — the first bundle on the search path belongs to the target, so a YAML key
-would let reviewed code arrange to have a review posted under your identity.
-
-Reviewing the same pull request twice is fine: findings it already carries are
-recognized and not repeated, the new ones are published, and the body says how
-many it left out. Recognition is bound to the commit each finding was published
-about, so one whose code has been pushed to since is published again in full rather
-than counted as old news — see
-[config/README.md](config/README.md#reviewing-the-same-pull-request-twice).
-
-Findings that name a file and a line are also posted as **inline comments**, so a
-reader meets each one beside the code instead of in a list at the bottom. Each one
-carries the same signature as the body, because it is read in the Files tab with no
-sight of the review it belongs to — unsigned, it would be an unattributed assertion
-sitting on somebody's code. A forge only accepts an anchor on a line the pull
-request actually touches; if it refuses any of them it refuses the whole
-submission, so fixpoint retries with the summary alone and says so. Nothing is lost
-either way — every finding is in the body.
-
-> **GitLab is not usable today.** There is a `glab`-based provider — it posts a
-> note, adds inline discussions, approves and unapproves — but nothing can reach
-> it: `pr` mode's `Prepare` unconditionally runs `gh pr checkout`, so a run against
-> a GitLab remote fails before any provider is chosen. The code is written and
-> tested against a fake CLI; what is missing is a checkout path that is not `gh`.
-> Treat every mention of GitLab below as describing code that has never run
-> against a real merge request.
-
-**GitHub refuses an approval or a change request on your OWN pull request**, so
-`-post-verdict` only does anything when the token belongs to somebody other than
-the PR's author — a bot account, or a reviewer running it on a colleague's branch.
-`-post` works either way, which is part of why the comment is the default: on your
-own PR it is the only thing that can land. A refusal is reported, not swallowed,
-and the review is still on disk.
-
-| Flag | Effect |
-|---|---|
-| `<name>` | Positional: the task config to run, resolved on the bundle search path. A value containing a separator or ending in `.yaml` is used as a path. |
-| `--list` | List task configs with the file each resolved from, and exit. |
-| `-config path` | Alternative to the positional name. Giving both is an error. |
-| `-review-only` | Run exactly one review round; the coder is never invoked (no edits in git-diff/directory mode; pr mode still runs `gh pr checkout`, switching the branch and working tree in Prepare). |
-| `-max-iterations n` | Override `loop.max_iterations`. |
-| `-base-ref ref` | Override `target.base_ref` in git-diff mode; a trailing `...` means the merge base with HEAD. For `fix-branch` on a branch with no upstream: `-base-ref 'origin/main...'`. |
-| `-target path` | Point a directory-mode run at a file or a directory. A file is reviewed as a **document**, shown to the panel in full; a directory is collected as a listing. How `review-design` is aimed. |
-| `-out path` | Where a create run writes its deliverable (default: `DESIGN.md` beside the assignment). An existing file is never overwritten. |
-| `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. |
-| `-trusted-target` | Assert a directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without it). |
-| `-trusted-bundle` | Assert **only** that the bundle files resolved from inside the target may be executed and sent to agents. Permits no fix round and trusts no other target content — this is the flag to use when the config is yours but the code is not, as `review-pr` on a fork's branch is. |
-| `-allow-untrusted-fix` | Permit fix rounds in `pr` mode (PR content is untrusted; see Security). |
-| `-post` | Publish the review on the pull request as a **comment**: findings become visible, no verdict is acted on. Publishes what the run just produced, so nobody has read it yet — prefer `-post-run`. A publish that was asked for and did not happen fails the run (exit `1`), so an approval can never exit `0` over a review that never reached the pull request; the review is still in `review-body.md`. |
-| `-post-run dir` | Publish the review a **finished** run already produced, from its `.fixpoint/<run>` directory (or its `summary-*.json`). Invokes no agent and reviews nothing: the bytes posted are the bytes in `review-body.md` and the inline anchors are the ones that run computed. Resolves no configuration at all — everything it acts on is in that run's summary — so every flag but `-post-verdict` is ignored. |
-| `-post-verdict` | With `-post` or `-post-run`, let the review carry its verdict — approving, or requesting changes on someone's PR. An inconclusive verdict stays a comment regardless. An approval is bound to the reviewed commit only until the run ends: unless the repository dismisses stale approvals on push, it keeps counting after one (see above). |
-| `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](docs/concepts.md#choosing-a-base-in-git-diff-mode). |
-| `-check-live` | Validate, ping every agent, and exit. |
-
-Exit codes: `0` converged, or a review that **approved**; `2` hit
-`max_iterations` without converging (or a usage error); `3` the coder rejected
-every issue so nothing changed — deliberately *not* `0`, since "nobody agreed
-there was a problem" is not "the code is clean"; `4` the review **requested
-changes**; `5` the review was **inconclusive** (nothing blocking was found, but
-the panel did not reach quorum or the judge did not finish, so that silence is
-not evidence); `1` any other failure or interruption. A verdict only ever makes
-the status worse, so an errored or interrupted run keeps its own code. `SIGINT`/`SIGTERM` stop the run cleanly: the current step is abandoned and any edits
-in the tree are stashed, so nothing half-finished is left behind. Signal a second time to quit
-immediately without that reconciliation — which can leave the working tree dirty.
+exits cleanly but its `<review>` block is missing or malformed, fixpoint asks it
+to emit the findings again in the required shape — without re-sending the
+material and without letting it redo the review, so the second pass cannot
+quietly report different findings. The alternative is a whole agentic session
+discarded over its punctuation, plus a reviewer error that resets the
+convergence streak. Both attempts' usage is billed to the one step. A crashed,
+timed-out or rate-limited agent is *not* retried this way — it has nothing to
+restate.
 
 ## Configuration
 
@@ -341,13 +280,13 @@ command line.
 |---|---|
 | [review-code](config/review-code.yaml) | Review a whole project once, no edits. Needs `-trusted-bundle` (or `-trusted-target`) if the project ships its own bundle. |
 | [review-branch](config/review-branch.yaml) | Review only what this branch changed, no edits. The review-only twin of `fix-branch`. |
-| [review-design](config/review-design.yaml) | Review a design document (`-target docs/DESIGN.md`) or a project's architecture (`-target <dir>`), no edits. Structure, data, and failure modes — not code defects. |
+| [review-pr](config/review-pr.yaml) | Review a GitHub pull request; review-only by default. See [Pull requests](docs/pull-requests.md). |
+| [review-design](config/review-design.yaml) | Review a design document (`-target docs/DESIGN.md`) or a project's architecture (`-target <dir>`), no edits. Structure, data and failure modes — not code defects. |
 | [create-design](config/create-design.yaml) | Draft a design from an assignment (`-target assignment.md`): the pool proposes independently, critiques anonymously, an editor synthesizes with dissent recorded. Writes `DESIGN.md` beside the assignment (or `-out`), never overwriting. |
-| [implement-go](config/implement-go.yaml) / [implement-node](config/implement-node.yaml) / [implement-web](config/implement-web.yaml) | Build a reviewed design into a **new project** (`-target DESIGN.md -out <fresh-dir> -trusted-target`): one planner session decomposes it, the coder builds one task per gated commit; every task's outcome lands in the history as durable trailers. `implement-web` is the asserted-ungated stack (plain html+js). Quality comes afterwards, from review-code/fix-code over the produced repo. A run that stops early (deadline, provider outage, Ctrl-C) leaves every committed task standing and gated, but **cannot be resumed** — `-continue` is specified in the design and not yet built, so finishing means a fresh run into a fresh directory. Spec: [docs/design/DESIGN.md](docs/design/DESIGN.md). |
-| [review-pr](config/review-pr.yaml) | Review a GitHub pull request; review-only by default. |
-| [fix-pr](config/fix-pr.yaml) | Fix a pull request's changes and triage its open conversations; the replies are posted only with `-post`. Needs `-allow-untrusted-fix`, and `-trusted-bundle` as well when the target ships the bundle being used. |
+| [implement-go](config/implement-go.yaml) / [implement-node](config/implement-node.yaml) / [implement-web](config/implement-web.yaml) | Build a reviewed design into a **new project** (`-target DESIGN.md -out <fresh-dir>`): one planner session decomposes it, the coder builds one task per gated commit, and every task's outcome lands in the history as durable trailers. `implement-web` is the asserted-ungated stack. Spec: [docs/design/DESIGN.md](docs/design/DESIGN.md). |
 | [fix-code](config/fix-code.yaml) | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
 | [fix-branch](config/fix-branch.yaml) | The same loop over only what this branch changed — git-diff against the merge base with `@{upstream}`. Needs `-trusted-target`. |
+| [fix-pr](config/fix-pr.yaml) | Fix a pull request's changes and triage its open conversations; replies are posted only with `-post`. Needs `-allow-untrusted-fix`. |
 | [defaults](config/defaults.yaml) | Shared base the others extend; not runnable on its own. |
 
 Bundles are searched most-specific first — `<project>/config/`, `~/.fixpoint/`,
@@ -360,54 +299,89 @@ run logs the file each name resolved to, and records it in the run summary.
 
 The main sections of a task config:
 
-- **`target`** — what to review: mode, path, exclude globs, base ref
-  or PR number.
+- **`target`** — what to review: mode, path, exclude globs, base ref or PR number.
 - **`roles`** — the coder (agent + prompt) and the review lens list with its
   assignment strategy. The reviewer **pool** lives in `defaults.yaml` and is
   inherited, so changing who reviews is one edit rather than one per config; a
   config that sets `roles.review.agents` replaces that pool instead of adding to
   it.
-- **`agents`** — the command templates described above, each optionally carrying
-  `prompt_budget` (bytes; over it the invocation is refused before the process
-  starts, and the step is recorded as failed rather than sent and rejected by the
-  provider — see [config/README.md](config/README.md)).
+- **`agents`** — the command templates, each optionally carrying `prompt_budget`
+  (bytes; over it the invocation is refused before the process starts, and the
+  step is recorded as failed rather than sent and rejected by the provider).
 - **`loop`** — `max_iterations`, `max_final_passes` (how many times the closing
   round may repeat, default 1), `final_skip_run_edits` (globs the closing round is
   not shown when this run wrote the file), `commit_policy` (see
-  [One fix, one commit](docs/concepts.md#one-fix-one-commit)), `max_findings_per_round` (caps how
-  many **issues** a round hands over, `0` = unlimited and the default; worst
-  severity goes first and the overflow is deferred to later rounds, but every
-  deferral promotes an issue one severity tier, so nothing can be starved
-  indefinitely by a steady supply of more-severe ones), `review_only`,
-  `commit_message` (placeholders `{issue}`, `{title}` for a single fix; `{round}`,
-  `{fixed}`, `{rejected}` for a squashed one), and `clean_rounds_to_stop` (how many
-  consecutive clean rounds end the run — `2` pairs well with `strategy: rotate`, so
-  a differently-assigned panel must confirm the clean result). The trust gates are
-  deliberately **not** here: they are command-line flags only, for the reason given
-  under [Security model](docs/security.md).
+  [One fix, one commit](docs/concepts.md#one-fix-one-commit)),
+  `max_findings_per_round` (caps how many **issues** a round hands over, `0` =
+  unlimited and the default; worst severity goes first and the overflow is
+  deferred to later rounds, but every deferral promotes an issue one severity
+  tier, so nothing can be starved indefinitely), `review_only`, `commit_message`
+  (placeholders `{issue}`, `{title}` for a single fix; `{round}`, `{fixed}`,
+  `{rejected}` for a squashed one), and `clean_rounds_to_stop` (how many
+  consecutive clean rounds end the run — `2` pairs well with `strategy: rotate`,
+  so a differently-assigned panel must confirm the clean result). The trust gates
+  are deliberately **not** here: they are command-line flags only, for the reason
+  given under [Security model](docs/security.md).
 - **`review`** — what a review run concludes and how it says so: `block_at` (the
   severity that forces CHANGES_REQUESTED, default `high`), `refute_at` (the floor
   for the refutation round, default `high` — it may be looser than `block_at` but
   never stricter), `refute` (the prompt, or empty to skip the round), and the two
-  signature templates, `signature` and `reply_signature`. Publishing is **not**
-  here: `-post`, `-post-run` and `-post-verdict` are flags only, for the reason
-  given under [Security model](docs/security.md).
+  signature templates. Publishing is **not** here: `-post`, `-post-run` and
+  `-post-verdict` are flags only.
 - **`verify`** — the deterministic gate fixpoint runs itself between the coder and
   the commit: `commands` (argv, per project, cheapest first), a per-command
-  `timeout`, and `policy` — `no_regressions` (the default: a check already failing
-  before the run may keep failing, one that passed may not start failing),
-  `must_pass`, or `off`. No commands means the gate is off, which is why the shipped
-  defaults define none. Commands execute code from the target, so they run only on
-  the fix path, which already requires the trust assertion. Every path that can
-  produce a commit passes this gate — including the recovery path for a coder that
-  failed mid-edit — so a commit later rounds build on, and that convergence can be
-  declared over, has always been verified.
+  `timeout`, and `policy` — `no_regressions` (the default), `must_pass`, or `off`.
+  A command may also be marked `infra: true` to say its failure is a fact about
+  the environment (a registry, a proxy) rather than about the code, so an outage
+  does not become a permanent verdict. No commands means the gate is off, which is
+  why the shipped defaults define none. Commands execute code from the target, so
+  they run only on the fix path, which already requires the trust assertion.
+- **`implement`** — the build pipeline's bounds: `max_tasks`, `max_task_attempts`,
+  `max_run_duration`, `max_infra_tries`, `max_task_bytes`, `min_free_disk`,
+  `clean_check`, and the stack's `gitignore_seed` / `gate_generated` lists.
 - **`logs`** — where and in which formats run artifacts are written.
+
+## Flags
+
+The publishing flags (`-post`, `-post-run`, `-post-verdict`) are the ones worth
+reading twice, and [Pull requests](docs/pull-requests.md) is where they are
+explained: each one acts under your identity on somebody else's branch.
+
+| Flag | Effect |
+|---|---|
+| `<name>` | Positional: the task config to run, resolved on the bundle search path. A value containing a separator or ending in `.yaml` is used as a path. |
+| `--list` | List task configs with the file each resolved from, and exit. |
+| `-config path` | Alternative to the positional name. Giving both is an error. |
+| `-review-only` | Run exactly one review round; the coder is never invoked (no edits in git-diff/directory mode; pr mode still runs `gh pr checkout`, switching the branch and working tree in Prepare). |
+| `-max-iterations n` | Override `loop.max_iterations`. |
+| `-base-ref ref` | Override `target.base_ref` in git-diff mode; a trailing `...` means the merge base with HEAD. For `fix-branch` on a branch with no upstream: `-base-ref 'origin/main...'`. |
+| `-target path` | Point a directory-mode run at a file or a directory. A file is reviewed as a **document**, shown to the panel in full; a directory is collected as a listing. How `review-design` is aimed. |
+| `-out path` | Where a create run writes its deliverable (default: `DESIGN.md` beside the assignment). An existing file is never overwritten. |
+| `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. |
+| `-trusted-target` | Assert a directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without it). |
+| `-trusted-bundle` | Assert **only** that the bundle files resolved from inside the target may be executed and sent to agents. Permits no fix round and trusts no other target content — this is the flag to use when the config is yours but the code is not, as `review-pr` on a fork's branch is. |
+| `-allow-untrusted-fix` | Permit fix rounds in `pr` mode (PR content is untrusted; see [Security model](docs/security.md)). |
+| `-post` | Publish the review on the pull request as a **comment**: findings become visible, no verdict is acted on. Publishes what the run just produced, so nobody has read it yet — prefer [`-post-run`](docs/pull-requests.md). A publish that was asked for and did not happen fails the run (exit `1`), so an approval can never exit `0` over a review that never reached the pull request; the review is still in `review-body.md`. |
+| `-post-run dir` | Publish the review a **finished** run already produced, from its `.fixpoint/<run>` directory (or its `summary-*.json`). Invokes no agent and reviews nothing: the bytes posted are the bytes in `review-body.md` and the inline anchors are the ones that run computed. Resolves no configuration at all — everything it acts on is in that run's summary — so every flag but `-post-verdict` is ignored. |
+| `-post-verdict` | With `-post` or `-post-run`, let the review carry its verdict — approving, or requesting changes on someone's PR. An inconclusive verdict stays a comment regardless. An approval is bound to the reviewed commit only until the run ends: unless the repository dismisses stale approvals on push, it keeps counting after one ([why](docs/pull-requests.md)). |
+| `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](docs/concepts.md#choosing-a-base-in-git-diff-mode). |
+| `-check-live` | Validate, ping every agent, and exit. |
+
+Exit codes: `0` converged, or a review that **approved**; `2` hit
+`max_iterations` without converging (or a usage error); `3` the coder rejected
+every issue so nothing changed — deliberately *not* `0`, since "nobody agreed
+there was a problem" is not "the code is clean"; `4` the review **requested
+changes**; `5` the review was **inconclusive** (nothing blocking was found, but
+the panel did not reach quorum or the judge did not finish, so that silence is
+not evidence); `1` any other failure or interruption. A verdict only ever makes
+the status worse, so an errored or interrupted run keeps its own code. `SIGINT`/`SIGTERM` stop the run cleanly: the current step is abandoned and any edits
+in the tree are stashed, so nothing half-finished is left behind. Signal a second time to quit
+immediately without that reconciliation — which can leave the working tree dirty.
 
 ## Platform support
 
 Linux and macOS. fixpoint does not currently compile for `GOOS=windows`: it puts
-each agent in its own POSIX process group so that a timeout, a cancelled run, or
+each agent in its own POSIX process group so that a timeout, a canceled run, or
 Ctrl-C reliably kills CLI-spawned children rather than leaking them. Windows has
 no direct equivalent — a job object is the analogue — so that lifecycle handling
 needs a platform-specific implementation behind build tags before Windows can
@@ -430,6 +404,10 @@ internal/target/         collects review material per mode; git operations
                          (base pinning, clean-tree checks, round commits)
 internal/model/          shared data shapes: observations, issues, verdicts, summaries, journal events
 internal/issue/          groups observations into issues; tracks them across rounds
+internal/create/         the create-design pipeline: propose, critique, synthesize,
+                         object, revise, publish atomically
+internal/implement/      the implement-design mechanics: plan validation, the
+                         design outline, censuses, repository invariants, scaffold
 internal/verify/         runs the deterministic gate (build / test / static checks)
 internal/review/         the verdict rules and the review document (body, inline
                          comments, signature)
@@ -437,6 +415,7 @@ internal/forge/          reads a pull request's checks and conversations, and
                          publishes the review back through the vendor's CLI (`gh`)
 internal/logstore/       per-step logs, the run journal, and the run summary
 internal/runlog/         renders the run's progress: phase blocks, color on a tty
+internal/gitenv/         the git hardening every subprocess against a target carries
 internal/testfixture/    shared test helpers
 config/                  the shipped bundle: task configs, prompts/, agents/
 config/defaults.yaml     the commented base every task config extends
