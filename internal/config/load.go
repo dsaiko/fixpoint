@@ -866,7 +866,29 @@ func refuseSymlinkedPath(target string) error {
 		dest, _ := os.Readlink(target)
 		return fmt.Errorf("-target %s is a symlink (to %q); fixpoint reads a target's bytes and shows them to every agent, so it will not follow one -- pass the real path if you meant it", target, dest)
 	}
-	clean := filepath.Clean(target)
+	if link, dest, found := EscapingSymlink(target); found {
+		return fmt.Errorf("-target %s reaches its destination through %s, a symlink to %q that leaves the directory it sits in (%s); fixpoint reads a target's bytes and shows them to every agent, so it will not follow one out of the tree -- pass the real path if you meant it",
+			target, link, dest, filepath.Dir(link))
+	}
+	return nil
+}
+
+// EscapingSymlink walks a path's components and reports the first one that is a
+// symlink LEAVING the directory it sits in, with what it points at.
+//
+// Exported because two entry points read a document whole and hand it to every
+// agent -- the -target flag and target.document from a config -- and only the
+// flag was checked. The config door was open to the same attack: a repository
+// shipping `docs/assignment -> ~/.aws` plus `document: assignment/credentials`
+// (review run 20260814-191024).
+//
+// The rule is about ESCAPE, not about symlinks. Refusing any symlinked ancestor
+// refuses every path on macOS, where /var is a link to private/var; a link that
+// stays inside the directory it sits in redirects nothing the operator did not
+// already name. Components that do not exist end the walk without a verdict --
+// the caller's own stat reports a missing path far better.
+func EscapingSymlink(path string) (link, dest string, found bool) {
+	clean := filepath.Clean(path)
 	walked := ""
 	for _, part := range strings.Split(clean, string(filepath.Separator)) {
 		if part == "" {
@@ -877,28 +899,25 @@ func refuseSymlinkedPath(target string) error {
 		walked = filepath.Join(walked, part)
 		info, err := os.Lstat(walked)
 		if err != nil {
-			// Missing: the Lstat that follows reports it far better than a symlink
-			// refusal naming an unrelated ancestor would.
-			return nil //nolint:nilerr // a missing target is not a symlink refusal
+			return "", "", false
 		}
 		if info.Mode()&os.ModeSymlink == 0 {
 			continue
 		}
-		// A symlink is fine as long as it does not LEAVE the directory it sits in.
 		// Both sides canonicalized, which is what keeps an ordinary system link --
 		// /var -> private/var, whose parent is / -- from reading as an escape.
 		resolved, rerr := filepath.EvalSymlinks(walked)
 		anchor, aerr := filepath.EvalSymlinks(parent)
 		if rerr != nil || aerr != nil {
-			return nil //nolint:nilerr // an unresolvable component cannot prove an escape
+			return "", "", false
 		}
 		if within(resolved, anchor) {
 			continue
 		}
-		dest, _ := os.Readlink(walked)
-		return fmt.Errorf("-target %s reaches its destination through %s, a symlink to %q that leaves the directory it sits in (%s); fixpoint reads a target's bytes and shows them to every agent, so it will not follow one out of the tree -- pass the real path if you meant it", target, walked, dest, parent)
+		to, _ := os.Readlink(walked)
+		return walked, to, true
 	}
-	return nil
+	return "", "", false
 }
 
 // withinTree reports whether path lies inside root either lexically or with every

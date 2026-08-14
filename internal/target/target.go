@@ -289,6 +289,16 @@ func (c *Collector) prepareDocument() error {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("target.document %s is a symlink; fixpoint shows a document's bytes to every agent and will not follow one", c.documentPath())
 	}
+	// The leaf check above is not enough, and the -target flag already learned
+	// this: the OS resolves every parent before it stats the leaf, so a repository
+	// shipping `docs/assignment -> ~/.aws` and `document: assignment/credentials`
+	// passes it -- credentials really is a regular file -- while the bytes read
+	// are the operator's keys. The flag was fixed and this door was left open
+	// (review run 20260814-191024); one rule, two entry points.
+	if link, dest, found := config.EscapingSymlink(c.documentPath()); found {
+		return fmt.Errorf("target.document %s reaches its destination through %s, a symlink to %q that leaves the directory it sits in; fixpoint shows a document's bytes to every agent and will not follow one out of the tree",
+			c.documentPath(), link, dest)
+	}
 	if info.IsDir() {
 		return fmt.Errorf("target.document %s is a directory; a document target is one file", c.documentPath())
 	}
@@ -2745,7 +2755,7 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	// needs to do its job is not the same as the credentials it must not see, and
 	// git still gets none of them.
 	if agent.IsForgeCLI(name) {
-		cmd.Env = agent.WithForgeCredentials(cmd.Env)
+		cmd.Env = agent.WithForgeCredentials(name, cmd.Env)
 	}
 	// Stream stdout and stderr into SEPARATE bounded buffers rather than one:
 	// callers parse the returned string as a machine-readable value (a SHA, a PR
