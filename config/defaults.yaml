@@ -181,6 +181,17 @@ verify:
   # check, ...), so a shipped default cannot know them, and an empty list disables
   # verification. Define them in your project's own task config.
   #
+  # Each command is `{name, run, optional, infra}`. `optional` records a result
+  # without ever failing the round. `infra` says the command reaches something
+  # the project does not control -- a registry, a proxy, a package index -- so a
+  # failure is a fact about the ENVIRONMENT rather than a verdict on the code:
+  # in an implement run it costs no attempt, writes no outcome marker, and is
+  # retried with backoff like a provider refusal instead of permanently failing
+  # the task and skipping everything that depends on it. Opt-in, because no exit
+  # code distinguishes a network failure from a real one -- only the person who
+  # wrote the command knows what it reaches. `npm ci` in config/implement-node.yaml
+  # is the shipped example.
+  #
   # policy:
   #   no_regressions  a check already failing before this run may keep failing,
   #                   but one that passed must not start failing. The default,
