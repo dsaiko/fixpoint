@@ -2,6 +2,7 @@ package implement
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,11 +184,22 @@ func TestCommitExactStagesExactlyTheNamedPaths(t *testing.T) {
 
 // fakeRepo is the Repo interface with no git: the cleanup contract is about the
 // DIRECTORY, and a real repository would only add a dependency to the assertion.
-type fakeRepo struct{ commitErr error }
+type fakeRepo struct {
+	commitErr error
+	lockErr   error
+	onRelease func()
+}
 
 func (f *fakeRepo) Init(context.Context) error { return nil }
 func (f *fakeRepo) LockRepo(context.Context) (func(), error) {
-	return func() {}, nil
+	if f.lockErr != nil {
+		return nil, f.lockErr
+	}
+	return func() {
+		if f.onRelease != nil {
+			f.onRelease()
+		}
+	}, nil
 }
 func (f *fakeRepo) CommitExact(_ context.Context, _, _ string, _ []string, _ bool) (string, error) {
 	return "deadbeef", f.commitErr
@@ -227,5 +239,49 @@ func TestScaffoldKeepsTheRepositoryItBuilt(t *testing.T) {
 	release()
 	if _, err := os.Stat(filepath.Join(out, "a.txt")); err != nil {
 		t.Errorf("the scaffolded project was removed: %v", err)
+	}
+}
+
+// A scaffold whose lock is already held by another run must NOT delete the
+// directory. `git init` has succeeded by then, so the repository is discoverable
+// and the lock failing means somebody else owns it -- removing it would take a
+// repository out from under the process that owns the lock (review run
+// 20260814-191024).
+func TestScaffoldKeepsARepositoryAnotherRunLocked(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	repo := &fakeRepo{lockErr: errors.New("another fixpoint run holds the lock")}
+
+	_, _, err := Scaffold(t.Context(), repo, out, map[string][]byte{"a.txt": []byte("x")}, "h", "b")
+	if err == nil {
+		t.Fatal("a locked repository was scaffolded into anyway")
+	}
+	if _, serr := os.Stat(out); serr != nil {
+		t.Errorf("%s was deleted while another run held its lock: %v", out, serr)
+	}
+	if !strings.Contains(err.Error(), "left in place") {
+		t.Errorf("the refusal must say the directory was kept and why: %v", err)
+	}
+}
+
+// A failure AFTER the lock is taken cleans up inside it: the directory goes
+// first and the lock is released second, so no other run can acquire a lock on
+// a directory that is about to be deleted.
+func TestScaffoldRemovesBeforeReleasingTheLock(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	var goneAtRelease bool
+	repo := &fakeRepo{onRelease: func() {
+		_, err := os.Stat(out)
+		goneAtRelease = os.IsNotExist(err)
+	}}
+
+	// An unsafe name fails after the lock is held.
+	if _, _, err := Scaffold(t.Context(), repo, out, map[string][]byte{"../escape": []byte("x")}, "h", "b"); err == nil {
+		t.Fatal("an unsafe name was accepted")
+	}
+	if !goneAtRelease {
+		t.Error("the lock was released before the directory was removed, leaving a window for another run to claim it")
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Error("the directory survived a failure that happened under the lock")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -195,7 +196,37 @@ func implementReply(shell, reportJSON string) string {
 	return shell + "\ncat <<'REPLY'\n<implement>\n" + reportJSON + "\n</implement>\nREPLY\n"
 }
 
+// reportLine is the output-contract block a coder session ends with, for a
+// script that emits a different report per session rather than one fixed reply.
+func reportLine(reportJSON string) string {
+	return "cat <<'REPLY'\n<implement>\n" + reportJSON + "\n</implement>\nREPLY\n"
+}
+
+// threeTaskPlanJSON adds a third task so a run can reach an outcome MARKER (T02
+// already_satisfied) before a later session commits on its own.
+const threeTaskPlanJSON = `{
+  "schema_version": 1,
+  "project": {"name": "game", "summary": "a game"},
+  "coverage": [
+    {"heading": "## One", "tasks": ["T01"]},
+    {"heading": "## Two", "tasks": ["T02", "T03"]}
+  ],
+  "tasks": [
+    {"id": "T01", "title": "one", "goal": "the one", "acceptance": ["one exists"], "files": ["one.txt"], "depends_on": [], "design_refs": ["## One"]},
+    {"id": "T02", "title": "two", "goal": "the two", "acceptance": ["two exists"], "files": ["two.txt"], "depends_on": ["T01"], "design_refs": ["## Two"]},
+    {"id": "T03", "title": "three", "goal": "the three", "acceptance": ["three exists"], "files": ["three.txt"], "depends_on": ["T02"], "design_refs": ["## Two"]}
+  ]
+}`
+
 func newImplementFixture(t *testing.T, coderScript string, verify config.Verify) *implementFixture {
+	t.Helper()
+	return newImplementFixtureAt(t, filepath.Join(t.TempDir(), "project"), coderScript, verify)
+}
+
+// newImplementFixtureAt is newImplementFixture with the write-target chosen by
+// the caller, for a test whose coder script has to name that path before the
+// run starts.
+func newImplementFixtureAt(t *testing.T, out, coderScript string, verify config.Verify) *implementFixture {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -220,7 +251,6 @@ func newImplementFixture(t *testing.T, coderScript string, verify config.Verify)
 		t.Fatal(err)
 	}
 
-	out := filepath.Join(t.TempDir(), "project")
 	noPing := false
 	cfg := &config.Config{
 		Target: config.Target{Mode: "directory", Path: designDir, Document: "DESIGN.md"},
@@ -1360,45 +1390,200 @@ func TestRunImplementCleansTheTreeWhenInterrupted(t *testing.T) {
 // work inside a commit, so GitClean returns true and the discard never runs --
 // the repository was unlocked with an unverified, unattributed commit at HEAD
 // (review run 20260814-024946).
+//
+// Cancellation waits for POSITIVE EVIDENCE that the commit reached HEAD rather
+// than for a fixed sleep: with a timer, a slow machine could cancel during setup,
+// produce a clean repository for the wrong reason, and leave a removed recovery
+// guard undetected (review run 20260814-191024).
+//
+// The baseline the reset returns to is exercised at each of its three values --
+// the bootstrap commit, a task commit, and an outcome marker. Only the first was
+// covered, so both later assignments of p.attributed could be deleted with the
+// suite still green, and an interruption would roll back gated work or a durable
+// outcome record.
+//
+// The coder is sequenced by a counter OUTSIDE the project: a marker file inside
+// it would dirty the tree, which already_satisfied refuses.
 func TestRunImplementDropsAnUnattributedCommitWhenInterrupted(t *testing.T) {
-	// The coder commits on its own, then sleeps into the cancellation.
-	f := newImplementFixture(t,
-		implementReply("printf 'sneaky\\n' > sneaky.txt\n"+
-			"git add -A >/dev/null 2>&1\n"+
-			"git -c user.name=x -c user.email=x@x commit -qm 'not fixpoint' >/dev/null 2>&1\n"+
-			"sleep 30",
-			`{"status": "implemented", "notes": "never reached"}`),
-		config.Verify{Policy: config.VerifyOff})
+	const rogue = "printf 'sneaky\\n' > sneaky.txt\n" +
+		"git add -A >/dev/null 2>&1\n" +
+		"git -c user.name=x -c user.email=x@x commit -qm 'not fixpoint' >/dev/null 2>&1\n"
 
-	if err := os.WriteFile(f.planFile, []byte(f.planJSON), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	logf, logs := captureLog()
-	f.logs = logs
-	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	go func() {
-		time.Sleep(5 * time.Second)
-		cancel()
-	}()
-	var sum model.RunSummary
-	if err := o.runImplement(ctx, &sum); err == nil {
-		t.Fatalf("an interrupted run reported success\nlog:\n%s", f.logs())
+	cases := []struct {
+		name string
+		// plan and the per-session bodies; the LAST body is the rogue session.
+		plan     string
+		sessions []string
+		wantKept string
+	}{
+		{
+			name:     "baseline is the bootstrap commit",
+			plan:     twoTaskPlanJSON,
+			sessions: []string{rogue},
+			wantKept: "initialize implementation",
+		},
+		{
+			name: "baseline is a task commit",
+			plan: twoTaskPlanJSON,
+			sessions: []string{
+				"printf 'real\\n' > real.txt\n" + reportLine(`{"status": "implemented", "notes": "built"}`),
+				rogue,
+			},
+			wantKept: "fixpoint: T01",
+		},
+		{
+			name: "baseline is an outcome marker",
+			plan: threeTaskPlanJSON,
+			sessions: []string{
+				"printf 'real\\n' > real.txt\n" + reportLine(`{"status": "implemented", "notes": "built"}`),
+				reportLine(`{"status": "already_satisfied", "covered_by": ["T01"], "notes": "T01 covered it"}`),
+				rogue,
+			},
+			wantKept: "fixpoint: T02",
+		},
 	}
 
-	// Only the bootstrap commit stands: the session's own is gone, and so are its
-	// bytes.
-	subjects := gitOutAt(t, f.out, "log", "--format=%s")
-	if strings.Contains(subjects, "not fixpoint") {
-		t.Errorf("an unattributed commit survived the interruption:\n%s\nlog:\n%s", subjects, f.logs())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "project")
+			state := t.TempDir()
+			committed := filepath.Join(state, "rogue-committed")
+
+			// A counter outside the project picks the session's behavior; the last
+			// entry is the rogue one and hangs so cancellation lands on it.
+			var sb strings.Builder
+			sb.WriteString("n=$(cat " + state + "/n 2>/dev/null || echo 0)\nn=$((n+1))\nprintf '%s' \"$n\" > " + state + "/n\ncase \"$n\" in\n")
+			for i, body := range tc.sessions {
+				last := i == len(tc.sessions)-1
+				sb.WriteString(fmt.Sprintf("%d)\n%s\n", i+1, body))
+				if last {
+					sb.WriteString("touch " + committed + "\nsleep 60\n")
+				}
+				sb.WriteString(";;\n")
+			}
+			sb.WriteString("esac\n")
+
+			f := newImplementFixtureAt(t, out, sb.String(), config.Verify{Policy: config.VerifyOff})
+			f.planJSON = tc.plan
+			if err := os.WriteFile(f.planFile, []byte(f.planJSON), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			logf, logs := captureLog()
+			f.logs = logs
+			o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			go func() {
+				for {
+					if _, err := os.Stat(committed); err == nil {
+						cancel()
+						return
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(50 * time.Millisecond):
+					}
+				}
+			}()
+			var sum model.RunSummary
+			if err := o.runImplement(ctx, &sum); err == nil {
+				t.Fatalf("an interrupted run reported success\nlog:\n%s", f.logs())
+			}
+
+			// The reset must have actually run, not merely produced a clean tree.
+			if !strings.Contains(f.logs(), "resetting HEAD") {
+				t.Errorf("the recovery branch never fired, so this proves nothing:\n%s", f.logs())
+			}
+			subjects := gitOutAt(t, out, "log", "--format=%s")
+			if strings.Contains(subjects, "not fixpoint") {
+				t.Errorf("an unattributed commit survived:\n%s", subjects)
+			}
+			if !strings.Contains(subjects, tc.wantKept) {
+				t.Errorf("the cleanup rolled back what fixpoint had attributed (wanted %q kept):\n%s", tc.wantKept, subjects)
+			}
+			if st := gitOutAt(t, out, "status", "--porcelain"); strings.TrimSpace(st) != "" {
+				t.Errorf("the tree is dirty after the cleanup:\n%s", st)
+			}
+			if _, err := os.Stat(filepath.Join(out, "sneaky.txt")); err == nil {
+				t.Error("the session's file survived the cleanup")
+			}
+		})
 	}
-	if out := gitOutAt(t, f.out, "status", "--porcelain"); strings.TrimSpace(out) != "" {
-		t.Errorf("the tree is dirty after the cleanup:\n%s", out)
+}
+
+// The clean check's infra escape hatch fires when the environment is what
+// failed, and NOT when a real check failed alongside it. Both halves are pinned,
+// because the branch shipped with neither and the second one is a false
+// "implemented" over a HEAD that does not build (review run 20260814-191024).
+//
+// Every command must PASS in the working tree and fail only in the CLONE, or the
+// task gates fail first and the breaker stops the run before the clean check
+// runs at all. Two earlier shapes of this test got that wrong: a plain `false`
+// fails everywhere, and an ignored file is deleted before every task gate by the
+// §5.2 step 6 reconciliation. The clone's own directory is the discriminator
+// that actually holds -- CleanCheck clones into a run-owned scratch path.
+func TestRunImplementCleanCheckInfraPrecedence(t *testing.T) {
+	// Passes anywhere except inside the clean-check clone.
+	onlyFailsInClone := []string{"sh", "-c", "! pwd | grep -q clean-check"}
+
+	cases := []struct {
+		name      string
+		commands  []config.VerifyCommand
+		wantTerm  string
+		wantInLog string
+	}{
+		{
+			// Only the environment-dependent check fails in the clone. It proves
+			// nothing, and a run whose commits are otherwise sound must not be
+			// marked incomplete over it.
+			name: "environment alone does not fail the run",
+			commands: []config.VerifyCommand{
+				{Name: "env", Run: onlyFailsInClone, Infra: true},
+				{Name: "needs", Run: []string{"test", "-f", "src.txt"}},
+			},
+			wantTerm:  model.TermImplemented,
+			wantInLog: "the clone proves nothing either way",
+		},
+		{
+			// A real check fails TOO. Suppressing here would declare the run a
+			// success over a HEAD that provably does not build -- the exact state
+			// clean_check exists to catch.
+			name: "a real failure beside it still fails the run",
+			commands: []config.VerifyCommand{
+				{Name: "env", Run: onlyFailsInClone, Infra: true},
+				{Name: "needs", Run: onlyFailsInClone},
+			},
+			wantTerm:  model.TermIncomplete,
+			wantInLog: "clean clone",
+		},
 	}
-	if _, err := os.Stat(filepath.Join(f.out, "sneaky.txt")); err == nil {
-		t.Error("the session's file survived the cleanup")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newImplementFixture(t, implementReply(
+				// src.txt for the real check, plus a file unique to each task so the
+				// second one is not reported as having changed nothing.
+				"printf 'work\\n' > src.txt\nprintf 'x\\n' > \"t_$$_$(date +%s).txt\"\nsleep 1",
+				`{"status": "implemented", "notes": "done"}`),
+				config.Verify{
+					Policy:   config.VerifyMustPass,
+					Timeout:  config.Duration(time.Minute),
+					Commands: tc.commands,
+				})
+			f.cfg.Implement.CleanCheck = config.CleanCheckLast
+
+			sum, err := f.run(t)
+			if err != nil {
+				t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+			}
+			if sum.Termination != tc.wantTerm {
+				t.Errorf("termination = %q, want %q\nlog:\n%s", sum.Termination, tc.wantTerm, f.logs())
+			}
+			if !strings.Contains(f.logs(), tc.wantInLog) {
+				t.Errorf("the log does not say %q:\n%s", tc.wantInLog, f.logs())
+			}
+		})
 	}
 }

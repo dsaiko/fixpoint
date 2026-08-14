@@ -344,59 +344,125 @@ func EnvNames(a config.Agent) []string {
 	return out
 }
 
-// forgeCredentialEnv is what a forge CLI needs in order to be a forge CLI: the
-// token it authenticates with, and the host/endpoint settings that say where.
+// forgeCredentialEnv is what each forge CLI needs in order to be a forge CLI:
+// the token it authenticates with, and the host/endpoint settings that say
+// where. Keyed BY CLI, because a credential is scoped to the service that
+// issued it.
 //
-// EnvWithoutCredentials strips these along with every other credential-shaped
-// name, which is right for a git plumbing probe and wrong for `gh` -- a `gh pr
-// checkout` with no token cannot check anything out. On a machine where gh
-// authenticates from the environment rather than from ~/.config/gh (a container,
-// CI, or any setup that exports GITHUB_TOKEN), stripping it turned every pr-mode
-// run into "To get started with GitHub CLI, please run: gh auth login".
-var forgeCredentialEnv = []string{
-	"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-	"GH_HOST", "GH_CONFIG_DIR",
-	"GITLAB_TOKEN", "GL_TOKEN", "GITLAB_HOST", "GLAB_CONFIG_DIR",
+// EnvWithoutCredentials strips all of these along with every other
+// credential-shaped name, which is right for a git plumbing probe and wrong for
+// `gh` -- a `gh pr checkout` with no token cannot check anything out. On a
+// machine where gh authenticates from the environment rather than from
+// ~/.config/gh (a container, CI, or any setup that exports GITHUB_TOKEN),
+// stripping it turned every pr-mode run into "To get started with GitHub CLI,
+// please run: gh auth login".
+//
+// The first version of this map was one flat list handed to whichever CLI was
+// running, so `gh` was given the operator's GitLab token and `glab` their GitHub
+// one -- a credential sent to a service that has no business holding it, and the
+// second forge is exactly where a leak would go unnoticed (review run
+// 20260814-191024).
+var forgeCredentialEnv = map[string][]string{
+	"gh": {
+		"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+		"GH_HOST", "GH_CONFIG_DIR",
+	},
+	"glab": {
+		"GITLAB_TOKEN", "GL_TOKEN", "GITLAB_HOST", "GLAB_CONFIG_DIR",
+	},
 }
 
-// WithForgeCredentials puts the forge CLI's own credentials back into an
-// environment EnvWithoutCredentials stripped, for the narrow case of running
-// that CLI.
+// WithForgeCredentials puts back the credentials belonging to the named forge
+// CLI, and only those, into an environment EnvWithoutCredentials stripped.
 //
-// Deliberately narrow. The credential a tool needs to do its job is not the same
-// thing as the credentials it must not be handed: `gh` gets the GitHub token
-// because every `gh` command is an authenticated GitHub call, and it still does
-// not get ANTHROPIC_API_KEY, AWS keys, or the agent tokens -- which is the whole
-// point of running it under a filtered environment rather than the process's own
-// (see forge.run, which inherits everything and should not).
+// Deliberately narrow twice over: by kind, because the credential a tool needs
+// to do its job is not the same thing as the credentials it must not be handed
+// -- `gh` gets the GitHub token and still not ANTHROPIC_API_KEY, AWS keys, or
+// the agent tokens; and by CLI, because `gh` has no use for a GitLab token.
 //
 // Values come from the process environment, so a name absent there stays absent
-// here; nothing is invented.
-func WithForgeCredentials(env []string) []string {
+// here; nothing is invented. A name the caller already set is left alone.
+func WithForgeCredentials(name string, env []string) []string {
+	wanted, ok := forgeCredentialEnv[filepath.Base(name)]
+	if !ok {
+		return env
+	}
 	have := make(map[string]bool, len(env))
 	for _, kv := range env {
-		if k, _, ok := strings.Cut(kv, "="); ok {
+		if k, _, cut := strings.Cut(kv, "="); cut {
 			have[k] = true
 		}
 	}
 	out := env
-	for _, name := range forgeCredentialEnv {
-		if have[name] {
+	for _, v := range wanted {
+		if have[v] {
 			continue
 		}
-		if v, ok := os.LookupEnv(name); ok {
-			out = append(out, name+"="+v)
+		if val, set := os.LookupEnv(v); set {
+			out = append(out, v+"="+val)
 		}
 	}
 	return out
 }
 
 // IsForgeCLI reports whether a command name is a forge client whose own
-// credentials WithForgeCredentials must restore.
+// credentials WithForgeCredentials restores.
 func IsForgeCLI(name string) bool {
-	switch filepath.Base(name) {
-	case "gh", "glab":
+	_, ok := forgeCredentialEnv[filepath.Base(name)]
+	return ok
+}
+
+// PathWithout returns env with every PATH entry that lies inside root removed.
+//
+// A forge CLI is handed a real credential and then spawns children of its own --
+// `gh` runs `git`, a credential helper, sometimes a pager. Those children are
+// resolved through PATH at the moment they are needed, so pinning the top-level
+// binary (gitenv.Tool) does not pin them. In pr mode `gh pr checkout` writes
+// PR-authored content into the target, so a PATH carrying a directory inside it
+// -- ordinary for the direnv and ./node_modules/.bin habits of the JavaScript
+// projects the shipped stacks target -- lets the reviewed branch supply the
+// `git` that gh then runs WITH the forge token in its environment (review run
+// 20260814-191024).
+//
+// Entries are compared after symlink resolution, so a link into the target does
+// not slip past a lexical check. An entry that cannot be resolved is dropped:
+// this runs on the path a credential travels, and a directory nobody can
+// identify is not one to trust with it.
+func PathWithout(env []string, root string) []string {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		realRoot = filepath.Clean(root)
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k != "PATH" {
+			out = append(out, kv)
+			continue
+		}
+		kept := make([]string, 0, strings.Count(v, string(os.PathListSeparator))+1)
+		for _, dir := range filepath.SplitList(v) {
+			if dir == "" {
+				// An empty entry means "the current directory", which in pr mode is
+				// the target itself.
+				continue
+			}
+			resolved, rerr := filepath.EvalSymlinks(dir)
+			if rerr != nil || within(resolved, realRoot) {
+				continue
+			}
+			kept = append(kept, dir)
+		}
+		out = append(out, "PATH="+strings.Join(kept, string(os.PathListSeparator)))
+	}
+	return out
+}
+
+// within reports whether path lies inside root, on a path-segment boundary so a
+// sibling whose name merely starts the same is not swallowed.
+func within(path, root string) bool {
+	if path == root {
 		return true
 	}
-	return false
+	return strings.HasPrefix(path, root+string(filepath.Separator))
 }

@@ -1410,13 +1410,32 @@ func (o *Orchestrator) cleanCheck(ctx context.Context, p *implementPrep) error {
 	// gate that never consulted the classification, so a registry 503 during the
 	// final clone turned a completed run into an incomplete one and told the
 	// operator their history did not build (review run 20260814-024946).
-	if bad := rep.InfraFailures(); len(bad) > 0 {
+	//
+	// ONLY when nothing else failed, and that condition is the whole of the fix
+	// here (review run 20260814-191024). The first version returned before
+	// looking at the real checks, so `[{install, infra}, {build}]` with a missing
+	// go.mod failed BOTH in the clone and was reported as "the clone proves
+	// nothing" -- the run terminated implemented over a HEAD that does not build,
+	// which is precisely the state clean_check exists to catch.
+	//
+	// Deliberately the opposite precedence to gatePhase, because the consequence
+	// is opposite. There, suppressing means retrying a task and committing
+	// nothing, so "the environment is broken, we cannot tell" is the safe answer.
+	// Here, suppressing means declaring the whole run a success. A real failure
+	// alongside a broken environment is still a real failure.
+	verdicts := 0 // failures that are a claim about the CODE, not the environment
+	for _, f := range rep.Failures() {
+		if !f.Infra {
+			verdicts++
+		}
+	}
+	if bad := rep.InfraFailures(); len(bad) > 0 && verdicts == 0 {
 		names := make([]string, 0, len(bad))
 		for _, r := range bad {
 			names = append(names, r.Name)
 		}
 		o.journal("clean_check_infra", 1, map[string]any{"checks": names})
-		o.logf("clean-check: the environment-dependent check(s) %s could not complete (%s); the clone proves nothing either way, so the run's verdict is unchanged",
+		o.logf("clean-check: the environment-dependent check(s) %s could not complete (%s); nothing else failed, so the clone proves nothing either way and the run's verdict is unchanged",
 			strings.Join(names, ", "), gateFailureSummary(rep))
 		return nil
 	}

@@ -285,64 +285,157 @@ func TestUseGitEnvReachesTheProbes(t *testing.T) {
 	}
 }
 
-// A forge CLI must keep the credential it authenticates with, while git keeps
-// none. The i27 fix pointed every collector subprocess at the
-// credential-stripped environment, which is right for a git probe and fatal for
-// `gh`: on a machine where gh authenticates from GITHUB_TOKEN rather than from
-// ~/.config/gh -- a container, CI, or any setup that exports it -- `gh pr
-// checkout` failed with "To get started with GitHub CLI, please run: gh auth
-// login" and pr mode did not work at all. Found on mediabox, on the first
-// pr-mode run after that fix shipped.
+// A forge CLI must keep the credential it authenticates with -- ITS OWN -- while
+// git keeps none.
+//
+// The i27 fix pointed every collector subprocess at the credential-stripped
+// environment, which is right for a git probe and fatal for `gh`: on a machine
+// where gh authenticates from GITHUB_TOKEN rather than from ~/.config/gh -- a
+// container, CI, or any setup that exports it -- `gh pr checkout` failed with
+// "please run: gh auth login" and pr mode did not work at all. Found on mediabox,
+// on the first pr-mode run after that fix shipped.
+//
+// The restore was then command-agnostic, so `gh` was handed the operator's
+// GitLab token and `glab` their GitHub one -- a credential sent to a service with
+// no business holding it, and the second forge is exactly where that would go
+// unnoticed. Both CLIs are exercised here with both tokens present (review run
+// 20260814-191024).
 //
 // Asserted through runInput with stub binaries on PATH, not by calling the
-// helper directly: the first version of this test called agent.WithForgeCredentials
-// itself and passed with the production wiring deleted, which is the exact
-// "asserts less than it claims" shape this project has now been bitten by three
-// times.
-func TestForgeCLIKeepsItsOwnCredentialAndGitKeepsNone(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "ghp_fixture")
-	t.Setenv("ANTHROPIC_API_KEY", "sk-fixture")
+// helper: an earlier version called agent.WithForgeCredentials directly and
+// passed with the production wiring deleted.
+func TestForgeCLIsKeepOnlyTheirOwnCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "ghp_github")
+	t.Setenv("GITLAB_TOKEN", "glpat_gitlab")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-agent")
 
-	// Stubs that report what they were given, named exactly as the real tools.
 	bin := t.TempDir()
-	for _, name := range []string{"gh", "git"} {
-		script := "#!/bin/sh\nprintf 'TOKEN=%s KEY=%s\\n' \"${GITHUB_TOKEN:-none}\" \"${ANTHROPIC_API_KEY:-none}\"\n"
+	for _, name := range []string{"gh", "glab", "git"} {
+		script := "#!/bin/sh\nprintf 'GH=%s GL=%s KEY=%s\\n' " +
+			"\"${GITHUB_TOKEN:-none}\" \"${GITLAB_TOKEN:-none}\" \"${ANTHROPIC_API_KEY:-none}\"\n"
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv("PATH", bin)
 
-	dir := t.TempDir()
-	c := New(config.Target{Mode: "directory", Path: dir})
-	// What the orchestrator does for every run: the collector's subprocesses run
-	// with agent credentials stripped.
+	c := New(config.Target{Mode: "directory", Path: t.TempDir()})
 	c.UseGitEnv(agent.EnvWithoutCredentials(nil))
 
-	ghOut, err := c.run(t.Context(), "gh", "pr", "checkout", "1")
-	if err != nil {
-		t.Fatalf("gh stub: %v", err)
+	cases := []struct{ tool, wantGH, wantGL string }{
+		{"gh", "GH=ghp_github", "GL=none"},
+		{"glab", "GH=none", "GL=glpat_gitlab"},
+		{"git", "GH=none", "GL=none"},
 	}
-	if !strings.Contains(ghOut, "TOKEN=ghp_fixture") {
-		t.Errorf("gh ran without the credential every gh command needs: %q", strings.TrimSpace(ghOut))
-	}
-	// And only that one: the restore is narrow on purpose.
-	if !strings.Contains(ghOut, "KEY=none") {
-		t.Errorf("restoring the forge credential also restored an agent's: %q", strings.TrimSpace(ghOut))
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			out, err := c.run(t.Context(), tc.tool, "whatever")
+			if err != nil {
+				t.Fatalf("%s stub: %v", tc.tool, err)
+			}
+			got := strings.TrimSpace(out)
+			if !strings.Contains(got, tc.wantGH) {
+				t.Errorf("%s: got %q, want %s", tc.tool, got, tc.wantGH)
+			}
+			if !strings.Contains(got, tc.wantGL) {
+				t.Errorf("%s: got %q, want %s -- a credential must not reach the other forge", tc.tool, got, tc.wantGL)
+			}
+			// No tool here has any use for an agent credential.
+			if !strings.Contains(got, "KEY=none") {
+				t.Errorf("%s was handed an agent credential: %q", tc.tool, got)
+			}
+		})
 	}
 
-	gitOut, err := c.run(t.Context(), "git", "status")
-	if err != nil {
-		t.Fatalf("git stub: %v", err)
-	}
-	if !strings.Contains(gitOut, "TOKEN=none") {
-		t.Errorf("a git probe was handed the forge token: %q", strings.TrimSpace(gitOut))
-	}
-
-	if !agent.IsForgeCLI("gh") || !agent.IsForgeCLI("/usr/bin/gh") || !agent.IsForgeCLI("glab") {
+	if !agent.IsForgeCLI("gh") || !agent.IsForgeCLI("/usr/bin/glab") {
 		t.Error("IsForgeCLI does not recognize the forge clients, including as absolute paths")
 	}
 	if agent.IsForgeCLI("git") {
 		t.Error("git is not a forge CLI and must not be handed a forge token")
+	}
+}
+
+// PATH entries inside the target are removed before a forge CLI runs. `gh`
+// resolves its OWN children through PATH -- git, a credential helper -- so
+// pinning the top-level binary does not pin them, and in pr mode the target
+// holds PR-authored content (review run 20260814-191024).
+func TestPathWithoutDropsTargetDirectories(t *testing.T) {
+	target := t.TempDir()
+	inside := filepath.Join(target, "bin")
+	outside := t.TempDir()
+	for _, d := range []string{inside, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A symlink from outside the target INTO it must go too: a lexical check
+	// would keep this one.
+	linked := filepath.Join(t.TempDir(), "link-to-target-bin")
+	if err := os.Symlink(inside, linked); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	sep := string(os.PathListSeparator)
+	env := []string{"PATH=" + strings.Join([]string{inside, outside, linked, ""}, sep), "HOME=/home/x"}
+	got := agent.PathWithout(env, target)
+
+	var path string
+	for _, kv := range got {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			path = v
+		}
+	}
+	entries := filepath.SplitList(path)
+	if !slices.Contains(entries, outside) {
+		t.Errorf("PATH lost an entry outside the target: %q", path)
+	}
+	for _, gone := range []string{inside, linked, ""} {
+		if slices.Contains(entries, gone) {
+			t.Errorf("PATH kept %q, which resolves inside the target", gone)
+		}
+	}
+	if !slices.Contains(got, "HOME=/home/x") {
+		t.Error("an unrelated variable was dropped")
+	}
+}
+
+// The document read whole and shown to every agent must not be reachable
+// through a symlinked ANCESTOR. The -target flag was fixed for this; the
+// config-supplied document was the same attack through the other door (review
+// run 20260814-191024).
+func TestPrepareDocumentRefusesAnEscapingAncestor(t *testing.T) {
+	secrets := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secrets, "credentials"), []byte("[default]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.Symlink(secrets, filepath.Join(repo, "assignment")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	c := New(config.Target{Mode: "directory", Path: repo, Document: filepath.Join("assignment", "credentials")})
+	err := c.prepareDocument()
+	if err == nil {
+		t.Fatal("a document reached through an escaping symlinked parent was accepted")
+	}
+	if !strings.Contains(err.Error(), "leaves the directory it sits in") {
+		t.Errorf("the refusal must name the escape: %v", err)
+	}
+
+	// A document under a link that stays inside the tree is fine — the rule is
+	// about escape, not about symlinks.
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docs, "DESIGN.md"), []byte("# d\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(docs, filepath.Join(repo, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	ok := New(config.Target{Mode: "directory", Path: repo, Document: filepath.Join("linked", "DESIGN.md")})
+	if err := ok.prepareDocument(); err != nil {
+		t.Errorf("a link that stays inside the tree was refused: %v", err)
 	}
 }

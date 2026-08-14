@@ -249,7 +249,7 @@ func providerKind(ctx context.Context, dir string) Kind {
 // skipped outright rather than handed over -- no legitimate remote is named that,
 // and target.ghRemote refuses them for the same reason.
 func remoteForges(ctx context.Context, dir string) []Kind {
-	out, err := run(ctx, dir, "git", "remote")
+	out, err := run(ctx, dir, "git", append(gitenv.SafeConfigArgs(), "remote")...)
 	if err != nil {
 		return nil
 	}
@@ -259,7 +259,7 @@ func remoteForges(ctx context.Context, dir string) []Kind {
 		if strings.HasPrefix(name, "-") {
 			continue
 		}
-		url, err := run(ctx, dir, "git", "remote", "get-url", "--end-of-options", name)
+		url, err := run(ctx, dir, "git", append(gitenv.SafeConfigArgs(), "remote", "get-url", "--end-of-options", name)...)
 		if err != nil {
 			continue
 		}
@@ -306,11 +306,42 @@ func ghBaseRepoURL(ctx context.Context, dir string) string {
 // review then hangs past cliTimeout and past a Ctrl-C, since cancellation is the
 // same mechanism. Supervise owns the pipes and kills the process group, so Wait
 // returns on the leader's exit and the descendant goes with it.
+// forgeEnv is the environment every subprocess this package starts runs with,
+// and it exists because these were the last ones running with fixpoint's own
+// (review run 20260814-191024, reported twice).
+//
+// Everywhere else already does this: agent.Run hardens buildEnv, target.runInput
+// uses the credential-stripped probe env, verify.runOne takes
+// EnvWithoutCredentials, implement's gitrun pins the operator's config off. Here
+// `gh`, `glab` and the `git remote` probes ran with ANTHROPIC_API_KEY,
+// SSH_AUTH_SOCK, cloud keys and everything else exported -- with their working
+// directory inside a `gh pr checkout`-ed, PR-authored worktree, and with none of
+// gitenv's pins in effect. Those four pins (core.hooksPath, core.fsmonitor,
+// protocol.ext.allow, core.alternateRefsCommand) are deliberately absent from
+// target.unsafeConfigKey's refusal list precisely BECAUSE gitenv covers them, so
+// a crafted .git/config shipping them passed preflight and was neutralized on
+// every git path except this one. The -post-run replay is the sharpest case: it
+// runs no preflight at all, and its first act is `git remote get-url` and
+// `gh repo view` inside the checkout that still holds the reviewed branch.
+//
+// Three steps, the same two target.runInput performs plus one this package needs:
+// strip the credentials nothing here should see, drop PATH entries inside the
+// target so a PR-supplied `bin/git` cannot be what gh reaches for, and hand the
+// forge CLI back its own token -- only its own.
+func forgeEnv(dir, name string) []string {
+	env := agent.PathWithout(agent.EnvWithoutCredentials(nil), dir)
+	if agent.IsForgeCLI(name) {
+		env = agent.WithForgeCredentials(name, env)
+	}
+	return gitenv.Harden(env)
+}
+
 func run(ctx context.Context, dir string, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gitenv.Tool(name), args...)
 	cmd.Dir = dir
+	cmd.Env = forgeEnv(dir, name)
 	var stdout, stderr strings.Builder
 	if _, err := agent.Supervise(ctx, cmd, &stdout, &stderr); err != nil {
 		msg := strings.TrimSpace(stderr.String())
@@ -338,6 +369,7 @@ func runStdin(ctx context.Context, dir, stdin, name string, args ...string) (str
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gitenv.Tool(name), args...)
 	cmd.Dir = dir
+	cmd.Env = forgeEnv(dir, name)
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr strings.Builder
 	if _, err := agent.Supervise(ctx, cmd, &stdout, &stderr); err != nil {

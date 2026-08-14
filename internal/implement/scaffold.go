@@ -53,21 +53,27 @@ func Scaffold(ctx context.Context, repo Repo, out string, files map[string][]byt
 	if err := os.Mkdir(out, 0o750); err != nil {
 		return "", nil, fmt.Errorf("claim %s: %w -- the write-target must not exist; implement-design builds into a fresh directory", out, err)
 	}
-	claimed := true
-	defer func() {
-		if err != nil && claimed {
-			_ = os.RemoveAll(out)
-		}
-	}()
-	if err := repo.Init(ctx); err != nil {
-		return "", nil, err
+	// Init failure: this directory was created microseconds ago and `git init`
+	// did not finish, so nothing can have reached it. Removing it is safe and is
+	// what keeps a retry from refusing on our own leftovers.
+	if ierr := repo.Init(ctx); ierr != nil {
+		_ = os.RemoveAll(out)
+		return "", nil, ierr
 	}
-	held, err := repo.LockRepo(ctx)
-	if err != nil {
-		return "", nil, err
+	held, lerr := repo.LockRepo(ctx)
+	if lerr != nil {
+		// NOT removed, deliberately. `git init` has succeeded, so the repository
+		// is discoverable, and the reason this lock failed is that somebody else
+		// holds it -- deleting the directory now would delete a repository ANOTHER
+		// run owns (review run 20260814-191024). An orphaned empty directory is
+		// the far cheaper wrong outcome, and the message says it is ours.
+		return "", nil, fmt.Errorf("%w -- %s was created by this run but another fixpoint holds its lock; it is left in place rather than removed, because removing it would take a repository out from under whoever owns it. Remove it by hand once that run has finished", lerr, out)
 	}
-	// Any failure from here on releases the lock: the caller only holds what it
-	// was handed together with a SHA.
+	// From here the lock is HELD, and every failure cleans up inside it: remove
+	// first, release second. The previous shape registered the removal defer
+	// before the release defer, so LIFO unwinding released the lock and only then
+	// deleted -- a window in which another run could acquire the lock on a
+	// directory about to be deleted underneath it.
 	//
 	// The lock is kept in a LOCAL and not read back out of the named return.
 	// Every failure below returns `nil` for the release function, so a defer
@@ -76,6 +82,7 @@ func Scaffold(ctx context.Context, repo Repo, out string, files map[string][]byt
 	// the first thing to exercise the unsafe-name refusal.
 	defer func() {
 		if err != nil {
+			_ = os.RemoveAll(out)
 			held()
 		}
 	}()
@@ -102,7 +109,6 @@ func Scaffold(ctx context.Context, repo Repo, out string, files map[string][]byt
 	if err != nil {
 		return "", nil, err
 	}
-	claimed = false // the repository is real now; it is the run's product
 	return sha, held, nil
 }
 
