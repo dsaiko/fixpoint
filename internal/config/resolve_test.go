@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -968,5 +969,80 @@ func TestResolverAcceptsPathLikeNames(t *testing.T) {
 	}
 	if got != p {
 		t.Errorf("Config(%s) = %s, want the path itself", p, got)
+	}
+}
+
+// The bundle that ships with the binary is on the search path, so `fixpoint`
+// works from a directory that has nothing to do with any project -- the case
+// that motivated this: `cd ~/tmp && fixpoint --list` found nothing at all, with
+// the binary sitting next to the bundle it was built with.
+//
+// The symlink resolution is the load-bearing half. Putting the tool on PATH
+// normally means a link in ~/bin or /usr/local/bin pointing back at a checkout,
+// and os.Executable does not promise to resolve one -- on macOS it returns the
+// path as invoked -- so a naive version would look beside the LINK and find
+// nothing, which is exactly the reported failure.
+func TestBundleDirsBesideTheBinaryResolveSymlinks(t *testing.T) {
+	install := t.TempDir()
+	binDir := filepath.Join(install, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(binDir, "fixpoint")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// The expectation is canonicalized too: EvalSymlinks resolves the WHOLE path,
+	// and on macOS t.TempDir() lives under /var, which is itself a link to
+	// /private/var. Comparing against the un-resolved form would fail on the
+	// tmpdir rather than on anything this function does.
+	realInstall, err := filepath.EvalSymlinks(install)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Named directly: the bundle beside it, and the ../share layout an install uses.
+	got := bundleDirsBeside(binary)
+	want := []string{
+		filepath.Join(realInstall, "bin", projectBundleDir),
+		filepath.Join(realInstall, "share", appName),
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("bundleDirsBeside(%s) = %v, want %v", binary, got, want)
+	}
+
+	// Reached through a symlink from somewhere else entirely -- the shape that
+	// puts a checkout's binary on PATH. The answer must be the same.
+	linkDir := t.TempDir()
+	link := filepath.Join(linkDir, "fixpoint")
+	if err := os.Symlink(binary, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if got := bundleDirsBeside(link); !slices.Equal(got, want) {
+		t.Errorf("through a symlink: bundleDirsBeside(%s) = %v, want the link's TARGET's bundles %v", link, got, want)
+	}
+}
+
+// The search path must not list one directory twice. The binary-adjacent and
+// system locations collide whenever fixpoint runs from the checkout it was built
+// in, or is installed under a prefix already on the system list, and a repeated
+// entry makes the not-found message read as two different searches.
+func TestResolverSearchPathHasNoDuplicates(t *testing.T) {
+	r := NewResolver(t.TempDir())
+	seen := map[string]bool{}
+	for _, b := range r.Bundles {
+		if seen[b] {
+			t.Errorf("search path lists %s twice: %v", b, r.Bundles)
+		}
+		seen[b] = true
+	}
+	// And it genuinely carries an entry derived from the running binary.
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("no executable path: %v", err)
+	}
+	want := bundleDirsBeside(exe)[0]
+	if !slices.Contains(r.Bundles, want) {
+		t.Errorf("search path %v does not include the binary's own bundle %s", r.Bundles, want)
 	}
 }

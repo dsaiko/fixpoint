@@ -136,10 +136,11 @@ afterwards, from `review-code` over the produced repository.
 
 The last step of each example runs the **binary by path**, because the make
 targets live in this repository and the project you just built does not have
-them. Reviewing other projects regularly is worth a one-time setup: copy
-`config/` to `~/.fixpoint/` and put the binary on your PATH, and then
-`fixpoint review-code` works from anywhere — see
-[config/README.md](config/README.md) for the search path.
+them. Putting the binary on your PATH is enough to run it from anywhere — a symlink
+into this checkout works, because the search path includes the bundle beside the
+resolved binary. Copy `config/` to `~/.fixpoint/` when you want your own edits
+to win over it; see [config/README.md](config/README.md) for the full search
+path.
 
 A run that stops early — deadline, provider outage, Ctrl-C — leaves every
 committed task standing and gated, but **cannot be resumed**: `-continue` is
@@ -290,8 +291,11 @@ command line.
 | [defaults](config/defaults.yaml) | Shared base the others extend; not runnable on its own. |
 
 Bundles are searched most-specific first — `<project>/config/`, `~/.fixpoint/`,
-the OS per-user config dir, then the package-installed bundle — **per file**, so a
-project can shadow one prompt and inherit the rest. There is deliberately no
+the OS per-user config dir, the bundle beside the binary itself, then the
+package-installed one — **per file**, so a project can shadow one prompt and
+inherit the rest. The binary-adjacent entry resolves symlinks first, so a link
+on your PATH pointing into a checkout finds that checkout's bundle; it is what
+lets `fixpoint` run from a directory with no bundle of its own. There is deliberately no
 fallback compiled into the binary: these files decide what agents are told to do
 and which trust gates apply, so they must be readable on disk. If nothing
 resolves, fixpoint refuses to run and prints every location it searched. Every
