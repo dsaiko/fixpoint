@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 )
 
@@ -281,5 +282,67 @@ func TestUseGitEnvReachesTheProbes(t *testing.T) {
 	}
 	if !slices.Contains(got, "LC_ALL=C") {
 		t.Error("probeEnv() dropped the locale pin the parsers depend on")
+	}
+}
+
+// A forge CLI must keep the credential it authenticates with, while git keeps
+// none. The i27 fix pointed every collector subprocess at the
+// credential-stripped environment, which is right for a git probe and fatal for
+// `gh`: on a machine where gh authenticates from GITHUB_TOKEN rather than from
+// ~/.config/gh -- a container, CI, or any setup that exports it -- `gh pr
+// checkout` failed with "To get started with GitHub CLI, please run: gh auth
+// login" and pr mode did not work at all. Found on mediabox, on the first
+// pr-mode run after that fix shipped.
+//
+// Asserted through runInput with stub binaries on PATH, not by calling the
+// helper directly: the first version of this test called agent.WithForgeCredentials
+// itself and passed with the production wiring deleted, which is the exact
+// "asserts less than it claims" shape this project has now been bitten by three
+// times.
+func TestForgeCLIKeepsItsOwnCredentialAndGitKeepsNone(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "ghp_fixture")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-fixture")
+
+	// Stubs that report what they were given, named exactly as the real tools.
+	bin := t.TempDir()
+	for _, name := range []string{"gh", "git"} {
+		script := "#!/bin/sh\nprintf 'TOKEN=%s KEY=%s\\n' \"${GITHUB_TOKEN:-none}\" \"${ANTHROPIC_API_KEY:-none}\"\n"
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+
+	dir := t.TempDir()
+	c := New(config.Target{Mode: "directory", Path: dir})
+	// What the orchestrator does for every run: the collector's subprocesses run
+	// with agent credentials stripped.
+	c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+
+	ghOut, err := c.run(t.Context(), "gh", "pr", "checkout", "1")
+	if err != nil {
+		t.Fatalf("gh stub: %v", err)
+	}
+	if !strings.Contains(ghOut, "TOKEN=ghp_fixture") {
+		t.Errorf("gh ran without the credential every gh command needs: %q", strings.TrimSpace(ghOut))
+	}
+	// And only that one: the restore is narrow on purpose.
+	if !strings.Contains(ghOut, "KEY=none") {
+		t.Errorf("restoring the forge credential also restored an agent's: %q", strings.TrimSpace(ghOut))
+	}
+
+	gitOut, err := c.run(t.Context(), "git", "status")
+	if err != nil {
+		t.Fatalf("git stub: %v", err)
+	}
+	if !strings.Contains(gitOut, "TOKEN=none") {
+		t.Errorf("a git probe was handed the forge token: %q", strings.TrimSpace(gitOut))
+	}
+
+	if !agent.IsForgeCLI("gh") || !agent.IsForgeCLI("/usr/bin/gh") || !agent.IsForgeCLI("glab") {
+		t.Error("IsForgeCLI does not recognize the forge clients, including as absolute paths")
+	}
+	if agent.IsForgeCLI("git") {
+		t.Error("git is not a forge CLI and must not be handed a forge token")
 	}
 }

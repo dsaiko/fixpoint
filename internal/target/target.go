@@ -2735,6 +2735,18 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	// sandbox. GIT_CONFIG_COUNT/KEY/VALUE make git treat these as -c overrides. The
 	// locale is pinned too, so the messages callers read stay the ones they parse.
 	cmd.Env = c.probeEnv()
+	// A forge CLI gets its OWN credential back, and nothing else. probeEnv is the
+	// credential-stripped environment, which is right for a git plumbing probe --
+	// and fatal for `gh`, whose every command is an authenticated call: on a
+	// machine where gh authenticates from GITHUB_TOKEN rather than from
+	// ~/.config/gh, `gh pr checkout` failed with "please run: gh auth login" and
+	// pr mode did not work at all. Restoring the token here rather than widening
+	// probeEnv keeps the distinction the strip exists for: the credential a tool
+	// needs to do its job is not the same as the credentials it must not see, and
+	// git still gets none of them.
+	if agent.IsForgeCLI(name) {
+		cmd.Env = agent.WithForgeCredentials(cmd.Env)
+	}
 	// Stream stdout and stderr into SEPARATE bounded buffers rather than one:
 	// callers parse the returned string as a machine-readable value (a SHA, a PR
 	// base OID, a remote list, a filename list), and a successful git/gh command
