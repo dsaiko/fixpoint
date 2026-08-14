@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -157,6 +158,68 @@ func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 	for name := range want {
 		if _, ok := agents[name]; !ok {
 			t.Errorf("agents/%s%s: expected by this test but not in the bundle -- drop it here if the agent was removed", name, configExt)
+		}
+	}
+}
+
+// Every shipped agent's environment is pinned by name, so widening one is a
+// deliberate edit to this table rather than a quiet change to a YAML file.
+//
+// env.pass IS the credential boundary: everything outside it -- the operator's
+// GitHub token, cloud credentials, database passwords -- is absent from the
+// process, so a prompt-injected reviewer cannot quote what it cannot see. The
+// existing shipped-agent tests covered prompt budgets and the claude
+// settings-sources flag and never touched this, so making minimax-ollama an
+// active reviewer relied on an allowlist nothing asserted (review run
+// 20260814-012440).
+func TestShippedAgentsPinTheirEnvironment(t *testing.T) {
+	// The ollama route needs only the server address: the wrapped claude harness
+	// authenticates to ollama, not to Anthropic, so an ANTHROPIC_API_KEY here
+	// would be a credential handed to a third party for no reason.
+	ollama := []string{"OLLAMA_HOST"}
+	// The OpenRouter agents drive the claude CLI at a different base URL, which
+	// is the one legitimate use of env.set here: a value fixpoint chooses, not a
+	// credential it forwards. ANTHROPIC_API_KEY is deliberately absent from all
+	// three -- it would take precedence over the auth token and silently bill
+	// Anthropic for a model served by someone else.
+	const openRouter = "https://openrouter.ai/api"
+	want := map[string]struct {
+		pass []string
+		set  map[string]string
+	}{
+		"claude":          {pass: []string{"ANTHROPIC_API_KEY"}},
+		"claude-coder":    {pass: []string{"ANTHROPIC_API_KEY"}},
+		"codex":           {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+		"agy":             {pass: []string{"GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"}},
+		"deepseek-ollama": {pass: ollama},
+		"gemma4-ollama":   {pass: ollama},
+		"glm-ollama":      {pass: ollama},
+		"kimi-ollama":     {pass: ollama},
+		"minimax-ollama":  {pass: ollama},
+		"glm-openrouter":  {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+		"kimi-openrouter": {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+		"qwen-openrouter": {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+	}
+	for name, a := range shippedAgents(t) {
+		w, ok := want[name]
+		if !ok {
+			t.Errorf("agents/%s%s: no expected environment for this agent -- add it here, and think about what it is allowed to see", name, configExt)
+			continue
+		}
+		if a.Env.InheritAll {
+			t.Errorf("agents/%s%s: env.inherit_all is set, which hands this agent fixpoint's whole environment", name, configExt)
+		}
+		if !maps.Equal(a.Env.Set, w.set) {
+			t.Errorf("agents/%s%s: env.set = %v, want %v", name, configExt, a.Env.Set, w.set)
+		}
+		if !slices.Equal(a.Env.Pass, w.pass) {
+			t.Errorf("agents/%s%s: env.pass = %v, want exactly %v", name, configExt, a.Env.Pass, w.pass)
+		}
+		// No agent may be handed a credential for a provider it does not use.
+		for _, v := range a.Env.Pass {
+			if v == "ANTHROPIC_API_KEY" && !strings.HasPrefix(name, "claude") {
+				t.Errorf("agents/%s%s: passes ANTHROPIC_API_KEY to a non-Anthropic route", name, configExt)
+			}
 		}
 	}
 }

@@ -95,6 +95,12 @@ type Orchestrator struct {
 	// the shipped schedule. Set only by tests, which must not sleep for real
 	// minutes to exercise the breaker.
 	infraBackoff []time.Duration
+	// diskFree reports free bytes at a path; nil means implement.DiskFree. Set
+	// only by tests: the BETWEEN-TASK disk guard cannot otherwise be reached,
+	// because a threshold high enough to trip it also trips the preflight check
+	// that runs first -- which is how the guard came to be dead in the whole
+	// suite (review run 20260814-012440).
+	diskFree func(string) (int64, bool)
 	// ledger groups raw observations into issues and carries their state across
 	// rounds, so a problem two agents both reported costs one slot, not two.
 	ledger *issue.Ledger

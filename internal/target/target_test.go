@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/dsaiko/fixpoint/internal/config"
@@ -214,5 +216,70 @@ func TestWalkFilesObservesContextCancellation(t *testing.T) {
 	}
 	if _, _, err := c.walkFiles(ctx, scope); !errors.Is(err, context.Canceled) {
 		t.Errorf("walkFiles() err = %v, want context.Canceled", err)
+	}
+}
+
+// readNoFollow is the second half of the i21 fix: the document's symlink check
+// and its read are one syscall, so the path cannot be swapped between them. Only
+// the check had a test; the read-side refusal did not (review run
+// 20260814-012440).
+func TestReadNoFollowRefusesASymlink(t *testing.T) {
+	dir := t.TempDir()
+	regular := filepath.Join(dir, "regular.md")
+	if err := os.WriteFile(regular, []byte("# real\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := readNoFollow(regular); err != nil || string(b) != "# real\n" {
+		t.Fatalf("readNoFollow(regular file) = %q, %v", b, err)
+	}
+
+	link := filepath.Join(dir, "DESIGN.md")
+	if err := os.Symlink(regular, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	b, err := readNoFollow(link)
+	if err == nil {
+		t.Fatalf("readNoFollow followed a symlink and returned %q", b)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("the refusal must name the cause: %v", err)
+	}
+}
+
+// UseGitEnv is the i27 fix: the write-target's collector runs git with the
+// orchestrator's one hardened environment. Nothing asserted that the env it is
+// given is the env its probes use (review run 20260814-012440).
+func TestUseGitEnvReachesTheProbes(t *testing.T) {
+	c := New(config.Target{Mode: "directory", Path: t.TempDir()})
+	// Default: the process environment, hardened.
+	if got := c.probeEnv(); len(got) == 0 {
+		t.Fatal("probeEnv() is empty with no override")
+	}
+
+	c.UseGitEnv([]string{"PATH=/usr/bin", "GIT_CONFIG_GLOBAL=/dev/null"})
+	got := c.probeEnv()
+	var sawPath, sawPin, sawCount bool
+	for _, e := range got {
+		switch {
+		case e == "PATH=/usr/bin":
+			sawPath = true
+		case e == "GIT_CONFIG_GLOBAL=/dev/null":
+			sawPin = true
+		case strings.HasPrefix(e, "GIT_CONFIG_COUNT="):
+			sawCount = true
+		}
+		if strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+			t.Error("probeEnv leaked a credential the caller did not pass")
+		}
+	}
+	if !sawPath || !sawPin {
+		t.Errorf("probeEnv() dropped what the caller supplied: %v", got)
+	}
+	// Harden runs LAST, so the safeConfig pins survive the caller's env.
+	if !sawCount {
+		t.Error("probeEnv() did not apply the safeConfig pins over the supplied env")
+	}
+	if !slices.Contains(got, "LC_ALL=C") {
+		t.Error("probeEnv() dropped the locale pin the parsers depend on")
 	}
 }

@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -167,6 +168,10 @@ type implementFixture struct {
 	// millisecond default every test gets so the breaker is exercised without
 	// spending the shipped ~51 minutes.
 	backoff []time.Duration
+	// diskFree overrides the between-task free-space probe; nil means the real
+	// one. Preflight always uses the real one, so a test can leave the run
+	// startable and still starve it before a task.
+	diskFree func(string) (int64, bool)
 }
 
 const twoSectionDesign = "# Game\n\n## One\n\nbuild the one.\n\n## Two\n\nbuild the two.\n"
@@ -266,6 +271,9 @@ func (f *implementFixture) run(t *testing.T) (*model.RunSummary, error) {
 	o.infraBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
 	if f.backoff != nil {
 		o.infraBackoff = f.backoff
+	}
+	if f.diskFree != nil {
+		o.diskFree = f.diskFree
 	}
 	var sum model.RunSummary
 	return &sum, o.runImplement(t.Context(), &sum)
@@ -1135,5 +1143,214 @@ func TestRunImplementWritesTheRunStateArtifacts(t *testing.T) {
 	}
 	if plan.Provenance == nil || plan.Provenance.DesignSHA256 == "" {
 		t.Errorf("the canonical plan artifact carries no provenance: %s", b)
+	}
+}
+
+// The between-task disk guard (i46) was DEAD in the entire suite: the fixture
+// bypasses applyDefaults, so MinFreeDisk stayed 0 and `free < 0` was never true
+// (review run 20260814-012440). The guard was written, described in a commit
+// message, and never once executed by a test.
+func TestRunImplementStopsWhenDiskRunsLow(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'work\\n' > \"src_$$_$(date +%s).txt\"\nsleep 1",
+			`{"status": "implemented", "notes": "done"}`),
+		config.Verify{Policy: config.VerifyOff})
+	// Preflight sees the real disk and lets the run start; the between-task probe
+	// then reports the filesystem full. Two different probes on purpose -- a
+	// threshold high enough to trip the loop would also trip preflight, and the
+	// branch under test is the loop's.
+	f.cfg.Implement.MinFreeDisk = 1 << 20
+	f.diskFree = func(string) (int64, bool) { return 0, true }
+
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if sum.Termination != model.TermIncomplete {
+		t.Errorf("termination = %q, want incomplete", sum.Termination)
+	}
+	if !strings.Contains(f.logs(), "under implement.min_free_disk") {
+		t.Errorf("the stop did not name the threshold:\n%s", f.logs())
+	}
+	// Nothing was built, and every planned task is still reported (i22).
+	if len(sum.Tasks) != 2 {
+		t.Fatalf("the report covers %d of 2 planned tasks: %+v", len(sum.Tasks), sum.Tasks)
+	}
+	for _, task := range sum.Tasks {
+		if task.Outcome != outcomeUnreached {
+			t.Errorf("task %s = %q, want unreached", task.ID, task.Outcome)
+		}
+	}
+	if n := strings.Count(gitOutAt(t, f.out, "log", "--format=%s"), "\n"); n != 1 {
+		t.Errorf("a disk stop committed something: %d commits", n)
+	}
+}
+
+// implement.max_infra_tries and the ladder backoffSchedule builds from it had no
+// test at all: every fixture overrides o.infraBackoff, so the branch never ran,
+// and the breaker test counted tries against the package var rather than the
+// configured schedule -- it would have passed with the key ignored entirely
+// (review run 20260814-012440).
+func TestBackoffScheduleFollowsMaxInfraTries(t *testing.T) {
+	sched := func(tries int) []time.Duration {
+		o := &Orchestrator{cfg: &config.Config{Implement: config.Implement{MaxInfraTries: tries}}}
+		return o.backoffSchedule()
+	}
+	if got := sched(2); !reflect.DeepEqual(got, infraBackoff[:2]) {
+		t.Errorf("max_infra_tries=2 -> %v, want the first two rungs %v", got, infraBackoff[:2])
+	}
+	if got := sched(4); !reflect.DeepEqual(got, infraBackoff) {
+		t.Errorf("max_infra_tries=4 -> %v, want the shipped ladder %v", got, infraBackoff)
+	}
+	// Unset means the shipped ladder, so a config that predates the key behaves
+	// as it did.
+	if got := sched(0); !reflect.DeepEqual(got, infraBackoff) {
+		t.Errorf("max_infra_tries unset -> %v, want the shipped ladder", got)
+	}
+	// Beyond the declared rungs the last wait REPEATS: raising the key must never
+	// silently shorten the waits.
+	got := sched(6)
+	if len(got) != 6 {
+		t.Fatalf("max_infra_tries=6 -> %d rungs, want 6", len(got))
+	}
+	last := infraBackoff[len(infraBackoff)-1]
+	if got[4] != last || got[5] != last {
+		t.Errorf("the extra rungs are %v/%v, want the last wait %v repeated", got[4], got[5], last)
+	}
+}
+
+// gatePhase checks InfraFailures before Passed, so a gate where an environment
+// command AND a real check both fail is classified as infrastructure -- the
+// attempt is not burned and the run eventually stops on the breaker rather than
+// failing the task. That precedence was unstated and unproven: inverting the two
+// blocks broke no test (review run 20260814-012440).
+func TestRunImplementInfraGateFailureOutranksARealOne(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'ok\\n' > src.txt\nsleep 1",
+			`{"status": "implemented", "notes": "done"}`),
+		config.Verify{
+			Policy:  config.VerifyMustPass,
+			Timeout: config.Duration(time.Minute),
+			Commands: []config.VerifyCommand{
+				{Name: "install", Run: []string{"false"}, Infra: true},
+				{Name: "build", Run: []string{"false"}},
+			},
+		})
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	// Deliberate: while the environment is broken, fixpoint cannot tell whether
+	// the build failure is real, so it declines to record a verdict rather than
+	// writing a permanent one it might not mean.
+	for _, task := range sum.Tasks {
+		if task.Outcome == outcomeFailed {
+			t.Errorf("task %s was permanently failed while an environment-dependent check was also failing", task.ID)
+		}
+	}
+	if !strings.Contains(f.logs(), "environment-dependent check") {
+		t.Errorf("the run did not report the environmental cause:\n%s", f.logs())
+	}
+}
+
+// repostate.json is where §8 sends an operator diagnosing the loudest failure in
+// the tool. It was written and never read back by any test, and the json tags
+// the commit called "a durable contract" locked nothing (review run
+// 20260814-012440).
+func TestRepoStateArtifactCarriesTheDiagnosis(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'ok\\n' > src.txt\nsleep 1",
+			`{"status": "implemented", "notes": "done"}`),
+		config.Verify{
+			Policy:  config.VerifyMustPass,
+			Timeout: config.Duration(time.Minute),
+			Commands: []config.VerifyCommand{{
+				Name: "hide", Run: []string{"sh", "-c", "printf 'x\\n' >> .git/info/exclude"},
+			}},
+		})
+	if _, err := f.run(t); err == nil {
+		t.Fatal("a gate that edited .git/info/exclude did not stop the run")
+	}
+	runDir := filepath.Dir(filepath.Dir(f.cfg.Logs.Dir))
+	entries, err := os.ReadDir(runDir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no run directory: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(runDir, entries[0].Name(), "repostate.json"))
+	if err != nil {
+		t.Fatalf("repostate.json: %v -- §8 points the operator at this file", err)
+	}
+	// Decoded against the documented field names, not against the Go struct, so
+	// a renamed tag fails here rather than silently changing the artifact.
+	var rec struct {
+		SchemaVersion int      `json:"schema_version"`
+		Task          string   `json:"task"`
+		When          string   `json:"when"`
+		Diff          []string `json:"diff"`
+		Before        struct {
+			ConfigDigest      string `json:"config_digest"`
+			RefsDigest        string `json:"refs_digest"`
+			InfoExcludeDigest string `json:"info_exclude_digest"`
+		} `json:"before"`
+		After struct {
+			InfoExcludeDigest string `json:"info_exclude_digest"`
+		} `json:"after"`
+	}
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatalf("repostate.json is not valid JSON: %v", err)
+	}
+	if rec.SchemaVersion != 1 || rec.Task == "" || rec.When != "gate" {
+		t.Errorf("repostate.json header: %+v", rec)
+	}
+	if len(rec.Diff) == 0 || !strings.Contains(strings.Join(rec.Diff, "; "), "info/exclude") {
+		t.Errorf("the diff does not name the invariant that moved: %v", rec.Diff)
+	}
+	if rec.Before.ConfigDigest == "" || rec.Before.RefsDigest == "" {
+		t.Errorf("the before image is empty, so there is nothing to compare: %+v", rec.Before)
+	}
+	if rec.Before.InfoExcludeDigest == rec.After.InfoExcludeDigest {
+		t.Errorf("before and after agree on the file the gate changed: %q", rec.After.InfoExcludeDigest)
+	}
+}
+
+// cleanUpInterrupted is the i6 fix: a canceled context made every git command
+// fail, so the discard that should have cleaned the tree never ran and an
+// interrupted run left the coder's edits behind. It runs on a fresh, bounded
+// context now, and the implement pipeline had no test for it -- only the fix
+// pipeline did (review run 20260814-012440).
+func TestRunImplementCleansTheTreeWhenInterrupted(t *testing.T) {
+	// The coder writes, then sleeps long enough for the cancel to land mid-task.
+	f := newImplementFixture(t,
+		implementReply("printf 'half-done\\n' > leftover.txt\nsleep 30",
+			`{"status": "implemented", "notes": "never reached"}`),
+		config.Verify{Policy: config.VerifyOff})
+
+	if err := os.WriteFile(f.planFile, []byte(f.planJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logf, logs := captureLog()
+	f.logs = logs
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		// Long enough for SCAFFOLD and the coder's write, short of its sleep.
+		time.Sleep(4 * time.Second)
+		cancel()
+	}()
+	var sum model.RunSummary
+	if err := o.runImplement(ctx, &sum); err == nil {
+		t.Fatalf("an interrupted run reported success\nlog:\n%s", f.logs())
+	}
+
+	// §8's promise: every committed task stands, nothing further is committed,
+	// and the repository is consistent as-is.
+	if out := gitOutAt(t, f.out, "status", "--porcelain"); strings.TrimSpace(out) != "" {
+		t.Errorf("the interrupted run left the tree dirty:\n%s\nlog:\n%s", out, f.logs())
+	}
+	if _, err := os.Stat(filepath.Join(f.out, "leftover.txt")); err == nil {
+		t.Error("the in-flight attempt's file survived the cleanup")
 	}
 }

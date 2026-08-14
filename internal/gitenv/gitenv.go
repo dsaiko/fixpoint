@@ -12,8 +12,11 @@ package gitenv
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // safeConfig neutralizes the repo-controlled git settings that make git itself
@@ -168,4 +171,63 @@ func Harden(env []string) []string {
 	}
 	out = append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", n))
 	return out
+}
+
+// pinned holds the absolute path of each helper binary as it resolved at the
+// start of the run. Populated only by PinTools.
+var pinned sync.Map // name -> string
+
+// Tool returns the absolute path of a helper binary, PINNED to what it resolved
+// to when the run started if PinTools has run, and resolved live otherwise.
+//
+// fixpoint runs `git` and `gh` against checkouts it does not trust, and it
+// resolved both from PATH on every single invocation (review run
+// 20260814-012440). A PATH carrying a directory inside the target -- ordinary
+// for the direnv and `./node_modules/.bin` habits of exactly the JavaScript
+// projects the shipped stacks target -- lets the reviewed content drop an
+// executable `bin/git` in mid-run. The first invocation then runs the real
+// binary while a later one, the post-checkout guard recheck included, runs the
+// payload, which can delegate to the real git so nothing looks wrong while it
+// reads fixpoint's whole environment.
+//
+// Pinning at the run boundary closes the mid-run half outright: the answer is
+// fixed before any target content exists, so no file appearing later can become
+// it. The fallback is live rather than cached on purpose -- a cache filled by
+// whoever asked first would answer for a moment nobody chose, which is the same
+// mistake in a quieter form.
+//
+// A name that does not resolve is returned BARE, never through filepath.Abs:
+// Abs on a bare name yields <cwd>/git, a file the reviewed checkout may own when
+// fixpoint runs from inside it.
+func Tool(name string) string {
+	if v, ok := pinned.Load(name); ok {
+		if s, isStr := v.(string); isStr {
+			return s
+		}
+	}
+	return resolveTool(name)
+}
+
+func resolveTool(name string) string {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return name
+	}
+	if abs, aerr := filepath.Abs(path); aerr == nil {
+		return abs
+	}
+	return path
+}
+
+// PinTools fixes the helper binaries fixpoint runs against untrusted checkouts,
+// at the start of a run -- before a target has been fetched, checked out or
+// written.
+//
+// It re-pins rather than filling once, because the guarantee is "the answer was
+// fixed before THIS run touched anything" and a run boundary is where that
+// becomes true.
+func PinTools() {
+	for _, n := range []string{"git", "gh", "glab"} {
+		pinned.Store(n, resolveTool(n))
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/gitenv"
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -289,6 +290,10 @@ func alreadyPosted(runDir string, pr int) string {
 // established would break the mode wherever git is absent -- while the check still
 // covers the case that produced the hazard, a directory that came in with the code
 // under review, where git is present by construction.
+// maxProvenanceOutput caps the tracked-file listing; only its first entry is
+// ever read.
+const maxProvenanceOutput = 1 << 20
+
 func committedRun(ctx context.Context, runDir string) string {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -296,16 +301,26 @@ func committedRun(ctx context.Context, runDir string) string {
 	// it does not trust: this one runs INSIDE that checkout, and core.fsmonitor or
 	// core.hooksPath out of its .git/config would otherwise have git execute a program
 	// the repository chose, with this process's environment.
-	cmd := exec.CommandContext(ctx, "git", append(gitenv.SafeConfigArgs(), "ls-files", "-z", "--", ".")...)
+	cmd := exec.CommandContext(ctx, gitenv.Tool("git"), append(gitenv.SafeConfigArgs(), "ls-files", "-z", "--", ".")...)
 	cmd.Dir = runDir
 	// nil is this process's environment, hardened -- so the pins reach the git
 	// processes git itself starts, which never see the -c flags above.
 	cmd.Env = gitenv.Harden(nil)
-	out, err := cmd.Output()
-	if err != nil || len(out) == 0 {
+	// Through agent.Supervise, so the ten-second deadline above is one. cmd.Output
+	// leaves os/exec owning the pipes with WaitDelay unset, and a git descendant
+	// holding the write end makes cmd.Wait block past cancellation -- in a check
+	// that runs INSIDE a checkout this gate exists because it does not trust
+	// (review run 20260814-012440). Supervise adds the process group, the
+	// group-kill on cancel, and the drain bound.
+	outBuf := agent.NewBoundedBuffer(maxProvenanceOutput, agent.TruncationMarker(maxProvenanceOutput))
+	if _, err := agent.Supervise(ctx, cmd, outBuf, nil); err != nil {
 		return ""
 	}
-	tracked := string(out)
+	out := outBuf.String()
+	if out == "" {
+		return ""
+	}
+	tracked := out
 	if i := strings.IndexByte(tracked, 0); i >= 0 {
 		tracked = tracked[:i]
 	}

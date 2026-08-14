@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -308,7 +309,7 @@ func ghBaseRepoURL(ctx context.Context, dir string) string {
 func run(ctx context.Context, dir string, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, gitenv.Tool(name), args...)
 	cmd.Dir = dir
 	var stdout, stderr strings.Builder
 	if _, err := agent.Supervise(ctx, cmd, &stdout, &stderr); err != nil {
@@ -335,7 +336,7 @@ func run(ctx context.Context, dir string, name string, args ...string) (string, 
 func runStdin(ctx context.Context, dir, stdin, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, gitenv.Tool(name), args...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr strings.Builder

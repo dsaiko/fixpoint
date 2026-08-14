@@ -811,7 +811,7 @@ func (c *Collector) gitScanNUL(ctx context.Context, fn func(string), args ...str
 	ctx, cancel := context.WithTimeout(ctx, gitOpTimeout)
 	defer cancel()
 	full := append(gitenv.SafeConfigArgs(), args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd := exec.CommandContext(ctx, gitenv.Tool("git"), full...)
 	cmd.Dir = c.cfg.Path
 	cmd.Env = c.probeEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -2725,7 +2725,7 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	// operation so a wedged credential prompt or commit hook cannot hang forever.
 	ctx, cancel := context.WithTimeout(ctx, gitOpTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, gitenv.Tool(name), args...)
 	cmd.Dir = c.cfg.Path
 	// Harden the environment so the git processes gh spawns internally -- which
 	// never see our -c overrides -- still get the safe-config pins applied. gh pr

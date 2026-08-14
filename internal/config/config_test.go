@@ -1732,3 +1732,20 @@ func TestByteSize(t *testing.T) {
 		t.Errorf("String() = %q, want 64MB", got)
 	}
 }
+
+// max_infra_tries decides how long a provider outage is tolerated before the
+// breaker ends an unattended run. Its default and its refusal had no assertion
+// (review run 20260814-012440).
+func TestImplementInfraTriesDefaultAndRefusal(t *testing.T) {
+	cfg := implementConfig(t)
+	cfg.applyDefaults()
+	if cfg.Implement.MaxInfraTries != 4 {
+		t.Errorf("implement.max_infra_tries default = %d, want 4", cfg.Implement.MaxInfraTries)
+	}
+	bad := implementConfig(t)
+	bad.applyDefaults()
+	bad.Implement.MaxInfraTries = 0 // explicit zero, after defaults: no retries at all
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "max_infra_tries") {
+		t.Errorf("Validate() = %v, want a refusal naming max_infra_tries", err)
+	}
+}

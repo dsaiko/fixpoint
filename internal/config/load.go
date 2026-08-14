@@ -174,13 +174,18 @@ func (o Overrides) applyTarget(c *Config) error {
 	// mandatory-secret exclusions (review run 20260813-124710). The refusal
 	// names the link rather than silently resolving it, because an operator who
 	// meant the destination can pass the destination.
+	// EVERY component, not just the last one. Lstat resolves each parent
+	// directory before it stats the leaf, so checking the leaf alone left the
+	// hole open one level up (review run 20260814-012440): a checkout shipping
+	// `assignment -> ../../.aws` plus a `-target .../assignment/credentials`
+	// passes a leaf check -- credentials is a regular file -- while the path it
+	// actually reads is the operator's cloud keys, handed whole to every agent.
+	if err := refuseSymlinkedPath(o.Target); err != nil {
+		return err
+	}
 	info, err := os.Lstat(o.Target)
 	if err != nil {
 		return fmt.Errorf("-target %s: %w", o.Target, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		dest, _ := os.Readlink(o.Target)
-		return fmt.Errorf("-target %s is a symlink (to %q); fixpoint reads a target's bytes and shows them to every agent, so it will not follow one -- pass the real path if you meant it", o.Target, dest)
 	}
 	if info.IsDir() {
 		c.Target.Path = o.Target
@@ -573,6 +578,15 @@ func (c *Config) anchor(projectRoot string) {
 	if c.Logs.Dir != "" && !filepath.IsAbs(c.Logs.Dir) {
 		c.Logs.Dir = filepath.Join(projectRoot, c.Logs.Dir)
 	}
+	// create.out is a documented YAML key and the implement pipeline's
+	// write-target, so a relative value from a config file used to be resolved
+	// against the PROCESS WORKING DIRECTORY -- meaning `fixpoint implement-go`
+	// built its project somewhere different depending on where it was run from,
+	// against this function's own stated invariant (review run 20260814-012440).
+	// The CLI flag is made absolute before it gets here; the config key was not.
+	if c.Create.Out != "" && !filepath.IsAbs(c.Create.Out) {
+		c.Create.Out = filepath.Join(projectRoot, c.Create.Out)
+	}
 }
 
 // ProjectSuppliedPolicy reports the bundle files that were resolved from INSIDE
@@ -765,6 +779,56 @@ func (l *Loaded) fromProject(path string) bool {
 		return true
 	}
 	return l.Config.Target.Path != "" && withinTree(path, l.Config.Target.Path)
+}
+
+// refuseSymlinkedPath rejects an explicit target fixpoint will not follow. Two
+// rules, because two different things go wrong.
+//
+// The LEAF: a symlink at the target itself is refused wherever it points. A
+// document target is read whole and handed to every agent, so an untrusted
+// checkout shipping `DESIGN.md -> ~/.aws/credentials` is an exfiltration
+// primitive, and an operator who meant the destination can pass the destination
+// (review run 20260813-124710).
+//
+// The ANCESTORS: a path that looks local but leaves the directory the operator
+// is working in. Lstat resolves every parent before it stats the leaf, so the
+// leaf rule alone left the hole one level up (review run 20260814-012440): a
+// checkout shipping `assignment -> ../../.aws` and a documented
+// `-target assignment/credentials` passes -- credentials really is a regular
+// file -- while the bytes read are the operator's cloud keys.
+//
+// The ancestor rule is about ESCAPE, not about symlinks, and the first attempt
+// got that wrong: refusing any symlinked ancestor refuses every path on macOS,
+// where /var is itself a link to private/var. fixpoint cannot police the
+// machine's own layout; it can police the tree the operator is standing in,
+// which is where an untrusted checkout lives. So the test is: a target that
+// lies inside the working directory must still lie inside it once resolved.
+func refuseSymlinkedPath(target string) error {
+	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		dest, _ := os.Readlink(target)
+		return fmt.Errorf("-target %s is a symlink (to %q); fixpoint reads a target's bytes and shows them to every agent, so it will not follow one -- pass the real path if you meant it", target, dest)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil //nolint:nilerr // no cwd means no "looks local" to betray
+	}
+	clean := filepath.Clean(target)
+	if !within(clean, cwd) {
+		// Named from outside the working tree: the operator wrote an absolute path
+		// somewhere else on purpose, and there is no "looks local" to betray.
+		return nil
+	}
+	resolved, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		// Missing or unreadable: the Lstat that follows reports it far better than
+		// a symlink refusal naming an unrelated ancestor would.
+		return nil //nolint:nilerr // a missing target is not a symlink refusal
+	}
+	resolvedCwd, err := filepath.EvalSymlinks(cwd)
+	if err != nil || within(resolved, resolvedCwd) {
+		return nil //nolint:nilerr // an unresolvable cwd cannot prove an escape
+	}
+	return fmt.Errorf("-target %s resolves to %s, outside the directory you are running in -- a symlink on the way out of %s redirects it. fixpoint reads a target's bytes and shows them to every agent, so it will not follow one out of the tree; pass the real path if you meant it", target, resolved, cwd)
 }
 
 // withinTree reports whether path lies inside root either lexically or with every
