@@ -1354,3 +1354,51 @@ func TestRunImplementCleansTheTreeWhenInterrupted(t *testing.T) {
 		t.Error("the in-flight attempt's file survived the cleanup")
 	}
 }
+
+// A clean tree is not the same as an unchanged history. A session that COMMITS
+// and is then interrupted before the step 4 ladder can soft-reset it leaves its
+// work inside a commit, so GitClean returns true and the discard never runs --
+// the repository was unlocked with an unverified, unattributed commit at HEAD
+// (review run 20260814-024946).
+func TestRunImplementDropsAnUnattributedCommitWhenInterrupted(t *testing.T) {
+	// The coder commits on its own, then sleeps into the cancellation.
+	f := newImplementFixture(t,
+		implementReply("printf 'sneaky\\n' > sneaky.txt\n"+
+			"git add -A >/dev/null 2>&1\n"+
+			"git -c user.name=x -c user.email=x@x commit -qm 'not fixpoint' >/dev/null 2>&1\n"+
+			"sleep 30",
+			`{"status": "implemented", "notes": "never reached"}`),
+		config.Verify{Policy: config.VerifyOff})
+
+	if err := os.WriteFile(f.planFile, []byte(f.planJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logf, logs := captureLog()
+	f.logs = logs
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		time.Sleep(5 * time.Second)
+		cancel()
+	}()
+	var sum model.RunSummary
+	if err := o.runImplement(ctx, &sum); err == nil {
+		t.Fatalf("an interrupted run reported success\nlog:\n%s", f.logs())
+	}
+
+	// Only the bootstrap commit stands: the session's own is gone, and so are its
+	// bytes.
+	subjects := gitOutAt(t, f.out, "log", "--format=%s")
+	if strings.Contains(subjects, "not fixpoint") {
+		t.Errorf("an unattributed commit survived the interruption:\n%s\nlog:\n%s", subjects, f.logs())
+	}
+	if out := gitOutAt(t, f.out, "status", "--porcelain"); strings.TrimSpace(out) != "" {
+		t.Errorf("the tree is dirty after the cleanup:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(f.out, "sneaky.txt")); err == nil {
+		t.Error("the session's file survived the cleanup")
+	}
+}
