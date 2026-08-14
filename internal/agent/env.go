@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -341,4 +342,61 @@ func EnvNames(a config.Agent) []string {
 		}
 	}
 	return out
+}
+
+// forgeCredentialEnv is what a forge CLI needs in order to be a forge CLI: the
+// token it authenticates with, and the host/endpoint settings that say where.
+//
+// EnvWithoutCredentials strips these along with every other credential-shaped
+// name, which is right for a git plumbing probe and wrong for `gh` -- a `gh pr
+// checkout` with no token cannot check anything out. On a machine where gh
+// authenticates from the environment rather than from ~/.config/gh (a container,
+// CI, or any setup that exports GITHUB_TOKEN), stripping it turned every pr-mode
+// run into "To get started with GitHub CLI, please run: gh auth login".
+var forgeCredentialEnv = []string{
+	"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+	"GH_HOST", "GH_CONFIG_DIR",
+	"GITLAB_TOKEN", "GL_TOKEN", "GITLAB_HOST", "GLAB_CONFIG_DIR",
+}
+
+// WithForgeCredentials puts the forge CLI's own credentials back into an
+// environment EnvWithoutCredentials stripped, for the narrow case of running
+// that CLI.
+//
+// Deliberately narrow. The credential a tool needs to do its job is not the same
+// thing as the credentials it must not be handed: `gh` gets the GitHub token
+// because every `gh` command is an authenticated GitHub call, and it still does
+// not get ANTHROPIC_API_KEY, AWS keys, or the agent tokens -- which is the whole
+// point of running it under a filtered environment rather than the process's own
+// (see forge.run, which inherits everything and should not).
+//
+// Values come from the process environment, so a name absent there stays absent
+// here; nothing is invented.
+func WithForgeCredentials(env []string) []string {
+	have := make(map[string]bool, len(env))
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok {
+			have[k] = true
+		}
+	}
+	out := env
+	for _, name := range forgeCredentialEnv {
+		if have[name] {
+			continue
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			out = append(out, name+"="+v)
+		}
+	}
+	return out
+}
+
+// IsForgeCLI reports whether a command name is a forge client whose own
+// credentials WithForgeCredentials must restore.
+func IsForgeCLI(name string) bool {
+	switch filepath.Base(name) {
+	case "gh", "glab":
+		return true
+	}
+	return false
 }
