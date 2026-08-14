@@ -219,7 +219,71 @@ func NewResolver(projectRoot string) *Resolver {
 	if cfgDir, err := os.UserConfigDir(); err == nil {
 		bundles = append(bundles, filepath.Join(cfgDir, appName))
 	}
-	return &Resolver{Bundles: append(bundles, systemBundleDirs()...)}
+	bundles = append(bundles, binaryBundleDirs()...)
+	return &Resolver{Bundles: dedupe(append(bundles, systemBundleDirs()...))}
+}
+
+// binaryBundleDirs returns the bundle locations that ship WITH the running
+// binary: `config/` beside it, and the `../share/fixpoint` an installed layout
+// puts next to `bin/`.
+//
+// It exists so `fixpoint` works from any directory. Without it the search path
+// is anchored on the working directory and the user's home, so running the tool
+// outside a project with a bundle -- `cd ~/tmp && fixpoint --list` -- finds
+// nothing at all, even though the binary is sitting right next to the bundle it
+// was built with.
+//
+// SYMLINKS ARE RESOLVED, and that is the whole point of doing this properly:
+// the normal way to get the binary on PATH is a symlink in ~/bin or
+// /usr/local/bin pointing back at a checkout. os.Executable does not promise to
+// resolve it -- on macOS it returns the path as invoked -- so without
+// EvalSymlinks this would look for a bundle beside the LINK and find nothing,
+// which is exactly the case that motivated it.
+//
+// Placed after the user's own bundles and before the system ones. After, so an
+// explicit ~/.fixpoint still wins; before, because a bundle shipping with this
+// binary matches this binary's version, while /usr/share may hold an older
+// install's.
+func binaryBundleDirs() []string {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	return bundleDirsBeside(exe)
+}
+
+// bundleDirsBeside is binaryBundleDirs' logic with the executable path given
+// rather than discovered, so the symlink resolution can be tested against a real
+// link instead of only against whatever binary happens to be running.
+func bundleDirsBeside(exe string) []string {
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	dir := filepath.Dir(exe)
+	return []string{
+		// A checkout or an extracted release: the bundle sits beside the binary.
+		filepath.Join(dir, projectBundleDir),
+		// An installed layout: <prefix>/bin/fixpoint with <prefix>/share/fixpoint.
+		filepath.Join(filepath.Dir(dir), "share", appName),
+	}
+}
+
+// dedupe removes repeated entries, keeping the first. The binary-adjacent and
+// system locations collide whenever fixpoint is run from the very checkout it
+// was built in, or installed under a prefix already on the system list, and a
+// path listed twice makes the not-found message read as though the same
+// directory had been searched twice for different reasons.
+func dedupe(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := paths[:0:0]
+	for _, p := range paths {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // NotFoundError reports a name that matched nothing. It lists every location

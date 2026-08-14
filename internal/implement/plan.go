@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/dsaiko/fixpoint/internal/config"
 )
 
 // Plan is the planner's product after validation: the ordered task list and
@@ -136,10 +138,12 @@ func (r Rules) PerTaskWorst() time.Duration {
 // case plus the clean-clone gate runs clean_check buys.
 func (r Rules) RunWorst(n int) time.Duration {
 	total := r.PlanOverhead + time.Duration(n)*r.PerTaskWorst()
+	// The config's own constants, so the arithmetic and the validator that
+	// accepts the value cannot disagree about its spelling.
 	switch r.CleanCheck {
-	case "every":
+	case config.CleanCheckEvery:
 		total += time.Duration(n) * r.GateWorst
-	case "last":
+	case config.CleanCheckLast:
 		total += r.GateWorst
 	}
 	return total

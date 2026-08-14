@@ -21,8 +21,19 @@ prompt and inherit everything else:
    ancestor holding a `config/` directory, walking up from where you ran fixpoint
 2. `~/.fixpoint/`
 3. the OS per-user config directory (`~/.config/fixpoint` on Linux)
-4. the package-installed bundle (`/usr/share/fixpoint`, `/usr/local/share/fixpoint`,
+4. **beside the binary** — `config/` next to the running executable, and the
+   `../share/fixpoint` of an installed `bin/` layout. Symlinks are resolved
+   first, so putting fixpoint on your PATH with a link into a checkout finds
+   that checkout's bundle rather than nothing. This is what makes `fixpoint`
+   work from a directory that has no bundle of its own
+5. the package-installed bundle (`/usr/share/fixpoint`, `/usr/local/share/fixpoint`,
    or `$(brew --prefix)/share/fixpoint`)
+
+The binary's own bundle sits after your bundles and before the system ones:
+after, so an explicit `~/.fixpoint/` still wins; before, because the bundle
+shipping with a binary matches that binary's version, while `/usr/share` may
+hold an older install's. Duplicates are collapsed, so running from the checkout
+fixpoint was built in lists each directory once.
 
 There is deliberately **no fallback compiled into the binary**. These files decide
 what agents are told to do and which trust gates apply, so "what will this do to
