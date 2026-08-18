@@ -3,12 +3,14 @@
 # `agy models` lists ids; reasoning effort is baked into the model name
 # (gemini-3.7-flash-high, gemini-3.1-pro-high, ...), so there is no effort field.
 #
-# BENCHED AND DISQUALIFIED 2026-08-18, at gemini-3.7-flash-high. Not on recall --
-# it never got that far. This agent cannot take a reviewer seat at all, because
-# can_edit below is true and validation refuses a writable agent in roles.review;
-# and the OpenRouter route that would have made it read-only returns an empty
-# result field on every call, which is the bench's contract disqualifier. See
-# bench/models.txt for both measurements.
+# BENCHED AND DISQUALIFIED 2026-08-19, at gemini-3.7-flash-high. Not on recall --
+# it never got that far on any of three routes: this agent cannot take a
+# reviewer seat (can_edit below is true, and validation refuses a writable agent
+# in roles.review); the claude-harness OpenRouter route returns an empty result
+# field on every call; and the codex-harness OpenRouter route dies mid-session
+# when Google's content filter truncates the stream and the reconnect trips
+# Gemini's no-trailing-model-turn rule. bench/models.txt carries all three
+# measurements in full.
 model: gemini-3.7-flash-high
 command:
   - agy
