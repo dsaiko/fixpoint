@@ -382,7 +382,7 @@ type ReviewVerdict struct {
 // for that, not the exit status.
 func ExitCode(termination string) int {
 	switch termination {
-	case TermConverged, TermReviewOnly, TermCreated, TermImplemented:
+	case TermConverged, TermReviewOnly, TermCreated, TermImplemented, TermPlanned:
 		return 0
 	case TermMaxIterations, TermIncomplete:
 		return 2
@@ -447,6 +447,7 @@ const (
 	TermCreated       = "created"     // a create run published its deliverable
 	TermImplemented   = "implemented" // an implement run built every task
 	TermIncomplete    = "incomplete"  // an implement run finished with holes: failed/blocked/skipped tasks, the deadline, the vacuous guard, or a clean-check failure
+	TermPlanned       = "planned"     // -plan-only: the plan was made and validated, and nothing was built
 )
 
 // RunSources is the provenance of one run's configuration: which file each

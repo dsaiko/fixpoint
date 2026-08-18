@@ -1657,3 +1657,72 @@ func TestRunImplementNoCoverageCheck(t *testing.T) {
 		}
 	})
 }
+
+// -plan-only is the cheapest human-in-the-loop at the highest-leverage point in
+// the run (§7.4): the plan decides how forty coder sessions are spent, and
+// reading it costs a minute. It spends one planner session, writes the plan
+// where the operator can read and edit it, and claims nothing.
+func TestRunImplementPlanOnly(t *testing.T) {
+	f := newImplementFixture(t,
+		implementReply("printf 'never\\n' > never.txt", `{"status": "implemented"}`),
+		config.Verify{Policy: config.VerifyOff})
+	f.cfg.Implement.PlanOnly = true
+	// No write-target at all: -plan-only must not require one, because deciding
+	// whether to build is the point of the mode.
+	f.cfg.Create.Out = ""
+
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if sum.Termination != model.TermPlanned {
+		t.Errorf("termination = %q, want %q", sum.Termination, model.TermPlanned)
+	}
+	if model.ExitCode(sum.Termination) != 0 {
+		t.Errorf("exit code = %d, want 0: a plan that validated is a success", model.ExitCode(sum.Termination))
+	}
+	// Nothing was built and nothing was claimed.
+	if len(sum.Tasks) != 0 {
+		t.Errorf("a plan-only run recorded task outcomes: %+v", sum.Tasks)
+	}
+	if _, err := os.Stat(f.out); err == nil {
+		t.Errorf("%s was created by a run that only planned", f.out)
+	}
+	if strings.Contains(f.logs(), "SCAFFOLD") || strings.Contains(f.logs(), "BUILD") {
+		t.Errorf("a plan-only run reached a later phase:\n%s", f.logs())
+	}
+
+	// The plan is on disk, validated, with the provenance the -plan handback
+	// will check against.
+	runDir := filepath.Dir(filepath.Dir(f.cfg.Logs.Dir))
+	entries, err := os.ReadDir(runDir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no run directory: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(runDir, entries[0].Name(), "plan.json"))
+	if err != nil {
+		t.Fatalf("plan.json: %v -- the whole point of the mode is that it is there to read", err)
+	}
+	var plan struct {
+		Tasks []struct {
+			ID string `json:"id"`
+		} `json:"tasks"`
+		Provenance *struct {
+			DesignSHA256 string `json:"design_sha256"`
+			Planner      string `json:"planner"`
+		} `json:"provenance"`
+	}
+	if err := json.Unmarshal(b, &plan); err != nil {
+		t.Fatalf("plan.json is not valid JSON: %v", err)
+	}
+	if len(plan.Tasks) != 2 {
+		t.Errorf("plan.json holds %d tasks, want the planner's 2", len(plan.Tasks))
+	}
+	if plan.Provenance == nil || plan.Provenance.DesignSHA256 == "" {
+		t.Fatalf("plan.json carries no design hash, so -plan could never verify it: %s", b)
+	}
+	// The log has to say where it went, or the mode is unusable.
+	if !strings.Contains(f.logs(), "plan.json") {
+		t.Errorf("the run did not say where it wrote the plan:\n%s", f.logs())
+	}
+}
