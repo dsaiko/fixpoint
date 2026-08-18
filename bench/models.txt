@@ -36,3 +36,27 @@ qwen3.5:397b-cloud
 # bills a card at the listed per-token price -- x-ai/grok-4.6 is $2/M in,
 # $6/M out. This route caches, unlike ollama).
 x-ai/grok-4.6
+
+# Gemini 3.7 Flash -- DISQUALIFIED 2026-08-18, both routes, for different
+# reasons. Left listed with the finding so the next person does not re-derive it.
+#
+# Through agy (Antigravity, its native CLI): agy needs
+# --dangerously-skip-permissions to read a file at all -- headless it denies
+# read_file without it -- so the agent must declare can_edit: true, and a
+# reviewer must be read-only. Validation refuses it in roles.review outright:
+# "reviewers run concurrently against the shared working tree and must be
+# read-only". --mode takes only accept-edits or plan, and --sandbox restricts
+# the terminal rather than writes, so there is no read-only posture to earn the
+# claim back. Not a configuration problem; the CLI offers no way to be a
+# reviewer.
+#
+# Through OpenRouter (the read-only route grok-4.6 uses, same claude harness,
+# model as the only variable): every call returns an EMPTY `result` field.
+# end_turn, no error, tokens billed -- 28 output tokens for "what is 2+2", 57
+# for a one-sentence question, and nothing in the field the harness reads.
+# fixpoint sees "no output" and the preflight ping fails. That is the bench's
+# named disqualifier: a session producing unparseable output burns a full slot
+# and can flip a quorum to INCONCLUSIVE. Measured over four separate prompts,
+# so it is the route and not one unlucky reply. Retry when either the harness
+# or the provider changes; the recorded row is the zero.
+# google/gemini-3.7-flash
