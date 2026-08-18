@@ -39,3 +39,4 @@ run,task,model,repeat,sessions,errors,findings,matched_seeds,seeds,recall,extras
 20260813-002114,design,minimax-m3:cloud,1,1,0,11,8,8,1.00,1,61770,8319,0,66,114.14
 20260813-091256,code,x-ai/grok-4.6,1,2,0,13,12,12,1.00,0,76738,18452,62464,313,126.06
 20260813-091551,design,x-ai/grok-4.6,1,1,0,7,8,8,1.00,0,34132,11666,31616,180,174.68
+20260818-235151,code,google/gemini-3.7-flash,1,0,1,0,0,12,0.00,0,0,0,0,0,0.0

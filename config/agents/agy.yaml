@@ -1,8 +1,15 @@
 # Antigravity (Google) -- NOT usable as a reviewer as configured; see can_edit.
 #
 # `agy models` lists ids; reasoning effort is baked into the model name
-# (gemini-3.6-flash-high, gemini-3.1-pro-high, ...), so there is no effort field.
-model: gemini-3.6-flash-high
+# (gemini-3.7-flash-high, gemini-3.1-pro-high, ...), so there is no effort field.
+#
+# BENCHED AND DISQUALIFIED 2026-08-18, at gemini-3.7-flash-high. Not on recall --
+# it never got that far. This agent cannot take a reviewer seat at all, because
+# can_edit below is true and validation refuses a writable agent in roles.review;
+# and the OpenRouter route that would have made it read-only returns an empty
+# result field on every call, which is the bench's contract disqualifier. See
+# bench/models.txt for both measurements.
+model: gemini-3.7-flash-high
 command:
   - agy
   - --model {{model}}
