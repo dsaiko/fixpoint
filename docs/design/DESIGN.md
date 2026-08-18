@@ -858,21 +858,8 @@ implement-go (30m session, 3 × 5m gate), **17** for implement-node (3 × 8m), a
 or shortening the gate. An operator running smaller plans lowers the deadline;
 the fit rule keeps whichever number is set honest.
 
-**An expired run can be continued, not only rerun — specified here, NOT YET
-IMPLEMENTED.** Everything in the rest of this subsection describes `-continue`,
-which this version does not ship: `cmd/fixpoint` defines no such flag and
-nothing reads the trailers back. It is specified because the *write* side is
-built to it — the committed `PLAN.json`, the bootstrap trailers and §5.4's
-outcome markers all exist to be replayed — and because the read side is a
-self-contained increment on top of them.
-
-Until it lands, the honest recovery for every stop below is: **the committed
-tasks stand and were gated; the remainder must be rebuilt by a fresh run into a
-fresh directory**, or finished by hand with `fix-code` over the half-built
-project. §8's recovery column says so, and the messages the run prints when it
-stops say so. Nothing in the tool claims re-entry it cannot perform.
-
-`-continue <project>` will resume into a repository fixpoint itself built:
+**An expired run can be continued, not only rerun.** `-continue <project>`
+resumes into a repository fixpoint itself built:
 
 ```sh
 fixpoint implement-go -continue ~/src/prsi -trusted-target
@@ -1183,16 +1170,10 @@ New config validation, each refusal carrying its reason:
 
 ### 7.4 Flags: three about the plan, one about the tree
 
-**None of the four flags in this subsection is implemented in this version.**
-The binary defines `-config`, `-target`, `-out`, `-trusted-target`,
-`-trusted-bundle`, `-allow-untrusted-fix` and the loop flags, and nothing else;
-`-plan-only`, `-plan`, `-no-coverage-check` and `-continue` (§5.5) are all
-specified here and unbuilt. What that costs today is stated where it lands: the
-coverage refusal in `internal/implement/outline.go` tells the operator in the
-error text that there is no flag to bypass it, and §8's recovery column names
-recoveries the tool can actually perform. This block stays because the rules
-below — above all the `design_sha256` refusal — are the part that must not be
-re-derived casually when the flags are built.
+All four ship. `-plan-only`, `-plan` and `-no-coverage-check` are below;
+`-continue` is §5.5. The `design_sha256` rule under `-plan` is the part that
+must not be re-derived casually: it is what stops a plan for one document being
+implemented against another.
 
 - **`-plan-only`** — preflight, snapshot, plan, validate; write `plan.json` and a
   rendered `PLAN.md` **into the run's artifacts**; create no directory, claim no
@@ -1251,8 +1232,8 @@ the panel on the plan after all.
 | trust flag absent | preflight | the §7.3 refusal | — | pass `-trusted-target` |
 | design exceeds the planner's budget | preflight | refusal naming bytes and budget | — | split the design, or raise the budget |
 | design has no readable outline | preflight | refusal naming the heading count | — | add sections, or pass `-no-coverage-check` |
-| planner session fails | after 1 session | run fails, exit 1, no directory created | raw reply in `round-0/` | rerun; the design and the write-target are untouched (`-plan` is specified but not shipped, §7.4) |
-| plan invalid (cycle, 200 tasks, absolute path, uncovered section) | after 1 session | refusal naming the offending task and rule | `plan.json` at the run root holds what was returned verbatim | edit the design (or raise the limit the refusal names) and rerun; hand-correcting the plan needs `-plan`, which is not shipped (§7.4) |
+| planner session fails | after 1 session | run fails, exit 1, no directory created | raw reply in `round-0/` | rerun, or hand-write a plan and use `-plan` (the refusal prints the digest to paste) |
+| plan invalid (cycle, 200 tasks, absolute path, uncovered section) | after 1 session | refusal naming the offending task and rule | `plan.json` at the run root holds what was returned verbatim | `-plan-only`, edit the plan, `-plan` -- or edit the design and rerun |
 | plan cannot fit the deadline | after 1 session | refusal naming tasks, per-task budget, and `max_run_duration` | the plan | raise the deadline, or cut the plan |
 | `-plan` file lacks or mismatches `design_sha256` | preflight | refusal quoting the design's actual digest | — | paste the digest, or point at the right design |
 | `-out` appeared between preflight and `os.Mkdir` | scaffold | refusal; the planner session is already spent and its plan is at the run root | `plan.json` | name a different `-out` and rerun -- the planner session is paid again (`-plan` would avoid it, §7.4) |
@@ -1265,8 +1246,8 @@ the panel on the plan after all.
 | the coder's changes exceed `max_task_bytes` | that task | attempt failed before hashing or gating; tree discarded via checkout-and-clean (§5.3) | the census walk's report and the journal | raise the bound, or fix the plan's task |
 | the coder creates a credential-shaped file (`.env`, `id_rsa`, `*.pem`, …) | that task | attempt failed, tree discarded via checkout-and-clean so nothing reaches the object database — not even a stash — paths named | the `credential_shaped_paths` journal event | if the project genuinely needs one, add it after the run: fixpoint will not commit a path its own mandatory exclude patterns would then hide from every reviewer |
 | the clean-clone check fails (`clean_check`, §7.2) | end of run (`last`) or that task (`every`) | run incomplete (exit 2): "HEAD does not pass the gate in a clean clone" | the clone's gate output; the per-task ignored-census diffs point at the accumulation | at `last`: rerun with `clean_check: every` to find the culprit task |
-| the agent or gate cannot run at all (provider refusal, dead session, missing executable), **or a gate command declared `infra: true` exits non-zero** | that attempt | attempt not counted, no marker; retried with an increasing wait (1m, 5m, 15m, 30m) until `implement.max_infra_tries` is spent, then the circuit breaker stops the run incomplete (exit 2). A 402 skips the ladder: waiting cannot fix payment | the `error_status` in the step record and the `infra_backoff` journal events | wait out the outage; the built tasks stand, the remainder needs a fresh run (no `-continue` yet, §5.5) |
-| free disk below `min_free_disk` | preflight or between tasks | refusal / run stops incomplete (exit 2), threshold and free figure named; every unreached task is reported | `df`, the `disk_exhausted` journal event | free space, then a fresh run (no `-continue` yet, §5.5) |
+| the agent or gate cannot run at all (provider refusal, dead session, missing executable), **or a gate command declared `infra: true` exits non-zero** | that attempt | attempt not counted, no marker; retried with an increasing wait (1m, 5m, 15m, 30m) until `implement.max_infra_tries` is spent, then the circuit breaker stops the run incomplete (exit 2). A 402 skips the ladder: waiting cannot fix payment | the `error_status` in the step record and the `infra_backoff` journal events | wait out the outage, then `-continue` re-enters at the same task |
+| free disk below `min_free_disk` | preflight or between tasks | refusal / run stops incomplete (exit 2), threshold and free figure named; every unreached task is reported | `df`, the `disk_exhausted` journal event | free space, then `-continue` |
 | the coder dies mid-task | that task | changes discarded (tracked **and** untracked); an infrastructure death does not count against the attempts (§5.4), a mid-work crash with output does | `git stash list`, attempt artifacts, `error_status` | the built tasks stand |
 | the coder claims a task it did not do | that task | contract violation, task failed | the session artifact and the clean tree | rerun that task |
 | the coder committed on its own | that task | soft-reset to base, journal deviation, run continues | the journal event | none needed |
@@ -1275,8 +1256,8 @@ the panel on the plan after all.
 | **the GATE** touched any of the same | that task | **run stops**, exit 1, before anything is staged: a gate runs coder-authored code, and a test that appends to `.git/info/exclude` would hide a source file from the census and the commit | the `gate_mutated_repository` journal event and `repostate.json` | fix the gate config; the committed tasks stand |
 | a nested repo appears under an IGNORED path (`node_modules/`, a vendored fixture) | nothing | ignored: only the un-ignored tree can reach a commit as a gitlink | — | none needed — installing a dependency from a git URL is ordinary |
 | the tree is dirty at the start of a task | that task | **run stops**, exit 1, repository-invariant failure naming the paths | the paths | a fixpoint bug; report it — the residue is fixpoint's, not the coder's |
-| `max_run_duration` reached | between tasks | run stops, exit 2, names the next unbuilt task; every task after it is reported `unreached` | summary | a fresh run for the remainder (no `-continue` yet, §5.5) |
-| Ctrl-C | between sessions | run stops; every committed task stands and was gated; **nothing further is committed**; the in-flight attempt is discarded so the tree is left clean | summary written to artifacts | leave it — the repository is consistent as-is; the remainder needs a fresh run (no `-continue` yet, §5.5) |
+| `max_run_duration` reached | between tasks | run stops, exit 2, names the next unbuilt task; every task after it is reported `unreached` | summary | `-continue` into the same project |
+| Ctrl-C | between sessions | run stops; every committed task stands and was gated; **nothing further is committed**; the in-flight attempt is discarded so the tree is left clean | summary written to artifacts | `-continue`, or leave it — the repository is consistent as-is |
 
 Three of these deserve their reasons stated.
 
