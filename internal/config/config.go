@@ -248,6 +248,16 @@ type Implement struct {
 	// the end of the run), "every" (after every task commit, for attribution),
 	// or "off". Forced off on an ungated run.
 	CleanCheck string `yaml:"clean_check"`
+	// NoCoverageCheck skips §4.2 rule 6, letting a run proceed with a design
+	// whose outline the coverage rule cannot read -- and making every report say
+	// `coverage: unchecked` instead of implying a check that never ran (§7.4).
+	//
+	// `yaml:"-"`, and for the same reason as §7.4's other flags: this is a
+	// per-invocation judgement about ONE document. A config key would let a
+	// bundle -- including one resolved from inside the design's own repository --
+	// switch off the rule that notices when the plan dropped a section, for every
+	// run, silently. The operator waives it per run or not at all.
+	NoCoverageCheck bool `yaml:"-"`
 	// GitignoreSeed is the stack's ignore entries, written by fixpoint into the
 	// bootstrap commit's .gitignore -- a control artifact no session may edit.
 	GitignoreSeed []string `yaml:"gitignore_seed"`
@@ -2610,6 +2620,8 @@ func (c *Config) refusePartialImplement() error {
 		i.MaxVacuousFrac != 0 || i.MaxInfraTries != 0 || i.MaxRunDuration != 0 || i.MaxTaskBytes != 0 ||
 		i.MinFreeDisk != 0 || i.CleanCheck != "" || len(i.GitignoreSeed) > 0 ||
 		len(i.GateGenerated) > 0 {
+		// NoCoverageCheck is deliberately absent: it is yaml:"-", so it can only
+		// have come from the flag, and a flag is not a partial config.
 		return errors.New("implement.* is set but roles.planner is not; an implement run is defined by having a plan made")
 	}
 	return nil
