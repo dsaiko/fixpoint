@@ -61,6 +61,9 @@ type implementPrep struct {
 	designSHA   string
 	designPath  string // as the operator named it
 	outline     implement.Outline
+	// plannerLabel is what Provenance.Planner records: the configured agent, or
+	// "operator-supplied" with the file's digest when -plan was used.
+	plannerLabel string
 	// coverageChecked is §4.2 rule 6's state for this run: false only when the
 	// operator waived it with -no-coverage-check. Carried rather than re-derived
 	// so the plan artifact, PLAN.md and the log cannot disagree about whether the
@@ -326,6 +329,21 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 			o.cfg.Implement.MaxRunDuration.Std(), rules.RunWorst(1).Round(time.Minute), rules.MaxTaskAttempts, rules.GateWorst)
 	}
 
+	// The configured agent unless -plan replaces it below.
+	p.plannerLabel = implement.PlannerLabel(o.cfg.Roles.Planner.Agent, false, "")
+
+	// -plan: the operator supplies the decomposition and no planner session runs.
+	// It is held to EVERY rule the planner's answer is held to -- a hand-edited
+	// plan is not more trusted for having been typed, and rule 7's arithmetic is
+	// what stops a plan that cannot finish from being started.
+	if src := o.cfg.Implement.Plan; src != "" {
+		pl, err := o.operatorPlan(src, p, rules)
+		if err != nil {
+			return pl, err
+		}
+		return o.stampPlan(pl, p)
+	}
+
 	d := prompt.PlanData{
 		Design:          p.material,
 		OutlineHeadings: p.outline.FormattedHeadings(),
@@ -356,12 +374,22 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 		return pl, fmt.Errorf("plan: %w", perr)
 	}
 
+	return o.stampPlan(pl, p)
+}
+
+// stampPlan writes the provenance this RUN owns onto a validated plan and
+// records the canonical artifact. Shared by both ways a plan arrives, because
+// everything here is a fact about the invocation rather than about the plan: a
+// -plan handback needs the same run id, coder and verify profile that a planner
+// session's answer does, and the first version returned before this ran, so the
+// supplied plan reached SCAFFOLD with no provenance at all and nil-dereferenced.
+func (o *Orchestrator) stampPlan(pl implement.Plan, p *implementPrep) (implement.Plan, error) {
 	pl.Provenance = &implement.Provenance{
 		SchemaVersion: 1,
 		RunID:         o.logs.RunID(),
 		DesignPath:    p.designPath,
 		DesignSHA256:  p.designSHA,
-		Planner:       implement.PlannerLabel(planner, false, ""),
+		Planner:       p.plannerLabel,
 		Coder:         o.cfg.Roles.Coder.Agent,
 		VerifyProfile: p.profile,
 	}
@@ -374,9 +402,9 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 	}
 	o.journal("plan_finished", 1, map[string]any{
 		"tasks":    len(pl.Tasks),
-		"coverage": fmt.Sprintf("%q (%d headings)", strings.Repeat("#", p.outline.Level), len(p.outline.Headings)),
+		"coverage": p.coverageLine(),
 	})
-	o.endPhase("PLAN  %d task(s), coverage accounted", len(pl.Tasks))
+	o.endPhase("PLAN  %d task(s), coverage %s", len(pl.Tasks), p.coverageLine())
 	return pl, nil
 }
 
@@ -460,6 +488,32 @@ func (p *implementPrep) coverageLine() string {
 		return "unchecked"
 	}
 	return fmt.Sprintf("%q (%d headings)", strings.Repeat("#", p.outline.Level), len(p.outline.Headings))
+}
+
+// operatorPlan is the -plan path: load, verify the design pairing, validate
+// against §4.2, and stamp the provenance this run owns.
+//
+// No planner session is spent, so no step is recorded for one -- a run that
+// invoked no agent must not appear to have invoked one. What IS recorded is
+// where the plan came from: Provenance.Planner says operator-supplied with the
+// file's own digest, because naming the configured planner agent as the author
+// of a plan it never saw would make the audit trail state a falsehood.
+func (o *Orchestrator) operatorPlan(src string, p *implementPrep, rules implement.Rules) (implement.Plan, error) {
+	pl, planSHA, err := implement.LoadOperatorPlan(src, p.designSHA)
+	if err != nil {
+		return pl, err
+	}
+	// The planner's own provenance block, whatever it claimed, is not this run's.
+	// Only the design pairing checked above was the file's to assert; run id,
+	// coder and verify profile are facts about THIS invocation.
+	implement.StripProvenance(&pl)
+	if err := implement.Validate(pl, rules); err != nil {
+		return pl, fmt.Errorf("-plan %s: %w", src, err)
+	}
+	o.journal("plan_supplied", 1, map[string]any{"path": src, "sha256": planSHA, "tasks": len(pl.Tasks)})
+	o.logf("plan: %d task(s) from %s (sha256 %.12s), validated against every rule; no planner session was spent", len(pl.Tasks), src, planSHA)
+	p.plannerLabel = implement.PlannerLabel(o.cfg.Roles.Planner.Agent, true, planSHA)
+	return pl, nil
 }
 
 // planMarkdown renders the plan step's durable artifact. coverage is the run's
