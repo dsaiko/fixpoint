@@ -42,7 +42,21 @@ const (
 	// about the work: it is what §1's "recorded in the run's report as not
 	// built, with a reason" means for the tail of an interrupted plan.
 	outcomeUnreached = "unreached"
+	// outcomeCarried is an outcome this run ADOPTED from the repository's own
+	// history rather than produced (§5.4). A resumed run reports the whole plan,
+	// and the reader has to be able to tell which half it actually did.
+	outcomeCarried = "carried"
 )
+
+// carriedReason renders a carried record for the report: the outcome it holds
+// plus whatever reason the original run recorded, so a resumed run's summary
+// explains a failed or blocked task it never ran itself.
+func carriedReason(r implement.Record) string {
+	if r.Reason != "" {
+		return fmt.Sprintf("%s (%s), recorded by an earlier run", r.Outcome, r.Reason)
+	}
+	return r.Outcome + ", recorded by an earlier run"
+}
 
 // taskReport is the coder's structured reply.
 type taskReport struct {
@@ -151,6 +165,23 @@ func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) 
 		sum.Rounds = append(sum.Rounds, rec)
 	}()
 
+	// -continue replaces PREFLIGHT, PLAN and SCAFFOLD: the project exists, its
+	// plan and design are committed inside it, and what was already built is
+	// read back out of its own history.
+	if o.cfg.Implement.Continue != "" {
+		prep, pl, resume, err := o.resumePhase(ctx, sum)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			o.cleanUpInterrupted(ctx, prep)
+			if prep.release != nil {
+				prep.release()
+			}
+		}()
+		return o.buildPhase(ctx, sum, &rec, prep, pl, started, resume)
+	}
+
 	prep, err := o.prepareImplement(ctx)
 	if err != nil {
 		return err
@@ -187,7 +218,114 @@ func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) 
 			prep.release()
 		}
 	}()
-	return o.buildPhase(ctx, sum, &rec, prep, pl, started)
+	return o.buildPhase(ctx, sum, &rec, prep, pl, started, implement.Resume{})
+}
+
+// resumePhase is §5.5's re-entry: open a project fixpoint built, read what it
+// says about itself, and prove it is the one this configuration describes.
+//
+// Nothing here comes from the original run's artifacts, which may be on another
+// machine or long deleted -- the plan, the design and every recorded outcome are
+// read out of the repository's own commits. That is what "self-describing"
+// means, and it is why §5.4 writes a commit for every processed task even when
+// the task changed no files.
+//
+// The trust boundary is RE-ESTABLISHED rather than inherited. Between runs the
+// tree was outside fixpoint's lock and anyone could have touched it, so the
+// first-contact checks a fresh directory does not need are run here: the
+// repository-invariant baseline is taken now, over this tree, and the lock is
+// taken before any of it is read.
+func (o *Orchestrator) resumePhase(ctx context.Context, sum *model.RunSummary) (*implementPrep, implement.Plan, implement.Resume, error) {
+	var pl implement.Plan
+	var resume implement.Resume
+	dir := o.cfg.Implement.Continue
+	o.phase("RESUME  %s", dir)
+
+	p := &implementPrep{out: dir, outcomes: map[string]string{}}
+	p.gitEnv = gitenv.NoOperatorConfig(o.verifyEnv)
+	p.git = implement.NewGit(p.gitEnv)
+
+	if st, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !st.IsDir() {
+		return p, pl, resume, fmt.Errorf("-continue %s: not a git repository; -continue resumes a project fixpoint itself built", dir)
+	}
+	if err := o.preflightPing(ctx); err != nil {
+		return p, pl, resume, err
+	}
+
+	p.col = target.New(config.Target{Mode: config.ModeDirectory, Path: dir})
+	p.col.UseGitEnv(p.gitEnv)
+	release, err := p.col.LockRepo(ctx)
+	if err != nil {
+		return p, pl, resume, fmt.Errorf("-continue %s: %w", dir, err)
+	}
+	p.release = release
+
+	// Step 0 before anything is believed: a dirty tree means the previous run
+	// died mid-attempt, and §5.2 has no way to tell that residue from work.
+	// -continue -discard-dirty is §12.7's named answer and is not built, so this
+	// says exactly what to do instead.
+	if clean, cerr := p.col.GitClean(ctx); cerr != nil {
+		return p, pl, resume, cerr
+	} else if !clean {
+		return p, pl, resume, fmt.Errorf("-continue %s: the working tree is dirty, so a previous run stopped mid-attempt and its residue cannot be told from work; inspect it and `git stash` or `git checkout .` before resuming", dir)
+	}
+
+	history, err := p.git.ReadHistory(ctx, dir)
+	if err != nil {
+		return p, pl, resume, err
+	}
+	p.bootstrapSHA = history.Bootstrap
+
+	// The plan and the design come from the BOOTSTRAP commit, not the worktree:
+	// they are control artifacts nothing may edit, and reading the committed
+	// blobs means a resumed run cannot be steered by a file someone changed
+	// between runs.
+	planJSON, err := p.git.ShowBlob(ctx, dir, history.Bootstrap, "PLAN.json")
+	if err != nil {
+		return p, pl, resume, fmt.Errorf("-continue %s: %w", dir, err)
+	}
+	if err := json.Unmarshal([]byte(planJSON), &pl); err != nil {
+		return p, pl, resume, fmt.Errorf("-continue %s: the committed PLAN.json does not parse: %w", dir, err)
+	}
+	designBytes, err := p.git.ShowBlob(ctx, dir, history.Bootstrap, "DESIGN.md")
+	if err != nil {
+		return p, pl, resume, fmt.Errorf("-continue %s: %w", dir, err)
+	}
+	p.designBytes = []byte(designBytes)
+	p.designSHA = implement.DigestBytes(p.designBytes)
+	p.designPath = filepath.Join(dir, "DESIGN.md")
+	if pl.Provenance != nil && pl.Provenance.DesignSHA256 != "" && pl.Provenance.DesignSHA256 != p.designSHA {
+		return p, pl, resume, fmt.Errorf("-continue %s: the committed PLAN.json was written for design %.12s and the committed DESIGN.md hashes to %.12s", dir, pl.Provenance.DesignSHA256, p.designSHA)
+	}
+
+	p.gateCommands = implement.RenderCommands(o.cfg.Verify)
+	p.profile = implement.VerifyProfile(p.gateCommands, string(o.cfg.Verify.Policy), o.cfg.Verify.Timeout.Std(), o.cfg.Implement.GateGenerated)
+	p.plannerLabel = "carried (-continue)"
+	p.coverageChecked = false // the check ran, or did not, on the run that planned
+
+	if resume, err = implement.AdmitResume(history, pl, p.designSHA, p.profile); err != nil {
+		return p, pl, resume, fmt.Errorf("-continue %s: %w", dir, err)
+	}
+
+	// The baseline is taken over THIS tree, now: whatever the previous run
+	// snapshotted describes a repository nobody has watched since.
+	if p.baseline, err = p.git.SnapshotRepoState(ctx, dir, "main"); err != nil {
+		return p, pl, resume, err
+	}
+
+	sum.Deliverable = dir
+	sum.Coder = o.cfg.Roles.Coder.Agent
+	o.journal("resume_admitted", 1, map[string]any{
+		"project": dir, "bootstrap": history.Bootstrap,
+		"carried": resume.Index, "planned": len(pl.Tasks),
+	})
+	if resume.Index >= len(pl.Tasks) {
+		o.endPhase("RESUME  every task in the plan is already recorded; nothing to do")
+	} else {
+		o.endPhase("RESUME  %d of %d task(s) carried; re-entering at %s",
+			resume.Index, len(pl.Tasks), pl.Tasks[resume.Index].ID)
+	}
+	return p, pl, resume, nil
 }
 
 // prepareImplement is every refusal that must fire before a session is paid
@@ -598,14 +736,31 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 // skips derived from the dependency graph, the deadline checked between
 // tasks, and an infrastructure circuit breaker so a provider outage never
 // reaches the immutable history (§5.4).
-func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, rec *model.RoundRecord, p *implementPrep, pl implement.Plan, started time.Time) error {
-	o.phase("BUILD  %d task(s), serially", len(pl.Tasks))
+func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, rec *model.RoundRecord, p *implementPrep, pl implement.Plan, started time.Time, resume implement.Resume) error {
+	// Everything the history already decided is recorded before the loop starts,
+	// so the report of a resumed run covers the whole plan and not just the part
+	// this invocation touched. `carried` is §5.4's word for exactly that: an
+	// outcome this run adopted rather than produced.
+	for _, t := range pl.Tasks[:resume.Index] {
+		rc := resume.Carried[t.ID]
+		p.outcomes[t.ID] = rc.Outcome
+		sum.Tasks = append(sum.Tasks, model.TaskOutcome{
+			ID: t.ID, Title: t.Title, Outcome: outcomeCarried,
+			Reason: carriedReason(rc), SHA: rc.SHA,
+		})
+	}
+	if resume.Index > 0 {
+		o.phase("BUILD  %d task(s) carried from the history, %d to go", resume.Index, len(pl.Tasks)-resume.Index)
+	} else {
+		o.phase("BUILD  %d task(s), serially", len(pl.Tasks))
+	}
 	infraStrikes := 0
 	incomplete := false
 	p.deadline = started.Add(o.cfg.Implement.MaxRunDuration.Std())
 	stoppedBefore := ""
 
-	for i, t := range pl.Tasks {
+	for i, t := range pl.Tasks[resume.Index:] {
+		i += resume.Index
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
