@@ -94,7 +94,13 @@ Candidates for the current sweep are listed in `models.txt`. Model names route
 the harness: an existing agent name (`claude`, `codex`) runs through its own
 yaml; a `claude-*` id runs claude.yaml with the model swapped; an id with a
 slash (`x-ai/grok-4.6`) runs the OpenRouter template (card-billed, cached;
-needs `OPENROUTER_API_KEY`); anything else runs the ollama template. Results append
+needs `OPENROUTER_API_KEY`); a `codex@`-prefixed OpenRouter id runs the same
+route through the CODEX harness instead -- for models whose replies the claude
+harness cannot read (OpenRouter's Anthropic translation puts a trailing
+signature-only thinking block after some models' text, and the harness's result
+comes out empty; gemini-3.7-flash is the measured case). A codex@ number is
+comparable to the codex baseline, which shares its harness -- say so when
+quoting it. Anything else runs the ollama template. Results append
 to `results.csv` (committed — measurements are project knowledge); per-run
 seed tables land in `results/`. Re-score an old run without re-paying for it:
 

@@ -37,26 +37,47 @@ qwen3.5:397b-cloud
 # $6/M out. This route caches, unlike ollama).
 x-ai/grok-4.6
 
-# Gemini 3.7 Flash -- DISQUALIFIED 2026-08-18, both routes, for different
-# reasons. Left listed with the finding so the next person does not re-derive it.
+# Gemini 3.7 Flash -- DISQUALIFIED 2026-08-19, three routes, three distinct
+# root causes, all measured. Left listed so nobody re-derives any of them.
 #
-# Through agy (Antigravity, its native CLI): agy needs
-# --dangerously-skip-permissions to read a file at all -- headless it denies
-# read_file without it -- so the agent must declare can_edit: true, and a
-# reviewer must be read-only. Validation refuses it in roles.review outright:
-# "reviewers run concurrently against the shared working tree and must be
-# read-only". --mode takes only accept-edits or plan, and --sandbox restricts
-# the terminal rather than writes, so there is no read-only posture to earn the
-# claim back. Not a configuration problem; the CLI offers no way to be a
-# reviewer.
+# 1. agy (Antigravity, its native CLI): headless agy denies read_file without
+#    --dangerously-skip-permissions, so the agent must declare can_edit: true,
+#    and validation refuses a writable agent in roles.review. --mode takes only
+#    accept-edits or plan; --sandbox restricts the terminal, not writes. The CLI
+#    offers no way to be a reviewer.
 #
-# Through OpenRouter (the read-only route grok-4.6 uses, same claude harness,
-# model as the only variable): every call returns an EMPTY `result` field.
-# end_turn, no error, tokens billed -- 28 output tokens for "what is 2+2", 57
-# for a one-sentence question, and nothing in the field the harness reads.
-# fixpoint sees "no output" and the preflight ping fails. That is the bench's
-# named disqualifier: a session producing unparseable output burns a full slot
-# and can flip a quorum to INCONCLUSIVE. Measured over four separate prompts,
-# so it is the route and not one unlucky reply. Retry when either the harness
-# or the provider changes; the recorded row is the zero.
+# 2. OpenRouter + the claude harness (the grok-4.6 route): every call returns an
+#    EMPTY `result` field with tokens billed. OpenRouter's Anthropic translation
+#    emits gemini responses as [text, thinking(signature-only)] -- text FIRST,
+#    trailing signature block LAST -- and the harness reads its reply from the
+#    text after the last thinking block. grok works there only because its text
+#    arrives last ([thinking, redacted_thinking, text], verified side by side).
+#    Reasoning "is mandatory for this endpoint and cannot be disabled", and
+#    Vertex returns the same block order as AI Studio, so there is no provider
+#    that avoids it.
+#
+# 3. OpenRouter + the codex harness (the codex@ route below, built for this):
+#    short sessions work -- tool calls, file reads, correct replies. Every real
+#    review session dies the same way, 5/5 across the code and design targets:
+#    Google's content filter truncates the stream mid-response
+#    ("content_filter"), codex reconnects by resending the conversation, which
+#    now ends with the partial assistant turn, and Gemini rejects it -- 400
+#    "Requests ending with a model turn are not supported." The filter is
+#    Google's, the resend is codex's protocol, and the rejection is Gemini's
+#    API rule; none of the three is ours to change. Only Google providers serve
+#    this model on OpenRouter, so there is no filter-free upstream either.
+#
+# 4. The same codex route pinned to Vertex ("Google" on OpenRouter, vs "Google
+#    AI Studio"): identical chain, content_filter then the model-turn 400. The
+#    filter is Google's on both providers. Pinning knowledge worth keeping even
+#    though it did not save this model: OpenRouter accepts a provider suffix on
+#    the slug -- `google/gemini-3.7-flash:vertex` is a valid model id --
+#    while `model@provider` is not. The suffix rides through any harness, since
+#    it is just a model name.
+#
+# The zero rows in results.csv are those runs. The bench's own words: a
+# model that cannot finish a run cannot hold a seat. Retry when any of the
+# three parties changes behavior.
 # google/gemini-3.7-flash
+# codex@google/gemini-3.7-flash
+# codex@google/gemini-3.7-flash:vertex

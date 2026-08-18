@@ -1,0 +1,63 @@
+# Bench candidate over OpenRouter, driven by the CODEX harness -- the second of
+# the two OpenRouter routes docs/agents.md documents, and the one that exists
+# here because the first cannot carry every model.
+#
+# The claude harness reads its reply from the text that follows the last
+# thinking block, and OpenRouter's Anthropic-compatible translation emits some
+# models' responses as [text, thinking(signature-only)] -- text FIRST, a trailing
+# signature block LAST. Measured on google/gemini-3.7-flash (2026-08-19): the
+# API returns the text, and the harness's `result` field is empty on every call,
+# so the preflight ping fails before a single lens runs. Reasoning "is mandatory
+# for this endpoint and cannot be disabled", so the block order cannot be
+# avoided; grok-4.6 works on that route only because its responses arrive
+# [thinking, ..., text]. codex's responses-API wire format has no such order
+# dependence -- verified with the exact flag set below.
+#
+# COMPARABILITY: a candidate measured through this template shares its harness
+# with the CODEX baseline, not with the ollama candidates. The bench's
+# one-variable rule holds against that baseline and only that baseline; say so
+# when quoting numbers.
+model: __MODEL__
+effort: high # matched to the codex baseline, so effort is not the variable
+command:
+  - codex
+  - exec
+  - --sandbox read-only # reviewer duty: enforced no-write sandbox
+  - --skip-git-repo-check
+  - --color never
+  - --json
+  - -c model_provider=openrouter
+  - -c model_providers.openrouter.name="OpenRouter"
+  - -c model_providers.openrouter.base_url="https://openrouter.ai/api/v1"
+  - -c model_providers.openrouter.env_key="OPENROUTER_API_KEY"
+  - -c model_providers.openrouter.wire_api="responses"
+  - --model {{model}}
+  - -c model_reasoning_effort={{effort}}
+  - "-" # prompt from stdin, keeping it off argv (ps / /proc)
+
+# The same JSONL envelope as codex.yaml: last value of each path wins, reply on
+# item.completed, totals on turn.completed. cached_input_tokens is real on this
+# route -- OpenRouter caches, unlike ollama.
+usage:
+  format: jsonl
+  text: item.text
+  input_tokens: usage.input_tokens
+  output_tokens: usage.output_tokens
+  cache_read_tokens: usage.cached_input_tokens
+  cache_write_tokens: usage.cache_write_input_tokens
+prompt_via: stdin
+timeout: 20m
+can_edit: false
+
+# Only the OpenRouter key: this route bills a card, and codex resolves the key
+# through the provider block's env_key. OPENAI_API_KEY is deliberately NOT
+# passed -- codex must not be able to fall back to a first-party endpoint and
+# silently measure the wrong provider.
+env:
+  pass:
+    - OPENROUTER_API_KEY
+
+# Matched to the other remote-served templates, not to codex.yaml's 900k: the
+# ceiling exists per ROUTE (someone else's HTTP endpoint, someone else's bill),
+# and 400k is five times the measured maximum on these targets.
+prompt_budget: 400000
