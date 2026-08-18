@@ -1,0 +1,67 @@
+name: ci
+
+# The same gate `make audit` runs locally, so a green checkout and a green CI
+# mean the same thing. Nothing here invokes an agent or spends a token: the
+# suite's reviewers and coders are shell-script fixtures.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes the run in flight for the same ref; main is left alone
+  # so its history keeps a result per commit.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  audit:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both supported platforms, because the differences that break this
+        # project are platform ones: process groups, /var being a symlink on
+        # macOS, and the filesystem semantics several tests assert.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The test suite shells out to git and needs an identity for the commits
+      # the target/implement fixtures make.
+      - name: Configure git
+        run: |
+          git config --global user.name "fixpoint ci"
+          git config --global user.email "ci@example.invalid"
+      - run: make fmt-check
+      - run: make vet
+      - run: make lint
+      - run: make staticcheck
+      - run: make tidy-check
+      - name: Tests with the race detector
+        run: make test-race
+      - run: make vulncheck
+
+  # The release pipeline's own configuration is validated on every change, so a
+  # broken .goreleaser.yaml is caught here rather than on a tag -- where the tag
+  # already exists and the fix needs a new one.
+  release-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check

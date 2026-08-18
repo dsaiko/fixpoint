@@ -8,3 +8,7 @@ coverage.out
 config/agents/bench-candidate.yaml
 bench/testdata/target-code/linkd
 bench/.run.lock
+# GoReleaser's output. Built artifacts, never reviewed and never committed --
+# and the archives contain a copy of the bundle, so a committed dist/ would put
+# a second, stale copy of every prompt on the search path.
+dist/

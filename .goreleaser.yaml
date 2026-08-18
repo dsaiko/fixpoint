@@ -1,0 +1,138 @@
+# Release pipeline: archives and Linux packages for a v* tag.
+#
+# THE BUNDLE SHIPS WITH THE BINARY, and that is the one thing this file exists
+# to get right. fixpoint compiles no fallback configuration into the binary on
+# purpose (config/README.md): the prompts drive an agent that edits files with
+# permission checks disabled and the configs hold the trust gates, so "what will
+# this do to my repository?" has to be answerable by reading files on disk. A
+# release that shipped only the executable would therefore install something
+# that refuses to run.
+#
+# Both layouts the search path knows are produced:
+#   archive   fixpoint + config/          -> the `<dir>/config` beside the binary
+#   deb/rpm   /usr/bin/fixpoint
+#             /usr/share/fixpoint/...     -> the `<prefix>/share/fixpoint` entry
+version: 2
+
+project_name: fixpoint
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: fixpoint
+    main: ./cmd/fixpoint
+    binary: fixpoint
+    env:
+      # Nothing here needs cgo, and a static binary is what makes one archive
+      # work across the glibc/musl split.
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.FullCommit}}
+      - -X main.date={{.CommitDate}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    # NO WINDOWS, and it is not an omission. fixpoint puts every agent in its own
+    # POSIX process group so a timeout, a canceled run or Ctrl-C reliably kills
+    # CLI-spawned children instead of leaking them; Windows has no direct
+    # equivalent (a job object is the analogue) and the package does not compile
+    # for GOOS=windows. See "Platform support" in README.md.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: fixpoint
+    ids: [fixpoint]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    files:
+      # The bundle, at the path the binary-adjacent search entry looks for.
+      # The TREE is preserved, not flattened: a bundle IS its shape --
+      # config.isBundle looks for prompts/ or agents/ subdirectories, and
+      # resolution reads config/agents/<name>.yaml and config/prompts/<name>.md.
+      # A `strip_parent` here put every file in the bundle root, which made
+      # `--list` offer the agent definitions as runnable task configs and left
+      # no prompt resolvable at all. Caught by extracting the snapshot and
+      # running it.
+      - src: config
+        dst: config
+      - README.md
+      - docs/**/*
+      - LICENSE*
+
+checksum:
+  name_template: checksums.txt
+
+nfpms:
+  - id: fixpoint
+    ids: [fixpoint]
+    package_name: fixpoint
+    formats: [deb, rpm, apk, archlinux]
+    vendor: dsaiko
+    homepage: https://github.com/dsaiko/fixpoint
+    maintainer: Dušan Saiko <dusan.saiko@gmail.com>
+    description: |-
+      Agent-agnostic automation loop for writing, reviewing and fixing code
+      with AI panels, where every claim a model makes is checked by something
+      that is not a model.
+    # The repository is private and no license has been chosen yet; this says so
+    # rather than asserting terms nobody granted. Change it when that is decided.
+    license: Proprietary
+    dependencies:
+      - git
+    recommends:
+      # pr mode shells to `gh`; everything else works without it.
+      - gh
+    contents:
+      # type: tree, for the same reason the archive does not strip parents: the
+      # bundle IS its shape. A plain directory entry flattens agents/ and
+      # prompts/ into the root, which leaves every prompt unresolvable and makes
+      # `--list` offer agent definitions as runnable configs. Both packagers had
+      # to be told separately, and both were checked by unpacking the result.
+      - src: config
+        dst: /usr/share/fixpoint
+        type: tree
+      - src: README.md
+        dst: /usr/share/doc/fixpoint/README.md
+      - src: docs
+        dst: /usr/share/doc/fixpoint
+        type: tree
+    # /usr/share is vendor-owned data, replaced cleanly on upgrade -- deliberately
+    # NOT /etc, which deb and rpm treat as conffiles and start prompting about on
+    # every upgrade once a user edits one. Users override by shadowing the bundle
+    # in ~/.fixpoint or in a project, never by editing the installed copy
+    # (config/README.md).
+
+release:
+  # Private repository today: the assets are reachable with `gh release
+  # download`, not with a bare curl. README says so where it tells people how to
+  # install.
+  draft: false
+  prerelease: auto
+  mode: replace
+  footer: |
+    ## Install
+
+    ```sh
+    gh release download {{ .Tag }} --repo dsaiko/fixpoint --pattern '*Linux_x86_64.tar.gz'
+    tar xzf fixpoint_*_Linux_x86_64.tar.gz
+    ./fixpoint --list
+    ```
+
+    The `config/` directory in the archive is the bundle: keep it beside the
+    binary, or copy it to `~/.fixpoint/`. A binary without a bundle refuses to
+    run and prints every location it searched.
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
