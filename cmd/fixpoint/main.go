@@ -98,6 +98,8 @@ Flags:
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
 	porcelain := fs.Bool("porcelain", false, "with --list, emit a stable tab-separated form for scripts and shell completion")
 	showVersion := fs.Bool("version", false, "print the version, commit and build date, and exit")
+	continueDir := fs.String("continue", "", "implement: resume a project fixpoint built, replaying the outcomes recorded in its history; mutually exclusive with -out, -plan and -plan-only")
+	planFile := fs.String("plan", "", "implement: run this validated plan instead of a planner session; it must carry provenance.design_sha256 matching -target")
 	planOnly := fs.Bool("plan-only", false, "implement: plan and validate, write the plan into the run's artifacts, and stop -- no directory is claimed and no coder session is spent")
 	noCoverageCheck := fs.Bool("no-coverage-check", false, "implement: proceed with a design whose outline the coverage rule cannot read; every report then says coverage: unchecked")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
@@ -168,7 +170,9 @@ Flags:
 	// LoadBundle, because an override changes what a valid configuration is (e.g.
 	// -review-only exempts an all-once lens list from the recurring-lens rule) and
 	// validation must therefore see the post-override value.
-	target, out, err := absPathFlags(*targetPath, *outPath)
+	paths, err := absPathFlags(map[string]string{
+		"target": *targetPath, "out": *outPath, "plan": *planFile, "continue": *continueDir,
+	})
 	if err != nil {
 		logf("%v", err)
 		return 1
@@ -178,13 +182,15 @@ Flags:
 		MaxIterations:     *maxIter,
 		BaseRef:           *baseRef,
 		PR:                *pr,
-		Target:            target,
-		Out:               out,
+		Target:            paths["target"],
+		Out:               paths["out"],
 		AllowUntrustedFix: *allowUntrustedFix,
 		TrustedTarget:     *trustedTarget,
 		TrustedBundle:     *trustedBundle,
 		NoCoverageCheck:   *noCoverageCheck,
 		PlanOnly:          *planOnly,
+		Plan:              paths["plan"],
+		Continue:          paths["continue"],
 		Post:              *post,
 		PostVerdict:       *postVerdict,
 	})
@@ -424,19 +430,20 @@ func newLogger(stderr io.Writer) *runlog.Log {
 // working directory, because only this layer knows it: config anchors relative
 // paths against the project root, which is not where the flag was typed when
 // fixpoint runs from a subdirectory. Empty stays empty -- "use config".
-func absPathFlags(target, out string) (string, string, error) {
-	var err error
-	if target != "" {
-		if target, err = filepath.Abs(target); err != nil {
-			return "", "", fmt.Errorf("-target: %w", err)
+func absPathFlags(flags map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(flags))
+	for name, v := range flags {
+		if v == "" {
+			out[name] = ""
+			continue
 		}
-	}
-	if out != "" {
-		if out, err = filepath.Abs(out); err != nil {
-			return "", "", fmt.Errorf("-out: %w", err)
+		abs, err := filepath.Abs(v)
+		if err != nil {
+			return nil, fmt.Errorf("-%s: %w", name, err)
 		}
+		out[name] = abs
 	}
-	return target, out, nil
+	return out, nil
 }
 
 // forceQuit ends the process on a second interrupt, with the interrupted run's

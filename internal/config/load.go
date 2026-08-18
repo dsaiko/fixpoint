@@ -106,6 +106,10 @@ type Overrides struct {
 	NoCoverageCheck bool
 	// PlanOnly stops an implement run after the plan is validated (§7.4).
 	PlanOnly bool
+	// Plan runs an operator-supplied plan instead of a planner session (§7.4).
+	Plan string
+	// Continue resumes a project fixpoint built (§5.5).
+	Continue string
 }
 
 // apply folds the overrides into the configuration being compiled.
@@ -135,6 +139,12 @@ func (o Overrides) apply(c *Config) {
 	}
 	if o.PlanOnly {
 		c.Implement.PlanOnly = true
+	}
+	if o.Plan != "" {
+		c.Implement.Plan = o.Plan
+	}
+	if o.Continue != "" {
+		c.Implement.Continue = o.Continue
 	}
 	// Any nonzero value applies, including a negative one: an explicit
 	// -max-iterations -1 must reach Validate so its must-not-be-negative rule
@@ -237,6 +247,12 @@ func (o Overrides) Applied() []string {
 	}
 	if o.PlanOnly {
 		out = append(out, "plan_only=true")
+	}
+	if o.Plan != "" {
+		out = append(out, "plan="+o.Plan)
+	}
+	if o.Continue != "" {
+		out = append(out, "continue="+o.Continue)
 	}
 	if o.TrustedBundle {
 		out = append(out, "trusted_bundle=true")

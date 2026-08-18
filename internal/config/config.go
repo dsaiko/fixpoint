@@ -263,6 +263,15 @@ type Implement struct {
 	// yaml:"-" for the same reason as the rest of §7.4's flags -- what a single
 	// invocation is FOR is not something a config file decides.
 	PlanOnly bool `yaml:"-"`
+	// Plan is a path to an operator-supplied or previously-generated plan to run
+	// instead of a planner session (§7.4). yaml:"-": a config key naming a plan
+	// file would let a bundle -- possibly one shipped inside the design's own
+	// repository -- decide what gets built, bypassing the planner entirely.
+	Plan string `yaml:"-"`
+	// Continue resumes a project fixpoint built, taking the plan and the design
+	// from that repository (§5.5). yaml:"-" like the rest: which project to
+	// resume is an invocation, not a setting.
+	Continue string `yaml:"-"`
 	// GitignoreSeed is the stack's ignore entries, written by fixpoint into the
 	// bootstrap commit's .gitignore -- a control artifact no session may edit.
 	GitignoreSeed []string `yaml:"gitignore_seed"`
@@ -2543,7 +2552,30 @@ func (c *Config) validateImplement() error {
 	if len(c.Verify.Commands) == 0 && c.Verify.Policy != VerifyOff {
 		return errors.New("verify.commands is empty; an implement config must either configure the gate or assert `verify.policy: off` -- an ungated new project has to be a statement, not a half-finished config")
 	}
+	// The write-target still rides in the create key (§12.8 records that as an
+	// open question), so it is passed in rather than mirrored into a second field.
+	if err := c.Implement.validateModes(c.Create.Out); err != nil {
+		return err
+	}
 	return c.Implement.validate()
+}
+
+// validateModes refuses the §7.4 flag combinations that contradict each other,
+// at load time rather than three phases in. Each pair is incoherent rather than
+// merely unusual, so a refusal naming both is more useful than a precedence
+// rule nobody could remember.
+func (i Implement) validateModes(out string) error {
+	switch {
+	case i.Continue != "" && out != "":
+		return errors.New("-continue and -out name two different projects: -continue resumes the one already built, and takes its plan and design from that repository")
+	case i.Continue != "" && i.Plan != "":
+		return errors.New("-continue and -plan cannot combine: a resumed run reads the plan from the project's committed PLAN.json, which is the plan its history was built against")
+	case i.Continue != "" && i.PlanOnly:
+		return errors.New("-continue and -plan-only cannot combine: one finishes a build, the other refuses to start one")
+	case i.PlanOnly && i.Plan != "":
+		return errors.New("-plan-only and -plan cannot combine: -plan-only exists to PRODUCE a plan, and -plan supplies one already made")
+	}
+	return nil
 }
 
 // validate checks the implement section's own numbers; the pipeline-shape rules

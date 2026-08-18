@@ -1726,3 +1726,82 @@ func TestRunImplementPlanOnly(t *testing.T) {
 		t.Errorf("the run did not say where it wrote the plan:\n%s", f.logs())
 	}
 }
+
+// §7.4's composition, end to end: plan, read it, hand it back. The second run
+// spends no planner session and records where its plan came from.
+func TestRunImplementPlanOnlyThenPlan(t *testing.T) {
+	// 1. Plan and stop.
+	planner := newImplementFixture(t, implementReply("true", `{"status": "implemented"}`),
+		config.Verify{Policy: config.VerifyOff})
+	planner.cfg.Implement.PlanOnly = true
+	planner.cfg.Create.Out = ""
+	if _, err := planner.run(t); err != nil {
+		t.Fatalf("plan-only run: %v\nlog:\n%s", err, planner.logs())
+	}
+	runDir := filepath.Dir(filepath.Dir(planner.cfg.Logs.Dir))
+	entries, err := os.ReadDir(runDir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no run directory: %v", err)
+	}
+	planPath := filepath.Join(runDir, entries[0].Name(), "plan.json")
+
+	// 2. Hand it back to a run that builds, against the SAME design.
+	build := newImplementFixture(t,
+		implementReply("printf 'x\\n' > \"t_$$_$(date +%s).txt\"\nsleep 1",
+			`{"status": "implemented", "notes": "done"}`),
+		config.Verify{Policy: config.VerifyOff})
+	build.cfg.Implement.Plan = planPath
+	// The planner script would answer if it were invoked; nothing must invoke it.
+	build.planJSON = `{"schema_version": 1, "tasks": []}`
+
+	sum, err := build.run(t)
+	if err != nil {
+		t.Fatalf("plan handback run: %v\nlog:\n%s", err, build.logs())
+	}
+	if sum.Termination != model.TermImplemented {
+		t.Errorf("termination = %q, want implemented\nlog:\n%s", sum.Termination, build.logs())
+	}
+	if len(sum.Tasks) != 2 {
+		t.Errorf("built %d tasks, want the supplied plan's 2", len(sum.Tasks))
+	}
+	if !strings.Contains(build.logs(), "no planner session was spent") {
+		t.Errorf("the run does not say the planner was skipped:\n%s", build.logs())
+	}
+	// No plan step may appear in the round record: a run that invoked no agent
+	// must not look as though it had.
+	for _, r := range sum.Rounds {
+		for _, s := range r.Steps {
+			if s.Role == "plan" {
+				t.Errorf("a -plan run recorded a planner step: %+v", s)
+			}
+		}
+	}
+	// The audit trail says the plan was the operator's, with the file's digest --
+	// naming the configured agent as its author would be a falsehood.
+	prov := gitOutAt(t, build.out, "show", "HEAD~2:PLAN.json")
+	if !strings.Contains(prov, "operator-supplied") {
+		t.Errorf("PLAN.json does not record the plan's real origin:\n%s", prov)
+	}
+}
+
+// A plan written for another design is refused before anything is claimed.
+func TestRunImplementPlanRefusesAnotherDesignsPlan(t *testing.T) {
+	f := newImplementFixture(t, implementReply("true", `{"status": "implemented"}`),
+		config.Verify{Policy: config.VerifyOff})
+	path := filepath.Join(t.TempDir(), "plan.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"project":{"name":"p"},"coverage":[],
+"provenance":{"design_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},
+"tasks":[{"id":"T01","title":"t","goal":"g","acceptance":["a"],"files":["a.go"]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.cfg.Implement.Plan = path
+
+	if _, err := f.run(t); err == nil {
+		t.Fatal("a plan written for a different design was implemented")
+	} else if !strings.Contains(err.Error(), "will not implement it against another") {
+		t.Errorf("the refusal must explain the pairing: %v", err)
+	}
+	if _, err := os.Stat(f.out); err == nil {
+		t.Error("the write-target was claimed by a run that refused its plan")
+	}
+}
