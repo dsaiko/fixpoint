@@ -1805,3 +1805,192 @@ func TestRunImplementPlanRefusesAnotherDesignsPlan(t *testing.T) {
 		t.Error("the write-target was claimed by a run that refused its plan")
 	}
 }
+
+// §5.5 end to end: a run stops half-built, and a second run finishes it from
+// the repository alone. No artifact of the first run is used -- the plan, the
+// design and every recorded outcome come out of the project's own commits,
+// which is the whole reason §5.4 writes a commit for every processed task.
+func TestRunImplementContinue(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	state := t.TempDir()
+
+	// Task 1 builds; task 2 hangs so the deadline stops the run mid-plan.
+	script := "n=$(cat " + state + "/n 2>/dev/null || echo 0)\nn=$((n+1))\nprintf '%s' \"$n\" > " + state + "/n\n" +
+		"if [ \"$n\" = 1 ]; then\n" +
+		"  printf 'one\\n' > one.txt\n" +
+		reportLine(`{"status": "implemented", "notes": "first"}`) +
+		"else\n  sleep 60\nfi\n"
+	first := newImplementFixtureAt(t, out, script, config.Verify{Policy: config.VerifyOff})
+	if err := os.WriteFile(first.planFile, []byte(first.planJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logf, logs := captureLog()
+	first.logs = logs
+	o, err := New(&config.Loaded{Config: first.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		one := filepath.Join(out, "one.txt")
+		for {
+			if _, err := os.Stat(one); err == nil {
+				time.Sleep(2 * time.Second) // let T02's session start
+				cancel()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+	var firstSum model.RunSummary
+	if err := o.runImplement(ctx, &firstSum); err == nil {
+		t.Fatalf("the interrupted run reported success\nlog:\n%s", first.logs())
+	}
+	// One task landed, one did not.
+	if n := strings.Count(gitOutAt(t, out, "log", "--format=%s"), "\n"); n != 2 {
+		t.Fatalf("history has %d commits, want bootstrap + T01:\n%s", n, gitOutAt(t, out, "log", "--format=%s"))
+	}
+
+	// The second run resumes. Its own planner would answer differently if it
+	// were asked; nothing must ask it.
+	second := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "unused"),
+		implementReply("printf 'two\\n' > two.txt", `{"status": "implemented", "notes": "second"}`),
+		config.Verify{Policy: config.VerifyOff})
+	second.cfg.Implement.Continue = out
+	second.cfg.Create.Out = ""
+	second.planJSON = `{"schema_version": 1, "tasks": []}`
+
+	sum, err := second.run(t)
+	if err != nil {
+		t.Fatalf("resumed run: %v\nlog:\n%s", err, second.logs())
+	}
+	if sum.Termination != model.TermImplemented {
+		t.Errorf("termination = %q, want implemented\nlog:\n%s", sum.Termination, second.logs())
+	}
+	// The report covers the WHOLE plan: one carried, one built here.
+	if len(sum.Tasks) != 2 {
+		t.Fatalf("the resumed run reports %d of the plan's 2 tasks: %+v", len(sum.Tasks), sum.Tasks)
+	}
+	byID := map[string]model.TaskOutcome{}
+	for _, task := range sum.Tasks {
+		byID[task.ID] = task
+	}
+	if got := byID["T01"].Outcome; got != outcomeCarried {
+		t.Errorf("T01 = %q, want carried: it was built by the earlier run", got)
+	}
+	if !strings.Contains(byID["T01"].Reason, "earlier run") {
+		t.Errorf("a carried outcome must say where it came from: %q", byID["T01"].Reason)
+	}
+	if got := byID["T02"].Outcome; got != outcomeImplemented {
+		t.Errorf("T02 = %q, want implemented by this run", got)
+	}
+	// It really finished the work, in the same repository.
+	if _, err := os.Stat(filepath.Join(out, "two.txt")); err != nil {
+		t.Errorf("the resumed run did not build T02 into the project: %v", err)
+	}
+	if !strings.Contains(second.logs(), "carried") {
+		t.Errorf("the resumed run did not report what it adopted:\n%s", second.logs())
+	}
+}
+
+// The refusals that keep -continue from adopting a repository it cannot vouch
+// for. Each one is a case where the project on disk is not demonstrably the one
+// this configuration describes.
+func TestRunImplementContinueRefusals(t *testing.T) {
+	// A finished project to mutate per case: two tasks, both built.
+	build := func(t *testing.T) string {
+		t.Helper()
+		out := filepath.Join(t.TempDir(), "project")
+		f := newImplementFixtureAt(t, out,
+			implementReply("printf 'x\\n' > \"t_$$_$(date +%s).txt\"\nsleep 1",
+				`{"status": "implemented", "notes": "done"}`),
+			config.Verify{Policy: config.VerifyOff})
+		if _, err := f.run(t); err != nil {
+			t.Fatalf("seed run: %v\nlog:\n%s", err, f.logs())
+		}
+		return out
+	}
+	resume := func(t *testing.T, out string, tweak func(*config.Config)) (string, error) {
+		t.Helper()
+		f := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "unused"),
+			implementReply("true", `{"status": "implemented"}`), config.Verify{Policy: config.VerifyOff})
+		f.cfg.Implement.Continue = out
+		f.cfg.Create.Out = ""
+		if tweak != nil {
+			tweak(f.cfg)
+		}
+		_, err := f.run(t)
+		return f.logs(), err
+	}
+
+	t.Run("a dirty tree", func(t *testing.T) {
+		out := build(t)
+		if err := os.WriteFile(filepath.Join(out, "leftover.txt"), []byte("residue\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// §12.7's -discard-dirty is not built, so the refusal has to say what to
+		// do instead rather than name a flag that does not exist.
+		if _, err := resume(t, out, nil); err == nil {
+			t.Fatal("a dirty project was resumed; its residue cannot be told from work")
+		} else if !strings.Contains(err.Error(), "git stash") {
+			t.Errorf("the refusal must say how to clear it: %v", err)
+		}
+	})
+
+	t.Run("a different gate", func(t *testing.T) {
+		out := build(t)
+		_, err := resume(t, out, func(c *config.Config) {
+			c.Verify = config.Verify{
+				Policy:   config.VerifyMustPass,
+				Timeout:  config.Duration(time.Minute),
+				Commands: []config.VerifyCommand{{Name: "new", Run: []string{"true"}}},
+			}
+		})
+		if err == nil {
+			t.Fatal("a project half-built under one gate was resumed under another")
+		}
+		if !strings.Contains(err.Error(), "different gate") {
+			t.Errorf("the refusal must name the cause: %v", err)
+		}
+	})
+
+	t.Run("a repository fixpoint did not build", func(t *testing.T) {
+		out := t.TempDir()
+		gitOutAt(t, out, "init", "-q")
+		if err := os.WriteFile(filepath.Join(out, "a.txt"), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		gitOutAt(t, out, "add", "-A")
+		gitOutAt(t, out, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "mine")
+		if _, err := resume(t, out, nil); err == nil {
+			t.Fatal("a foreign repository was resumed")
+		} else if !strings.Contains(err.Error(), "fixpoint built") {
+			t.Errorf("the refusal must say what it is not: %v", err)
+		}
+	})
+
+	t.Run("a path that is not a repository", func(t *testing.T) {
+		if _, err := resume(t, t.TempDir(), nil); err == nil {
+			t.Fatal("a plain directory was resumed")
+		} else if !strings.Contains(err.Error(), "not a git repository") {
+			t.Errorf("the refusal must say what is missing: %v", err)
+		}
+	})
+
+	// Resuming a project with nothing left to do is not an error: it reports the
+	// whole plan as carried and terminates implemented.
+	t.Run("a finished project carries everything", func(t *testing.T) {
+		out := build(t)
+		logs, err := resume(t, out, nil)
+		if err != nil {
+			t.Fatalf("resuming a finished project failed: %v\nlog:\n%s", err, logs)
+		}
+		if !strings.Contains(logs, "already recorded") {
+			t.Errorf("the run did not say there was nothing to do:\n%s", logs)
+		}
+	})
+}
