@@ -102,6 +102,8 @@ type Overrides struct {
 	// TrustedBundle asserts trust in the bundle alone, not in the target's content;
 	// see Loop.TrustedBundle for why the two are separate assertions.
 	TrustedBundle bool
+	// NoCoverageCheck waives §4.2 rule 6 for this invocation (§7.4).
+	NoCoverageCheck bool
 }
 
 // apply folds the overrides into the configuration being compiled.
@@ -125,6 +127,9 @@ func (o Overrides) apply(c *Config) {
 	}
 	if o.TrustedBundle {
 		c.Loop.TrustedBundle = true
+	}
+	if o.NoCoverageCheck {
+		c.Implement.NoCoverageCheck = true
 	}
 	// Any nonzero value applies, including a negative one: an explicit
 	// -max-iterations -1 must reach Validate so its must-not-be-negative rule
@@ -221,6 +226,9 @@ func (o Overrides) Applied() []string {
 	}
 	if o.TrustedTarget {
 		out = append(out, "trusted_target=true")
+	}
+	if o.NoCoverageCheck {
+		out = append(out, "no_coverage_check=true")
 	}
 	if o.TrustedBundle {
 		out = append(out, "trusted_bundle=true")

@@ -33,7 +33,8 @@ var completionScripts = map[string]string{"bash": bashCompletion, "zsh": zshComp
 // deriving them would only be accurate until the next upgrade, which is a worse
 // kind of wrong than a list a reader can see and check.
 const completionFlags = "--list --porcelain --config --review-only --max-iterations --base-ref --pr --target --out " +
-	"--trusted-target --trusted-bundle --allow-untrusted-fix --post --post-verdict --post-run --check --check-live --version"
+	"--trusted-target --trusted-bundle --allow-untrusted-fix --post --post-verdict --post-run --check --check-live " +
+	"--no-coverage-check --version"
 
 const bashCompletion = `# fixpoint completion for bash. Install with:
 #   fixpoint completion bash > /etc/bash_completion.d/fixpoint
@@ -125,7 +126,9 @@ const zshFlagPairs = `'--list:list the configs available here' ` +
 	`'--post-verdict:with --post, let the review approve or request changes' ` +
 	`'--post-run:publish the review a finished run already produced' ` +
 	`'--check:validate the configuration and exit' ` +
-	`'--check-live:validate, ping every agent, and exit'`
+	`'--check-live:validate, ping every agent, and exit' ` +
+	`'--no-coverage-check:implement: run without the coverage rule; reports say unchecked' ` +
+	`'--version:print the version, commit and build date, and exit'`
 
 const fishCompletion = `# fixpoint completion for fish. Install with:
 #   fixpoint completion fish > ~/.config/fish/completions/fixpoint.fish
@@ -158,4 +161,6 @@ complete -c fixpoint -l post-verdict -d 'with --post, let the review approve or 
 complete -c fixpoint -l post-run -r -d 'publish the review a finished run already produced'
 complete -c fixpoint -l check -d 'validate the configuration and exit'
 complete -c fixpoint -l check-live -d 'validate, ping every agent, and exit'
+complete -c fixpoint -l no-coverage-check -d 'implement: run without the coverage rule; reports say unchecked'
+complete -c fixpoint -l version -d 'print the version, commit and build date, and exit'
 `
