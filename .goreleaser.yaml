@@ -75,14 +75,12 @@ nfpms:
     formats: [deb, rpm, apk, archlinux]
     vendor: dsaiko
     homepage: https://github.com/dsaiko/fixpoint
-    maintainer: Dušan Saiko <dusan.saiko@gmail.com>
+    maintainer: Dušan Saiko <dusan@saiko.cz>
     description: |-
       Agent-agnostic automation loop for writing, reviewing and fixing code
       with AI panels, where every claim a model makes is checked by something
       that is not a model.
-    # The repository is private and no license has been chosen yet; this says so
-    # rather than asserting terms nobody granted. Change it when that is decided.
-    license: Proprietary
+    license: MIT
     dependencies:
       - git
     recommends:
@@ -97,6 +95,8 @@ nfpms:
       - src: config
         dst: /usr/share/fixpoint
         type: tree
+      - src: LICENSE
+        dst: /usr/share/doc/fixpoint/LICENSE
       - src: README.md
         dst: /usr/share/doc/fixpoint/README.md
       - src: docs
