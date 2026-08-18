@@ -10,9 +10,11 @@ CONFIG  := fix-code
 GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
 STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
+GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.12.5
 
 .PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench implement-go implement-node implement-web \
-        fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help
+        fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help \
+        release-check release-snapshot release-verify
 
 all: build
 
@@ -208,6 +210,33 @@ clean-logs:
 ## list: show the task configs available on the bundle search path
 list: build
 	./$(BINARY) --list
+
+## release-check: validate .goreleaser.yaml without building anything
+release-check:
+	$(GORELEASER) check
+
+## release-snapshot: build the full release locally -- archives and Linux
+## packages -- without tagging or publishing. Output lands in dist/.
+## This is how a packaging change is verified before a tag exists, because a
+## tag that produces a broken archive cannot be taken back.
+release-snapshot:
+	$(GORELEASER) release --snapshot --clean --skip=publish
+	@echo
+	@echo "dist/ contains:" && ls dist/*.tar.gz dist/*.deb dist/*.rpm 2>/dev/null
+
+## release-verify: unpack the snapshot archive and prove it runs -- the bundle
+## resolves and a config is listed. The binary carries no fallback
+## configuration, so an archive with a mis-shaped bundle installs a tool that
+## refuses to run; both packagers flattened it on the first attempt.
+release-verify: release-snapshot
+	@set -e; \
+	archive=$$(ls dist/fixpoint_*_$$(uname -s)_$$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/arm64/;s/arm64/arm64/').tar.gz 2>/dev/null | head -1); \
+	if [ -z "$$archive" ]; then echo "no archive for this platform in dist/"; exit 1; fi; \
+	work=$$(mktemp -d); tar xzf "$$archive" -C "$$work"; \
+	test -d "$$work/config/agents" || { echo "FAIL: bundle has no agents/"; exit 1; }; \
+	test -d "$$work/config/prompts" || { echo "FAIL: bundle has no prompts/"; exit 1; }; \
+	cd $$(mktemp -d) && "$$work/fixpoint" -version && "$$work/fixpoint" --list | grep -q review-code; \
+	echo "OK: $$archive resolves its bundle and lists its configs"
 
 ## help: list all targets with their descriptions
 ## Only "## name: text" lines are listed; a "## " line without a target name is a

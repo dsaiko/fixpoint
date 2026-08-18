@@ -13,6 +13,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +29,33 @@ import (
 	"github.com/dsaiko/fixpoint/internal/orchestrator"
 	"github.com/dsaiko/fixpoint/internal/runlog"
 )
+
+// Version, commit and date are stamped at link time by the release build
+// (-ldflags -X). They are the only way a binary that was copied somewhere can
+// say what it is, which matters here more than for most tools: the bundle
+// search path resolves a config directory BESIDE the binary, so "which fixpoint
+// is this and which bundle shipped with it" is one question.
+//
+// "dev" rather than a plausible-looking number: a build that was not made by
+// the release pipeline must not claim to be a release.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+// versionLine is what -version prints. Go's own build info fills in the module
+// version for `go install`-ed binaries, which the ldflags do not reach.
+func versionLine() string {
+	v := version
+	if v == "dev" {
+		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+			v = bi.Main.Version
+		}
+	}
+	return fmt.Sprintf("fixpoint %s (commit %s, built %s, %s/%s, %s)",
+		v, commit, date, runtime.GOOS, runtime.GOARCH, runtime.Version())
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -68,6 +97,7 @@ Flags:
 	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
 	porcelain := fs.Bool("porcelain", false, "with --list, emit a stable tab-separated form for scripts and shell completion")
+	showVersion := fs.Bool("version", false, "print the version, commit and build date, and exit")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
 	checkLive := fs.Bool("check-live", false, "validate the configuration, ping every agent, and exit without running")
 	positionals, err := parseArgs(fs, args)
@@ -105,7 +135,7 @@ Flags:
 	resolver := config.NewResolver(projectRoot)
 
 	// Modes that print something and exit, before any config is resolved.
-	if code, handled := earlyExit(resolver, projectRoot, positionals, *list, *porcelain, stdout, stderr); handled {
+	if code, handled := earlyExit(resolver, projectRoot, positionals, *list, *porcelain, *showVersion, stdout, stderr); handled {
 		return code
 	}
 
@@ -793,7 +823,14 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 //
 // `completion` is intercepted here because the argument parser treats bare words
 // as the config to run, so it would otherwise be looked up as a config name.
-func earlyExit(r *config.Resolver, projectRoot string, positionals []string, list, porcelain bool, stdout, stderr io.Writer) (int, bool) {
+func earlyExit(r *config.Resolver, projectRoot string, positionals []string, list, porcelain, showVersion bool, stdout, stderr io.Writer) (int, bool) {
+	// -version answers before any bundle is resolved, because the first thing
+	// someone does with a fresh install is ask what it is -- from wherever they
+	// unpacked it, which is usually a directory with no bundle at all.
+	if showVersion {
+		fmt.Fprintf(stdout, "%s\n", versionLine())
+		return 0, true
+	}
 	if len(positionals) > 0 && positionals[0] == "completion" {
 		return writeCompletion(positionals[1:], stdout, stderr), true
 	}

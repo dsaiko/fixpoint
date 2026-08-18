@@ -165,6 +165,41 @@ fresh directory. Specification: [docs/design/DESIGN.md](docs/design/DESIGN.md).
 
 ## Getting started
 
+### Install a release
+
+Releases carry a tar.gz per platform plus deb, rpm, apk and Arch packages, all
+built from a `v*` tag by [GoReleaser](.goreleaser.yaml). Every archive contains
+the **config bundle** as well as the binary, because fixpoint compiles no
+fallback configuration into the executable: the prompts drive an agent that
+edits files with permission checks disabled and the configs hold the trust
+gates, so a binary on its own refuses to run and prints where it looked.
+
+The repository is private, so the assets need an authenticated download rather
+than a bare `curl`, and there is no Homebrew tap — a formula fetches by URL and
+brew cannot authenticate here.
+
+```sh
+# macOS (Apple silicon); swap Darwin_arm64 for Linux_x86_64, Linux_arm64, Darwin_x86_64
+gh release download v0.1.0 --repo dsaiko/fixpoint --pattern '*Darwin_arm64.tar.gz'
+tar xzf fixpoint_*_Darwin_arm64.tar.gz
+./fixpoint -version
+./fixpoint --list
+```
+
+```sh
+# Debian/Ubuntu
+gh release download v0.1.0 --repo dsaiko/fixpoint --pattern '*linux_amd64.deb'
+sudo dpkg -i fixpoint_*_linux_amd64.deb    # /usr/bin/fixpoint + /usr/share/fixpoint
+```
+
+Keep `config/` beside the binary, or copy it to `~/.fixpoint/` to edit your own
+copy — the search path finds both, and yours wins. Packages install the bundle
+to `/usr/share/fixpoint`, which the same search path already knows.
+
+Windows is not built. See [Platform support](#platform-support).
+
+### Build from source
+
 Requirements:
 
 - Linux or macOS. **Windows is not supported yet** — see [Platform support](#platform-support).
@@ -441,6 +476,21 @@ make tidy         # go mod tidy
 make audit        # everything CI runs: fmt-check, vet, lint, staticcheck, race tests, vulncheck
 make help         # list all targets
 ```
+
+```sh
+make release-check      # validate .goreleaser.yaml
+make release-snapshot   # build archives + Linux packages into dist/, no tag, no publish
+make release-verify     # …then unpack one and prove it runs
+```
+
+Cutting a release is a tag: `git tag -a v0.2.0 -m ... && git push origin v0.2.0`
+runs the audit gate on Linux and macOS, builds every artifact, and publishes the
+GitHub Release. The workflow then unpacks an archive and installs the deb and
+asserts both resolve their bundle — an archive whose bundle is mis-shaped
+installs a tool that refuses to run, and both packagers flattened it on the
+first attempt. `make release-verify` is the same check locally, and is what a
+packaging change should be tested with before a tag exists, since a tag that
+produces a broken archive cannot be taken back.
 
 Analysis tools run via `go run` with pinned versions, so no global installs
 are needed and every machine uses identical tool versions. The lint policy

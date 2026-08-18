@@ -1,0 +1,119 @@
+name: release
+
+# Cross-platform release on a v* tag: the same audit gate CI runs, then
+# GoReleaser produces tar.gz archives for linux/darwin on amd64/arm64, deb, rpm,
+# apk and archlinux packages, a checksums.txt, and the GitHub Release.
+#
+# No Homebrew job. A tap formula has to fetch the archive by URL, and this
+# repository is private -- brew cannot authenticate to it, so a formula would
+# publish an install command that fails for everyone including its author. Add
+# it when the repository is public; the archives are already the shape a formula
+# wants (binary and bundle at the archive root, no wrapping directory).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the artifacts without publishing a release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The gate runs BEFORE anything is built, so a tag cannot produce artifacts
+  # from a tree that does not pass its own checks. On both platforms, for the
+  # reason ci.yml gives.
+  audit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Configure git
+        run: |
+          git config --global user.name "fixpoint ci"
+          git config --global user.email "ci@example.invalid"
+      - run: make audit
+
+  goreleaser:
+    needs: audit
+    runs-on: ubuntu-latest
+    permissions:
+      # Only this job writes: it creates the GitHub Release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # GoReleaser derives the version and the changelog from tags, so a
+          # shallow clone would give it neither.
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Cross-compiling to darwin and linux on one runner is what CGO_ENABLED=0
+      # buys; no cross toolchain is installed and none is needed.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: >-
+            release --clean
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--snapshot --skip=publish' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # An archive that installs nothing usable is the failure this project is
+      # most exposed to: the binary carries no fallback configuration, so a
+      # release whose bundle is missing or mis-shaped produces a tool that
+      # refuses to run. Both packaging paths flattened the bundle's
+      # subdirectories on the first attempt, so the layout is asserted here
+      # rather than trusted.
+      - name: Verify an archive installs a working bundle
+        run: |
+          set -euo pipefail
+          archive=$(ls dist/fixpoint_*_Linux_x86_64.tar.gz)
+          work=$(mktemp -d)
+          tar xzf "$archive" -C "$work"
+          test -d "$work/config/agents"  || { echo "bundle has no agents/ -- the tree was flattened"; exit 1; }
+          test -d "$work/config/prompts" || { echo "bundle has no prompts/ -- the tree was flattened"; exit 1; }
+          # Run it from somewhere with no bundle of its own, so the answer comes
+          # from the archive rather than from this checkout.
+          cd "$(mktemp -d)"
+          "$work/fixpoint" -version
+          "$work/fixpoint" --list | grep -q review-code
+          echo "archive OK: bundle resolves and review-code is listed"
+
+      - name: Verify the deb installs the bundle where the search path looks
+        run: |
+          set -euo pipefail
+          deb=$(ls dist/fixpoint_*_linux_amd64.deb)
+          sudo dpkg -i "$deb"
+          test -d /usr/share/fixpoint/agents  || { echo "deb bundle has no agents/"; exit 1; }
+          test -d /usr/share/fixpoint/prompts || { echo "deb bundle has no prompts/"; exit 1; }
+          cd "$(mktemp -d)"
+          fixpoint -version
+          fixpoint --list | grep -q fix-code
+          echo "deb OK: /usr/bin/fixpoint resolves /usr/share/fixpoint"
+
+      - name: Upload artifacts (dry run only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fixpoint-dist
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.apk
+            dist/*.pkg.tar.zst
+            dist/checksums.txt
