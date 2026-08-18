@@ -156,6 +156,16 @@ func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) 
 	if err != nil {
 		return err
 	}
+	// -plan-only stops here, having spent one planner session and claimed
+	// nothing. The plan is on disk at the run root; §7.4's composition is to read
+	// it, edit it, and hand it back with -plan.
+	if o.cfg.Implement.PlanOnly {
+		sum.Termination = model.TermPlanned
+		o.logf("PLAN-ONLY: %d task(s) validated and written to %s; no directory was created and no coder session was spent",
+			len(pl.Tasks), filepath.Join(o.logs.RunDir(), "plan.json"))
+		o.logf("review it, then build it with:  -plan %s -out <fresh-dir>", filepath.Join(o.logs.RunDir(), "plan.json"))
+		return nil
+	}
 	if err := o.scaffoldPhase(ctx, sum, prep, pl); err != nil {
 		return err
 	}
@@ -192,6 +202,13 @@ func (o *Orchestrator) prepareImplement(ctx context.Context) (*implementPrep, er
 	// appended to in place.
 	p.gitEnv = gitenv.NoOperatorConfig(o.verifyEnv)
 	p.git = implement.NewGit(p.gitEnv)
+	// -plan-only claims nothing, so it needs no write-target and must not test
+	// one: the point of the mode is to decide whether to spend the run at all,
+	// and demanding the directory up front would make an operator name a place
+	// for a project they have not agreed to build yet.
+	if o.cfg.Implement.PlanOnly {
+		return o.prepareDesign(ctx, p)
+	}
 	if p.out == "" {
 		return nil, errors.New("implement: pass -out <directory>; the pipeline builds a new project and must be told where")
 	}
@@ -216,6 +233,13 @@ func (o *Orchestrator) prepareImplement(ctx context.Context) (*implementPrep, er
 		return nil, fmt.Errorf("implement: %d bytes free under %s, below implement.min_free_disk (%s)", free, filepath.Dir(p.out), o.cfg.Implement.MinFreeDisk)
 	}
 
+	return o.prepareDesign(ctx, p)
+}
+
+// prepareDesign is the half of preflight that is about the DOCUMENT rather than
+// the write-target: the agent ping, the snapshot, the design hash and the
+// outline. -plan-only runs exactly this much.
+func (o *Orchestrator) prepareDesign(ctx context.Context, p *implementPrep) (*implementPrep, error) {
 	if o.cfg.Target.Document == "" {
 		return nil, errors.New("implement: the target must be a design document file (-target DESIGN.md)")
 	}
