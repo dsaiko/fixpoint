@@ -56,15 +56,20 @@ type taskReport struct {
 
 // implementPrep is everything the phases share.
 type implementPrep struct {
-	out          string // the write-target, claimed by SCAFFOLD
-	designBytes  []byte
-	designSHA    string
-	designPath   string // as the operator named it
-	outline      implement.Outline
-	material     string // the design, collected and fenced for the planner
-	profile      string // the effective-gate digest
-	gateCommands []string
-	col          *target.Collector // over out; valid after SCAFFOLD
+	out         string // the write-target, claimed by SCAFFOLD
+	designBytes []byte
+	designSHA   string
+	designPath  string // as the operator named it
+	outline     implement.Outline
+	// coverageChecked is §4.2 rule 6's state for this run: false only when the
+	// operator waived it with -no-coverage-check. Carried rather than re-derived
+	// so the plan artifact, PLAN.md and the log cannot disagree about whether the
+	// check ran.
+	coverageChecked bool
+	material        string // the design, collected and fenced for the planner
+	profile         string // the effective-gate digest
+	gateCommands    []string
+	col             *target.Collector // over out; valid after SCAFFOLD
 	// gitEnv is the ONE hardened environment every git command against the
 	// write-target runs with, and git is the read path's handle onto it. Both
 	// the Collector and the implement package are handed this same slice: the
@@ -250,12 +255,9 @@ func (o *Orchestrator) prepareImplement(ctx context.Context) (*implementPrep, er
 	}
 	p.designSHA = implement.DigestBytes(p.designBytes)
 
-	// The outline comes from the snapshot, never from the planner (§4.2 rule
-	// 6); an unreadable outline is a preflight refusal.
-	if p.outline, err = implement.ExtractOutline(string(p.designBytes)); err != nil {
-		return nil, fmt.Errorf("implement: %w", err)
+	if err := o.readOutline(p); err != nil {
+		return nil, err
 	}
-	o.logf("coverage outline: %q level, %d heading(s)", strings.Repeat("#", p.outline.Level), len(p.outline.Headings))
 
 	if p.material, err = o.snapshotMaterial(ctx, snap); err != nil {
 		return nil, err
@@ -275,7 +277,7 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 		MaxTasks:        o.cfg.Implement.MaxTasks,
 		MaxFilesPerTask: o.cfg.Implement.MaxFilesPerTask,
 		Outline:         p.outline,
-		CoverageChecked: true,
+		CoverageChecked: p.coverageChecked,
 		MaxTaskAttempts: o.cfg.Implement.MaxTaskAttempts,
 		SessionTimeout:  o.cfg.Agents[o.cfg.Roles.Coder.Agent].Timeout.Std(),
 		GateWorst:       implement.GateWorst(o.cfg.Verify),
@@ -325,7 +327,7 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 		perr = implement.Validate(pl, rules)
 	}
 	rec.Steps = append(rec.Steps, stepStat("plan", planner, o.cfg.Roles.Planner.Prompt, len(text), res, perr != nil))
-	o.logStep("plan", planner, o.cfg.Roles.Planner.Prompt, 1, perr == nil, pl, planMarkdown(pl, perr), res, "")
+	o.logStep("plan", planner, o.cfg.Roles.Planner.Prompt, 1, perr == nil, pl, planMarkdown(pl, p.coverageLine(), perr), res, "")
 	if perr != nil {
 		return pl, fmt.Errorf("plan: %w", perr)
 	}
@@ -403,18 +405,54 @@ func (o *Orchestrator) writeRunState(sum *model.RunSummary, pl implement.Plan, i
 	}
 }
 
-// planMarkdown renders the plan step's durable artifact.
-func planMarkdown(pl implement.Plan, err error) string {
+// readOutline extracts the design's heading skeleton for §4.2 rule 6.
+//
+// An unreadable outline is a preflight refusal unless the operator waived the
+// rule for this invocation, in which case the run proceeds and SAYS so
+// everywhere -- silence would let a report imply a check that never ran.
+func (o *Orchestrator) readOutline(p *implementPrep) error {
+	p.coverageChecked = !o.cfg.Implement.NoCoverageCheck
+	outline, err := implement.ExtractOutline(string(p.designBytes))
+	p.outline = outline
+	switch {
+	case err != nil && p.coverageChecked:
+		return fmt.Errorf("implement: %w", err)
+	case err != nil:
+		o.logf("coverage: UNCHECKED -- %v; -no-coverage-check was given, so the plan is not held to §4.2 rule 6 and no report will claim it was", err)
+	case !p.coverageChecked:
+		o.logf("coverage: UNCHECKED by -no-coverage-check, though the outline is readable (%q level, %d heading(s))",
+			strings.Repeat("#", p.outline.Level), len(p.outline.Headings))
+	default:
+		o.logf("coverage outline: %q level, %d heading(s)", strings.Repeat("#", p.outline.Level), len(p.outline.Headings))
+	}
+	return nil
+}
+
+// coverageLine is what every report says about §4.2 rule 6 -- the extracted
+// outline, or exactly "unchecked". The design requires the word: nothing in a
+// run report may imply the check ran when it did not.
+func (p *implementPrep) coverageLine() string {
+	if !p.coverageChecked {
+		return "unchecked"
+	}
+	return fmt.Sprintf("%q (%d headings)", strings.Repeat("#", p.outline.Level), len(p.outline.Headings))
+}
+
+// planMarkdown renders the plan step's durable artifact. coverage is the run's
+// answer to rule 6, verbatim: this artifact is read on its own, so "validated"
+// hard-coded here would tell an operator the check ran on a run where it was
+// waived.
+func planMarkdown(pl implement.Plan, coverage string, err error) string {
 	if err != nil {
 		return fmt.Sprintf("# plan (refused)\n\n%v\n", err)
 	}
-	return implement.RenderMarkdown(pl, implement.RenderHeader{Coverage: "validated"})
+	return implement.RenderMarkdown(pl, implement.RenderHeader{Coverage: coverage})
 }
 
 // scaffoldPhase claims the write-target and makes the bootstrap commit (§5.1).
 func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary, p *implementPrep, pl implement.Plan) error {
 	o.phase("SCAFFOLD  %s", p.out)
-	coverage := fmt.Sprintf("%q (%d headings)", strings.Repeat("#", p.outline.Level), len(p.outline.Headings))
+	coverage := p.coverageLine()
 	planJSON, err := json.MarshalIndent(pl, "", "  ")
 	if err != nil {
 		return err

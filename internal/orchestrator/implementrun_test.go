@@ -196,6 +196,15 @@ func implementReply(shell, reportJSON string) string {
 	return shell + "\ncat <<'REPLY'\n<implement>\n" + reportJSON + "\n</implement>\nREPLY\n"
 }
 
+// writeDesign replaces the fixture's design document, for a test whose subject
+// is the document's own shape rather than what the coder does with it.
+func writeDesign(t *testing.T, f *implementFixture, doc string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(f.cfg.Target.Path, f.cfg.Target.Document), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // reportLine is the output-contract block a coder session ends with, for a
 // script that emits a different report per session rather than one fixed reply.
 func reportLine(reportJSON string) string {
@@ -1586,4 +1595,65 @@ func TestRunImplementCleanCheckInfraPrecedence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// -no-coverage-check waives §4.2 rule 6, and the waiver has to be VISIBLE:
+// nothing in a run's reports may imply the check ran when it did not (§4.2).
+// A design with no usable outline is a preflight refusal without it.
+func TestRunImplementNoCoverageCheck(t *testing.T) {
+	// One heading level, used once: no level repeats, so the outline cannot be
+	// extracted and rule 6 has nothing to check against.
+	const noOutline = "# Only a title\n\nProse with no sections at all.\n"
+
+	t.Run("refused without the flag", func(t *testing.T) {
+		f := newImplementFixture(t, implementReply("sleep 0", `{"status": "implemented"}`),
+			config.Verify{Policy: config.VerifyOff})
+		writeDesign(t, f, noOutline)
+		_, err := f.run(t)
+		if err == nil {
+			t.Fatal("a design with no outline was accepted")
+		}
+		if !strings.Contains(err.Error(), "no section outline") {
+			t.Errorf("the refusal must name the cause: %v", err)
+		}
+		// And it must point at the way out, now that there is one.
+		if !strings.Contains(err.Error(), "-no-coverage-check") {
+			t.Errorf("the refusal does not name the flag that waives it: %v", err)
+		}
+	})
+
+	t.Run("proceeds with the flag, and says the check did not run", func(t *testing.T) {
+		f := newImplementFixture(t,
+			implementReply("printf 'x\\n' > \"t_$$_$(date +%s).txt\"\nsleep 1",
+				`{"status": "implemented", "notes": "done"}`),
+			config.Verify{Policy: config.VerifyOff})
+		writeDesign(t, f, noOutline)
+		f.cfg.Implement.NoCoverageCheck = true
+		// A plan with no coverage entries at all: rule 6 is what would refuse it.
+		f.planJSON = `{
+  "schema_version": 1,
+  "project": {"name": "game", "summary": "a game"},
+  "coverage": [],
+  "tasks": [
+    {"id": "T01", "title": "one", "goal": "the one", "acceptance": ["one exists"], "files": ["one.txt"], "depends_on": []},
+    {"id": "T02", "title": "two", "goal": "the two", "acceptance": ["two exists"], "files": ["two.txt"], "depends_on": ["T01"]}
+  ]
+}`
+		sum, err := f.run(t)
+		if err != nil {
+			t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+		}
+		if sum.Termination != model.TermImplemented {
+			t.Errorf("termination = %q, want implemented\nlog:\n%s", sum.Termination, f.logs())
+		}
+		if !strings.Contains(f.logs(), "UNCHECKED") {
+			t.Errorf("the run did not say the coverage check was waived:\n%s", f.logs())
+		}
+		// The committed PLAN.md is read long after the log is gone, so the word
+		// has to be in the artifact too.
+		body := gitOutAt(t, f.out, "show", "HEAD~2:PLAN.md")
+		if !strings.Contains(body, "coverage: unchecked") {
+			t.Errorf("PLAN.md does not record that coverage was unchecked:\n%s", body)
+		}
+	})
 }

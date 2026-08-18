@@ -91,9 +91,9 @@ type Rules struct {
 	MaxTasks        int
 	MaxFilesPerTask int
 	// Outline is the design's extracted skeleton; CoverageChecked false skips
-	// rule 6, and every report says so. Nothing sets it false yet: §7.4's
-	// -no-coverage-check is specified but not implemented, so the field is the
-	// seam the flag will land on rather than a switch anything flips today.
+	// rule 6, and every report says so. Set false by -no-coverage-check (§7.4),
+	// which is a per-invocation waiver and never a config key -- see
+	// config.Implement.NoCoverageCheck.
 	Outline         Outline
 	CoverageChecked bool
 	// Fit inputs: the worst case the configuration permits (§4.2 rule 7).
