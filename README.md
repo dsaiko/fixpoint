@@ -142,10 +142,45 @@ resolved binary. Copy `config/` to `~/.fixpoint/` when you want your own edits
 to win over it; see [config/README.md](config/README.md) for the full search
 path.
 
+### Reading the plan before you pay for it
+
+The plan decides how up to forty coder sessions are spent, so it is worth a
+minute of your own. `-plan-only` produces one and stops — no directory is
+claimed, no coder runs:
+
+```sh
+fixpoint implement-go -target docs/DESIGN.md -plan-only
+$EDITOR .fixpoint/<run>/plan.json
+fixpoint implement-go -target docs/DESIGN.md -out ~/src/prsi \
+    -plan .fixpoint/<run>/plan.json --trusted-target
+```
+
+A plan handed back this way is held to every rule the planner's answer is held
+to, and it must carry `provenance.design_sha256` matching the design you point
+at — a plan for one document must never be implemented against another. The
+refusal prints the line to paste. It composes with the panel too:
+`-plan-only` → `review-design -target PLAN.md` → `-plan`.
+
+`-no-coverage-check` waives the rule that every design section is accounted for,
+for documents whose heading structure fixpoint cannot read. Every report then
+says `coverage: unchecked` rather than implying a check that never ran.
+
+### Finishing a run that stopped
+
 A run that stops early — deadline, provider outage, Ctrl-C — leaves every
-committed task standing and gated, but **cannot be resumed**: `-continue` is
-specified in the design and not yet built, so finishing means a fresh run into a
-fresh directory. Specification: [docs/design/DESIGN.md](docs/design/DESIGN.md).
+committed task standing and gated, and **can be resumed**:
+
+```sh
+fixpoint implement-go -continue ~/src/prsi --trusted-target
+```
+
+The project is self-describing: the plan, the design and every finished task's
+outcome are read out of its own commits, not from the artifacts of the run that
+stopped. It refuses if the tree is dirty, if the design or the gate is not the
+one the project was built under, or if the history is not entirely fixpoint's —
+each of those means the repository cannot be shown to be the one the plan was
+built into. Finished tasks are carried, never rebuilt, and a task recorded as
+failed stays failed. Specification: [docs/design/DESIGN.md](docs/design/DESIGN.md).
 
 ---
 
@@ -403,6 +438,11 @@ explained: each one acts under your identity on somebody else's branch.
 | `-post` | Publish the review on the pull request as a **comment**: findings become visible, no verdict is acted on. Publishes what the run just produced, so nobody has read it yet — prefer [`-post-run`](docs/pull-requests.md). A publish that was asked for and did not happen fails the run (exit `1`), so an approval can never exit `0` over a review that never reached the pull request; the review is still in `review-body.md`. |
 | `-post-run dir` | Publish the review a **finished** run already produced, from its `.fixpoint/<run>` directory (or its `summary-*.json`). Invokes no agent and reviews nothing: the bytes posted are the bytes in `review-body.md` and the inline anchors are the ones that run computed. Resolves no configuration at all — everything it acts on is in that run's summary — so every flag but `-post-verdict` is ignored. |
 | `-post-verdict` | With `-post` or `-post-run`, let the review carry its verdict — approving, or requesting changes on someone's PR. An inconclusive verdict stays a comment regardless. An approval is bound to the reviewed commit only until the run ends: unless the repository dismisses stale approvals on push, it keeps counting after one ([why](docs/pull-requests.md)). |
+| `-plan-only` | **implement**: plan and validate, write `plan.json` and the rendered plan into the run's artifacts, and stop. Claims no `-out` and spends no coder session; terminates `planned` and exits 0. |
+| `-plan file` | **implement**: run this validated plan instead of a planner session. It is held to every rule in §4.2 and must carry `provenance.design_sha256` matching `-target`; a missing digest is a refusal, not a waiver. The plan is stamped `operator-supplied` with the file's own digest. |
+| `-no-coverage-check` | **implement**: proceed with a design whose heading outline the coverage rule cannot read. Every report then says `coverage: unchecked`. |
+| `-continue dir` | **implement**: resume a project fixpoint built, replaying finished tasks from its own commits. Mutually exclusive with `-out`, `-plan` and `-plan-only`. Still needs `-trusted-target`. |
+| `-version` | Print the version, commit, build date, platform and Go version, and exit. Answers before any bundle is resolved. |
 | `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](docs/concepts.md#choosing-a-base-in-git-diff-mode). |
 | `-check-live` | Validate, ping every agent, and exit. |
 

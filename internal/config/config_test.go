@@ -1749,3 +1749,59 @@ func TestImplementInfraTriesDefaultAndRefusal(t *testing.T) {
 		t.Errorf("Validate() = %v, want a refusal naming max_infra_tries", err)
 	}
 }
+
+// §7.4's modes that contradict each other are refused at load time rather than
+// three phases in. Each pair is incoherent rather than merely unusual, so a
+// refusal naming both is more useful than a precedence rule nobody remembers.
+func TestImplementModeExclusions(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"continue with out", func(c *Config) {
+			c.Implement.Continue = "/p"
+			c.Create.Out = "/q"
+		}, "two different projects"},
+		{"continue with plan", func(c *Config) {
+			c.Implement.Continue = "/p"
+			c.Implement.Plan = "/plan.json"
+			c.Create.Out = "" // else the -out pair below is what refuses first
+		}, "reads the plan from the project's committed PLAN.json"},
+		{"continue with plan-only", func(c *Config) {
+			c.Implement.Continue = "/p"
+			c.Implement.PlanOnly = true
+			c.Create.Out = ""
+		}, "one finishes a build, the other refuses to start one"},
+		{"plan-only with plan", func(c *Config) {
+			c.Implement.PlanOnly = true
+			c.Implement.Plan = "/plan.json"
+		}, "exists to PRODUCE a plan"},
+		{"continue alone is fine", func(c *Config) {
+			c.Implement.Continue = "/p"
+			c.Create.Out = ""
+		}, ""},
+		{"plan with out is fine", func(c *Config) {
+			c.Implement.Plan = "/plan.json"
+		}, ""},
+		{"plan-only alone is fine", func(c *Config) { c.Implement.PlanOnly = true }, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := implementConfig(t)
+			cfg.Create.Out = "/out"
+			tc.mutate(cfg)
+			cfg.applyDefaults()
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() = %v, want a refusal containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
