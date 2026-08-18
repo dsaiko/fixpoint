@@ -501,3 +501,10 @@ The only external dependency is `gopkg.in/yaml.v3`.
 
 Dogfooding note: this repository is reviewed by fixpoint itself — see the
 `round N (M fixed, K rejected)` commits in the history.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The same terms cover the shipped config bundle:
+the prompts and task configs are as much the tool as the Go code is, and a
+license that stopped at the binary would leave the part you are most likely to
+copy and edit unlicensed.
