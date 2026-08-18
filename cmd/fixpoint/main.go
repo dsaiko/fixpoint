@@ -98,6 +98,7 @@ Flags:
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
 	porcelain := fs.Bool("porcelain", false, "with --list, emit a stable tab-separated form for scripts and shell completion")
 	showVersion := fs.Bool("version", false, "print the version, commit and build date, and exit")
+	planOnly := fs.Bool("plan-only", false, "implement: plan and validate, write the plan into the run's artifacts, and stop -- no directory is claimed and no coder session is spent")
 	noCoverageCheck := fs.Bool("no-coverage-check", false, "implement: proceed with a design whose outline the coverage rule cannot read; every report then says coverage: unchecked")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
 	checkLive := fs.Bool("check-live", false, "validate the configuration, ping every agent, and exit without running")
@@ -183,6 +184,7 @@ Flags:
 		TrustedTarget:     *trustedTarget,
 		TrustedBundle:     *trustedBundle,
 		NoCoverageCheck:   *noCoverageCheck,
+		PlanOnly:          *planOnly,
 		Post:              *post,
 		PostVerdict:       *postVerdict,
 	})

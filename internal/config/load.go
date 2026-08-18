@@ -104,6 +104,8 @@ type Overrides struct {
 	TrustedBundle bool
 	// NoCoverageCheck waives §4.2 rule 6 for this invocation (§7.4).
 	NoCoverageCheck bool
+	// PlanOnly stops an implement run after the plan is validated (§7.4).
+	PlanOnly bool
 }
 
 // apply folds the overrides into the configuration being compiled.
@@ -130,6 +132,9 @@ func (o Overrides) apply(c *Config) {
 	}
 	if o.NoCoverageCheck {
 		c.Implement.NoCoverageCheck = true
+	}
+	if o.PlanOnly {
+		c.Implement.PlanOnly = true
 	}
 	// Any nonzero value applies, including a negative one: an explicit
 	// -max-iterations -1 must reach Validate so its must-not-be-negative rule
@@ -229,6 +234,9 @@ func (o Overrides) Applied() []string {
 	}
 	if o.NoCoverageCheck {
 		out = append(out, "no_coverage_check=true")
+	}
+	if o.PlanOnly {
+		out = append(out, "plan_only=true")
 	}
 	if o.TrustedBundle {
 		out = append(out, "trusted_bundle=true")

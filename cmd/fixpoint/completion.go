@@ -34,7 +34,7 @@ var completionScripts = map[string]string{"bash": bashCompletion, "zsh": zshComp
 // kind of wrong than a list a reader can see and check.
 const completionFlags = "--list --porcelain --config --review-only --max-iterations --base-ref --pr --target --out " +
 	"--trusted-target --trusted-bundle --allow-untrusted-fix --post --post-verdict --post-run --check --check-live " +
-	"--no-coverage-check --version"
+	"--no-coverage-check --plan-only --version"
 
 const bashCompletion = `# fixpoint completion for bash. Install with:
 #   fixpoint completion bash > /etc/bash_completion.d/fixpoint
@@ -128,6 +128,7 @@ const zshFlagPairs = `'--list:list the configs available here' ` +
 	`'--check:validate the configuration and exit' ` +
 	`'--check-live:validate, ping every agent, and exit' ` +
 	`'--no-coverage-check:implement: run without the coverage rule; reports say unchecked' ` +
+	`'--plan-only:implement: plan and validate, then stop without building' ` +
 	`'--version:print the version, commit and build date, and exit'`
 
 const fishCompletion = `# fixpoint completion for fish. Install with:
@@ -162,5 +163,6 @@ complete -c fixpoint -l post-run -r -d 'publish the review a finished run alread
 complete -c fixpoint -l check -d 'validate the configuration and exit'
 complete -c fixpoint -l check-live -d 'validate, ping every agent, and exit'
 complete -c fixpoint -l no-coverage-check -d 'implement: run without the coverage rule; reports say unchecked'
+complete -c fixpoint -l plan-only -d 'implement: plan and validate, then stop without building'
 complete -c fixpoint -l version -d 'print the version, commit and build date, and exit'
 `

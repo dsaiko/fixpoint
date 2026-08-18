@@ -258,6 +258,11 @@ type Implement struct {
 	// switch off the rule that notices when the plan dropped a section, for every
 	// run, silently. The operator waives it per run or not at all.
 	NoCoverageCheck bool `yaml:"-"`
+	// PlanOnly stops the run after the plan is validated: the artifacts are
+	// written, no directory is claimed and no coder session is spent (§7.4).
+	// yaml:"-" for the same reason as the rest of §7.4's flags -- what a single
+	// invocation is FOR is not something a config file decides.
+	PlanOnly bool `yaml:"-"`
 	// GitignoreSeed is the stack's ignore entries, written by fixpoint into the
 	// bootstrap commit's .gitignore -- a control artifact no session may edit.
 	GitignoreSeed []string `yaml:"gitignore_seed"`

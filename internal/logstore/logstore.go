@@ -206,6 +206,13 @@ func (s *Store) RunID() string {
 	return filepath.Base(s.runDir)
 }
 
+// RunDir is the run's artifact directory, for a message that has to tell an
+// operator where to find a file this run wrote.
+func (s *Store) RunDir() string {
+	_ = s.ensureDir()
+	return s.runDir
+}
+
 // ReviewBody writes the rendered review document at the run root, next to the
 // summary, and returns its path.
 //
