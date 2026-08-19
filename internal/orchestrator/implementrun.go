@@ -29,23 +29,18 @@ import (
 // specified in docs/design/DESIGN.md and every section reference below is to
 // that document.
 
-// Task outcome vocabulary (§5.4). Strings, because they land in trailers,
-// journals and the scoreboard verbatim.
+// Task outcome vocabulary (§5.4), defined once in internal/implement -- the
+// package that writes these strings into commit trailers and reads them back --
+// and aliased here so the two halves of the pipeline cannot disagree about the
+// words. See implement's own block for what each one means.
 const (
-	outcomeImplemented = "implemented"
-	outcomeSatisfied   = "already_satisfied"
-	outcomeBlocked     = "blocked"
-	outcomeFailed      = "failed"
-	outcomeSkipped     = "skipped"
-	// outcomeUnreached is for a task the loop never got to -- the deadline, the
-	// breaker, the disk bound or Ctrl-C stopped the run first. Not a judgment
-	// about the work: it is what §1's "recorded in the run's report as not
-	// built, with a reason" means for the tail of an interrupted plan.
-	outcomeUnreached = "unreached"
-	// outcomeCarried is an outcome this run ADOPTED from the repository's own
-	// history rather than produced (§5.4). A resumed run reports the whole plan,
-	// and the reader has to be able to tell which half it actually did.
-	outcomeCarried = "carried"
+	outcomeImplemented = implement.OutcomeImplemented
+	outcomeSatisfied   = implement.OutcomeSatisfied
+	outcomeBlocked     = implement.OutcomeBlocked
+	outcomeFailed      = implement.OutcomeFailed
+	outcomeSkipped     = implement.OutcomeSkipped
+	outcomeUnreached   = implement.OutcomeUnreached
+	outcomeCarried     = implement.OutcomeCarried
 )
 
 // carriedReason renders a carried record for the report: the outcome it holds
