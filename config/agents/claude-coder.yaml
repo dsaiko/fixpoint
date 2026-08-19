@@ -31,7 +31,11 @@ usage:
   error_status: api_error_status
 
 prompt_via: stdin
-timeout: 30m # fixing rounds run longer than a single review pass
+# 30m, and no longer LONGER than a reviewer's -- the panel was raised to match it
+# (see claude.yaml). Kept explicit rather than dropped: implement-go's verify
+# arithmetic quotes this number against the gate's, and rule 7's fit depends on
+# it, so it is not a value to inherit silently.
+timeout: 30m
 can_edit: true
 # `--setting-sources user` above, exactly as on every reviewer: settings come
 # from ~/.claude and never from the .claude/settings.json sitting in the code

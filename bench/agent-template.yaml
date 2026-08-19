@@ -24,7 +24,7 @@ usage:
 # NO cost_usd: the wrapped harness fabricates Anthropic rate-card prices for
 # models Anthropic does not serve (measured ~93x off). Tokens are real.
 prompt_via: stdin
-timeout: 20m
+timeout: 30m
 can_edit: false
 env:
   pass:

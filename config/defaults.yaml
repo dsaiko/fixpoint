@@ -74,7 +74,7 @@ roles:
   # glm-5.2 remains the standing alternative if either seat underperforms live
   # (20/20 with zero extras, glm-ollama.yaml). If the weekly limit is hit again,
   # drop minimax first (it spends ~2x kimi's input tokens on the code suite),
-  # then deepseek -- a dead ollama agent burns its full 20m timeout and can flip
+  # then deepseek -- a dead ollama agent burns its full 30m timeout and can flip
   # quorum to INCONCLUSIVE, so a spent limit means a smaller panel, never a
   # waiting one.
   review:

@@ -58,7 +58,7 @@ usage:
   error_status: api_error_status
 
 prompt_via: stdin
-timeout: 20m # remote-served model; matched to the rest of the panel
+timeout: 30m # remote-served model; matched to the rest of the panel
 can_edit: false
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,
