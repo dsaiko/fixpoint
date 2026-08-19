@@ -118,6 +118,44 @@ release:
   footer: |
     ## Install
 
+    The repository is private, so the assets need `gh` rather than a bare curl.
+
+    **macOS** — `Darwin_arm64` for Apple Silicon, `Darwin_x86_64` for Intel:
+
+    ```sh
+    gh release download {{ .Tag }} --repo dsaiko/fixpoint --pattern '*Darwin_arm64.tar.gz'
+    tar xzf fixpoint_*_Darwin_arm64.tar.gz
+    ./fixpoint --list
+    ```
+
+    To put it on `PATH`, keep the bundle where the binary can find it — either
+    beside the binary (`<dir>/config`) or under its prefix
+    (`<prefix>/share/fixpoint`). Both are on the search path, and both were
+    verified against this release:
+
+    ```sh
+    mkdir -p ~/.local/bin ~/.local/share/fixpoint
+    cp fixpoint ~/.local/bin/
+    cp -R config/* ~/.local/share/fixpoint/
+    ```
+
+    A symlink on `PATH` works too: the search path resolves it and looks beside
+    the *real* binary, so `~/bin/fixpoint -> /opt/fixpoint/fixpoint` finds
+    `/opt/fixpoint/config`.
+
+    Downloaded with `gh` the binary runs as-is: it arrives with
+    `com.apple.provenance` only. A copy fetched through a **browser** also
+    carries `com.apple.quarantine`, and Gatekeeper then blocks it — from a
+    terminal it hangs rather than printing anything, because the release is
+    unsigned and un-notarized. Clear it once:
+
+    ```sh
+    xattr -d com.apple.quarantine ./fixpoint
+    ```
+
+    **Linux** — or use the `.deb`/`.rpm`/`.apk`/`.pkg.tar.zst` below, which put
+    the bundle in `/usr/share/fixpoint` where the search path already looks:
+
     ```sh
     gh release download {{ .Tag }} --repo dsaiko/fixpoint --pattern '*Linux_x86_64.tar.gz'
     tar xzf fixpoint_*_Linux_x86_64.tar.gz
@@ -127,6 +165,10 @@ release:
     The `config/` directory in the archive is the bundle: keep it beside the
     binary, or copy it to `~/.fixpoint/`. A binary without a bundle refuses to
     run and prints every location it searched.
+
+    No Homebrew formula: a tap has to fetch the archive by URL and brew cannot
+    authenticate to a private repository, so the formula would fail for
+    everyone. It arrives when the repository does.
 
 changelog:
   use: github
