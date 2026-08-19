@@ -1805,3 +1805,66 @@ func TestImplementModeExclusions(t *testing.T) {
 		})
 	}
 }
+
+// A bare command name resolved through a PATH entry that lies INSIDE the target
+// is the invisible spelling: the operator wrote "claude", and PATH silently
+// turns it into the reviewed repository's own file. Refused in every untrusted
+// mode now, not only pr -- a directory review-only run needs no trust assertion
+// at all, so it was the least protected and the easiest to reach (review run
+// 20260819-104919, two reviewers).
+//
+// The explicit spelling (./agent.sh) is deliberately still allowed outside pr:
+// an operator wrote that path down, and a config the TARGET ships is gated by
+// the project-supplied-policy rule instead. TestValidateTargetRelativeBinary
+// pins that half.
+func TestValidateRefusesAgentOnTargetInternalPATH(t *testing.T) {
+	target := t.TempDir()
+	bin := filepath.Join(target, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "hostile-agent"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfgFor := func(mode Mode) *Config {
+		cfg := validConfig(t)
+		cfg.Target.Mode = mode
+		cfg.Target.Path = target
+		// Each mode's own prerequisites, so the PATH refusal is what fires.
+		switch mode {
+		case ModeGitDiff:
+			cfg.Target.BaseRef = "main"
+		case ModePR:
+			cfg.Target.PR = 1
+		case ModeDirectory:
+			// nothing further: a directory run needs no extra field, which is
+			// exactly why it was the least protected mode.
+		}
+		rev := cfg.Agents["rev"]
+		rev.Command = []string{"hostile-agent"} // a BARE name: PATH decides which file
+		cfg.Agents["rev"] = rev
+		return cfg
+	}
+
+	for _, mode := range []Mode{ModeDirectory, ModeGitDiff, ModePR} {
+		t.Run(string(mode), func(t *testing.T) {
+			err := cfgFor(mode).Validate()
+			if err == nil {
+				t.Fatalf("mode %s accepted an agent resolved from a PATH entry inside the target", mode)
+			}
+			if !strings.Contains(err.Error(), "lies inside target") {
+				t.Errorf("refusal = %v, want one naming the PATH entry", err)
+			}
+		})
+	}
+
+	t.Run("trust clears it", func(t *testing.T) {
+		cfg := cfgFor(ModeDirectory)
+		cfg.Loop.TrustedTarget = true
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() = %v, want nil once the checkout is asserted to be the operator's", err)
+		}
+	})
+}

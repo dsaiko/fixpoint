@@ -59,7 +59,10 @@ func TestVacuousFraction(t *testing.T) {
 	tasks := []model.TaskOutcome{
 		{Outcome: outcomeImplemented},
 		{Outcome: outcomeSatisfied},
-		{Outcome: outcomeSatisfied},
+		// A resumed run relabels the recorded outcome `carried`; it must still
+		// count, or resuming would launder a vacuous plan past the guard (review
+		// run 20260819-104919).
+		{Outcome: outcomeCarried, CarriedOutcome: outcomeSatisfied},
 	}
 	n, frac := vacuousFraction(tasks, 40)
 	if n != 2 || frac < 0.049 || frac > 0.051 {
@@ -1971,6 +1974,58 @@ func TestRunImplementContinueRefusals(t *testing.T) {
 		return f.logs(), err
 	}
 
+	// The two guards resumePhase runs against the PROJECT, which sat outside
+	// fixpoint's lock between runs. Wired in 46cad47 and exercised by nothing:
+	// deleting the guardResumedRepository call left the whole suite green
+	// (review run 20260819-104919, four reviewers).
+	t.Run("a work tree redirected out of the project", func(t *testing.T) {
+		out := build(t)
+		elsewhere := t.TempDir()
+		gitOutAt(t, out, "config", "core.worktree", elsewhere)
+		if _, err := resume(t, out, nil); err == nil {
+			t.Fatal("a project whose git work tree points elsewhere was resumed")
+		} else if !strings.Contains(err.Error(), "points at") {
+			t.Errorf("the refusal must name the redirect: %v", err)
+		}
+	})
+
+	t.Run("a repository-local git config that runs a program", func(t *testing.T) {
+		out := build(t)
+		// A clean filter is a program git runs itself, with fixpoint's
+		// environment, whenever a command touches the worktree.
+		gitOutAt(t, out, "config", "filter.evil.clean", "sh -c id")
+		if _, err := resume(t, out, nil); err == nil {
+			t.Fatal("a project defining its own git filter was resumed")
+		} else if !strings.Contains(err.Error(), "does not get to configure") {
+			t.Errorf("the refusal must name the cause: %v", err)
+		}
+	})
+
+	// The lock is handed back on every refusal path, so a second run in the same
+	// process can take it. Claimed by 46cad47's commit message and untested until
+	// now (review run 20260819-104919, two reviewers).
+	t.Run("a refusal releases the repository lock", func(t *testing.T) {
+		out := build(t)
+		if err := os.WriteFile(filepath.Join(out, "leftover.txt"), []byte("residue\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := resume(t, out, nil); err == nil {
+			t.Fatal("the dirty-tree refusal did not fire")
+		}
+		// Clear what the first attempt refused over, then resume again in this
+		// same process: a leaked flock would refuse against ourselves.
+		if err := os.Remove(filepath.Join(out, "leftover.txt")); err != nil {
+			t.Fatal(err)
+		}
+		logs, err := resume(t, out, nil)
+		if err != nil {
+			t.Fatalf("the second resume failed after a refusal: %v\nlog:\n%s", err, logs)
+		}
+		if strings.Contains(logs, "already working on") {
+			t.Errorf("the refused run kept the repository lock:\n%s", logs)
+		}
+	})
+
 	t.Run("a dirty tree", func(t *testing.T) {
 		out := build(t)
 		if err := os.WriteFile(filepath.Join(out, "leftover.txt"), []byte("residue\n"), 0o600); err != nil {
@@ -2147,6 +2202,13 @@ func TestRunImplementContinueAdmitsADerivedSkip(t *testing.T) {
 	}
 	if got := byID["T02"]; got.CarriedOutcome != outcomeSkipped {
 		t.Errorf("T02 = %q/%q, want the derived skip carried", got.Outcome, got.CarriedOutcome)
+	}
+	// Resume.Index is a PLAN POSITION, not the record count. With the old
+	// len(h.Records)==2 the loop would re-enter at T03 and rebuild an
+	// already-built task, and every other assertion here would still hold
+	// (review run 20260819-104919).
+	if got := byID["T03"]; got.Outcome != outcomeCarried {
+		t.Errorf("T03 = %q, want carried: a task the history already recorded must not be rebuilt", got.Outcome)
 	}
 	if sum.Termination != model.TermIncomplete {
 		t.Errorf("termination = %q, want incomplete: a carried failure and skip remain what they were", sum.Termination)
@@ -2434,4 +2496,67 @@ func TestRunImplementContinueResetsAnInterruptedResumedCommit(t *testing.T) {
 	if strings.Contains(gitOutAt(t, out, "log", "--format=%s"), "not fixpoint") {
 		t.Error("the coder's own commit survived the interrupted resume")
 	}
+}
+
+// readCommittedArtifacts re-checks the committed PLAN.json against the committed
+// DESIGN.md, and refuses a plan that does not parse. Both branches were
+// unreachable from the suite: the existing test swaps only a task id, leaving
+// provenance and the design intact (review run 20260819-104919). The pairing is
+// the ONLY guard that catches a DESIGN.md swapped together with its bootstrap
+// trailer, since AdmitResume's design check reads that same trailer.
+func TestRunImplementContinueRefusesForgedControlArtifacts(t *testing.T) {
+	seed := func(t *testing.T) string {
+		t.Helper()
+		out := filepath.Join(t.TempDir(), "project")
+		f := newImplementFixtureAt(t, out,
+			implementReply("printf 'x\\n' > \"t_$$_$(date +%s).txt\"\nsleep 1",
+				`{"status": "implemented", "notes": "done"}`), config.Verify{Policy: config.VerifyOff})
+		if _, err := f.run(t); err != nil {
+			t.Fatalf("seed run: %v\nlog:\n%s", err, f.logs())
+		}
+		return out
+	}
+	// Rewrite one file in the bootstrap commit, leaving its message (and so every
+	// trailer the admission reads) untouched.
+	amendBootstrap := func(t *testing.T, out, path, body string) {
+		t.Helper()
+		boot := strings.TrimSpace(gitOutAt(t, out, "rev-list", "--max-parents=0", "HEAD"))
+		gitOutAt(t, out, "checkout", "-q", boot)
+		if err := os.WriteFile(filepath.Join(out, path), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		gitOutAt(t, out, "add", path)
+		gitOutAt(t, out, "-c", "user.name=x", "-c", "user.email=x@x", "commit", "-q", "--amend", "--no-edit")
+		gitOutAt(t, out, "branch", "-f", "main", "HEAD")
+		gitOutAt(t, out, "checkout", "-q", "main")
+	}
+	resume := func(t *testing.T, out string) error {
+		t.Helper()
+		f := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "unused"),
+			implementReply("true", `{"status": "implemented"}`), config.Verify{Policy: config.VerifyOff})
+		f.cfg.Implement.Continue = out
+		f.cfg.Create.Out = ""
+		_, err := f.run(t)
+		return err
+	}
+
+	t.Run("a swapped design", func(t *testing.T) {
+		out := seed(t)
+		amendBootstrap(t, out, "DESIGN.md", "# Another document entirely\n\n## One\nDo something else.\n")
+		if err := resume(t, out); err == nil {
+			t.Fatal("a project whose committed design was replaced was resumed")
+		} else if !strings.Contains(err.Error(), "written for design") {
+			t.Errorf("refusal = %v, want the plan/design pairing", err)
+		}
+	})
+
+	t.Run("an unparseable plan", func(t *testing.T) {
+		out := seed(t)
+		amendBootstrap(t, out, "PLAN.json", "{not json at all")
+		if err := resume(t, out); err == nil {
+			t.Fatal("a project with an unparseable committed plan was resumed")
+		} else if !strings.Contains(err.Error(), "does not parse") {
+			t.Errorf("refusal = %v, want the parse refusal", err)
+		}
+	})
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/forge"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 	"github.com/dsaiko/fixpoint/internal/issue"
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
@@ -1904,12 +1905,40 @@ func (o *Orchestrator) preflightGuards(ctx context.Context, agentsInTarget bool)
 		return o.preflightErr
 	}
 	o.preflightDone, o.preflightAgents = true, agentsInTarget
+	if err := o.guardPinnedHelpers(); err != nil {
+		o.preflightErr = err
+		return o.preflightErr
+	}
 	if err := o.guardRedirectedWorktree(ctx); err != nil {
 		o.preflightErr = err
 		return o.preflightErr
 	}
 	o.preflightErr = o.guardUntrustedGitConfig(ctx, agentsInTarget)
 	return o.preflightErr
+}
+
+// guardPinnedHelpers refuses a run whose git/gh/glab resolved to a file inside
+// the target. gitenv.PinTools fixes those paths before any target content is
+// FETCHED, which is what stops a PR checkout swapping one mid-run -- but in
+// directory mode the checkout is already there when the run starts, so a PATH
+// entry inside it (the direnv and ./node_modules/.bin habits are ordinary) makes
+// the reviewed repository's own `git` the pinned answer from the first
+// invocation onward. Every later guard then runs through the program it exists
+// to guard against, including the worktree and config checks immediately below,
+// so this has to come first (review run 20260819-104919).
+//
+// Trust-gated, unlike the worktree redirect: -trusted-target says the checkout's
+// content is the operator's own, and a project-local helper on PATH is a normal
+// thing to have in a checkout you wrote.
+func (o *Orchestrator) guardPinnedHelpers() error {
+	if o.cfg.Loop.TrustedTarget || o.cfg.Target.Path == "" {
+		return nil
+	}
+	name, path := gitenv.PinnedInside(o.cfg.Target.Path)
+	if name == "" {
+		return nil
+	}
+	return fmt.Errorf("%s resolves to %s, inside target %s: fixpoint runs %s itself to inspect and commit to this checkout, so the reviewed material would be supplying the tool that inspects it -- and every guard after this one would run through it. Drop that directory from PATH, or pass -trusted-target if this checkout is yours", name, path, o.cfg.Target.Path, name)
 }
 
 // guardRedirectedWorktree refuses a target whose git work tree is not the target

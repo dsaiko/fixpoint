@@ -993,6 +993,42 @@ func argPathSpellings(tok string, dataScope bool) []argSpelling {
 	return append(out, argSpelling{tok: val, dataScope: scope})
 }
 
+// checkTargetSuppliedExecutable refuses an agent command the reviewed material
+// could choose, for an untrusted target.
+//
+// The two spellings are gated differently, on purpose:
+//
+//   - An EXPLICIT target-relative element (./agent.sh) is refused in pr mode
+//     only. Elsewhere it is a deliberate choice an operator wrote down -- a
+//     project shipping its own agent wrapper is a supported shape -- and a
+//     config the TARGET supplies is already gated by the project-supplied-policy
+//     rule, which needs -trusted-bundle. In pr mode it is different in kind:
+//     `gh pr checkout` replaces the tree after validation, so the file that runs
+//     is not the file that was checked.
+//   - A BARE name resolved through a PATH entry inside the target is refused in
+//     EVERY untrusted mode. Nobody wrote that path down: the operator typed
+//     "claude" and PATH silently turned it into the reviewed repository's file.
+//     A directory review-only run asserts no trust at all, which made it the
+//     least protected mode and the easiest to reach (review run
+//     20260819-104919).
+func (c *Config) checkTargetSuppliedExecutable(name string, argv []string) error {
+	if c.Loop.TrustedTarget || c.Loop.AllowUntrustedFix {
+		return nil
+	}
+	if c.Target.Mode == ModePR {
+		if tok := TargetSuppliedArg(argv, c.Target.Path); tok != "" {
+			return fmt.Errorf("agents.%s: command element %q resolves inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Point the command at a binary outside the target (a bare name on PATH, or an absolute path), or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, tok, c.Target.Path)
+		}
+	}
+	if dir := TargetSuppliedPATHDir(argv[0], c.Target.Path); dir != "" {
+		if c.Target.Mode == ModePR {
+			return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, argv[0], dir, c.Target.Path)
+		}
+		return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- the reviewed material can supply that executable, or shadow one further down PATH with a file of the same name, and fixpoint would run it as the agent process with the credentials this agent declares (env.pass/env.set). Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target if this checkout is yours", name, argv[0], dir, c.Target.Path)
+	}
+	return nil
+}
+
 // TargetSuppliedPATHDir returns the PATH entry that lies inside root, or "" when
 // bin is not resolved through PATH or no entry does. It answers the question
 // TargetSuppliedArg cannot: a BARE command name (no separator) names no path at
@@ -1810,23 +1846,11 @@ func (c *Config) Validate() error {
 		// orchestrator.guardActivatableConfig refuses pr mode: the content that
 		// decides what runs is not on disk yet, so there is nothing for a preflight
 		// to inspect and "continue anyway" means running PR-authored code sight
-		// unseen. Every other mode keeps the target-relative form working -- no
-		// checkout swaps the tree under those, and the file LookPath just validated
-		// is the one that will run. With trust asserted the run proceeds and
+		// unseen. With trust asserted the run proceeds and
 		// orchestrator.warnTargetSuppliedCommand says what was accepted.
-		if c.Target.Mode == ModePR && !c.Loop.TrustedTarget && !c.Loop.AllowUntrustedFix {
-			if tok := TargetSuppliedArg(argv, c.Target.Path); tok != "" {
-				return fmt.Errorf("agents.%s: command element %q resolves inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Point the command at a binary outside the target (a bare name on PATH, or an absolute path), or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, tok, c.Target.Path)
-			}
-			// And the same refusal for the spelling argv cannot show: a BARE name is
-			// resolved through PATH at every invocation, so a PATH entry inside the
-			// target hands the PR the same direct execution -- by shipping that
-			// executable, or by shadowing one further down PATH with a file of the same
-			// name. The LookPath check above proves only that SOMETHING answers to the
-			// name on the PRE-checkout tree.
-			if dir := TargetSuppliedPATHDir(argv[0], c.Target.Path); dir != "" {
-				return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, argv[0], dir, c.Target.Path)
-			}
+		// See checkTargetSuppliedExecutable for which spelling is refused where.
+		if err := c.checkTargetSuppliedExecutable(name, argv); err != nil {
+			return err
 		}
 		// A read-only claim contradicted by the command's own argv. Reviewers are
 		// the agents that carry can_edit: false, they read untrusted content, they
@@ -2538,7 +2562,7 @@ func (c *Config) validateImplement() error {
 		return fmt.Errorf("loop.commit_policy: an implement run is %q only -- squashing collapses one-task-one-revert, the property the pipeline exists to provide (got %q)", CommitPerFix, c.Loop.CommitPolicy)
 	}
 	if c.Loop.ReviewOnly {
-		return errors.New("loop.review_only is set in an implement config; an implement run builds. (§7.4's -plan-only, which would plan without building, is specified but not implemented in this version -- there is no flag for it yet)")
+		return errors.New("loop.review_only is set in an implement config; an implement run builds. To plan without building, use -plan-only (§7.4), which stops after the plan is written and validated")
 	}
 	// Gate policy (DESIGN.md §7.2): a no-regressions baseline is captured on
 	// the pristine tree, which is EMPTY here, so every check would be exempted

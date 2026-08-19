@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -1717,11 +1718,44 @@ func TestDesignSuppliedPolicyNeedsTheNarrowFlag(t *testing.T) {
 	}
 }
 
+// The REAL wiring: -plan and -continue given relative values must reach the
+// configuration as absolute paths. TestAbsPathFlags below pins the helper, but
+// it builds its own correctly-keyed map, so a typo at the call site
+// (paths["plans"]) would still pass it -- precisely the silent empty-plan path
+// that would fall through to a planner session and build a decomposition the
+// operator never approved (review run 20260819-104919). The run log's
+// "overridden by flags" line is printed from config.Overrides.Applied() during
+// load, before any validation refusal, so it shows what actually arrived.
+func TestPlanAndContinueFlagsReachConfigAsAbsolutePaths(t *testing.T) {
+	for _, tc := range []struct{ flag, rel, key string }{
+		{"-plan", "rel-plan.json", "plan"},
+		{"-continue", "rel-project", "continue"},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			f := newFixture(t)
+			var buf bytes.Buffer
+			p := f.configFile("directory", "", "")
+			run([]string{"-config", p, tc.flag, tc.rel, "-check"}, &buf, &buf)
+			// The value must be present, absolute, and end in what was typed. The
+			// exact prefix is the fixture's working directory, which is not this
+			// test's -- asserting the property rather than a literal is also what
+			// keeps this from becoming a test that restates its own setup.
+			re := regexp.MustCompile(tc.key + `=(\S+)`)
+			m := re.FindStringSubmatch(buf.String())
+			if m == nil {
+				t.Fatalf("no %s= in the applied overrides -- the flag never reached the config:\n%s", tc.key, buf.String())
+			}
+			if !filepath.IsAbs(m[1]) || filepath.Base(m[1]) != tc.rel {
+				t.Errorf("%s = %q, want an absolute path ending in %q", tc.key, m[1], tc.rel)
+			}
+		})
+	}
+}
+
 // absPathFlags keys on string literals now, so a key written at the call site
 // but not read back -- or vice versa -- is a silently empty path, not a compile
-// error. The worst case is -plan coming back empty: the run would fall through
-// to a planner session and build a decomposition the operator never approved
-// (review run 20260818-234734). This pins every key the call site uses.
+// error (review run 20260818-234734). This pins the helper; the test above pins
+// the call site.
 func TestAbsPathFlags(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {

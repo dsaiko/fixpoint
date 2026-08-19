@@ -209,3 +209,46 @@ func TestUnpinnedToolResolvesLive(t *testing.T) {
 		t.Errorf("unresolvable name = %q, want it returned unchanged", got)
 	}
 }
+
+// Pinning fixes the helper paths before any target content is FETCHED, which is
+// what stops a PR checkout swapping one mid-run. In directory mode the checkout
+// is already on disk at pin time, so a PATH entry inside it makes the target's
+// own git the pinned answer from the first call -- and every guard after that
+// runs through it (review run 20260819-104919).
+func TestPinnedInside(t *testing.T) {
+	target := t.TempDir()
+	bin := filepath.Join(target, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(bin, "git")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("a helper pinned from inside the target is named", func(t *testing.T) {
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		PinTools()
+		t.Cleanup(PinTools) // leave the process pinned to the real tools
+		name, path := PinnedInside(target)
+		if name != "git" {
+			t.Fatalf("PinnedInside() = %q, %q; want git", name, path)
+		}
+		if path != fake {
+			t.Errorf("path = %q, want %q", path, fake)
+		}
+	})
+
+	t.Run("an ordinary pin is not inside", func(t *testing.T) {
+		PinTools() // the real PATH
+		if name, path := PinnedInside(target); name != "" {
+			t.Errorf("PinnedInside() = %q, %q; want none", name, path)
+		}
+	})
+
+	t.Run("an empty root matches nothing", func(t *testing.T) {
+		if name, _ := PinnedInside(""); name != "" {
+			t.Errorf("PinnedInside(\"\") = %q, want none", name)
+		}
+	})
+}
