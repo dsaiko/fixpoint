@@ -273,6 +273,15 @@ func AdmitResume(h History, pl Plan, designSHA, verifyProfile string) (Resume, e
 		r.Carried[t.ID] = Record{Task: t.ID, Outcome: OutcomeSkipped, Reason: "dependency " + dep}
 		outcomes[t.ID] = OutcomeSkipped
 	}
+	// Every record must have been consumed. A surplus one -- a duplicate task, or
+	// anything appended after the plan was fully recorded -- means the history
+	// holds a commit this walk cannot account for, and `history.Head` (which
+	// becomes the interruption anchor) would point AT it. Silently ignoring the
+	// tail would make "the history must be fixpoint's own, start to finish" a
+	// claim the admission does not actually check (review run 20260819-104919).
+	if ri != len(h.Records) {
+		return r, fmt.Errorf("the history records %q after every task in the plan was already accounted for: %d commit(s) at the tip belong to no remaining task, so the repository holds work this plan cannot explain", h.Records[ri].Task, len(h.Records)-ri)
+	}
 	r.Index = len(pl.Tasks)
 	return r, nil
 }

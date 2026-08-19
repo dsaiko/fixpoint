@@ -902,7 +902,11 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 	o.writeRunState(sum, pl, "")
 	o.endPhase("BUILD  %d of %d task(s) processed", len(sum.Tasks), len(pl.Tasks))
 
-	if len(o.cfg.Verify.Commands) > 0 && o.cfg.Implement.CleanCheck == config.CleanCheckLast {
+	// Verify.Enabled(), not a non-empty command list: gatePhase decides the same
+	// question that way, and `policy: off` with a command list still configured
+	// used to run every one of those commands in a clone of HEAD -- a gate an
+	// operator switched OFF (review run 20260819-104919).
+	if o.cfg.Verify.Enabled() && o.cfg.Implement.CleanCheck == config.CleanCheckLast {
 		if err := o.cleanCheck(ctx, p); err != nil {
 			o.logf("clean-check: %v", err)
 			incomplete = true
@@ -939,7 +943,7 @@ func (o *Orchestrator) processTask(ctx context.Context, sum *model.RunSummary, r
 	if out.Outcome != outcomeImplemented && out.Outcome != outcomeSatisfied {
 		bad = true
 	}
-	if out.Outcome == outcomeImplemented && len(o.cfg.Verify.Commands) > 0 && o.cfg.Implement.CleanCheck == config.CleanCheckEvery {
+	if out.Outcome == outcomeImplemented && o.cfg.Verify.Enabled() && o.cfg.Implement.CleanCheck == config.CleanCheckEvery {
 		if err := o.cleanCheck(ctx, p); err != nil {
 			// At `every` the culprit IS attributable: it is this task.
 			o.logf("clean-check after %s: %v", t.ID, err)

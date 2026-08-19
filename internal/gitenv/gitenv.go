@@ -227,7 +227,50 @@ func resolveTool(name string) string {
 // fixed before THIS run touched anything" and a run boundary is where that
 // becomes true.
 func PinTools() {
-	for _, n := range []string{"git", "gh", "glab"} {
+	for _, n := range pinnedTools {
 		pinned.Store(n, resolveTool(n))
 	}
+}
+
+// pinnedTools are the helper binaries fixpoint runs itself.
+var pinnedTools = []string{"git", "gh", "glab"}
+
+// PinnedInside returns the name and path of the first pinned helper that
+// resolved to a file INSIDE root, or empty strings.
+//
+// Pinning fixes the answer before the target exists, which closes the mid-run
+// swap. It cannot close the other half: in directory mode the checkout is
+// already on disk when the run starts, so a PATH entry inside it makes the
+// target's own `git` the pinned one from the very first invocation -- and every
+// later guard, including the ones that would notice tampering, then runs through
+// the program being guarded against (review run 20260819-104919). Only the
+// caller knows the target, so the check lives here and the refusal lives with
+// the other target-trust gates.
+func PinnedInside(root string) (name, path string) {
+	if root == "" {
+		return "", ""
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		realRoot = root
+	}
+	for _, n := range pinnedTools {
+		v, ok := pinned.Load(n)
+		if !ok {
+			continue
+		}
+		p, isStr := v.(string)
+		if !isStr || !filepath.IsAbs(p) {
+			continue
+		}
+		realTool, terr := filepath.EvalSymlinks(p)
+		if terr != nil {
+			realTool = p
+		}
+		if rel, rerr := filepath.Rel(realRoot, realTool); rerr == nil &&
+			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return n, p
+		}
+	}
+	return "", ""
 }

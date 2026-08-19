@@ -84,13 +84,29 @@ func TestEveryShellCompletionOffersEveryFlag(t *testing.T) {
 		}
 		script := buf.String()
 		for _, f := range flags {
-			// fish registers a long flag as `-l <name>`; bash and zsh write
-			// `--<name>`.
-			token := "--" + f
-			if shell == "fish" {
-				token = "-l " + f
+			// DELIMITED, not a bare substring: --plan is a prefix of --plan-only,
+			// --check of --check-live, --post of --post-verdict, so a plain
+			// Contains passes for a flag that was never listed -- the exact drift
+			// class this test exists to catch (review run 20260819-104919). Each
+			// shell has its own delimiter: bash separates with whitespace, zsh
+			// writes '--name:description', fish writes `-l name` followed by -r/-d.
+			var found bool
+			switch shell {
+			case "bash":
+				// The flag list is interpolated into `compgen -W "..."`, so the
+				// last entry carries the closing quote.
+				for _, tok := range strings.Fields(script) {
+					if strings.Trim(tok, `"`) == "--"+f {
+						found = true
+						break
+					}
+				}
+			case "zsh":
+				found = strings.Contains(script, "'--"+f+":")
+			case "fish":
+				found = strings.Contains(script, "-l "+f+" ")
 			}
-			if !strings.Contains(script, token) {
+			if !found {
 				t.Errorf("the %s completion never offers --%s", shell, f)
 			}
 		}

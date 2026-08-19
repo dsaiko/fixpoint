@@ -221,3 +221,45 @@ func TestAdmitResumeRefusesMissingDesignTrailer(t *testing.T) {
 		t.Errorf("AdmitResume(no design trailer) = %v, want a refusal", err)
 	}
 }
+
+// A record left over after the plan is fully accounted for means the history
+// holds a commit the walk cannot explain -- and history.Head, which becomes the
+// resumed run's interruption anchor, would point at it (review run
+// 20260819-104919).
+func TestAdmitResumeRefusesSurplusRecords(t *testing.T) {
+	h := History{Bootstrap: "boot", DesignSHA: "d", VerifyProfile: "p", Records: []Record{
+		rec("T01", OutcomeImplemented), rec("T02", OutcomeImplemented),
+		rec("T03", OutcomeImplemented), rec("T01", OutcomeImplemented), // the surplus
+	}}
+	_, err := AdmitResume(h, threeTasks(), "d", "p")
+	if err == nil {
+		t.Fatal("a history with a commit past the end of the plan was admitted")
+	}
+	if !strings.Contains(err.Error(), "already accounted for") {
+		t.Errorf("refusal = %v, want one naming the surplus", err)
+	}
+}
+
+// The admission branch for a derived skip, as a unit: threeTasks() has no
+// dependencies, so nothing in the original table could reach it (review run
+// 20260819-104919).
+func TestAdmitResumeCarriesADerivedSkip(t *testing.T) {
+	pl := Plan{Tasks: []Task{
+		{ID: "T01"},
+		{ID: "T02", DependsOn: []string{"T01"}},
+		{ID: "T03"},
+	}}
+	h := History{Bootstrap: "boot", DesignSHA: "d", VerifyProfile: "p", Records: []Record{
+		rec("T01", OutcomeFailed), rec("T03", OutcomeImplemented),
+	}}
+	r, err := AdmitResume(h, pl, "d", "p")
+	if err != nil {
+		t.Fatalf("AdmitResume() = %v, want the skip admitted", err)
+	}
+	if r.Index != 3 {
+		t.Errorf("Index = %d, want 3 -- a plan position, not the record count (2)", r.Index)
+	}
+	if got := r.Carried["T02"]; got.Outcome != OutcomeSkipped || !strings.Contains(got.Reason, "T01") {
+		t.Errorf("T02 = %+v, want skipped with a reason naming T01", got)
+	}
+}

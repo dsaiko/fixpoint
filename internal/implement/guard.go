@@ -74,6 +74,13 @@ func (g Git) CleanCheck(ctx context.Context, repoDir, scratchDir string, vcfg co
 // command's timeout, because the verify executor applies the timeout per
 // command and runs them sequentially (§4.2 rule 7).
 func GateWorst(v config.Verify) time.Duration {
+	// A gate that will not run costs nothing. Counting the commands regardless of
+	// policy made rule 7 reserve deadline for work gatePhase never performs, so a
+	// `policy: off` run admitted fewer tasks than it could actually build
+	// (review run 20260819-104919).
+	if !v.Enabled() {
+		return 0
+	}
 	return time.Duration(len(v.Commands)) * v.Timeout.Std()
 }
 
