@@ -25,7 +25,7 @@ usage:
 # Anthropic does not serve (measured ~93x off). Compute the real bill from the
 # token counts and the OpenRouter price list instead.
 prompt_via: stdin
-timeout: 20m
+timeout: 30m
 can_edit: false
 env:
   pass:

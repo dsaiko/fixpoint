@@ -46,7 +46,7 @@ usage:
   cache_read_tokens: usage.cached_input_tokens
   cache_write_tokens: usage.cache_write_input_tokens
 prompt_via: stdin
-timeout: 20m
+timeout: 30m
 can_edit: false
 
 # Only the OpenRouter key: this route bills a card, and codex resolves the key

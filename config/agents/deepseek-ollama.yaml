@@ -65,7 +65,7 @@ usage:
 # See "effort (claude)" in _README.md for the measurement.
 
 prompt_via: stdin
-timeout: 20m # cloud-served models are slower; matched to the panel (see claude.yaml)
+timeout: 30m # cloud-served models are slower; matched to the panel (see claude.yaml)
 can_edit: false
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,

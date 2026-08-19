@@ -38,13 +38,17 @@ usage:
   error_status: api_error_status
 
 prompt_via: stdin
-# 20m, raised from 10m: a reviewer's budget has to cover a target that GROWS during
-# the run. In a measured 7-round run the review prompt went from 4.6 KB to 37.7 KB
-# (accumulated history) while the coder added 24 commits of code to read, and this
-# agent was killed twice at exactly 10m00s having written nothing at all. A timeout
-# buys no findings and still resets the convergence streak, so it is the most
-# expensive way to save time.
-timeout: 20m
+# 30m, raised from 20m (which was raised from 10m): a reviewer's budget has to
+# cover a target that GROWS during the run. In a measured 7-round run the review
+# prompt went from 4.6 KB to 37.7 KB (accumulated history) while the coder added
+# 24 commits of code to read, and this agent was killed twice at exactly 10m00s
+# having written nothing at all. A timeout buys no findings and still resets the
+# convergence streak, so it is the most expensive way to save time.
+#
+# 20m was measurably too close: in review run 20260818-234734 the slowest
+# reviewer's longest single session took 16.5m -- 82% of the ceiling, on a
+# 10-file PR. The headroom, not the average, is what a timeout spends.
+timeout: 30m
 can_edit: false
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,

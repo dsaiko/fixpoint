@@ -27,10 +27,10 @@ usage:
   cache_read_tokens: usage.cached_input_tokens
   cache_write_tokens: usage.cache_write_input_tokens
 prompt_via: stdin
-# 20m, raised from 10m: see claude.yaml. This agent was killed at 10m having emitted
-# 1 MB of exploration output and still working -- unlike a hung process, it was
-# making progress the whole time.
-timeout: 20m
+# 30m: see claude.yaml. This agent was killed at 10m having emitted 1 MB of
+# exploration output and still working -- unlike a hung process, it was making
+# progress the whole time.
+timeout: 30m
 can_edit: false
 # To use codex as the coder, copy this to codex-coder.yaml with
 # --dangerously-bypass-approvals-and-sandbox instead of --sandbox read-only,
