@@ -678,6 +678,27 @@ func TestTrustFieldsAreNotYAMLDecodable(t *testing.T) {
 	}
 }
 
+// The §7.4 implement flags are invocation-only for the same reason the trust
+// fields are: <project>/config is searched first, so a config key would let the
+// design's own repository waive the coverage rule, skip the planner with a plan
+// it chose, or point a resume at a project it named -- for every run, silently.
+// yaml:"-" is what makes that impossible; this asserts the type cannot carry
+// the value even if a decode is pointed straight at it (review run
+// 20260818-234734).
+func TestImplementFlagsAreNotYAMLDecodable(t *testing.T) {
+	var cfg Config
+	y := "implement:\n  no_coverage_check: true\n  plan_only: true\n  plan: /etc/evil.json\n  continue: /tmp/hijack\n"
+	if err := yaml.Unmarshal([]byte(y), &cfg); err != nil {
+		t.Fatalf("permissive decode should not error here: %v", err)
+	}
+	if cfg.Implement.NoCoverageCheck || cfg.Implement.PlanOnly {
+		t.Error("YAML set a boolean §7.4 flag; these are CLI-only")
+	}
+	if cfg.Implement.Plan != "" || cfg.Implement.Continue != "" {
+		t.Errorf("YAML set a §7.4 path flag: plan=%q continue=%q -- CLI-only", cfg.Implement.Plan, cfg.Implement.Continue)
+	}
+}
+
 // The same boundary as the two tests above, for the publishing switches. Posting
 // is an action on somebody else's pull request, and <project>/config is searched
 // FIRST -- so a review.post key a repository could ship would let the code under
@@ -946,8 +967,12 @@ func TestOverridesApplied(t *testing.T) {
 		Post:              true,
 		PostVerdict:       true,
 		TrustedTarget:     true,
+		NoCoverageCheck:   true,
+		PlanOnly:          true,
+		Plan:              "/p.json",
+		Continue:          "/proj",
 	}.Applied(), ", ")
-	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "post=true", "post_verdict=true", "trusted_target=true", "max_iterations=-1", "pr=1234"} {
+	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "post=true", "post_verdict=true", "trusted_target=true", "max_iterations=-1", "pr=1234", "no_coverage_check=true", "plan_only=true", "plan=/p.json", "continue=/proj"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Applied() = %q, missing %q", got, want)
 		}
