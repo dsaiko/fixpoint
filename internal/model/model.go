@@ -203,13 +203,19 @@ type RoundRecord struct {
 // trailers (DESIGN.md §5.4): the reason codes are the normalized enum, and a
 // task that produced no commit still has a SHA -- its outcome marker's.
 type TaskOutcome struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Outcome  string `json:"outcome"` // implemented | already_satisfied | blocked | failed | skipped | carried
-	Reason   string `json:"reason,omitempty"`
-	SHA      string `json:"sha,omitempty"`
-	Attempts int    `json:"attempts,omitempty"`
-	Gate     string `json:"gate,omitempty"` // passed | failed:<check> | ungated | skipped
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Outcome string `json:"outcome"` // implemented | already_satisfied | blocked | failed | skipped | carried
+	// CarriedOutcome is the RECORDED outcome under a carried one -- what the
+	// original run concluded. Set only when Outcome is carried. It exists so a
+	// resumed run's report and its guards can act on the original verdict: a
+	// carried failure makes the run incomplete, and a carried already_satisfied
+	// still counts against max_vacuous_frac (review run 20260818-234734).
+	CarriedOutcome string `json:"carried_outcome,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	SHA            string `json:"sha,omitempty"`
+	Attempts       int    `json:"attempts,omitempty"`
+	Gate           string `json:"gate,omitempty"` // passed | failed:<check> | ungated | skipped
 }
 
 // StepStat records one agent invocation's size and duration figures, so runs

@@ -221,6 +221,65 @@ func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) 
 	return o.buildPhase(ctx, sum, &rec, prep, pl, started, implement.Resume{})
 }
 
+// readCommittedArtifacts loads the plan and the design from the BOOTSTRAP
+// commit, not the worktree: they are control artifacts nothing may edit, and
+// reading the committed blobs means a resumed run cannot be steered by a file
+// someone changed between runs. It also re-checks the plan/design pairing the
+// bootstrap recorded, so a swapped DESIGN.md is caught here rather than becoming
+// the document the run reports it implemented.
+func (o *Orchestrator) readCommittedArtifacts(ctx context.Context, p *implementPrep, dir, bootstrap string) (implement.Plan, error) {
+	var pl implement.Plan
+	planJSON, err := p.git.ShowBlob(ctx, dir, bootstrap, "PLAN.json")
+	if err != nil {
+		return pl, fmt.Errorf("-continue %s: %w", dir, err)
+	}
+	if err := json.Unmarshal([]byte(planJSON), &pl); err != nil {
+		return pl, fmt.Errorf("-continue %s: the committed PLAN.json does not parse: %w", dir, err)
+	}
+	designBytes, err := p.git.ShowBlob(ctx, dir, bootstrap, "DESIGN.md")
+	if err != nil {
+		return pl, fmt.Errorf("-continue %s: %w", dir, err)
+	}
+	p.designBytes = []byte(designBytes)
+	p.designSHA = implement.DigestBytes(p.designBytes)
+	p.designPath = filepath.Join(dir, "DESIGN.md")
+	if pl.Provenance != nil && pl.Provenance.DesignSHA256 != "" && pl.Provenance.DesignSHA256 != p.designSHA {
+		return pl, fmt.Errorf("-continue %s: the committed PLAN.json was written for design %.12s and the committed DESIGN.md hashes to %.12s", dir, pl.Provenance.DesignSHA256, p.designSHA)
+	}
+	return pl, nil
+}
+
+// guardResumedRepository applies the two git guards a resumed project needs
+// before the first worktree-touching command. A fresh run gets them from run()'s
+// preflight against the reviewed target; a resume must run them against the
+// PROJECT, which sat outside fixpoint's lock between runs and which anyone could
+// have edited (review run 20260818-234734, two reviewers).
+//
+// Neither is trust-gated, for the reasons the preflight versions give: a
+// core.worktree redirect makes every later git command -- including the coder's
+// commits -- read and write a directory the operator never named, and a
+// .git/config shipping a filter, diff driver or credential helper is a program
+// git runs with fixpoint's environment. The repository-invariant baseline cannot
+// substitute for either, because on a resume the baseline is TAKEN FROM this
+// tree: tampering done between runs would simply become the accepted state.
+func (o *Orchestrator) guardResumedRepository(ctx context.Context, col *target.Collector, dir string) error {
+	root, err := col.WorktreeOutOfScope(ctx)
+	if err != nil {
+		return err
+	}
+	if root != "" {
+		return fmt.Errorf("-continue %s: the repository's work tree points at %s (core.worktree or GIT_WORK_TREE), so every git command -- including the coder's commits -- would read and write outside the project; remove the redirect", dir, root)
+	}
+	keys, err := col.UnsafeConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if len(keys) > 0 {
+		return fmt.Errorf("-continue %s: the repository's own git config defines %s -- programs git would run with fixpoint's environment; a project left unattended between runs does not get to configure the tool that resumes it. Remove the key(s) and rerun", dir, strings.Join(keys, ", "))
+	}
+	return nil
+}
+
 // resumePhase is §5.5's re-entry: open a project fixpoint built, read what it
 // says about itself, and prove it is the one this configuration describes.
 //
@@ -235,13 +294,11 @@ func (o *Orchestrator) runImplement(ctx context.Context, sum *model.RunSummary) 
 // first-contact checks a fresh directory does not need are run here: the
 // repository-invariant baseline is taken now, over this tree, and the lock is
 // taken before any of it is read.
-func (o *Orchestrator) resumePhase(ctx context.Context, sum *model.RunSummary) (*implementPrep, implement.Plan, implement.Resume, error) {
-	var pl implement.Plan
-	var resume implement.Resume
+func (o *Orchestrator) resumePhase(ctx context.Context, sum *model.RunSummary) (p *implementPrep, pl implement.Plan, resume implement.Resume, retErr error) {
 	dir := o.cfg.Implement.Continue
 	o.phase("RESUME  %s", dir)
 
-	p := &implementPrep{out: dir, outcomes: map[string]string{}}
+	p = &implementPrep{out: dir, outcomes: map[string]string{}}
 	p.gitEnv = gitenv.NoOperatorConfig(o.verifyEnv)
 	p.git = implement.NewGit(p.gitEnv)
 
@@ -259,6 +316,23 @@ func (o *Orchestrator) resumePhase(ctx context.Context, sum *model.RunSummary) (
 		return p, pl, resume, fmt.Errorf("-continue %s: %w", dir, err)
 	}
 	p.release = release
+	// Every refusal below hands the lock back on the way out. The caller only
+	// registers its release defer AFTER this function succeeds, so an error
+	// return that kept the lock would hold the repository -- and leak the
+	// descriptor -- for the life of the process; the test suite drives several
+	// runs per process, and a second LockRepo then refuses against ourselves
+	// (review run 20260818-234734). The named-return check keeps this correct
+	// for every return statement, including ones added later.
+	defer func() {
+		if retErr != nil && p.release != nil {
+			p.release()
+			p.release = nil
+		}
+	}()
+
+	if err := o.guardResumedRepository(ctx, p.col, dir); err != nil {
+		return p, pl, resume, err
+	}
 
 	// Step 0 before anything is believed: a dirty tree means the previous run
 	// died mid-attempt, and §5.2 has no way to tell that residue from work.
@@ -275,33 +349,35 @@ func (o *Orchestrator) resumePhase(ctx context.Context, sum *model.RunSummary) (
 		return p, pl, resume, err
 	}
 	p.bootstrapSHA = history.Bootstrap
+	// The interruption anchor, same as a fresh run's: everything at HEAD was
+	// admitted from the repository, so HEAD is the last commit this run vouches
+	// for. Left empty, cleanUpInterrupted skipped its reset for the whole first
+	// resumed task -- a coder that committed on its own and was then interrupted
+	// left an ungated commit at HEAD, and the NEXT -continue would have admitted
+	// it as a recorded outcome if the session had written itself the trailers
+	// (review run 20260818-234734, three reviewers independently).
+	p.attributed = history.Head
 
-	// The plan and the design come from the BOOTSTRAP commit, not the worktree:
-	// they are control artifacts nothing may edit, and reading the committed
-	// blobs means a resumed run cannot be steered by a file someone changed
-	// between runs.
-	planJSON, err := p.git.ShowBlob(ctx, dir, history.Bootstrap, "PLAN.json")
-	if err != nil {
-		return p, pl, resume, fmt.Errorf("-continue %s: %w", dir, err)
-	}
-	if err := json.Unmarshal([]byte(planJSON), &pl); err != nil {
-		return p, pl, resume, fmt.Errorf("-continue %s: the committed PLAN.json does not parse: %w", dir, err)
-	}
-	designBytes, err := p.git.ShowBlob(ctx, dir, history.Bootstrap, "DESIGN.md")
-	if err != nil {
-		return p, pl, resume, fmt.Errorf("-continue %s: %w", dir, err)
-	}
-	p.designBytes = []byte(designBytes)
-	p.designSHA = implement.DigestBytes(p.designBytes)
-	p.designPath = filepath.Join(dir, "DESIGN.md")
-	if pl.Provenance != nil && pl.Provenance.DesignSHA256 != "" && pl.Provenance.DesignSHA256 != p.designSHA {
-		return p, pl, resume, fmt.Errorf("-continue %s: the committed PLAN.json was written for design %.12s and the committed DESIGN.md hashes to %.12s", dir, pl.Provenance.DesignSHA256, p.designSHA)
+	if pl, err = o.readCommittedArtifacts(ctx, p, dir, history.Bootstrap); err != nil {
+		return p, pl, resume, err
 	}
 
 	p.gateCommands = implement.RenderCommands(o.cfg.Verify)
 	p.profile = implement.VerifyProfile(p.gateCommands, string(o.cfg.Verify.Policy), o.cfg.Verify.Timeout.Std(), o.cfg.Implement.GateGenerated)
 	p.plannerLabel = "carried (-continue)"
 	p.coverageChecked = false // the check ran, or did not, on the run that planned
+
+	// The committed plan is held to §4.2 like every other way a plan enters the
+	// pipeline. It was the ONE unvalidated entry point (review run
+	// 20260818-234734, two reviewers): the admission evidence is trailer text in
+	// a repository that sat outside fixpoint's lock, and the rules skipped are
+	// load-bearing beyond plan quality -- rule 2's id pattern exists because
+	// task ids land in artifact filenames, and rule 4 refuses the paths a misled
+	// plan could point a session at. Coverage is unchecked here because the
+	// check ran, or did not, on the run that planned; everything else binds.
+	if err := implement.Validate(pl, o.planRules(p, 0)); err != nil {
+		return p, pl, resume, fmt.Errorf("-continue %s: the committed PLAN.json does not pass validation: %w -- the repository's plan has been altered since fixpoint wrote it", dir, err)
+	}
 
 	if resume, err = implement.AdmitResume(history, pl, p.designSHA, p.profile); err != nil {
 		return p, pl, resume, fmt.Errorf("-continue %s: %w", dir, err)
@@ -432,13 +508,11 @@ func (o *Orchestrator) prepareDesign(ctx context.Context, p *implementPrep) (*im
 	return p, nil
 }
 
-// planPhase runs the one read-only planner session and validates its product.
-// A plan that fails costs exactly one planner session and zero coder sessions.
-func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p *implementPrep) (implement.Plan, error) {
-	o.phase("PLAN  one %s session over the design snapshot", o.cfg.Roles.Planner.Agent)
-	var pl implement.Plan
-
-	rules := implement.Rules{
+// planRules is §4.2's rule set for this run's configuration. planOverhead is
+// what the run spends before the first task -- a planner's timeout on the fresh
+// path, zero on a resume, where no planner runs.
+func (o *Orchestrator) planRules(p *implementPrep, planOverhead time.Duration) implement.Rules {
+	return implement.Rules{
 		MaxTasks:        o.cfg.Implement.MaxTasks,
 		MaxFilesPerTask: o.cfg.Implement.MaxFilesPerTask,
 		Outline:         p.outline,
@@ -448,11 +522,17 @@ func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p 
 		GateWorst:       implement.GateWorst(o.cfg.Verify),
 		MaxRunDuration:  o.cfg.Implement.MaxRunDuration.Std(),
 		CleanCheck:      o.cfg.Implement.CleanCheck,
-		// The deadline clock started before PREFLIGHT, so the budget has to cover
-		// the same interval: the planner's own timeout plus an allowance for the
-		// ping and the snapshot.
-		PlanOverhead: o.cfg.Agents[o.cfg.Roles.Planner.Agent].Timeout.Std() + planOverheadSlack,
+		PlanOverhead:    planOverhead,
 	}
+}
+
+// planPhase runs the one read-only planner session and validates its product.
+// A plan that fails costs exactly one planner session and zero coder sessions.
+func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p *implementPrep) (implement.Plan, error) {
+	o.phase("PLAN  one %s session over the design snapshot", o.cfg.Roles.Planner.Agent)
+	var pl implement.Plan
+
+	rules := o.planRules(p, o.cfg.Agents[o.cfg.Roles.Planner.Agent].Timeout.Std()+planOverheadSlack)
 	// The cap quoted to the planner and the rule that will judge its answer are
 	// now the same arithmetic (Rules.Admitted), so the two cannot disagree.
 	admitted := rules.Admitted(o.cfg.Implement.MaxTasks)
@@ -737,16 +817,28 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 // tasks, and an infrastructure circuit breaker so a provider outage never
 // reaches the immutable history (§5.4).
 func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, rec *model.RoundRecord, p *implementPrep, pl implement.Plan, started time.Time, resume implement.Resume) error {
+	infraStrikes := 0
+	incomplete := false
 	// Everything the history already decided is recorded before the loop starts,
 	// so the report of a resumed run covers the whole plan and not just the part
 	// this invocation touched. `carried` is §5.4's word for exactly that: an
-	// outcome this run adopted rather than produced.
+	// outcome this run adopted rather than produced -- and adopting it includes
+	// adopting its VERDICT. A carried failure used to leave `incomplete` false,
+	// so resuming a project whose history covered the whole plan terminated
+	// `implemented`/exit 0 over a task the original run reported failed/exit 2
+	// -- the resumed run contradicting the report the original produced, which
+	// is the one thing carried outcomes exist to prevent (review run
+	// 20260818-234734, three reviewers independently).
 	for _, t := range pl.Tasks[:resume.Index] {
 		rc := resume.Carried[t.ID]
 		p.outcomes[t.ID] = rc.Outcome
+		if rc.Outcome != outcomeImplemented && rc.Outcome != outcomeSatisfied {
+			incomplete = true
+		}
 		sum.Tasks = append(sum.Tasks, model.TaskOutcome{
 			ID: t.ID, Title: t.Title, Outcome: outcomeCarried,
-			Reason: carriedReason(rc), SHA: rc.SHA,
+			CarriedOutcome: rc.Outcome,
+			Reason:         carriedReason(rc), SHA: rc.SHA,
 		})
 	}
 	if resume.Index > 0 {
@@ -754,8 +846,6 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 	} else {
 		o.phase("BUILD  %d task(s), serially", len(pl.Tasks))
 	}
-	infraStrikes := 0
-	incomplete := false
 	p.deadline = started.Add(o.cfg.Implement.MaxRunDuration.Std())
 	stoppedBefore := ""
 
@@ -785,7 +875,7 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 			incomplete = true
 			break
 		}
-		if blockedBy := blockedDependency(t, p.outcomes); blockedBy != "" {
+		if blockedBy := implement.BlockedDependency(t, p.outcomes); blockedBy != "" {
 			p.outcomes[t.ID] = outcomeSkipped
 			sum.Tasks = append(sum.Tasks, model.TaskOutcome{ID: t.ID, Title: t.Title, Outcome: outcomeSkipped, Reason: "dependency " + blockedBy})
 			o.journal("task_skipped", 1, map[string]any{"id": t.ID, "blocked_by": blockedBy})
@@ -1717,19 +1807,6 @@ func (o *Orchestrator) cleanCheck(ctx context.Context, p *implementPrep) error {
 	return nil
 }
 
-// blockedDependency returns the first (transitive) dependency that did not
-// land. Skips are DERIVED, never recorded (§5.4): they are a pure function of
-// the plan and the failed/blocked outcomes.
-func blockedDependency(t implement.Task, outcomes map[string]string) string {
-	for _, d := range t.DependsOn {
-		switch outcomes[d] {
-		case outcomeFailed, "blocked", "skipped":
-			return d
-		}
-	}
-	return ""
-}
-
 // vacuousFraction is already_satisfied over the WHOLE PLAN (§5.4: "N of M
 // tasks"), returning both numbers so the refusal can quote them.
 //
@@ -1744,7 +1821,11 @@ func vacuousFraction(tasks []model.TaskOutcome, planned int) (int, float64) {
 	}
 	vac := 0
 	for _, t := range tasks {
-		if t.Outcome == outcomeSatisfied {
+		// A carried already_satisfied is still an already_satisfied: the guard
+		// measures how much of the PLAN decomposed to nothing, and relabelling a
+		// task `carried` on resume must not launder it out of that fraction
+		// (review run 20260818-234734).
+		if t.Outcome == outcomeSatisfied || t.CarriedOutcome == outcomeSatisfied {
 			vac++
 		}
 	}
