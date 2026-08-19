@@ -21,7 +21,7 @@ func TestAdmitResume(t *testing.T) {
 
 	t.Run("a prefix resumes at the first unrecorded task", func(t *testing.T) {
 		h := sound
-		h.Records = []Record{rec("T01", "implemented"), rec("T02", "failed")}
+		h.Records = []Record{rec("T01", OutcomeImplemented), rec("T02", OutcomeFailed)}
 		r, err := AdmitResume(h, threeTasks(), design, profile)
 		if err != nil {
 			t.Fatalf("AdmitResume() = %v", err)
@@ -29,14 +29,14 @@ func TestAdmitResume(t *testing.T) {
 		if r.Index != 2 {
 			t.Errorf("Index = %d, want 2", r.Index)
 		}
-		if r.Carried["T02"].Outcome != "failed" {
+		if r.Carried["T02"].Outcome != OutcomeFailed {
 			t.Errorf("the carried outcome was lost: %+v", r.Carried["T02"])
 		}
 	})
 
 	t.Run("a fully recorded plan resumes past the end", func(t *testing.T) {
 		h := sound
-		h.Records = []Record{rec("T01", "implemented"), rec("T02", "implemented"), rec("T03", "implemented")}
+		h.Records = []Record{rec("T01", OutcomeImplemented), rec("T02", OutcomeImplemented), rec("T03", OutcomeImplemented)}
 		r, err := AdmitResume(h, threeTasks(), design, profile)
 		if err != nil {
 			t.Fatalf("AdmitResume() = %v", err)
@@ -50,7 +50,7 @@ func TestAdmitResume(t *testing.T) {
 		h := sound
 		// Tasks run serially in plan order, so this shape means the history and
 		// the plan disagree about what was being built.
-		h.Records = []Record{rec("T02", "implemented")}
+		h.Records = []Record{rec("T02", OutcomeImplemented)}
 		_, err := AdmitResume(h, threeTasks(), design, profile)
 		if err == nil || !strings.Contains(err.Error(), "prefix") {
 			t.Errorf("AdmitResume(out of order) = %v, want a prefix refusal", err)
@@ -59,7 +59,7 @@ func TestAdmitResume(t *testing.T) {
 
 	t.Run("a task the plan does not contain is refused", func(t *testing.T) {
 		h := sound
-		h.Records = []Record{rec("T99", "implemented")}
+		h.Records = []Record{rec("T99", OutcomeImplemented)}
 		_, err := AdmitResume(h, threeTasks(), design, profile)
 		if err == nil || !strings.Contains(err.Error(), "T99") {
 			t.Errorf("AdmitResume(unknown task) = %v, want a refusal naming it", err)
@@ -89,7 +89,7 @@ func TestAdmitResume(t *testing.T) {
 	// make a resumed run disagree with the report the original produced.
 	t.Run("a carried failure is not re-opened", func(t *testing.T) {
 		h := sound
-		h.Records = []Record{rec("T01", "failed")}
+		h.Records = []Record{rec("T01", OutcomeFailed)}
 		r, err := AdmitResume(h, threeTasks(), design, profile)
 		if err != nil {
 			t.Fatal(err)
