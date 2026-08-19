@@ -213,9 +213,13 @@ The repository is private, so the assets need an authenticated download rather
 than a bare `curl`, and there is no Homebrew tap — a formula fetches by URL and
 brew cannot authenticate here.
 
+No tag in the commands below: `gh release download` takes the latest release
+when none is given, so these stay correct across releases rather than pinning a
+version that goes stale the next time one ships. Name a tag to pin one.
+
 ```sh
 # macOS (Apple silicon); swap Darwin_arm64 for Linux_x86_64, Linux_arm64, Darwin_x86_64
-gh release download v0.1.0 --repo dsaiko/fixpoint --pattern '*Darwin_arm64.tar.gz'
+gh release download --repo dsaiko/fixpoint --pattern '*Darwin_arm64.tar.gz'
 tar xzf fixpoint_*_Darwin_arm64.tar.gz
 ./fixpoint -version
 ./fixpoint --list
@@ -223,7 +227,7 @@ tar xzf fixpoint_*_Darwin_arm64.tar.gz
 
 ```sh
 # Debian/Ubuntu
-gh release download v0.1.0 --repo dsaiko/fixpoint --pattern '*linux_amd64.deb'
+gh release download --repo dsaiko/fixpoint --pattern '*linux_amd64.deb'
 sudo dpkg -i fixpoint_*_linux_amd64.deb    # /usr/bin/fixpoint + /usr/share/fixpoint
 ```
 
