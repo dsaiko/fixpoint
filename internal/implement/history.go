@@ -111,12 +111,35 @@ func (g Git) ReadHistory(ctx context.Context, dir string) (History, error) {
 	return h, nil
 }
 
+// Task outcome vocabulary (§5.4). Strings, because they land in commit
+// trailers, journals and the scoreboard verbatim -- and they live HERE, in the
+// package that writes and reads the trailers, so the writer and the reader
+// cannot drift. internal/orchestrator aliases these rather than restating them.
+const (
+	OutcomeImplemented = "implemented"
+	OutcomeSatisfied   = "already_satisfied"
+	OutcomeBlocked     = "blocked"
+	OutcomeFailed      = "failed"
+	OutcomeSkipped     = "skipped"
+	// OutcomeUnreached is for a task the loop never got to -- the deadline, the
+	// breaker, the disk bound or Ctrl-C stopped the run first. Not a judgment
+	// about the work: it is what §1's "recorded in the run's report as not
+	// built, with a reason" means for the tail of an interrupted plan.
+	OutcomeUnreached = "unreached"
+	// OutcomeCarried is an outcome a run ADOPTED from the repository's own
+	// history rather than produced (§5.4). A resumed run reports the whole plan,
+	// and the reader has to be able to tell which half it actually did. It is a
+	// REPORT label only -- never written to a trailer, which is why
+	// recordableOutcome below rejects it.
+	OutcomeCarried = "carried"
+)
+
 // recordableOutcome reports whether an outcome is one §5.4 ever writes into a
 // commit. `skipped` is deliberately absent -- skips are derived and leave no
 // commit -- and so is `carried`, which is a report label, never a trailer.
 func recordableOutcome(o string) bool {
 	switch o {
-	case "implemented", "already_satisfied", "blocked", "failed":
+	case OutcomeImplemented, OutcomeSatisfied, OutcomeBlocked, OutcomeFailed:
 		return true
 	}
 	return false
@@ -161,7 +184,7 @@ type Resume struct {
 func BlockedDependency(t Task, outcomes map[string]string) string {
 	for _, d := range t.DependsOn {
 		switch outcomes[d] {
-		case "failed", "blocked", "skipped":
+		case OutcomeFailed, OutcomeBlocked, OutcomeSkipped:
 			return d
 		}
 	}
@@ -247,8 +270,8 @@ func AdmitResume(h History, pl Plan, designSHA, verifyProfile string) (Resume, e
 		if dep == "" {
 			return r, fmt.Errorf("the history records %q after a gap at %q, which no failed or blocked dependency explains: recorded tasks plus derived skips must form a prefix of the plan's order, and this repository's do not", h.Records[ri].Task, t.ID)
 		}
-		r.Carried[t.ID] = Record{Task: t.ID, Outcome: "skipped", Reason: "dependency " + dep}
-		outcomes[t.ID] = "skipped"
+		r.Carried[t.ID] = Record{Task: t.ID, Outcome: OutcomeSkipped, Reason: "dependency " + dep}
+		outcomes[t.ID] = OutcomeSkipped
 	}
 	r.Index = len(pl.Tasks)
 	return r, nil
