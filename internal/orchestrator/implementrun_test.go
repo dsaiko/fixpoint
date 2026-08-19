@@ -35,18 +35,18 @@ func twoTaskPlan() implement.Plan {
 func TestBlockedDependency(t *testing.T) {
 	pl := twoTaskPlan()
 	outcomes := map[string]string{"T01": "failed"}
-	if got := blockedDependency(pl.Tasks[1], outcomes); got != "T01" {
-		t.Errorf("blockedDependency(T02) = %q, want T01", got)
+	if got := implement.BlockedDependency(pl.Tasks[1], outcomes); got != "T01" {
+		t.Errorf("implement.BlockedDependency(T02) = %q, want T01", got)
 	}
 	outcomes["T02"] = "skipped"
-	if got := blockedDependency(pl.Tasks[2], outcomes); got != "T02" {
-		t.Errorf("blockedDependency(T03) = %q, want T02", got)
+	if got := implement.BlockedDependency(pl.Tasks[2], outcomes); got != "T02" {
+		t.Errorf("implement.BlockedDependency(T03) = %q, want T02", got)
 	}
-	if got := blockedDependency(pl.Tasks[0], outcomes); got != "" {
-		t.Errorf("blockedDependency(T01) = %q, want none", got)
+	if got := implement.BlockedDependency(pl.Tasks[0], outcomes); got != "" {
+		t.Errorf("implement.BlockedDependency(T01) = %q, want none", got)
 	}
 	// already_satisfied and implemented both count as landed.
-	if got := blockedDependency(pl.Tasks[1], map[string]string{"T01": "already_satisfied"}); got != "" {
+	if got := implement.BlockedDependency(pl.Tasks[1], map[string]string{"T01": "already_satisfied"}); got != "" {
 		t.Errorf("an already_satisfied dependency blocked its dependent: %q", got)
 	}
 }
@@ -615,6 +615,45 @@ func TestImplementActiveAgentsAreThePlannerAndTheCoder(t *testing.T) {
 	want := []string{"coder", "planner"} // sorted
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("activeAgentNames() = %v, want %v -- the inherited pool must never be pinged", got, want)
+	}
+
+	// Mode-aware, so a mode does not ping an agent it never invokes and fail on
+	// its outage (review run 20260818-234734). -plan-only runs only the planner;
+	// -plan and -continue run only the coder.
+	modes := []struct {
+		name string
+		set  func()
+		want []string
+	}{
+		{"plan-only", func() { cfg.Implement = config.Implement{PlanOnly: true} }, []string{"planner"}},
+		{"plan", func() { cfg.Implement = config.Implement{Plan: "/p.json"} }, []string{"coder"}},
+		{"continue", func() { cfg.Implement = config.Implement{Continue: "/proj"} }, []string{"coder"}},
+	}
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			m.set()
+			if got := o.activeAgentNames(); !reflect.DeepEqual(got, m.want) {
+				t.Errorf("activeAgentNames() = %v, want %v", got, m.want)
+			}
+		})
+	}
+}
+
+// The seen-map guard: when one CLI serves both roles, -plan-only must still
+// return that agent once, not an empty set (the "reset and re-add against a
+// poisoned seen map" bug caught while writing this).
+func TestImplementPlanOnlyPingsThePlannerWhenRolesShareAnAgent(t *testing.T) {
+	cfg := &config.Config{
+		Target: config.Target{Mode: "directory", Path: t.TempDir(), Document: "DESIGN.md"},
+		Roles: config.Roles{
+			Planner: config.RoleRef{Agent: "solo", Prompt: "p"},
+			Coder:   config.RoleRef{Agent: "solo", Prompt: "c"},
+		},
+		Implement: config.Implement{PlanOnly: true},
+	}
+	o := &Orchestrator{cfg: cfg}
+	if got := o.activeAgentNames(); !reflect.DeepEqual(got, []string{"solo"}) {
+		t.Errorf("activeAgentNames() = %v, want [solo]", got)
 	}
 }
 
@@ -1815,11 +1854,18 @@ func TestRunImplementContinue(t *testing.T) {
 	state := t.TempDir()
 
 	// Task 1 builds; task 2 hangs so the deadline stops the run mid-plan.
+	// T02's session signals that it has STARTED, then hangs; the watcher cancels
+	// on that signal. A fixed sleep here false-failed under load and -race (the
+	// panel flagged it): the cancel could land while T01 was still committing, or
+	// after T02's marker path had begun. The sentinel is written only once T01's
+	// commit has landed (the loop reached T02) and T02's session is live, which
+	// is exactly the state the test asserts.
+	started := filepath.Join(state, "t02-started")
 	script := "n=$(cat " + state + "/n 2>/dev/null || echo 0)\nn=$((n+1))\nprintf '%s' \"$n\" > " + state + "/n\n" +
 		"if [ \"$n\" = 1 ]; then\n" +
 		"  printf 'one\\n' > one.txt\n" +
 		reportLine(`{"status": "implemented", "notes": "first"}`) +
-		"else\n  sleep 60\nfi\n"
+		"else\n  touch " + started + "\n  sleep 60\nfi\n"
 	first := newImplementFixtureAt(t, out, script, config.Verify{Policy: config.VerifyOff})
 	if err := os.WriteFile(first.planFile, []byte(first.planJSON), 0o600); err != nil {
 		t.Fatal(err)
@@ -1832,10 +1878,8 @@ func TestRunImplementContinue(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
-		one := filepath.Join(out, "one.txt")
 		for {
-			if _, err := os.Stat(one); err == nil {
-				time.Sleep(2 * time.Second) // let T02's session start
+			if _, err := os.Stat(started); err == nil {
 				cancel()
 				return
 			}
@@ -1993,4 +2037,401 @@ func TestRunImplementContinueRefusals(t *testing.T) {
 			t.Errorf("the run did not say there was nothing to do:\n%s", logs)
 		}
 	})
+}
+
+// A carried outcome carries its VERDICT. Resuming a project whose history
+// covers the whole plan -- last task failed, run then stopped -- used to
+// terminate implemented/exit 0 over a task the original run reported
+// failed/exit 2: the resumed run contradicting the report the original
+// produced, which is the one thing carried outcomes exist to prevent (review
+// run 20260818-234734, three reviewers independently).
+func TestRunImplementContinueCarriesTheFailureToo(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	state := t.TempDir()
+
+	// T01 builds; T02 (independent of T01 in threeTaskPlan? no -- use a plan
+	// where the FAILING task is last and nothing depends on it) fails both
+	// attempts. Plan: T01 implemented, T02 fails, no T03. The original run ends
+	// incomplete with the whole plan recorded.
+	script := "n=$(cat " + state + "/n 2>/dev/null || echo 0)\nn=$((n+1))\nprintf '%s' \"$n\" > " + state + "/n\n" +
+		"if [ \"$n\" = 1 ]; then\n  printf 'one\\n' > one.txt\n" +
+		reportLine(`{"status": "implemented", "notes": "first"}`) +
+		"else\n" + reportLine(`{"status": "implemented", "notes": "claimed"}`) + "fi\n"
+	// The failure comes from the claim-without-changes contract check: the
+	// session reports implemented but writes nothing, burning both attempts.
+	first := newImplementFixtureAt(t, out, script, config.Verify{Policy: config.VerifyOff})
+	if _, err := first.run(t); err != nil {
+		t.Fatalf("seed run: %v\nlog:\n%s", err, first.logs())
+	}
+
+	second := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "unused"),
+		implementReply("true", `{"status": "implemented"}`), config.Verify{Policy: config.VerifyOff})
+	second.cfg.Implement.Continue = out
+	second.cfg.Create.Out = ""
+
+	sum, err := second.run(t)
+	if err != nil {
+		t.Fatalf("resumed run: %v\nlog:\n%s", err, second.logs())
+	}
+	// Everything is carried -- and so is the failure.
+	if sum.Termination != model.TermIncomplete {
+		t.Errorf("termination = %q, want incomplete: the original run's failed task did not vanish by being resumed", sum.Termination)
+	}
+	if code := model.ExitCode(sum.Termination); code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	byID := map[string]model.TaskOutcome{}
+	for _, task := range sum.Tasks {
+		byID[task.ID] = task
+	}
+	if got := byID["T02"]; got.Outcome != outcomeCarried || got.CarriedOutcome != outcomeFailed {
+		t.Errorf("T02 = %q/%q, want carried/failed -- the report must show the original verdict", got.Outcome, got.CarriedOutcome)
+	}
+	if !strings.Contains(byID["T02"].Reason, "earlier run") {
+		t.Errorf("the carried failure does not say where it came from: %q", byID["T02"].Reason)
+	}
+}
+
+// §5.5's prefix includes DERIVED skips: a failure, its dependent skipped, a
+// later independent task built. That is the common interrupted shape, and the
+// first admission walk refused it forever (review run 20260818-234734, three
+// reviewers independently).
+func TestRunImplementContinueAdmitsADerivedSkip(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	state := t.TempDir()
+
+	// Plan: T01 fails; T02 depends on T01 (skipped, no commit); T03 independent,
+	// built; then the run is interrupted before... actually the plan has only 3
+	// tasks, so the seed run finishes incomplete with history [boot, T01-marker,
+	// T03-commit] -- the hole at T02 is exactly what is under test.
+	planJSON := `{
+  "schema_version": 1,
+  "project": {"name": "game", "summary": "a game"},
+  "coverage": [
+    {"heading": "## One", "tasks": ["T01", "T02"]},
+    {"heading": "## Two", "tasks": ["T03"]}
+  ],
+  "tasks": [
+    {"id": "T01", "title": "one", "goal": "the one", "acceptance": ["a"], "files": ["one.txt"], "depends_on": []},
+    {"id": "T02", "title": "two", "goal": "the two", "acceptance": ["a"], "files": ["two.txt"], "depends_on": ["T01"]},
+    {"id": "T03", "title": "three", "goal": "the three", "acceptance": ["a"], "files": ["three.txt"], "depends_on": []}
+  ]
+}`
+	script := "n=$(cat " + state + "/n 2>/dev/null || echo 0)\nn=$((n+1))\nprintf '%s' \"$n\" > " + state + "/n\n" +
+		"if [ \"$n\" -le 2 ]; then\n" + reportLine(`{"status": "implemented", "notes": "claimed nothing"}`) +
+		"else\n  printf 'three\\n' > three.txt\n" + reportLine(`{"status": "implemented", "notes": "built"}`) + "fi\n"
+	first := newImplementFixtureAt(t, out, script, config.Verify{Policy: config.VerifyOff})
+	first.planJSON = planJSON
+	if _, err := first.run(t); err != nil {
+		t.Fatalf("seed run: %v\nlog:\n%s", err, first.logs())
+	}
+	// Confirm the seed produced the hole: T01 marker + T03 commit, no T02.
+	subjects := gitOutAt(t, out, "log", "--format=%s")
+	if !strings.Contains(subjects, "T01") || !strings.Contains(subjects, "T03") || strings.Contains(subjects, "T02") {
+		t.Fatalf("the seed did not produce the skip-hole shape:\n%s", subjects)
+	}
+
+	second := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "unused"),
+		implementReply("true", `{"status": "implemented"}`), config.Verify{Policy: config.VerifyOff})
+	second.cfg.Implement.Continue = out
+	second.cfg.Create.Out = ""
+	second.planJSON = planJSON
+
+	sum, err := second.run(t)
+	if err != nil {
+		t.Fatalf("a repository fixpoint built, with a derived skip in its history, was refused: %v\nlog:\n%s", err, second.logs())
+	}
+	byID := map[string]model.TaskOutcome{}
+	for _, task := range sum.Tasks {
+		byID[task.ID] = task
+	}
+	if got := byID["T02"]; got.CarriedOutcome != outcomeSkipped {
+		t.Errorf("T02 = %q/%q, want the derived skip carried", got.Outcome, got.CarriedOutcome)
+	}
+	if sum.Termination != model.TermIncomplete {
+		t.Errorf("termination = %q, want incomplete: a carried failure and skip remain what they were", sum.Termination)
+	}
+}
+
+// A resumed run's interruption anchor: the coder commits on its own during the
+// first resumed task and the run is interrupted before reconciliation. Without
+// p.attributed = history.Head the reset is skipped, the ungated commit survives
+// at HEAD, and a session that had also written itself Fixpoint trailers would be
+// ADMITTED by the next -continue as a recorded outcome (review run
+// 20260818-234734, three reviewers independently).
+func TestRunImplementContinueDropsAnUnattributedCommitWhenInterrupted(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	state := t.TempDir()
+
+	// Seed: T01 builds, T02 signals it started and hangs, then interrupt.
+	started := filepath.Join(state, "t02-started")
+	script := "n=$(cat " + state + "/n 2>/dev/null || echo 0)\nn=$((n+1))\nprintf '%s' \"$n\" > " + state + "/n\n" +
+		"if [ \"$n\" = 1 ]; then\n  printf 'one\\n' > one.txt\n" +
+		reportLine(`{"status": "implemented", "notes": "first"}`) +
+		"else\n  touch " + started + "\n  sleep 60\nfi\n"
+	first := newImplementFixtureAt(t, out, script, config.Verify{Policy: config.VerifyOff})
+	if err := os.WriteFile(first.planFile, []byte(first.planJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logf, logs := captureLog()
+	first.logs = logs
+	o, err := New(&config.Loaded{Config: first.cfg, Source: config.Source{Config: "t.yaml"}}, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		for {
+			if _, err := os.Stat(started); err == nil {
+				cancel()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+	var seedSum model.RunSummary
+	_ = o.runImplement(ctx, &seedSum) // interrupted, T02 unbuilt
+	preHead := strings.TrimSpace(gitOutAt(t, out, "rev-parse", "HEAD"))
+
+	// Resume with a coder that COMMITS on its own, signals, and hangs.
+	committed := filepath.Join(state, "rogue-committed")
+	rogue := "printf 'sneaky\\n' > sneaky.txt\n" +
+		"git add -A >/dev/null 2>&1\n" +
+		"git -c user.name=x -c user.email=x@x commit -qm 'not fixpoint' >/dev/null 2>&1\n" +
+		"touch " + committed + "\nsleep 60\n"
+	second := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "unused"), rogue, config.Verify{Policy: config.VerifyOff})
+	second.cfg.Implement.Continue = out
+	second.cfg.Create.Out = ""
+	if err := os.WriteFile(second.planFile, []byte(second.planJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logf2, logs2 := captureLog()
+	second.logs = logs2
+	o2, err := New(&config.Loaded{Config: second.cfg, Source: config.Source{Config: "t.yaml"}}, logf2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	go func() {
+		for {
+			if _, err := os.Stat(committed); err == nil {
+				cancel2()
+				return
+			}
+			select {
+			case <-ctx2.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+	var sum model.RunSummary
+	if err := o2.runImplement(ctx2, &sum); err == nil {
+		t.Fatalf("an interrupted resume reported success\nlog:\n%s", second.logs())
+	}
+
+	// HEAD is back at the last admitted commit, the rogue one is gone.
+	if head := strings.TrimSpace(gitOutAt(t, out, "rev-parse", "HEAD")); head != preHead {
+		t.Errorf("HEAD = %.12s, want the pre-resume tip %.12s\nlog:\n%s\nsubjects:\n%s",
+			head, preHead, second.logs(), gitOutAt(t, out, "log", "--format=%s"))
+	}
+	if st := gitOutAt(t, out, "status", "--porcelain"); strings.TrimSpace(st) != "" {
+		t.Errorf("the tree is dirty after the cleanup:\n%s", st)
+	}
+}
+
+// -plan holds a supplied plan to §4.2 -- "a hand-edited plan is held to every
+// rule the planner's answer is held to". Nothing exercised that: deleting the
+// Validate call left the suite green (review run 20260818-234734). A plan with
+// the right design hash but a rule violation must refuse before the write-target
+// is claimed.
+func TestRunImplementPlanValidatesTheSuppliedPlan(t *testing.T) {
+	// Build a valid plan carrying the fixture design's real hash, then break one
+	// rule at a time.
+	base := newImplementFixture(t, implementReply("true", `{"status": "implemented"}`),
+		config.Verify{Policy: config.VerifyOff})
+	designSHA := implement.DigestBytes([]byte(twoSectionDesign))
+
+	plan := func(tasks string) string {
+		return `{"schema_version":1,"project":{"name":"p"},"coverage":[{"heading":"## One","tasks":["T01"]},{"heading":"## Two","tasks":["T01"]}],` +
+			`"provenance":{"design_sha256":"` + designSHA + `"},"tasks":[` + tasks + `]}`
+	}
+	cases := map[string]struct{ tasks, want string }{
+		"forward dependency": {`{"id":"T01","title":"t","goal":"g","acceptance":["a"],"files":["a.go"],"depends_on":["T02"]},{"id":"T02","title":"t","goal":"g","acceptance":["a"],"files":["b.go"]}`, "backwards only"},
+		"absolute path":      {`{"id":"T01","title":"t","goal":"g","acceptance":["a"],"files":["/etc/passwd"]}`, "relative slash path"},
+		"bad id":             {`{"id":"../escape","title":"t","goal":"g","acceptance":["a"],"files":["a.go"]}`, "must match"},
+		"control artifact":   {`{"id":"T01","title":"t","goal":"g","acceptance":["a"],"files":["PLAN.json"]}`, "control artifact"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "plan.json")
+			if err := os.WriteFile(path, []byte(plan(tc.tasks)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "project"),
+				implementReply("true", `{"status": "implemented"}`), config.Verify{Policy: config.VerifyOff})
+			// Same design as base, so the hash matches and validation is what refuses.
+			writeDesign(t, f, twoSectionDesign)
+			f.cfg.Implement.Plan = path
+
+			_, err := f.run(t)
+			if err == nil {
+				t.Fatalf("an invalid plan (%s) was accepted", name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("refusal = %v, want %q", err, tc.want)
+			}
+			if _, serr := os.Stat(f.out); serr == nil {
+				t.Error("the write-target was claimed by a run that refused its plan")
+			}
+		})
+	}
+	_ = base
+}
+
+// -plan-only never runs the coder, so it must not demand the coder trust
+// assertion (review run 20260818-234734). The documented command is
+// `implement-go -target DESIGN.md -plan-only` with no -trusted-target.
+func TestRunImplementPlanOnlyNeedsNoTrust(t *testing.T) {
+	f := newImplementFixture(t, implementReply("true", `{"status": "implemented"}`),
+		config.Verify{Policy: config.VerifyOff})
+	f.cfg.Implement.PlanOnly = true
+	f.cfg.Create.Out = ""
+	f.cfg.Loop.TrustedTarget = false // the fixture sets it; a real plan-only invocation would not
+
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("-plan-only refused without -trusted-target: %v\nlog:\n%s", err, f.logs())
+	}
+	if sum.Termination != model.TermPlanned {
+		t.Errorf("termination = %q, want planned", sum.Termination)
+	}
+}
+
+// The committed PLAN.json is held to §4.2 on resume like every other entry
+// point. It was the one unvalidated door (review run 20260818-234734, two
+// reviewers), and the sharpest skipped rule is the id pattern -- task ids land
+// in artifact filenames, so an id like `../../x` writes outside the run.
+func TestRunImplementContinueValidatesTheCommittedPlan(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	// Seed a real project so the bootstrap trailers and DESIGN.md blob are
+	// genuine, then rewrite the committed PLAN.json to carry an illegal task id
+	// and amend the bootstrap so the blob the resume reads is the hostile one.
+	first := newImplementFixtureAt(t, out,
+		implementReply("printf 'x\\n' > \"t_$$_$(date +%s).txt\"\nsleep 1",
+			`{"status": "implemented", "notes": "done"}`), config.Verify{Policy: config.VerifyOff})
+	if _, err := first.run(t); err != nil {
+		t.Fatalf("seed run: %v\nlog:\n%s", err, first.logs())
+	}
+	// The bootstrap is the root commit; read its PLAN.json regardless of depth.
+	boot := strings.TrimSpace(gitOutAt(t, out, "rev-list", "--max-parents=0", "HEAD"))
+	good := gitOutAt(t, out, "show", boot+":PLAN.json")
+	hostile := strings.Replace(good, `"id": "T01"`, `"id": "../../pwned"`, 1)
+	if hostile == good {
+		hostile = strings.Replace(good, `"id":"T01"`, `"id":"../../pwned"`, 1)
+	}
+	// Rewrite history: reset to before bootstrap is impossible (it is the root),
+	// so amend the bootstrap commit's PLAN.json in place via a fresh commit tree.
+	// Simplest faithful reproduction: check out the bootstrap, overwrite the
+	// file, and amend.
+	gitOutAt(t, out, "checkout", "-q", boot)
+	if err := os.WriteFile(filepath.Join(out, "PLAN.json"), []byte(hostile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutAt(t, out, "add", "PLAN.json")
+	gitOutAt(t, out, "-c", "user.name=x", "-c", "user.email=x@x", "commit", "-q", "--amend", "--no-edit")
+	gitOutAt(t, out, "branch", "-f", "main", "HEAD")
+	gitOutAt(t, out, "checkout", "-q", "main")
+
+	second := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "unused"),
+		implementReply("true", `{"status": "implemented"}`), config.Verify{Policy: config.VerifyOff})
+	second.cfg.Implement.Continue = out
+	second.cfg.Create.Out = ""
+
+	if _, err := second.run(t); err == nil {
+		t.Fatal("a resumed run built an unvalidated plan with an illegal task id")
+	} else if !strings.Contains(err.Error(), "must match") && !strings.Contains(err.Error(), "does not pass validation") {
+		t.Errorf("refusal = %v, want a validation refusal", err)
+	}
+}
+
+// A coder that commits on its own during the first resumed task, then is
+// interrupted, must not leave that unattributed commit at HEAD. resumePhase now
+// anchors p.attributed to the history head (review run 20260818-234734, four
+// reviewers).
+func TestRunImplementContinueResetsAnInterruptedResumedCommit(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "project")
+	state := t.TempDir()
+	// Seed: T01 built, T02 interrupted (deadline) -> history is bootstrap+T01.
+	started1 := filepath.Join(state, "seed-t02-started")
+	seedScript := "n=$(cat " + state + "/s 2>/dev/null || echo 0)\nn=$((n+1))\nprintf '%s' \"$n\" > " + state + "/s\n" +
+		"if [ \"$n\" = 1 ]; then\n  printf 'one\\n' > one.txt\n" +
+		reportLine(`{"status": "implemented", "notes": "first"}`) + "else\n  touch " + started1 + "\n  sleep 60\nfi\n"
+	first := newImplementFixtureAt(t, out, seedScript, config.Verify{Policy: config.VerifyOff})
+	logf1, _ := captureLog()
+	o1, _ := New(&config.Loaded{Config: first.cfg, Source: config.Source{Config: "t.yaml"}}, logf1)
+	if err := os.WriteFile(first.planFile, []byte(first.planJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	go func() {
+		for {
+			if _, err := os.Stat(started1); err == nil {
+				cancel1()
+				return
+			}
+			select {
+			case <-ctx1.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+	var s1 model.RunSummary
+	_ = o1.runImplement(ctx1, &s1)
+	preHead := strings.TrimSpace(gitOutAt(t, out, "rev-parse", "HEAD"))
+
+	// Resume: the coder commits on its own, signals, and hangs; cancel then.
+	committed := filepath.Join(state, "committed")
+	resumeScript := "printf 'rogue\\n' > rogue.txt\n" +
+		"git add -A >/dev/null 2>&1\n" +
+		"git -c user.name=x -c user.email=x@x commit -qm 'not fixpoint' >/dev/null 2>&1\n" +
+		"touch " + committed + "\nsleep 60\n"
+	second := newImplementFixtureAt(t, filepath.Join(t.TempDir(), "unused"),
+		implementReply(resumeScript, `{"status": "implemented"}`), config.Verify{Policy: config.VerifyOff})
+	second.cfg.Implement.Continue = out
+	second.cfg.Create.Out = ""
+	logf2, logs2 := captureLog()
+	o2, err := New(&config.Loaded{Config: second.cfg, Source: config.Source{Config: "t.yaml"}}, logf2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	go func() {
+		for {
+			if _, err := os.Stat(committed); err == nil {
+				cancel2()
+				return
+			}
+			select {
+			case <-ctx2.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+	var s2 model.RunSummary
+	if err := o2.runImplement(ctx2, &s2); err == nil {
+		t.Fatalf("the interrupted resume reported success\nlog:\n%s", logs2())
+	}
+	if head := strings.TrimSpace(gitOutAt(t, out, "rev-parse", "HEAD")); head != preHead {
+		t.Errorf("HEAD = %.12s, want the pre-resume tip %.12s -- the rogue commit was not reset\nlog:\n%s", head, preHead, logs2())
+	}
+	if strings.Contains(gitOutAt(t, out, "log", "--format=%s"), "not fixpoint") {
+		t.Error("the coder's own commit survived the interrupted resume")
+	}
 }

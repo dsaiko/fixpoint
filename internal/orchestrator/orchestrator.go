@@ -2107,6 +2107,15 @@ func (o *Orchestrator) checkFixTrust() error {
 	if o.cfg.Loop.ReviewOnly || o.cfg.IsCreate() {
 		return nil
 	}
+	// -plan-only invokes only the read-only planner and never the coder, so
+	// there is no write to gate: demanding -trusted-target for it made the
+	// documented `implement-go -target DESIGN.md -plan-only` refuse for a run
+	// that cannot edit anything -- the same shape the create pipeline hit on its
+	// first live run (review run 20260818-234734). Checked here rather than at
+	// the call site so Ping's use of this gate inherits the exemption too.
+	if o.cfg.Implement.PlanOnly {
+		return nil
+	}
 	switch o.cfg.Target.Mode {
 	case config.ModePR:
 		if !o.cfg.Loop.AllowUntrustedFix {
@@ -2906,7 +2915,24 @@ func (o *Orchestrator) activeAgentNames() []string {
 	// bug (fixed in f424d9f); DESIGN.md §7.3 refuses it on paper, and this is
 	// the refusal.
 	if o.cfg.IsImplement() {
-		add(o.cfg.Roles.Planner.Agent)
+		// Mode-aware, because pinging an agent a mode never invokes turns that
+		// agent's outage into a refusal of a run that did not need it: -plan-only
+		// never reaches the coder, and -plan/-continue never run a planner
+		// (review run 20260818-234734). The default set -- both -- covers the
+		// full pipeline. `names` may already hold the coder from the block
+		// above; a plan-only run must drop it.
+		switch {
+		case o.cfg.Implement.PlanOnly:
+			// The planner ALONE -- not "reset and re-add", because the seen map
+			// above may already hold this very agent when one CLI serves both
+			// roles, and a reset that kept the map would then produce an empty
+			// ping set.
+			return []string{o.cfg.Roles.Planner.Agent}
+		case o.cfg.Implement.Plan != "" || o.cfg.Implement.Continue != "":
+			// coder only, already added above
+		default:
+			add(o.cfg.Roles.Planner.Agent)
+		}
 		sort.Strings(names)
 		return names
 	}

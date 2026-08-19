@@ -56,6 +56,47 @@ func TestWriteCompletionSupportedShells(t *testing.T) {
 //
 // The source of truth is --help, because that is what the FlagSet itself prints:
 // a flag missing from both is a flag nobody can discover.
+// Every real flag must appear as `--<name>` in EVERY shell's completion, not
+// just the bash list the drift test above reads. --version once reached the
+// binary and the bash list and neither zsh nor fish, and that test passed
+// anyway (review run 20260818-234734). Presence is checked by literal substring,
+// which has no false positives from prose the way parsing flag tokens out would.
+func TestEveryShellCompletionOffersEveryFlag(t *testing.T) {
+	var help bytes.Buffer
+	run([]string{"-h"}, &help, &help)
+	var flags []string
+	for _, line := range strings.Split(help.String(), "\n") {
+		name, ok := strings.CutPrefix(line, "  -")
+		if !ok {
+			continue
+		}
+		if name, _, _ = strings.Cut(name, " "); name != "" {
+			flags = append(flags, name)
+		}
+	}
+	if len(flags) == 0 {
+		t.Fatal("parsed no flags from --help")
+	}
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		var buf bytes.Buffer
+		if code := run([]string{"completion", shell}, &buf, &buf); code != 0 {
+			t.Fatalf("completion %s exited %d", shell, code)
+		}
+		script := buf.String()
+		for _, f := range flags {
+			// fish registers a long flag as `-l <name>`; bash and zsh write
+			// `--<name>`.
+			token := "--" + f
+			if shell == "fish" {
+				token = "-l " + f
+			}
+			if !strings.Contains(script, token) {
+				t.Errorf("the %s completion never offers --%s", shell, f)
+			}
+		}
+	}
+}
+
 func TestCompletionFlagsCoverEveryRealFlag(t *testing.T) {
 	var out bytes.Buffer
 	run([]string{"-h"}, &out, &out) // usage goes to the writer, exit code is not the subject

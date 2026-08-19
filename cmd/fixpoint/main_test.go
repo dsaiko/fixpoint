@@ -1716,3 +1716,36 @@ func TestDesignSuppliedPolicyNeedsTheNarrowFlag(t *testing.T) {
 		t.Error("a non-implement run was gated by the implement-only rule")
 	}
 }
+
+// absPathFlags keys on string literals now, so a key written at the call site
+// but not read back -- or vice versa -- is a silently empty path, not a compile
+// error. The worst case is -plan coming back empty: the run would fall through
+// to a planner session and build a decomposition the operator never approved
+// (review run 20260818-234734). This pins every key the call site uses.
+func TestAbsPathFlags(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := absPathFlags(map[string]string{
+		"target": filepath.Join("docs", "DESIGN.md"), "out": "", "plan": filepath.Join("rel", "plan.json"), "continue": "/abs/proj",
+	})
+	if err != nil {
+		t.Fatalf("absPathFlags() = %v", err)
+	}
+	// Every key the run() call site passes must come back present.
+	for _, k := range []string{"target", "out", "plan", "continue"} {
+		if _, ok := out[k]; !ok {
+			t.Errorf("key %q was dropped -- a call-site/read mismatch is a silent empty path", k)
+		}
+	}
+	if want := filepath.Join(cwd, "rel", "plan.json"); out["plan"] != want {
+		t.Errorf("plan = %q, want the absolute form %q", out["plan"], want)
+	}
+	if out["out"] != "" {
+		t.Errorf("empty stays empty (use config), got %q", out["out"])
+	}
+	if out["continue"] != "/abs/proj" {
+		t.Errorf("an absolute path is unchanged, got %q", out["continue"])
+	}
+}

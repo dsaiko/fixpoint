@@ -2,6 +2,7 @@ package implement
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -29,15 +30,6 @@ type History struct {
 	Records []Record
 	// Head is the tip the replay was read from.
 	Head string
-}
-
-// Outcomes indexes the records by task id.
-func (h History) Outcomes() map[string]Record {
-	out := make(map[string]Record, len(h.Records))
-	for _, r := range h.Records {
-		out[r.Task] = r
-	}
-	return out
 }
 
 // trailer field names, kept in one place because they are a DURABLE contract:
@@ -97,6 +89,15 @@ func (g Git) ReadHistory(ctx context.Context, dir string) (History, error) {
 		if task == "" {
 			return h, fmt.Errorf("commit %.12s in %s carries no %s trailer: the history has a commit fixpoint did not make, so its recorded outcomes cannot be trusted as complete", sha, dir, strings.TrimSuffix(trailerTask, ":"))
 		}
+		// The outcome is validated as strictly as the task id, because an
+		// unrecognized one would otherwise act as SUCCESS: the dependency check
+		// treats any outcome outside failed/blocked/skipped as landed, so a
+		// commit carrying `Fixpoint-Outcome:` with a typo -- or nothing -- would
+		// release every dependent of a task nobody finished (review run
+		// 20260818-234734).
+		if out := fields[trailerOutcome]; !recordableOutcome(out) {
+			return h, fmt.Errorf("commit %.12s in %s records task %s with outcome %q, which fixpoint never writes: the history has been edited, so its recorded outcomes cannot be trusted", sha, dir, task, out)
+		}
 		h.Records = append(h.Records, Record{
 			Task:    task,
 			Outcome: fields[trailerOutcome],
@@ -108,6 +109,17 @@ func (g Git) ReadHistory(ctx context.Context, dir string) (History, error) {
 		return h, fmt.Errorf("%s has no commits; there is nothing to continue", dir)
 	}
 	return h, nil
+}
+
+// recordableOutcome reports whether an outcome is one §5.4 ever writes into a
+// commit. `skipped` is deliberately absent -- skips are derived and leave no
+// commit -- and so is `carried`, which is a report label, never a trailer.
+func recordableOutcome(o string) bool {
+	switch o {
+	case "implemented", "already_satisfied", "blocked", "failed":
+		return true
+	}
+	return false
 }
 
 // trailers reads the "Key: value" lines of a commit body. Last wins, which
@@ -130,13 +142,30 @@ func trailers(body string) map[string]string {
 }
 
 // Resume is where a continued run picks up: the index of the first plan task
-// with no commit, and the outcomes to carry for everything before it.
+// with no recorded or derivable outcome, and the outcomes to carry for
+// everything before it.
 type Resume struct {
 	// Index is the plan position BUILD re-enters at. Equal to len(plan.Tasks)
 	// when every task was processed.
 	Index int
-	// Carried is the recorded outcome per task, by id.
+	// Carried is the recorded (or derived -- see AdmitResume on skips) outcome
+	// per task, by id.
 	Carried map[string]Record
+}
+
+// BlockedDependency returns the first of t's dependencies whose recorded
+// outcome means it did not land. Skips are DERIVED, never recorded (§5.4):
+// they are a pure function of the plan and the failed/blocked outcomes, which
+// is why this lives here -- the build loop and the resume admission must
+// derive them identically, and two copies of the rule is how they would drift.
+func BlockedDependency(t Task, outcomes map[string]string) string {
+	for _, d := range t.DependsOn {
+		switch outcomes[d] {
+		case "failed", "blocked", "skipped":
+			return d
+		}
+	}
+	return ""
 }
 
 // AdmitResume applies §5.5's admission rules to a history and a plan, and
@@ -147,13 +176,23 @@ type Resume struct {
 // left. Each refusal is a case where the repository cannot be shown to be the
 // one this plan was built into.
 //
-//   - The recorded tasks must form a PREFIX of the plan's order. Tasks run
-//     serially in plan order, so any other shape means the history and the plan
-//     disagree about what was being built -- a plan edited between runs, or a
-//     repository built from a different one.
-//   - Every recorded task must exist in the plan, for the same reason.
-//   - The design must be the one the bootstrap commit names.
-//   - The gate must be the one the bootstrap commit names. A project half-built
+// The prefix is over "the recorded tasks -- commits and markers, PLUS THE
+// DERIVED SKIPS" (§5.5), and the second half is load-bearing: a skip leaves no
+// commit on purpose, so the common interrupted shape -- an early failure, its
+// dependents skipped, later independent tasks built before the stop -- leaves
+// holes in the recorded sequence. The first version required a gapless prefix
+// and therefore refused, forever, exactly the repositories -continue exists to
+// recover (review run 20260818-234734, three reviewers independently). The walk
+// admits a hole only when the plan task in it is derivable as skipped from the
+// outcomes carried so far; a hole nothing explains is still a refusal.
+//
+//   - every recorded task must exist in the plan, in plan order;
+//   - the design must be the one the bootstrap commit names, and a bootstrap
+//     with NO design trailer is refused rather than waived -- fixpoint always
+//     writes one, so its absence means the history was rewritten. The same
+//     accept-if-absent rule was already refused for -plan, and this is the same
+//     guard on the other door;
+//   - the gate must be the one the bootstrap commit names. A project half-built
 //     under one gate must not be finished under another and reported as one
 //     thing.
 //
@@ -163,7 +202,10 @@ type Resume struct {
 // original produced.
 func AdmitResume(h History, pl Plan, designSHA, verifyProfile string) (Resume, error) {
 	var r Resume
-	if h.DesignSHA != "" && designSHA != "" && h.DesignSHA != designSHA {
+	if h.DesignSHA == "" {
+		return r, errors.New("the bootstrap commit carries no Design-SHA256 trailer; fixpoint always writes one, so the history has been rewritten -- a missing digest is a refusal, not a waiver")
+	}
+	if designSHA != "" && h.DesignSHA != designSHA {
 		return r, fmt.Errorf("the project was built from design %.12s and the design in it now hashes to %.12s; a half-built project cannot be finished against a different document", h.DesignSHA, designSHA)
 	}
 	if h.VerifyProfile != verifyProfile {
@@ -174,18 +216,41 @@ func AdmitResume(h History, pl Plan, designSHA, verifyProfile string) (Resume, e
 	for i, t := range pl.Tasks {
 		position[t.ID] = i
 	}
-	r.Carried = make(map[string]Record, len(h.Records))
-	for i, rec := range h.Records {
-		pos, known := position[rec.Task]
-		switch {
-		case !known:
+	for _, rec := range h.Records {
+		if _, known := position[rec.Task]; !known {
 			return r, fmt.Errorf("the history records task %q, which the plan does not contain: the repository and PLAN.json disagree about what was being built", rec.Task)
-		case pos != i:
-			return r, fmt.Errorf("the history records %q at position %d and the plan puts it at %d: recorded tasks must be a prefix of the plan's order, and this repository's are not", rec.Task, i+1, pos+1)
 		}
-		r.Carried[rec.Task] = rec
 	}
-	r.Index = len(h.Records)
+
+	// Walk the plan and the records together. A record must sit at the cursor;
+	// a plan task with no record is admitted as a derived skip only while later
+	// records prove the original run went past it.
+	r.Carried = make(map[string]Record, len(h.Records))
+	outcomes := make(map[string]string, len(h.Records))
+	ri := 0
+	for idx, t := range pl.Tasks {
+		if ri < len(h.Records) && h.Records[ri].Task == t.ID {
+			r.Carried[t.ID] = h.Records[ri]
+			outcomes[t.ID] = h.Records[ri].Outcome
+			ri++
+			continue
+		}
+		if ri >= len(h.Records) {
+			// Nothing recorded past here: this is where the original run stopped,
+			// and where the resumed one re-enters. The build loop re-derives any
+			// skip this task would be, exactly as a fresh run would.
+			r.Index = idx
+			return r, nil
+		}
+		// A hole with records beyond it: legitimate only as a derived skip.
+		dep := BlockedDependency(t, outcomes)
+		if dep == "" {
+			return r, fmt.Errorf("the history records %q after a gap at %q, which no failed or blocked dependency explains: recorded tasks plus derived skips must form a prefix of the plan's order, and this repository's do not", h.Records[ri].Task, t.ID)
+		}
+		r.Carried[t.ID] = Record{Task: t.ID, Outcome: "skipped", Reason: "dependency " + dep}
+		outcomes[t.ID] = "skipped"
+	}
+	r.Index = len(pl.Tasks)
 	return r, nil
 }
 
