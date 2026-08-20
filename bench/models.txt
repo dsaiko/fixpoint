@@ -1,5 +1,9 @@
 # Candidates for the 2026-08 reviewer sweep, one per line. Run each with:
 #   make bench MODEL=<name>
+# Every seed number in the notes below (17/20, 20/20, ...) is from the 20-seed
+# bench retired on 2026-08-20. The bench is 100 seeds now and results.csv was
+# emptied with it; those rows are in git at 70b9113. The DISQUALIFIED notes are
+# about harnesses, not seeds, and still stand.
 # Floating :cloud tags are a repeatability hazard -- bench/run.sh records what
 # `ollama show` resolves at run time; prefer dated tags where the library
 # offers them (see config/agents/deepseek-ollama.yaml for why).
@@ -75,9 +79,9 @@ x-ai/grok-4.6
 #    while `model@provider` is not. The suffix rides through any harness, since
 #    it is just a model name.
 #
-# The zero rows in results.csv are those runs. The bench's own words: a
-# model that cannot finish a run cannot hold a seat. Retry when any of the
-# three parties changes behavior.
+# The zero rows those runs left are in git at 70b9113, not in the current
+# results.csv. The bench's own words: a model that cannot finish a run cannot
+# hold a seat. Retry when any of the three parties changes behavior.
 # google/gemini-3.7-flash
 # codex@google/gemini-3.7-flash
 # codex@google/gemini-3.7-flash:vertex

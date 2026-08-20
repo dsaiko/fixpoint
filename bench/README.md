@@ -18,10 +18,22 @@ disqualifier, and one decision rule.
 
 | metric | definition | why it is the right proxy |
 |---|---|---|
-| **recall** | seeded defects found / seeded (12 code, 8 design) | quality against ground truth — no judge, no taste, no drift between runs |
+| **recall** | seeded defects found / seeded (60 code, 40 design) | quality against ground truth — no judge, no taste, no drift between runs |
 | **noise** | findings matching no seed | not automatically false (models find real unseeded bugs; skim the per-run report before dismissing) — but a model whose output is mostly unmatched is expensive to triage |
 | **cost** | input+output tokens (CLI-reported, real) and wall-clock seconds | tokens are the quota drawdown; wall clock is what gates a panel round, which runs at the slowest reviewer's pace |
 | **found_per_mtok** | matched seeds per million tokens | the headline: quality per unit of the thing being spent |
+
+The two tasks are one benchmark: **60 code seeds + 40 design seeds = 100
+points**, one point per seed. `bench/report.py` sums a model's two rows into
+that score; a model that has run only one task is reported as INCOMPLETE
+rather than scored out of 60.
+
+Nobody scores 100, and that is the design. The previous 20-seed target was
+saturated — 10 of 24 code runs and 11 of 21 design runs sat at recall 1.00, so
+the metric had stopped ranking the top of the field. A hundred seeds across
+~940 lines of Go and a 169-line design document spread the good models out
+again; what matters is the distance to the claude baseline, not the distance
+to 100.
 
 ### The disqualifier
 
@@ -32,6 +44,28 @@ verdict to INCONCLUSIVE. Any contract failure or timeout across the sweep is
 recorded in `results.csv` (`errors`); more than one across three repeats
 disqualifies regardless of recall.
 
+### The calibration, measured 2026-08-20
+
+| baseline | code | design | **score** | tokens | wall |
+|---|---|---|---|---|---|
+| claude (opus-5, effort high) | 52/60 | 23/40 | **75/100** | 76k | 901s |
+| codex | 45/60 | 16/40 | **61/100** | 315k | 941s |
+
+Zero contract failures either side. That is the readable scale: 75 is what the
+best reviewer available does, so a candidate at 50 is doing two thirds of the
+job and one at 15 is not reviewing.
+
+Two things the calibration showed that a reader of the numbers needs:
+
+- **The misses move between runs.** claude found the unsalted SHA-256 in one
+  run and not in the next, on an unchanged target. Single-repeat recall is a
+  sample, not a measurement — which is why a seat needs 3 repeats.
+- **Design tops out near 25, not 40.** claude produced 37 findings across the
+  two design lenses with *zero* unmatched, and still reached 23 seeds: the two
+  lenses report the same flaw, and one finding often covers two or three seeds.
+  The 40 design seeds are a pool a reviewer samples from, so *which* ones a
+  model finds carries as much information as how many.
+
 ### The decision rule
 
 Run **claude and codex through the bench first** — they calibrate it. A seed
@@ -41,7 +75,8 @@ the 100% mark that makes candidate recall readable.
 A candidate earns a seat when, over ≥3 repeats:
 
 1. zero-or-one contract failures (see above), and
-2. median recall ≥ **2/3 of the claude baseline** on the same task, and
+2. median recall ≥ **2/3 of the claude baseline** on the same task (so ≥35/60
+   on code, ≥15/40 on design, against the 2026-08-20 calibration), and
 3. `found_per_mtok` beats the weakest current seat-holder on the same task —
    a seat is comparative: the question is never "is it good", it is "does it
    beat what the seat currently pays for".
@@ -53,10 +88,13 @@ across the panel is <4%, so non-overlap is the panel's whole value).
 
 ## Protocol
 
-- **Frozen targets.** `testdata/target-code` (Go link shortener, 12 seeded
-  defects: 8 correctness for the `review-bugs` lens, 4 concurrency for
-  `review-concurrency`) and `testdata/target-design` (a sync-service design,
-  8 seeded failure-mode flaws for `design-failure`). **Never fix the seeded
+- **Frozen targets.** `testdata/target-code` (a Go link shortener in seven
+  files, 60 seeded defects: correctness for `review-bugs`, concurrency for
+  `review-concurrency`, and 14 security defects — unsalted hashes, a
+  predictable token, an open redirect, a path traversal, a client-controlled
+  admin header — for `review-security`) and `testdata/target-design` (a
+  sync-service design, 40 seeded flaws: 24 failure-and-operation for
+  `design-failure`, 16 data-model for `design-data`). **Never fix the seeded
   bugs** — the target's value is that it does not change between
   measurements. `**/testdata/**` is excluded by the default config, so real
   review runs over this repository never trip on them.
@@ -64,12 +102,13 @@ across the panel is <4%, so non-overlap is the panel's whole value).
   (`bench/agent-template.yaml` = the kimi-ollama.yaml invocation with only
   the model swapped), identical prompts, identical targets. No judge, no
   refutation — they would measure claude's filtering, not the candidate.
-- **3 sessions per candidate per repeat** (2 code lenses + 1 design lens), so
-  a seven-model sweep is ~21 sessions per repeat — sized to fit a weekly
-  quota alongside real work. Sweep once at 1 repeat, then re-run the
-  finalists at 3 repeats before deciding: single-run recall on a dozen seeds
-  is noisy, and the variance itself is information (a model that finds 9
-  then 4 is worse than one that finds 6 twice).
+- **5 sessions per candidate per repeat** (3 code lenses + 2 design lenses),
+  so a seven-model sweep is ~35 sessions per repeat. That is the price of a
+  seed count that discriminates, and it is why the cheap screen matters:
+  sweep once at 1 repeat, drop everything that cannot finish a run or scores
+  near the floor, then re-run only the finalists at 3 repeats. Single-run
+  recall is noisy and the variance itself is information (a model that scores
+  61 then 38 is worse than one that scores 49 twice).
 - **Pin what you measured.** Floating `:cloud` tags get re-pointed;
   `bench/run.sh` records `ollama show` output at run time, and a dated tag
   (like `deepseek-v4-flash:0731-cloud`) beats a floating one where the
@@ -83,11 +122,38 @@ across the panel is <4%, so non-overlap is the panel's whole value).
   comparable, never invalid, since all runs are re-scorable from their
   summaries).
 
+  Three properties matter at a hundred seeds and did not at twenty:
+
+  - **One finding, one seed.** A finding is credited to its best match only —
+    most keywords, then a line gate beats a file-wide seed, then the closer
+    line. With seeds packed a few lines apart, the old any-seed-that-matches
+    rule let one vague finding light up three neighbours.
+  - **Anchors, not line numbers.** A code seed carries `anchor`, an exact and
+    unique substring of its line; `score.py` resolves it against the target at
+    scoring time. Hand-counted line numbers rot the moment the target is
+    touched, and an anchor that no longer resolves is a hard error instead of
+    a seed nobody finds.
+  - **A bundled finding earns one point.** Reviewers write one finding where
+    the manifest has two seeds — claude reported the logged token and the
+    token echoed in the 401 as a single sentence, and covered three design
+    seeds with "unpaginated, unindexed, untimed /sync". That is the ceiling
+    the design task runs into: 37 findings, every one matched, 23 seeds. The
+    rule stays, because itemizing distinct defects is exactly what a panel
+    seat is being bought for — but read a miss list with it in mind before
+    calling a seed bad.
+  - **The manifests are testable.** `make bench-check` runs
+    `score.py --check` (every anchor resolves, uniquely) and
+    `score.py --selftest` (every seed, handed the most on-the-nose finding it
+    could receive, gets that finding back rather than losing it to a
+    neighbour). Both must pass before a manifest edit is worth a run.
+
 ## Running it
 
 ```sh
 make bench MODEL=glm-5.2:cloud                 # both tasks, 1 repeat
 make bench MODEL=kimi-k3:cloud TASK=code N=3   # one task, 3 repeats
+make bench-check                               # validate the manifests, no model
+python3 bench/report.py                        # every model's score out of 100
 ```
 
 Candidates for the current sweep are listed in `models.txt`. Model names route
@@ -107,6 +173,19 @@ seed tables land in `results/`. Re-score an old run without re-paying for it:
 ```sh
 python3 bench/score.py bench/manifest-code.yaml .fixpoint/<ts>/summary-<ts>.json <model>
 ```
+
+## History
+
+`results.csv` was emptied on 2026-08-20, when the bench went from 20 seeds to
+100. The 46 rows measured against the old target are in git history at
+`70b9113` and are **not** comparable: different targets, more lenses, and a
+matcher that credits each finding once. Everything is being re-measured.
+
+That reset also fixed a matcher bug worth remembering: the manifest reader kept
+the quotation marks on every quoted keyword that was not first in its list, so
+those keywords could never match anything. Multi-word keywords were silently
+dead in every measurement before the reset, which biased all of them towards
+false negatives.
 
 ## What this does not measure
 

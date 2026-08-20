@@ -150,6 +150,19 @@ bench:
 	@test -n "$(MODEL)" || { echo "usage: make bench MODEL=<ollama-model> [TASK=code|design|all] [N=repeats]"; exit 2; }
 	bench/run.sh "$(MODEL)" "$(or $(TASK),all)" "$(or $(N),1)"
 
+## bench-check: validate both seed manifests against the frozen targets -- no model, no quota
+## Every anchor must resolve to exactly one line, and every seed must recover
+## its own finding instead of losing it to a neighbouring seed. Run it after
+## any manifest or target edit; a broken manifest scores a model low and calls
+## it a measurement.
+bench-check:
+	python3 bench/score.py --check bench/manifest-code.yaml >/dev/null
+	python3 bench/score.py --check bench/manifest-design.yaml >/dev/null
+	python3 bench/score.py --selftest bench/manifest-code.yaml
+	python3 bench/score.py --selftest bench/manifest-design.yaml
+	cd bench/testdata/target-code && go build ./...
+	@echo "bench: manifests and target OK"
+
 ## review-branch: one review round over only what this branch changed
 review-branch: build
 	./$(BINARY) review-branch --trusted-target

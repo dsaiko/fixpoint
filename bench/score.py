@@ -2,12 +2,26 @@
 """Score one fixpoint bench run against a seed manifest.
 
 Usage: bench/score.py <manifest.yaml> <summary-*.json> <model> [repeat]
+       bench/score.py --check <manifest.yaml>
+       bench/score.py --selftest <manifest.yaml>
 
 Reads the run summary fixpoint already writes, matches every finding against
 the manifest's seeded defects, and appends one row to bench/results.csv plus a
 per-seed hit table to bench/results/. Matching is deterministic: right file,
-within +/- span lines of the seed (skipped when line is 0), and at least
-`need` of the keywords present in title+description, case-insensitive.
+within +/- span lines of the seed (skipped when the seed has no line), and at
+least `need` of the keywords present in title+description, case-insensitive.
+
+Every finding is credited to AT MOST ONE seed -- the one it matches best (most
+keywords, then closest line). With 60 code seeds packed into a few files, the
+older any-seed-that-matches rule let one vague finding light up three
+neighbouring seeds and inflate recall; a reviewer is credited for what it
+actually distinguished.
+
+Seed lines come from `anchor`, an exact and unique substring of the seeded
+line, resolved against the target under the manifest's `root` at scoring time.
+Hand-counted line numbers rot silently the moment the target is touched; an
+anchor that no longer resolves is a hard error. `--check` runs that resolution
+alone, which is how you validate a manifest edit without paying for a run.
 
 No YAML dependency: the manifest is parsed with a purpose-built reader that
 understands exactly the shape bench/manifest-*.yaml uses.
@@ -20,70 +34,244 @@ import re
 import sys
 
 
+def parse_list(val):
+    """Split a YAML flow list into its items, honouring quotes.
+
+    Hand-rolled because the manifest is read without a YAML library. The regex
+    this replaces kept the quotation marks on every quoted item that was not
+    the first in the list ('"rows 1..N-1"'), and a keyword carrying its own
+    quotes can never match a finding -- those keywords were silently dead, which
+    biased every measurement made before 2026-08-20 towards false negatives.
+    """
+    items, cur, quote = [], "", None
+    for ch in val.strip().strip("[]"):
+        if quote:
+            if ch == quote:
+                items.append(cur)
+                cur, quote = "", None
+            else:
+                cur += ch
+        elif ch in "\"'":
+            # Drop the separator whitespace sitting in front of a quoted item,
+            # so the keyword is exactly what the quotes contain.
+            if not cur.strip():
+                cur = ""
+            quote = ch
+        elif ch == ",":
+            if cur.strip():
+                items.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        items.append(cur.strip())
+    return [i for i in items if i]
+
+
 def read_manifest(path):
     """Parse the two-level manifest without a YAML library."""
-    task, seeds, cur = None, [], None
+    task, root, seeds, cur = None, None, [], None
     for raw in pathlib.Path(path).read_text().splitlines():
         line = raw.split(" #")[0].rstrip() if not raw.lstrip().startswith("#") else ""
         if not line.strip():
             continue
         if line.startswith("task:"):
             task = line.split(":", 1)[1].strip()
+        elif line.startswith("root:"):
+            root = line.split(":", 1)[1].strip()
         elif line.strip().startswith("- id:"):
             cur = {"id": line.split(":", 1)[1].strip()}
             seeds.append(cur)
         elif cur is not None and ":" in line:
             key, val = (s.strip() for s in line.strip().split(":", 1))
             if key == "keywords":
-                words = re.findall(r'"([^"]+)"|([^,\[\]]+)', val.strip("[]"))
-                cur[key] = [a or b.strip() for a, b in words if (a or b.strip())]
+                cur[key] = parse_list(val)
             elif key in ("line", "span", "need"):
                 cur[key] = int(val)
             else:
-                cur[key] = val.strip('"')
+                # Anchors carry code, so they are quoted with whichever quote
+                # the code itself does not use.
+                val = val.strip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                    val = val[1:-1]
+                cur[key] = val
     if task is None or not seeds:
         sys.exit(f"{path}: no task or no seeds parsed")
-    return task, seeds
+    ids = [s["id"] for s in seeds]
+    if len(set(ids)) != len(ids):
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        sys.exit(f"{path}: duplicate seed ids: {', '.join(dupes)}")
+    for seed in seeds:
+        seed.setdefault("line", 0)
+        seed.setdefault("span", 0)
+        seed.setdefault("need", 1)
+        if not seed.get("keywords"):
+            sys.exit(f"{path}: seed {seed['id']} has no keywords")
+    return task, root, seeds
 
 
-def matches(seed, finding):
+def resolve_anchors(manifest_path, root, seeds):
+    """Turn every seed's `anchor` into a line number in the target.
+
+    A seed whose anchor is missing, ambiguous, or in the wrong file is a
+    manifest that no longer describes the target: that is a hard error, not a
+    seed nobody finds. Seeds without an anchor keep whatever `line` they carry
+    (0 means no line gate at all).
+    """
+    if root is None:
+        return []
+    base = pathlib.Path(manifest_path).parent / root
+    problems, cache = [], {}
+    for seed in seeds:
+        anchor = seed.get("anchor")
+        if not anchor:
+            continue
+        name = seed["file"]
+        if "|" in name:
+            problems.append(f"{seed['id']}: anchor with a multi-file seed ({name})")
+            continue
+        path = base / name
+        if name not in cache:
+            if not path.exists():
+                problems.append(f"{seed['id']}: {path} does not exist")
+                cache[name] = []
+            else:
+                cache[name] = path.read_text().splitlines()
+        lines = cache[name]
+        found = [i + 1 for i, text in enumerate(lines) if anchor in text]
+        if len(found) == 0:
+            problems.append(f"{seed['id']}: anchor not found in {name}: {anchor!r}")
+        elif len(found) > 1:
+            problems.append(
+                f"{seed['id']}: anchor is ambiguous in {name} (lines {found}): {anchor!r}")
+        else:
+            seed["line"] = found[0]
+    return problems
+
+
+def assign(seeds, findings):
+    """Credit every finding to at most one seed: its best match.
+
+    Ties go to the seed listed first in the manifest, which is why two seeds
+    that a finding can satisfy equally well must be told apart by keywords --
+    `--selftest` is what catches the pairs that cannot.
+    """
+    hit = {s["id"]: [] for s in seeds}
+    extras = []
+    for f in findings:
+        best, best_key = None, None
+        for s in seeds:
+            key = match_score(s, f)
+            if key is not None and (best_key is None or key > best_key):
+                best, best_key = s, key
+        if best is None:
+            extras.append(f)
+        else:
+            hit[best["id"]].append(f)
+    return hit, extras
+
+
+def match_score(seed, finding):
+    """Return the ranking key if the finding matches this seed, else None.
+
+    The key decides which seed a finding belongs to when several would accept
+    it: most keywords first, then the seed that gates on a line (evidence about
+    one place beats a file-wide seed), then the closer line.
+    """
     # `file` may list alternatives ("store.go|worker.go") for a defect whose
     # two halves live in different files and get reported from either.
     if not any(finding.get("file", "").endswith(f) for f in seed["file"].split("|")):
-        return False
-    if seed["line"] > 0 and abs(int(finding.get("line") or 0) - seed["line"]) > seed["span"]:
-        return False
+        return None
+    distance = 0
+    if seed["line"] > 0:
+        distance = abs(int(finding.get("line") or 0) - seed["line"])
+        if distance > seed["span"]:
+            return None
     text = (finding.get("title", "") + " " + finding.get("description", "")).lower()
     # Word-boundary prefix match: "race" hits "races" and "racing" but "lock"
     # does not hit "block" -- substring matching produced both failure modes
     # in calibration.
     hits = sum(1 for k in seed["keywords"]
                if re.search(r"\b" + re.escape(k.lower()), text))
-    return hits >= seed["need"]
+    if hits < seed["need"]:
+        return None
+    return (hits, 1 if seed["line"] > 0 else 0, -distance)
+
+
+def check(manifest_path):
+    """Validate a manifest against its target without running anything."""
+    task, root, seeds = read_manifest(manifest_path)
+    problems = resolve_anchors(manifest_path, root, seeds)
+    anchored = sum(1 for s in seeds if s.get("anchor"))
+    print(f"{manifest_path}: task {task}, {len(seeds)} seeds, "
+          f"{anchored} anchored, {len(seeds) - anchored} matched on keywords alone")
+    for p in problems:
+        print(f"  BROKEN {p}")
+    if problems:
+        return 1
+    for seed in sorted(seeds, key=lambda s: (s["file"], s["line"])):
+        where = f"{seed['file']}:{seed['line']}+/-{seed['span']}" if seed["line"] else seed["file"]
+        print(f"  {seed['id']:5s} {where:34s} need {seed['need']} of {len(seed['keywords'])}")
+    return 0
+
+
+def selftest(manifest_path):
+    """Prove every seed can be found without stealing another seed's finding.
+
+    Each seed is turned into the most on-the-nose finding it could receive --
+    its own keywords and its own note, at its own line -- and the whole set is
+    matched at once. A seed that does not get its own finding back is a seed
+    two others cannot be told apart from, which at 100 seeds is the failure
+    mode that quietly caps everyone's recall.
+    """
+    task, root, seeds = read_manifest(manifest_path)
+    problems = resolve_anchors(manifest_path, root, seeds)
+    if problems:
+        for p in problems:
+            print(f"  BROKEN {p}")
+        return 1
+    findings = [{
+        "file": s["file"].split("|")[0],
+        "line": s["line"],
+        "title": f"seed {s['id']}",
+        "description": " ".join(s["keywords"][:s["need"]]) + " -- " + s.get("note", ""),
+    } for s in seeds]
+    hit, extras = assign(seeds, findings)
+    stolen = []
+    for seed, f in zip(seeds, findings):
+        got = hit[seed["id"]]
+        if not any(g is f for g in got):
+            thief = next((sid for sid, fs in hit.items() if any(g is f for g in fs)), "nothing")
+            stolen.append(f"{seed['id']}: its own finding was credited to {thief}")
+    print(f"{manifest_path}: selftest {len(seeds) - len(stolen)}/{len(seeds)} seeds "
+          f"recover their own finding, {len(extras)} unmatched")
+    for line in stolen:
+        print(f"  COLLISION {line}")
+    return 1 if stolen else 0
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--check":
+        sys.exit(check(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "--selftest":
+        sys.exit(selftest(sys.argv[2]))
     if len(sys.argv) < 4:
         sys.exit(__doc__)
     manifest_path, summary_path, model = sys.argv[1], sys.argv[2], sys.argv[3]
     repeat = sys.argv[4] if len(sys.argv) > 4 else "1"
 
-    task, seeds = read_manifest(manifest_path)
+    task, root, seeds = read_manifest(manifest_path)
+    problems = resolve_anchors(manifest_path, root, seeds)
+    if problems:
+        # Scoring against a manifest that no longer fits the target would
+        # publish a low recall as a fact about the model.
+        sys.exit("bench: manifest does not match the target:\n  " + "\n  ".join(problems))
     summary = json.loads(pathlib.Path(summary_path).read_text())
     rounds = summary.get("rounds") or []
     findings = [f for r in rounds for f in (r.get("findings") or [])]
     steps = [s for r in rounds for s in (r.get("steps") or [])]
 
-    hit = {s["id"]: [] for s in seeds}
-    extras = []
-    for f in findings:
-        matched = False
-        for s in seeds:
-            if matches(s, f):
-                hit[s["id"]].append(f)
-                matched = True
-        if not matched:
-            extras.append(f)
+    hit, extras = assign(seeds, findings)
 
     found = sum(1 for v in hit.values() if v)
     recall = found / len(seeds)
@@ -115,7 +303,9 @@ def main():
     csv_path = pathlib.Path(__file__).parent / "results.csv"
     new = not csv_path.exists()
     with csv_path.open("a", newline="") as fh:
-        w = csv.writer(fh)
+        # csv.writer defaults to CRLF; git normalises it away on commit, so the
+        # working copy would differ from HEAD after every single run.
+        w = csv.writer(fh, lineterminator="\n")
         if new:
             w.writerow(["run", "task", "model", "repeat", "sessions", "errors",
                         "findings", "matched_seeds", "seeds", "recall", "extras",
