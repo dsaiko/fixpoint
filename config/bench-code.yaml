@@ -19,8 +19,14 @@ roles:
     agents: [bench-candidate]
     strategy: all
     prompts:
+      # Three lenses for 60 seeds: correctness and concurrency as before, plus
+      # security, which owns 14 of them (auth.go, the traversal and the header
+      # trust in main.go). Without the third lens those seeds would be
+      # unreachable in practice -- the bugs lens does not go looking for an
+      # unsalted hash -- and an unreachable seed measures nothing.
       - review-bugs
       - review-concurrency
+      - review-security
 
 loop:
   review_only: true

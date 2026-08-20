@@ -52,14 +52,15 @@ roles:
   # value per session here.
   #
   # RESTORED 2026-08-12, after the quota reset and the seeded-target benchmark
-  # (bench/README.md, bench/results.csv, 16 models). deepseek-v4-flash scored a
-  # perfect 20/20 seeds with zero noise -- the "flash trades depth for latency"
+  # (bench/README.md, bench/results.csv, 16 models). On the 20-seed bench that
+  # preceded the 2026-08-20 rebuild, deepseek-v4-flash scored a perfect 20/20
+  # with zero noise -- the "flash trades depth for latency"
   # concern it was once passed over for did not survive measurement. The rest of
   # the 2026-08 sweep disqualified itself (timeouts, contract failures, or half
   # the recall at multiples of the tokens).
   #
   # kimi REPLACED BY minimax 2026-08-14, and the reason is worth keeping because
-  # the bench did not predict it. kimi held its seat on 19/20 seeds with zero
+  # the bench did not predict it. kimi held its seat on 19/20 of those seeds with zero
   # unseeded findings; then two live rounds over this repository (runs
   # 20260813-180828 and 20260813-222753) had the judge drop 76% and then 85% of
   # what it reported -- 13 of 17, then 22 of 26 -- while it produced the largest
@@ -67,7 +68,8 @@ roles:
   # session, a prompt, and a share of the judge's context to throw away. Recall
   # against planted defects turned out not to predict precision against a real
   # codebase, which is the single most useful thing the panel has learned about
-  # its own benchmark. minimax-m3 takes the seat on a perfect 20/20 across both
+  # its own benchmark (seed counts below are the 20-seed bench, retired
+  # 2026-08-20). minimax-m3 takes the seat on a perfect 20/20 across both
   # suites -- see minimax-ollama.yaml for what it costs and the one number that
   # argues against it.
   #

@@ -11,7 +11,11 @@
 # unseeded findings, which is the shape of a model that is precise on a target
 # with planted defects and unmoored on a real one.
 #
-# minimax's own bench numbers (bench/results.csv, run 20260813-001925/002114):
+# EVERY seed number in this file is from the 20-seed bench that ran until
+# 2026-08-20. The bench is 100 seeds now and results.csv was reset with it, so
+# these rows live in git at 70b9113 -- see bench/README.md before comparing.
+#
+# minimax's own bench numbers (run 20260813-001925/002114):
 # a perfect 20/20 across both suites -- 12/12 code seeds, 8/8 design seeds -- the
 # only ollama model besides deepseek-v4-flash, glm-5.2, deepseek-v4-pro and
 # kimi-k3 to manage it, and it did so in 127s and 66s.

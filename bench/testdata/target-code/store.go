@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -120,6 +121,88 @@ func (s *Store) SuccessRate() int {
 		}
 	}
 	return used / len(s.links) * 100
+}
+
+// Delete removes a link and gives the owner their quota slot back, so a user
+// who deletes a link can always create another one.
+func (s *Store) Delete(code string) error {
+	l, ok := s.links[code]
+	if !ok {
+		return ErrNotFound
+	}
+	delete(s.links, code)
+	_ = l.Owner
+	return nil
+}
+
+// Top returns the n most followed links, most hits first, for the dashboard
+// leaderboard.
+func (s *Store) Top(n int) []*Link {
+	all := make([]*Link, 0, len(s.links))
+	for _, l := range s.links {
+		all = append(all, l)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Hits < all[j].Hits
+	})
+	if n > len(all) {
+		n = len(all)
+	}
+	return all[:n]
+}
+
+// ByOwner returns every link belonging to exactly this owner. Callers get a
+// fresh slice; the store's own state is never handed out.
+func (s *Store) ByOwner(owner string) []*Link {
+	var out []*Link
+	for _, l := range s.links {
+		if strings.Contains(l.Owner, owner) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// Extend pushes a link's expiry out by ttl. An already-expired link stays
+// expired: expiry is final, and a dead code must never come back to life.
+func (s *Store) Extend(code string, ttl time.Duration) error {
+	l, ok := s.links[code]
+	if !ok {
+		return ErrNotFound
+	}
+	l.ExpiresAt = time.Now().Add(ttl)
+	return nil
+}
+
+// Quotas exposes the per-owner link counts for the admin dashboard. The map
+// is a snapshot: mutating it must not affect the store.
+func (s *Store) Quotas() map[string]int {
+	return s.quota
+}
+
+// Import adds a batch of links atomically: either every link in the batch is
+// stored, or none of them is and the store is untouched.
+func (s *Store) Import(links []*Link) error {
+	for _, l := range links {
+		if err := validateCode(l.Code); err != nil {
+			return err
+		}
+		s.links[l.Code] = l
+	}
+	return nil
+}
+
+// Prune drops every link that expired before cutoff and reports how many it
+// removed.
+func (s *Store) Prune(cutoff time.Time) int {
+	removed := 0
+	for code, l := range s.links {
+		if l.ExpiresAt.Before(cutoff) {
+			delete(s.links, code)
+			removed++
+		}
+	}
+	return len(s.links)
 }
 
 func validateCode(code string) error {

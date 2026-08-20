@@ -1,7 +1,13 @@
 # Seeded flaws in bench/testdata/target-design/DESIGN.md. Design findings cite
 # unstable line numbers, so these seeds match on keywords alone (line: 0):
 # a seed is FOUND when at least `need` of its keywords appear in a finding's
-# title+description. Frozen: never fix these flaws.
+# title+description, and every finding is credited to at most one seed.
+# Frozen: never fix these flaws.
+#
+# 40 seeds, one point each; the code task carries the other 60 of the
+# benchmark's 100 points. Two lenses run over this document (design-failure,
+# design-data), so the seeds are split roughly evenly between what breaks when
+# things go wrong (D01-D24) and what the data model gets wrong (D25-D40).
 task: design
 seeds:
   - id: D01
@@ -37,7 +43,9 @@ seeds:
     line: 0
     span: 0
     need: 2
-    keywords: [unbounded, cap, outbox, "one request", batch, chunk, "grows", backpressure]
+    # "no cap", not bare "cap": \b-prefix matching makes "cap" hit "capacity"
+    # and "capped", which is how D05 used to swallow D28's body-size finding.
+    keywords: [unbounded, "no cap", outbox, "one request", batch, chunk, "grows", backpressure]
     note: "no outbox cap plus whole-outbox-in-one-POST: a long-offline device produces an unserviceable request"
   - id: D06
     file: DESIGN.md
@@ -60,3 +68,229 @@ seeds:
     need: 2
     keywords: [rolling, concurrently, migration, "old and new", overlap, "schema"]
     note: "rolling deploys guarantee old/new overlap; 'deploys are quick' is not a mechanism, and migrating before start breaks the old version"
+  - id: D09
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["no request timeout", timeout, "as long as it takes", exhaust, "hold", connection, slow]
+    note: "§5 removes the server-side request timeout, so a slow or hostile client holds a connection and a DB transaction open indefinitely"
+  - id: D10
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [jitter, thundering, herd, "same schedule", synchroniz, stampede, backoff, lockstep]
+    note: "every client shares one backoff schedule with no jitter; after an outage they retry in lockstep"
+  - id: D11
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["until the batch is acknowledged", forever, "max attempts", "dead letter", "give up", poison, indefinit, "never succeeds"]
+    note: "retries repeat until acknowledged with no attempt limit: a batch the server will always reject retries forever"
+  - id: D12
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["rate limit", backpressure, "tight loop", throttl, quota, abuse, "misbehaving client"]
+    note: "no per-user rate limit and no backpressure; one looping client can consume the service"
+  - id: D13
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [cursor, "strictly newer", tie, "same millisecond", "same timestamp", skip, miss, monotonic]
+    note: "the cursor is a millisecond timestamp compared strictly-greater: changes sharing a timestamp are skipped forever"
+  - id: D14
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["stops sending", alert, silent, "not itself an alertable", detect, invisible, "no signal", monitor]
+    note: "a client that can never sync simply goes quiet; the design names that as unalertable and falls back to support tickets"
+  - id: D15
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [pagination, "SELECT *", "first sync", "every matching row", memory, "no pagination", chunk, large]
+    note: "the changes query returns every matching row unpaginated; a first sync or a big account loads it all into memory"
+  - id: D16
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [index, "no index", scan, "primary key", query, slow, "modified_at", performance]
+    note: "the changes query filters on (user_id, modified_at) with no index planned beyond the primary key"
+  - id: D17
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["read-only", degraded, "Postgres unavailable", dependency, 500, "no degraded", outage, unavailable]
+    note: "when Postgres is down every sync 500s with no degraded mode, and the retry storm arrives on top of the outage"
+  - id: D18
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["version number", versioning, "no version", compatib, "old client", upgrade, protocol, negotiat]
+    note: "the wire format carries no version, so any change that is not purely additive breaks old clients silently"
+  - id: D19
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [drain, "in-flight", shutdown, graceful, deploy, "not drained", abort]
+    note: "in-flight syncs are killed on every rolling deploy and the design leans on the retry loop, which re-applies non-idempotent batches"
+  - id: D20
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [restore, rehears, backup, RPO, "24 hours", untested, recovery, "pg_dump"]
+    note: "nightly pg_dump means up to 24h data loss, and the restore procedure has never been rehearsed"
+  - id: D21
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["30 seconds", "15 minutes", timer, suspend, background, push, wake, goal, unachievable]
+    note: "the 30-second sync goal is unreachable with a 15-minute foreground timer and a suspended process; nothing wakes the app"
+  - id: D22
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [spike, outage, "adding instances", capacity, autoscal, absorb, "all clients", reconnect]
+    note: "the reconnect spike after a regional outage is handled by 'adding instances' — an expectation, not a mechanism"
+  - id: D23
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [audit, "which device", support, reconstruct, "no record", trail, dashboards, diagnos]
+    note: "§1 promises support can answer 'why is my note missing' from dashboards, while §9 records nothing about who sent what"
+  - id: D24
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["losing copy", discard, merge, "do not keep", recover, conflict, irrecoverab, "no record"]
+    note: "the conflict loser is discarded with no copy kept, so a wrong resolution is unrecoverable and undebuggable"
+  - id: D25
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["32-bit", collision, random, "birthday", unique, "id", collide]
+    note: "note ids are random 32-bit integers minted per device: collisions are expected well inside the target user base"
+  - id: D26
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [BIGSERIAL, "two ids", "secondary column", mapping, identity, dual, "client id", uniqueness]
+    note: "every note has two identities (client id, server BIGSERIAL) with no stated uniqueness or mapping rule"
+  - id: D27
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["full copy", duplicate, "two places", diverge, outbox, "note table", redundan, "same fact"]
+    note: "the outbox stores a full copy of each body beside the note table, with nothing keeping the two agreeing"
+  - id: D28
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    # No "unbounded"/"limit" here: those belong to D05's uncapped outbox, and a
+    # two-keyword tie between the two seeds is decided by manifest order.
+    keywords: ["do not cap", body, "free text", size, huge, megabyte, truncat, "single note"]
+    note: "nothing caps a note body, so one pasted file becomes a row and a request that no layer below can chunk or reject"
+  - id: D29
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [history, "only the latest", "overwritten", version, "no history", previous, recover, undo]
+    note: "the server keeps only the latest body, so nothing can reconstruct a note after a bad merge or a client bug"
+  - id: D30
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [tombstone, "deleted = true", forever, grow, "garbage", retention, "never removed", unbounded]
+    note: "tombstones are kept forever in both databases with no GC horizon; the client DB grows without bound"
+  - id: D31
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["account deletion", orphan, "user row", GDPR, retention, "left in place", "nightly job", privacy]
+    note: "deleting an account leaves every note row in place, orphaned and undeleted, on a maybe-later cleanup job"
+  - id: D32
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["one cursor", "per user", "per device", devices, cursor, share, "second device", skip]
+    note: "one cursor per account with several devices: whichever device syncs first advances it and the others never see those changes"
+  - id: D33
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [ownership, authoriz, "who may write", "access check", tenant, "user_id", permission, spoof]
+    note: "nothing states who may write a given note: /sync applies whatever edits arrive, with user ownership never checked"
+  - id: D34
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [encrypt, "at rest", permission, "in the clear", plaintext, disk, "notes.db", stolen]
+    note: "notes.db is written in the clear with default permissions, while §4 treats a stolen device as a handled threat"
+  - id: D35
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [shared_with, migration, schema, reserve, versioning, sharing, "not need another migration", column]
+    note: "a reserved shared_with column is not a sharing design; the migration it avoids is the cheap part"
+  - id: D36
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [resurrect, "deleted", undelete, "comes back", tombstone, edit, converge, reappear]
+    note: "a delete on one device racing an edit on another is resolved by timestamp, so deleted notes reappear"
+  - id: D37
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [attachment, "object storage", URL, orphan, lifecycle, blob, "later phase", delete]
+    note: "attachments are a URL in the note row with no lifecycle: nothing deletes the blob when the note goes"
+  - id: D38
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: [device, "per-device", "which device", identify, "no record", state, register]
+    note: "the server holds no per-device state at all, so it cannot tell two devices apart, expire one, or reason about their cursors"
+  - id: D39
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["client wall clock", "server", "receipt", trust, authoritative, "server-side timestamp", spoof, monotonic]
+    note: "modified_at is client-supplied and stored as the truth; the server never records its own receipt time"
+  - id: D40
+    file: DESIGN.md
+    line: 0
+    span: 0
+    need: 2
+    keywords: ["clears the outbox", "during", race, "while the sync", cleared, lost, "in flight", concurrent]
+    note: "step 4 clears the whole outbox, discarding edits the user made while the request was in flight"

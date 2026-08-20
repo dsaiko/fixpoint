@@ -1,74 +1,423 @@
 # Seeded defects in bench/testdata/target-code. The matcher (bench/score.py)
 # counts a seed as FOUND when a finding names the right file, lands within
-# `span` lines of `line`, and mentions at least `need` of the keywords
-# (case-insensitive, in title+description). Frozen: never fix these bugs --
-# the target's whole value is that it does not change between measurements.
+# `span` lines of the seed's line, and mentions at least `need` of the keywords
+# (case-insensitive, in title+description). Every finding is credited to at
+# most one seed -- the best-matching one -- so a vague finding cannot light up
+# three seeds at once. Frozen: never fix these bugs; the target's whole value is
+# that it does not change between measurements.
+#
+# 60 seeds, one point each; the design task carries the other 40 of the
+# benchmark's 100 points. Three lenses run over this target (review-bugs,
+# review-concurrency, review-security).
+#
+# `anchor` is an exact, unique substring of the seeded line; score.py resolves
+# it to a line number in `root` at scoring time, so editing the target above a
+# seed cannot silently rot the manifest. Seeds with neither anchor nor line are
+# matched on file and keywords alone -- used where the defect is legitimately
+# reported from either of two places.
 task: code
+root: testdata/target-code
 seeds:
   - id: C01
     file: store.go
     # No line gate: the defect is legitimately reported at NewStore (the map
     # not made) or at Create (the write that panics) -- calibration saw both.
-    line: 0
-    span: 0
-    need: 1
-    keywords: [quota]
+    # Two keywords, not one: a file-wide seed keyed on "quota" alone also
+    # accepts the quota findings that belong to C09 and C14, and exclusive
+    # matching then hands it whichever arrives first.
+    need: 2
+    keywords: [quota, nil, panic, "not initialized", "never initialized", "make(map", NewStore, "nil map"]
     note: "s.quota is never initialized in NewStore; first Create panics with nil-map write"
   - id: C02
     file: store.go
-    line: 64
+    anchor: "if time.Now().Before(l.ExpiresAt) {"
     span: 6
     need: 1
     keywords: [Before, After, inverted, expir, backwards, reversed]
     note: "expiry comparison inverted: live links are deleted, expired ones resolve"
   - id: C03
     file: store.go
-    line: 77
-    span: 6
+    anchor: "func (s *Store) Rename"
+    span: 8
     need: 1
     keywords: [twice, "validateCode(to)", "never validated", duplicate, copy-paste]
     note: "Rename validates `from` twice; `to` is never validated"
   - id: C04
     file: store.go
-    line: 105
+    anchor: "end = len(all) + 1"
     span: 6
     need: 1
     keywords: [off-by-one, "out of range", bounds, "len(all) + 1", clamp, panic, exceed]
     note: "Page clamps end to len(all)+1; last page slices out of range"
   - id: C05
     file: store.go
-    line: 122
-    span: 5
+    anchor: "return used / len(s.links) * 100"
+    span: 6
     need: 1
     keywords: [integer division, truncat, "always 0", "always returns 0", float, order of operations]
     note: "used/len*100 in integer arithmetic is 0 for every rate under 100%"
+  - id: C09
+    file: store.go
+    anchor: "func (s *Store) Delete"
+    span: 10
+    need: 1
+    keywords: [quota, "never decrement", "not released", refund, "give the owner", leak]
+    note: "Delete drops the link but never returns the owner's quota slot the doc comment promises"
+  - id: C10
+    file: store.go
+    anchor: "return all[i].Hits < all[j].Hits"
+    span: 6
+    need: 1
+    keywords: [ascending, "least", reversed, "wrong order", "most hits", backwards, sort]
+    note: "Top sorts by hits ascending, so the leaderboard shows the least followed links"
+  - id: C11
+    file: store.go
+    anchor: "if strings.Contains(l.Owner, owner) {"
+    span: 6
+    need: 1
+    keywords: [Contains, substring, "exact", "other owners", leak, tenant, prefix]
+    note: "ByOwner matches owners by substring, so one owner sees another's links"
+  - id: C12
+    file: store.go
+    anchor: "func (s *Store) Extend"
+    span: 8
+    need: 1
+    keywords: [expired, resurrect, "back to life", revive, "already expired", dead]
+    note: "Extend re-dates an already-expired link, resurrecting a code the comment says is final"
+  - id: C13
+    file: store.go
+    anchor: "func (s *Store) Import"
+    span: 11
+    need: 1
+    keywords: [atomic, partial, "half", rollback, "already stored", "not all", "before validating", mutat]
+    note: "Import writes links as it validates, so a bad code leaves the earlier half of the batch stored"
+  - id: C14
+    file: store.go
+    anchor: "return s.quota"
+    span: 6
+    need: 1
+    keywords: [snapshot, "internal map", copy, alias, mutate, "shared", expose]
+    note: "Quotas hands out the store's own map; a caller mutating it rewrites the store's state"
+  - id: C15
+    file: store.go
+    anchor: "return len(s.links)"
+    span: 6
+    need: 1
+    keywords: [removed, "wrong", count, "len(s.links)", remaining, returns]
+    note: "Prune counts removals but returns the number of links left"
   - id: C06
     file: main.go
-    line: 54
-    span: 5
+    anchor: "hours, _ := strconv.Atoi(req.TTL)"
+    span: 6
     need: 1
     keywords: [ignored, discarded, "_", error, Atoi]
     note: "strconv.Atoi error discarded; bad TTL silently becomes 0 hours"
   - id: C07
     file: main.go
-    line: 86
-    span: 10
+    anchor: "resp, err := s.client.Get(target)"
+    span: 12
     need: 1
     keywords: [Close, leak, body, connection]
     note: "preview never closes resp.Body; connections leak"
+  - id: C27
+    file: main.go
+    anchor: "func (s *server) preview"
+    span: 14
+    need: 1
+    keywords: [SSRF, "server-side request forgery", "internal", metadata, localhost, "127.0.0.1", "link-local", "private network"]
+    note: "preview fetches any registered target server-side and returns its body, reaching anything the service can reach"
+  - id: C16
+    file: main.go
+    anchor: "s.store.Resolve(strings.ToLower(code))"
+    span: 6
+    need: 1
+    keywords: [ToLower, "case", lowercas, mismatch, "never resolve", base64]
+    note: "redirect lowercases the code before lookup, but codes are stored case-sensitively"
+  - id: C17
+    file: main.go
+    anchor: "func (s *server) deleteLink"
+    span: 10
+    need: 1
+    keywords: [owner, authoriz, "access check", "any user", "anyone", permission, IDOR]
+    note: "deleteLink never checks the owner its comment promises to check: any caller deletes any link"
+  - id: C18
+    file: main.go
+    anchor: "func (s *server) out"
+    span: 12
+    need: 1
+    keywords: ["open redirect", redirect, phish, "next", unvalidated, arbitrary]
+    note: "/out redirects to any address in ?next= -- an open redirect, cached permanently by the 301"
+  - id: C19
+    file: main.go
+    anchor: 'if r.Header.Get("X-Admin") != "true" {'
+    span: 6
+    need: 1
+    keywords: ["X-Admin", header, "client-controlled", spoof, "privilege", "trivially", forge]
+    note: "the admin endpoint is gated on a request header the caller sets themselves"
+  - id: C20
+    file: main.go
+    anchor: "hits / int64(len(links))"
+    span: 6
+    need: 1
+    keywords: ["divide by zero", "division by zero", "zero", panic, empty, "len(links)"]
+    note: "/stats divides by the link count, panicking whenever the store is empty"
+  - id: C21
+    file: main.go
+    anchor: 'fmt.Sprintf("export to %s failed: %v", s.cfg.ExportDir, err)'
+    span: 6
+    need: 1
+    keywords: [leak, "internal", path, "error message", disclos, expose, verbose]
+    note: "the export handler returns the server's filesystem path and raw error to the caller"
+  - id: C22
+    file: main.go
+    anchor: "func writeJSON"
+    span: 6
+    need: 1
+    keywords: ["WriteHeader", "after", "no effect", ignored, order, header]
+    note: "writeJSON calls WriteHeader before setting headers, so Content-Type and CORS never reach the client"
+  - id: C23
+    file: main.go
+    anchor: 'w.Header().Set("Access-Control-Allow-Credentials", "true")'
+    span: 6
+    need: 1
+    keywords: [CORS, wildcard, credentials, "any origin", "Allow-Origin", cross-origin]
+    note: "wildcard CORS combined with Allow-Credentials on every JSON response"
+  - id: C24
+    file: main.go
+    anchor: "if err := json.NewDecoder(r.Body).Decode(&req); err != nil {"
+    span: 6
+    need: 1
+    keywords: [MaxBytesReader, "size limit", unbounded, "body", memory, exhaust, DoS]
+    note: "the create handler decodes an unbounded request body straight into memory"
+  - id: C25
+    file: main.go
+    anchor: 'log.Fatal(http.ListenAndServe(addr, NewAuthenticator().Middleware(mux)))'
+    span: 6
+    need: 1
+    keywords: [ReadTimeout, "ReadHeaderTimeout", timeout, slowloris, "no timeouts", Server]
+    note: "ListenAndServe with the default server: no read, write or header timeouts"
+  - id: C26
+    file: main.go
+    anchor: "defer stop()"
+    span: 6
+    need: 1
+    keywords: ["log.Fatal", "never runs", "defer", "os.Exit", shutdown, "not executed"]
+    note: "log.Fatal exits the process, so the deferred janitor stop never runs -- there is no graceful shutdown"
+  - id: S01
+    file: auth.go
+    anchor: 'secret = "dev-secret-do-not-use"'
+    span: 6
+    need: 1
+    keywords: [hardcoded, "default secret", "dev-secret", fallback, weak, credential]
+    note: "the signing secret falls back to a hardcoded development value when the environment is unset"
+  - id: S02
+    file: auth.go
+    anchor: "raw[i] = byte(rand.Intn(256))"
+    span: 6
+    need: 1
+    keywords: ["math/rand", predictable, "crypto/rand", "not cryptographically", guess, seed]
+    note: "session tokens come from math/rand, so they are predictable and forgeable"
+  - id: S03
+    file: auth.go
+    anchor: 'log.Printf("auth: issued token %s for %s", s.Token, owner)'
+    span: 6
+    need: 1
+    keywords: [log, secret, token, "written to logs", disclos, redact]
+    note: "every issued session token is written to the log in cleartext"
+  - id: S04
+    file: auth.go
+    anchor: "func (a *Authenticator) Verify"
+    span: 9
+    need: 1
+    keywords: [expir, "ExpiresAt", "never expire", lifetime, "not checked", stale]
+    note: "Verify never looks at ExpiresAt, so a token works forever despite the documented lifetime"
+  - id: S05
+    file: auth.go
+    anchor: "sum := sha256.Sum256([]byte(password))"
+    span: 6
+    need: 1
+    keywords: [salt, bcrypt, argon, scrypt, "fast hash", "unsalted", rainbow, KDF]
+    note: "passwords are stored as a single unsalted SHA-256, crackable offline at speed"
+  - id: S06
+    file: auth.go
+    anchor: "return parts[1]"
+    span: 6
+    need: 1
+    keywords: ["index out of range", panic, "parts[1]", "missing header", malformed, crash]
+    note: "BearerToken indexes parts[1] without checking; a request with no Authorization header panics"
+  - id: S07
+    file: auth.go
+    anchor: 'if s.Role != "admin" || s.Role != "owner" {'
+    span: 6
+    need: 1
+    keywords: ["always true", tautolog, "&&", "||", "never", "every session", "suspect or"]
+    note: "the admin check is always true, so RequireAdmin rejects every session including admins"
+  - id: S08
+    file: auth.go
+    anchor: '"unauthorized: "+err.Error()+" (token "+token+")"'
+    span: 6
+    need: 1
+    keywords: [token, "error message", echo, reflect, disclos, leak, response]
+    note: "the 401 response echoes the rejected token back to the caller"
+  - id: S09
+    file: auth.go
+    # No line gate: the unsynchronized map is reported at the field, at Verify's
+    # loop, or at Issue's write -- calibration cited the loop, 26 lines from the
+    # field. Two keywords instead, one of which must name the map.
+    need: 2
+    keywords: [sessions, race, "concurrent map", lock, mutex, unsynchron, "no synchronization", goroutine]
+    note: "the sessions map is read and written from every request goroutine with no lock"
+  - id: CF01
+    file: config.go
+    anchor: "port, _ := strconv.Atoi(v)"
+    span: 6
+    need: 1
+    keywords: [ignored, error, Atoi, "port 0", "silently", discarded]
+    note: "a malformed LINKD_PORT silently becomes port 0"
+  - id: CF02
+    file: config.go
+    anchor: 'log.Printf("config: bad LINKD_TIMEOUT_MS %q, keeping default", v)'
+    span: 6
+    need: 1
+    keywords: ["keeping default", "does not", "still", assigned, "anyway", contradic, zero]
+    note: "the parse-error branch logs 'keeping default' and then assigns the failed value anyway"
+  - id: CF03
+    file: config.go
+    anchor: "cfg.CacheTTL = time.Duration(n) * time.Second"
+    span: 6
+    need: 1
+    keywords: [millisecond, "time.Second", unit, "1000", documented, wrong]
+    note: "LINKD_CACHE_TTL_MS is documented in milliseconds and multiplied by time.Second: 1000x too long"
+  - id: CF04
+    file: config.go
+    anchor: "_ = limit"
+    span: 6
+    need: 1
+    keywords: ["never", "discarded", "no effect", ignored, "_ = limit", unused]
+    note: "LINKD_FETCH_LIMIT is parsed and validated, then thrown away; the setting does nothing"
+  - id: CF05
+    file: config.go
+    anchor: "raw, _ := os.ReadFile(path)"
+    span: 6
+    need: 1
+    keywords: [error, ignored, "unreadable", permission, silently, "os.ReadFile"]
+    note: "any read error -- not just a missing file -- silently yields an empty config"
+  - id: CF06
+    file: config.go
+    anchor: "func (c Config) Validate"
+    span: 16
+    need: 1
+    keywords: ["returns nil", "never returns", "always nil", logs, "does not fail", startup]
+    note: "Validate logs the problems it finds and returns nil, so a bad config starts the service anyway"
+  - id: EX01
+    # Two files, so no anchor: calibration reported the traversal at the /report
+    # handler that accepts the name, not at the filepath.Join that trusts it.
+    file: export.go|main.go
+    need: 2
+    keywords: ["path traversal", traversal, sanitiz, "arbitrary", escape, "outside", filepath.Join, name]
+    note: "the report name comes from the query string and goes into filepath.Join unchecked"
+  - id: EX02
+    file: export.go
+    anchor: "os.WriteFile(path, []byte(b.String()), 0666)"
+    span: 6
+    need: 1
+    keywords: ["0666", permission, "world", "0600", readable, mode]
+    note: "the export holding every owner's links is written world-readable"
+  - id: EX03
+    file: export.go
+    anchor: 'b.WriteString(fmt.Sprintf("%s,%s,%s,%d\n", l.Code, l.Target, l.Owner, l.Hits))'
+    span: 6
+    need: 1
+    keywords: [escap, quot, "encoding/csv", comma, inject, "csv.Writer", malformed]
+    note: "CSV rows are built with Sprintf, so a comma or quote in a target breaks the file and a leading = is a formula injection"
+  - id: EX04
+    file: export.go
+    anchor: "defer f.Close()"
+    span: 6
+    need: 1
+    keywords: ["defer", loop, "until the function returns", descriptor, leak, accumulat]
+    note: "defer inside the loop holds every file open until ArchiveAll returns"
+  - id: EX06
+    file: export.go
+    anchor: 'os.Rename(tmp.Name(), filepath.Join(dir, "snapshot.json"))'
+    span: 6
+    need: 1
+    keywords: [error, ignored, "os.Rename", "cross-device", "different filesystem", EXDEV, "/tmp"]
+    note: "the rename's error is discarded and /tmp is usually another filesystem, so the snapshot silently never lands"
+  - id: EX07
+    file: export.go
+    anchor: "if _, err := tmp.Write(payload); err != nil {"
+    span: 6
+    need: 1
+    keywords: [Sync, fsync, durab, "temporary file", "left behind", cleanup, remove]
+    note: "nothing fsyncs before the rename the comment calls durable, and the temp file is leaked on a write error"
+  - id: CA01
+    file: cache.go
+    anchor: "c.mu.RLock()"
+    span: 14
+    need: 2
+    keywords: [RLock, "read lock", write, delete, mutat, race, "concurrent map"]
+    note: "Get deletes from the map and increments hits while holding only a read lock"
+  - id: CA02
+    file: cache.go
+    anchor: "func (c *Cache) Peek"
+    span: 6
+    need: 2
+    keywords: [lock, "no lock", race, unsynchron, concurrent, Peek]
+    note: "Peek reads the map with no lock at all while other goroutines are writing it"
+  - id: CA03
+    file: cache.go
+    anchor: "func (c *Cache) Delete"
+    span: 9
+    need: 2
+    keywords: [unlock, "early return", deadlock, "still held", defer, "never released", "holding the write lock", wedg, "returns while holding", "still holding", "permanently locked"]
+    note: "Delete returns without unlocking when the code is absent, deadlocking every later caller"
+  - id: CA04
+    file: cache.go
+    anchor: "if _, alive := c.Get(code); !alive {"
+    span: 6
+    need: 2
+    keywords: [deadlock, reentran, "already holds", "RLock", "self", recursive]
+    note: "evict runs under the write lock and calls Get, which takes the read lock: a self-deadlock"
+  - id: CA05
+    file: cache.go
+    # No line gate: the timer is created in Set and not stopped in Delete, and
+    # a reviewer may cite either end -- calibration cited Delete.
+    need: 2
+    keywords: [timer, "Stop", leak, "never stopped", goroutine, accumulat, overwrit, retained, forever]
+    note: "one timer per Set is stored and never stopped, so timers and their goroutines accumulate"
+  - id: CA06
+    file: cache.go
+    anchor: "func (c *Cache) Warm"
+    span: 8
+    need: 2
+    keywords: ["check-then-act", race, "between", Peek, Set, "not atomic", "TOCTOU"]
+    note: "Warm's Peek and Set are separately locked, so the janitor and a handler can both fill the same key"
+  - id: CA07
+    file: cache.go
+    anchor: "func (c *Cache) Stats"
+    span: 6
+    need: 2
+    keywords: [race, lock, "hits", unsynchron, atomic, "torn"]
+    note: "Stats reads the hits counter with no lock while Get is incrementing it"
+  - id: CA08
+    file: cache.go
+    anchor: "func (c *Cache) evict"
+    span: 6
+    need: 1
+    keywords: ["least recently used", LRU, random, "map iteration", arbitrary, "not the least"]
+    note: "evict drops whatever entry map iteration yields first, not the least recently used one"
   - id: C08
     file: worker.go
     # No line gate: reported at mustHead itself or at the client.Do call site
     # in CheckTargets -- calibration saw both.
-    line: 0
-    span: 0
     need: 2
     keywords: [nil, panic, crash, mustHead]
     note: "mustHead logs and returns nil request; client.Do(nil) panics"
   - id: X01
     file: worker.go
-    line: 20
-    span: 5
+    anchor: "func (m Metrics) AddResolved"
+    span: 6
     need: 1
     keywords: [value receiver, copies, copied, copylocks, pointer receiver]
     note: "AddResolved has a value receiver; the mutex is copied and the increment is lost"
@@ -76,22 +425,20 @@ seeds:
     # Reported from either side of the race: the unlocked Store or the
     # janitor that sweeps it. No line gate for the same reason.
     file: store.go|worker.go
-    line: 0
-    span: 0
     need: 2
     keywords: [race, lock, mutex, concurrent, unsynchronized, synchroniz, janitor, handler]
     note: "janitor iterates and deletes s.links concurrently with HTTP handlers; Store has no lock"
   - id: X03
     file: worker.go
-    line: 68
+    anchor: "wg.Add(1)"
     span: 6
     need: 2
     keywords: [wg.Add, goroutine, race, before, Wait, inside]
     note: "wg.Add inside the goroutine races wg.Wait; WarmCache can return before probes start"
   - id: X04
     file: worker.go
-    line: 100
-    span: 16
+    anchor: "results := make(chan error)"
+    span: 18
     need: 2
     keywords: [unbuffered, block, leak, goroutine, drain, buffered]
     note: "CheckTargets returns on first error; remaining sends to the unbuffered channel block forever"
