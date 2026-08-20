@@ -17,7 +17,11 @@ claude-fable-5
 mistral-large-3:675b-cloud
 deepseek-v4-flash:0731-cloud
 glm-5.2:cloud
-kimi-k3:cloud
+kimi-k3:cloud # NOT covered by the ollama subscription alone: its library page
+# says kimi-k3 "requires a Pro or Max subscription, and consumes extra usage
+# credits" (checked 2026-08-20). Every other cloud model here draws the weekly
+# quota at its usage level and bills nothing further, so a seat for this one
+# costs money the quota argument does not cover.
 kimi-k2.7-code:cloud
 nemotron-3-ultra:cloud
 minimax-m3:cloud
@@ -40,6 +44,13 @@ qwen3.5:397b-cloud
 # bills a card at the listed per-token price -- x-ai/grok-4.6 is $2/M in,
 # $6/M out. This route caches, unlike ollama).
 x-ai/grok-4.6
+# Added 2026-08-20 on operator request. Rates from their OpenRouter pages that
+# day: 3.8-27b is $0.40/M in, $3.00/M out, $0.04/M cache read -- the cheapest
+# card route measured here by a wide margin; 3.8-max is $2/M in, $6/M out, the
+# same shelf as grok. Both carry a 1M context. bench/report.py holds the rates
+# so the per-point column is real money rather than a guess.
+qwen/qwen3.8-27b
+qwen/qwen3.8-max
 
 # Gemini 3.7 Flash -- DISQUALIFIED 2026-08-19, three routes, three distinct
 # root causes, all measured. Left listed so nobody re-derives any of them.
