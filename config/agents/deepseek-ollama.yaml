@@ -1,35 +1,46 @@
 # DeepSeek via ollama, same claude-harness wrapping as minimax-ollama. ON THE
-# PANEL since 2026-08-12, when the seeded bench answered the open question this
-# file was written to pose: it scored a perfect 20/20 with zero unseeded
-# findings, and the "flash trades depth for latency" argument it had been passed
-# over for did not survive measurement.
+# PANEL since 2026-08-12; the seat moved from the FLASH tier to the PRO tier on
+# 2026-08-20, and the reason is the whole argument for rebuilding the bench.
 #
-# The pinned tag matters. `deepseek-v4-flash:cloud` and
-# `deepseek-v4-flash:0731-cloud` are NOT the same model -- the floating tag
-# reported 158B parameters, this one reports 304B. Pinning the dated tag is what
-# makes a comparison repeatable at all, since a floating tag can be re-pointed
-# between the run that measured it and the run that trusts the measurement.
+# Both tiers scored a perfect 20/20 on the old seeded bench -- indistinguishable,
+# so the seat went to flash on the latency argument below. The 100-seed bench
+# separates them: pro 66/100, flash 52/100 (bench/results.csv, runs
+# 20260820-124306 and 20260820-122214), on the same route, the same quota, in
+# comparable wall clock (576s vs 489s) and FEWER tokens (500k vs 593k). Nothing
+# about the flash argument was wrong; there was simply no measurement fine
+# enough to test it until now.
 #
-# Capabilities per `ollama show`: completion, tools, thinking. No vision, which is
-# what disqualified the qwen3.7 flash and plus tiers -- those are vision-language
+# WHAT THIS SWAP DOES NOT BUY: coverage. Against the rest of the panel (claude,
+# codex, minimax) pro contributes the same 3 seeds flash did, and the panel still
+# covers 86/100 either way -- the panel's product is what one reviewer finds and
+# the others miss, and on that axis these two are interchangeable. The upgrade is
+# in the individual reviewer, at no extra cost. Do not quote the 14-point gap as
+# a coverage gain.
+#
+# Decided on ONE repeat, deliberately: the bench's own variance probe (the same
+# model measured twice, 75 and 74) moved 1 point in total and +/-4 per task, so a
+# 14-point gap is outside it, while the 57-vs-57 tie between minimax and
+# kimi-k2.7 is not decidable without N=3.
+#
+# The pinned tag matters, and this file has already been bitten by it:
+# `deepseek-v4-flash:cloud` and `deepseek-v4-flash:0731-cloud` are NOT the same
+# model -- the floating tag reported 158B parameters, the dated one 304B. The
+# bench measured `deepseek-v4-pro:cloud`, and on the day of the swap that tag
+# fingerprinted identically to `0813-cloud` (1.65T parameters, FP8, 1M context,
+# `ollama show`), so the dated tag below IS the measured model and cannot be
+# re-pointed out from under it.
+#
+# Capabilities per `ollama show`: completion, tools. No vision, which is what
+# disqualified the qwen3.7 flash and plus tiers -- those are vision-language
 # models whose published strengths are object recognition, and a code reviewer
 # reading source wants neither.
 #
-# THE OPEN QUESTION, AS IT WAS POSED (answered above; kept because the reasoning
-# is what the bench was built to settle). This model was passed over once, on the argument that
-# a "flash" tier trades depth for latency and depth was exactly what gemma4 lacked
-# (see kimi-ollama.yaml). That argument was made from a latency probe, not from
-# review output, so it was never actually tested. What has been learned since gives
-# it a second look for a different reason: the panel's cost is driven by TURNS, not
-# by tokens or price per token -- kimi takes ~168 turns to claude's ~37 on the same
-# round, and that is what made it expensive on every route. A flash tier that
-# converges in fewer turns could beat a stronger model that will not converge, even
-# while finding somewhat less.
-#
-# So the metrics that decide this are, in order: turns per session, findings the
-# coder ACCEPTS, and schema compliance -- every output-contract failure in the
-# project's history came from a non-Anthropic model driving this harness.
-model: deepseek-v4-flash:0731-cloud
+# The flash tier's original case -- that the panel's cost is driven by TURNS
+# rather than tokens (kimi took ~168 turns to claude's ~37), so a fast tier that
+# converges could beat a stronger one that will not -- is in git history at
+# 881cf03. It held for eight days and lost to a finer instrument, which is the
+# outcome that argument asked for.
+model: deepseek-v4-pro:0813-cloud
 command:
   - ollama
   - launch
