@@ -176,6 +176,17 @@ python3 bench/score.py bench/manifest-code.yaml .fixpoint/<ts>/summary-<ts>.json
 
 ## History
 
+The full field was re-swept on 2026-08-20, the day the bench changed: 19
+candidates, one repeat each, 95 sessions, zero contract failures except the two
+models that have failed before (`nemotron-3-super` 19/100 with one, and
+`mistral-large-3` 3/100 with two -- its third measured contract failure, and
+5127s for the privilege). What the old 20-seed bench could not see, this one
+did: `deepseek-v4-pro` (66) is 14 points ahead of the `deepseek-v4-flash` (52)
+holding the seat, `opus-4-8` (52) is 23 behind `opus-5` (75), and
+`nemotron-3-ultra` -- which returned nothing at all on the old code target --
+scores 63 while spending 1.36M tokens and 31 minutes to do it. Numbers in
+`results.csv`, per-seed tables in `results/`.
+
 `results.csv` was emptied on 2026-08-20, when the bench went from 20 seeds to
 100. The 46 rows measured against the old target are in git history at
 `70b9113` and are **not** comparable: different targets, more lenses, and a
