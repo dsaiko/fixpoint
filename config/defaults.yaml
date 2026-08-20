@@ -59,6 +59,22 @@ roles:
   # the 2026-08 sweep disqualified itself (timeouts, contract failures, or half
   # the recall at multiples of the tokens).
   #
+  # deepseek-ollama MOVED FROM THE FLASH TIER TO THE PRO TIER 2026-08-20. The seat
+  # is unchanged -- the agent file is what points at a model -- but the model is
+  # now deepseek-v4-pro:0813-cloud, which the 100-seed bench separated from flash
+  # (66/100 vs 52/100) where 20 seeds had them tied at perfect. Same route, same
+  # quota, fewer tokens. It buys a better reviewer, NOT wider panel coverage:
+  # against claude, codex and minimax both tiers contribute the same 3 seeds and
+  # the panel covers 86/100 either way. Reasoning in deepseek-ollama.yaml.
+  #
+  # The same sweep says the other three seats stand. minimax is the field's
+  # largest marginal contributor (+6 seeds over claude+codex) despite ranking
+  # 10th of 19 on score, which is the whole reason a panel is not a leaderboard;
+  # codex finds one seed nobody else in 19 models found. The only candidate that
+  # would widen coverage further is qwen/qwen3.8-max (+3, to 89/100), and it is
+  # not seated because it doubles the round's wall clock -- 1877s against the
+  # 941s codex sets today -- and a round runs at its slowest reviewer's pace.
+  #
   # kimi REPLACED BY minimax 2026-08-14, and the reason is worth keeping because
   # the bench did not predict it. kimi held its seat on 19/20 of those seeds with zero
   # unseeded findings; then two live rounds over this repository (runs
