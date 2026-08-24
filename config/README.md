@@ -624,7 +624,7 @@ sandbox.
 
 **The agent environment is filtered.** Each agent receives a non-secret baseline —
 `PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LANGUAGE`/`LC_ALL`/`LC_CTYPE`,
-`TERM`, `TZ`, `USER`/`LOGNAME`, the `XDG_*` config paths, TLS trust
+`TERM`, `TZ`, `USER`/`LOGNAME`, the `XDG_*` config paths, `CLAUDE_CONFIG_DIR`, TLS trust
 (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`,
 `REQUESTS_CA_BUNDLE`), and proxy settings — plus the variables its own
 `agents/*.yaml` declares under `env.pass` / `env.set`. Nothing else is present in
@@ -633,7 +633,11 @@ the process, so a prompt-injected reviewer cannot quote a secret it cannot see.
 The baseline is chosen so that dropping something does not break a CLI in a way
 that looks unrelated: without `HOME`, `claude` and `codex` cannot find their
 credentials; without the TLS entries, HTTPS fails certificate verification behind a
-corporate proxy. One caveat — proxy variables can embed credentials
+corporate proxy. `CLAUDE_CONFIG_DIR` is the same hazard with a sharper edge — on
+macOS `claude` derives its keychain item from that path, so an operator who exports
+it logs in to a different credential store than an agent that never receives it,
+and the agent reports an expired OAuth session rather than a missing variable. One
+caveat — proxy variables can embed credentials
 (`http://user:pass@proxy`), so they are the single baseline entry that may carry a
 secret; the redactor masks URI passwords, and an operator who cannot accept that
 should unset them for fixpoint's own process.
