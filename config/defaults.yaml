@@ -89,12 +89,12 @@ roles:
   # suites -- see minimax-ollama.yaml for what it costs and the one number that
   # argues against it.
   #
-  # glm-5.2 remains the standing alternative if either seat underperforms live
+  # glm-5.2 remains the standing alternative if the ollama seat underperforms live
   # (20/20 with zero extras, glm-ollama.yaml). If the weekly limit is hit again,
-  # drop minimax first (it spends ~2x kimi's input tokens on the code suite),
-  # then deepseek -- a dead ollama agent burns its full 30m timeout and can flip
-  # quorum to INCONCLUSIVE, so a spent limit means a smaller panel, never a
-  # waiting one.
+  # drop the ollama seat -- minimax first when both are seated (it spends ~2x
+  # kimi's input tokens on the code suite), then deepseek. A dead ollama agent
+  # burns its full 30m timeout and can flip quorum to INCONCLUSIVE, so a spent
+  # limit means a smaller panel, never a waiting one.
   #
   # BOTH OLLAMA SEATS PULLED 2026-08-21, on that rule: the weekly Ollama Cloud
   # limit was running out, a dead ollama agent writes nothing for its full 30m
@@ -102,16 +102,48 @@ roles:
   # seats out of 4 land the verdict on INCONCLUSIVE no matter what claude and codex
   # found. A quota measure, not a verdict on either model; the measured seats stand.
   #
-  # deepseek-ollama RESTORED 2026-08-24, after the weekly reset and a probe of the
-  # pinned model on the live route. It goes back first because it is the cheaper of
-  # the two in input tokens, which is the same order the pull ran in reverse.
+  # deepseek-ollama RESTORED 2026-08-24 after the weekly reset, then SWAPPED FOR
+  # minimax-ollama the same day, on the first live measurement either seat has of
+  # its MARGINAL yield -- which is the only thing a panel seat is bought with.
+  # Two review-code runs over www.saiko.cz.flek (.fixpoint/20260824-094108 and
+  # -115231) gave deepseek 17 observations; 6 survived, and every one of those 6
+  # was also reported by claude or codex. All 12 it reported alone were rejected.
+  # Unique surviving findings: ZERO. claude's were 10 and 12 in the same two runs,
+  # codex's 5 and 2. The rejections were not hallucinations -- almost all read
+  # "duplicate of iN, stated with less precision" -- which is the point: a seat
+  # that restates what the panel already has adds nothing to buy.
   #
-  # minimax-ollama IS STILL OUT, and that costs coverage while it waits: it is the
-  # field's largest marginal contributor (+6 seeds over claude+codex) and the panel
-  # reads 86/100 with it, less without. Restore it once the quota has room by
-  # putting the line back to [claude, codex, deepseek-ollama, minimax-ollama].
+  # The bench agrees once it is asked about the PANEL instead of the model. Over
+  # claude+codex+deepseek, minimax adds 4 seeds (C26, S05, D14, D24); over
+  # claude+codex+minimax, deepseek adds 1 (D12). deepseek is the better reviewer
+  # alone (66/100 to minimax's 57) and the smaller contributor to this panel --
+  # the same reason a panel is not a leaderboard, one paragraph up. bench/ does
+  # not compute this; recompute it from the per-seed tables in bench/results/.
+  #
+  # ONE ollama seat, not two, deliberately. Quorum is a strict majority, so a
+  # 4-seat panel requires 3: seating both rather than swapping holds the tolerance
+  # at one dead agent while doubling the seats that can die. deepseek has a failure
+  # mode that has now fired three times (20260806-102122, 20260813-003817, and
+  # review-bugs in 20260824-115231): one turn overruns the route's own 32000-token
+  # output ceiling and the entire lens is lost, here after 13 minutes and 992k
+  # input tokens. It is not a knob to raise -- 32000 is what this model reports as
+  # modelUsage.maxOutputTokens -- and it cost the quorum note in that run.
+  #
+  # What this swap does NOT have is a live round for minimax. Its 2026-08-14
+  # probation was never tested; the quota pull came first, and no summary in
+  # .fixpoint/ carries it as a reviewer. So the metric that cost kimi its seat is
+  # unmeasured here and THIS round is the test -- if the judge drops most of what
+  # minimax says, glm-5.2 is the standing alternative and deepseek is one line
+  # away. The one number that argued against minimax did not survive the finer
+  # instrument: it reported the most unseeded findings of any ollama model on the
+  # 20-seed bench, and on the 100-seed bench it reads extras 1 on code, 0 on
+  # design -- the same as deepseek, glm and kimi, against claude's 3 and 4.
+  #
+  # Restore deepseek by putting the line back to [claude, codex, deepseek-ollama],
+  # or seat both at [claude, codex, deepseek-ollama, minimax-ollama] for 86/100
+  # once the weekly quota has room for two ollama agents and quorum 3.
   review:
-    agents: [claude, codex, deepseek-ollama]
+    agents: [claude, codex, minimax-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
