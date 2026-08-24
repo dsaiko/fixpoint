@@ -95,8 +95,23 @@ roles:
   # then deepseek -- a dead ollama agent burns its full 30m timeout and can flip
   # quorum to INCONCLUSIVE, so a spent limit means a smaller panel, never a
   # waiting one.
+  #
+  # BOTH OLLAMA SEATS PULLED 2026-08-21, on that rule: the weekly Ollama Cloud
+  # limit was running out, a dead ollama agent writes nothing for its full 30m
+  # timeout, and quorum counts only agents whose every lens succeeded -- so 2 dead
+  # seats out of 4 land the verdict on INCONCLUSIVE no matter what claude and codex
+  # found. A quota measure, not a verdict on either model; the measured seats stand.
+  #
+  # deepseek-ollama RESTORED 2026-08-24, after the weekly reset and a probe of the
+  # pinned model on the live route. It goes back first because it is the cheaper of
+  # the two in input tokens, which is the same order the pull ran in reverse.
+  #
+  # minimax-ollama IS STILL OUT, and that costs coverage while it waits: it is the
+  # field's largest marginal contributor (+6 seeds over claude+codex) and the panel
+  # reads 86/100 with it, less without. Restore it once the quota has room by
+  # putting the line back to [claude, codex, deepseek-ollama, minimax-ollama].
   review:
-    agents: [claude, codex, deepseek-ollama, minimax-ollama]
+    agents: [claude, codex, deepseek-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
