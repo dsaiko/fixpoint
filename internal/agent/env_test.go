@@ -286,7 +286,7 @@ func TestBuildEnvNilOnlyMeansInherit(t *testing.T) {
 // non-obviously.
 func TestBaselineCoversEssentials(t *testing.T) {
 	names := BaselineEnvNames()
-	for _, want := range []string{"PATH", "HOME", "TMPDIR", "LANG", "SSL_CERT_FILE", "HTTPS_PROXY", "XDG_CONFIG_HOME"} {
+	for _, want := range []string{"PATH", "HOME", "TMPDIR", "LANG", "SSL_CERT_FILE", "HTTPS_PROXY", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("baseline is missing %s; its absence breaks CLIs in ways that look unrelated", want)
 		}

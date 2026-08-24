@@ -26,6 +26,17 @@ import (
 //     non-ASCII output, which matters when the reviewed material is not English.
 //   - XDG_*: where a CLI looks for config on Linux. If the operator has set these
 //     and we drop them, the CLI silently reads a different (or no) config.
+//   - CLAUDE_CONFIG_DIR: the same hazard as XDG_*, and sharper, because on macOS
+//     it selects the CREDENTIAL and not just the config. `claude` stores its OAuth
+//     tokens in a keychain item whose service name is derived from this path
+//     ("Claude Code-credentials-<hash>", account $USER), so an operator who
+//     exports it -- even to the default ~/.claude -- logs in to a DIFFERENT
+//     keychain item than an agent that does not receive it. The agent then finds
+//     the stale unsuffixed item and reports "OAuth session expired and could not
+//     be refreshed", which reads as an expired login rather than a dropped
+//     variable. Diagnosed the hard way on 2026-08-24: `claude auth login`
+//     succeeded and check-live kept failing, because the two were not looking at
+//     the same store. USER is already below for the account half of that lookup.
 //   - TLS trust: SSL_CERT_FILE, SSL_CERT_DIR, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE,
 //     REQUESTS_CA_BUNDLE. Behind a corporate MITM proxy, dropping these makes
 //     every HTTPS call fail certificate verification.
@@ -40,6 +51,7 @@ var baselineEnv = []string{
 	"LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TERM", "TZ",
 	"USER", "LOGNAME",
 	"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+	"CLAUDE_CONFIG_DIR",
 	"SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
 	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
 	"http_proxy", "https_proxy", "all_proxy", "no_proxy",
