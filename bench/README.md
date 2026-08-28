@@ -187,6 +187,28 @@ holding the seat, `opus-4-8` (52) is 23 behind `opus-5` (75), and
 scores 63 while spending 1.36M tokens and 31 minutes to do it. Numbers in
 `results.csv`, per-seed tables in `results/`.
 
+`glm-5.3-flash:cloud` was added and measured on 2026-08-28, the day it reached
+the library (320B total / 18B active, 1M context, one floating `:cloud` tag).
+One repeat: **62/100** — code 48/60, design 14/40, zero unmatched on either
+task, 849k tokens, 393s, no contract failures. Two things in that row are worth
+more than its rank. Its **code** recall is the highest any ollama model has
+posted here and third in the whole field, behind only `claude-opus-5` (55) and
+the `claude` baseline (52) — ahead of `claude-fable-5`. And it is the largest
+marginal contributor measured against the seated panel: over
+claude+codex+minimax (85/100) it adds **3** seeds — CA08, EX07, D11 — where
+`deepseek-v4-pro` adds 1 and `kimi-k3` adds 1, tying `qwen/qwen3.8-max` at
+88/100 for a third of its wall clock. It is not a swap candidate, though:
+claude+codex+glm-5.3-flash covers 83, below the 85 minimax holds today, because
+minimax finds five seeds this model does not (C26, S05, D09, D24, D29). Recompute
+these from the per-seed tables in `results/`; the report does not.
+
+Before any seat talk it needs the 3 repeats the decision rule asks for, and on
+one repeat it already fails rule 3 on code — 80.3 found_per_mtok against
+minimax's 117.3, since 849k tokens is a lot for 62 points — and lands one seed
+under rule 2's design floor (15/40). A fourth-seat argument would have to be
+made on marginal coverage against the quota, and against the standing rule that
+the panel seats ONE ollama agent so a single dead one cannot take quorum with it.
+
 `results.csv` was emptied on 2026-08-20, when the bench went from 20 seeds to
 100. The 46 rows measured against the old target are in git history at
 `70b9113` and are **not** comparable: different targets, more lenses, and a

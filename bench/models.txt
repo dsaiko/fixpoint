@@ -40,6 +40,19 @@ deepseek-v4-pro:cloud
 gpt-oss:120b-cloud
 nemotron-3-super:cloud
 qwen3.5:397b-cloud
+# Added 2026-08-28 on operator request, the day it appeared in the library:
+# 320B total / 18B active, 1M context, FP8. The library offers exactly ONE tag
+# (:cloud, no dated variant), so this measurement is pinned only by the
+# `ollama show` output bench/run.sh records at run time -- re-check the digest
+# before quoting the number in a seat decision. Its page carries no extra-credit
+# note, so it draws the weekly quota like every model here except kimi-k3.
+# Measured the same day, 1 repeat: 62/100 (code 48/60, design 14/40), zero
+# unmatched on either task, 849k tokens, 393s, no contract failures. Best CODE
+# recall of any ollama model measured and third-best in the field; the design
+# half is what holds the total down. Its `effort` ladder is real on Z.ai's
+# endpoint and dead on this route -- see "effort (claude)" in
+# config/agents/_README.md before assuming the number can be tuned upward.
+glm-5.3-flash:cloud
 # OpenRouter candidates (a slash in the id selects the OpenRouter template;
 # bills a card at the listed per-token price -- x-ai/grok-4.6 is $2/M in,
 # $6/M out. This route caches, unlike ollama).
