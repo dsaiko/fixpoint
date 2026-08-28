@@ -335,12 +335,23 @@ def _esc(text):
 def write_html(ranked, out_path):
     """Emit the standings as one self-contained page, for sharing."""
     top = max((max(e["points"] for e in entries) for _, entries in ranked), default=100)
-    sessions = 0
+    # Counted, not assumed: 5 sessions per repeat is the protocol, but an
+    # INCOMPLETE candidate ran only one task, and repeats multiply. The csv
+    # records what actually ran, so the header cannot drift from the rows.
+    sessions = sum(e["sessions"] for _, entries in ranked for e in entries)
+    repeats = max((len(entries) for _, entries in ranked), default=1)
+    # The measurement window, from the run ids. It was hardcoded to 2026-08-20
+    # until the first row landed on another day, which is exactly the drift the
+    # page exists to avoid -- it is generated so that it cannot disagree with
+    # results.csv, and a stamped date is part of what it must not disagree with.
+    days = sorted({d for _, entries in ranked for e in entries for d in e["dates"]})
+    def _day(d):
+        return f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
+    when = _day(days[0]) if len(days) < 2 else f"{_day(days[0])} &ndash; {_day(days[-1])}"
     failures = 0
     rows_html = []
     for i, (model, entries) in enumerate(ranked, 1):
         e = entries[0]
-        sessions += 0
         failures += 1 if e["errors"] else 0
         mtok = e["tokens"] / 1e6
         eff = e["points"] / mtok if mtok else 0.0
@@ -376,7 +387,7 @@ def write_html(ranked, out_path):
 <style>{PAGE_CSS}</style>
 <div class="page">
   <header>
-    <div class="eyebrow">Reviewer benchmark &middot; 2026-08-20</div>
+    <div class="eyebrow">Reviewer benchmark &middot; {when}</div>
     <h1>Which model is worth a panel seat</h1>
     <p class="lede">Every candidate reviews the same two frozen targets and is scored against
     <strong>100 planted defects</strong> &mdash; 60 in a Go service, 40 in a design document.
@@ -387,9 +398,9 @@ def write_html(ranked, out_path):
 
   <dl class="facts">
     <div class="fact"><dt>Candidates</dt><dd>{len(ranked)}</dd></div>
-    <div class="fact"><dt>Sessions</dt><dd>{len(ranked) * 5}</dd></div>
+    <div class="fact"><dt>Sessions</dt><dd>{sessions}</dd></div>
     <div class="fact"><dt>Points available</dt><dd>100</dd></div>
-    <div class="fact"><dt>Repeats</dt><dd>1</dd></div>
+    <div class="fact"><dt>Repeats</dt><dd>{repeats}</dd></div>
     <div class="fact"><dt>Contract failures</dt><dd>{failures}</dd></div>
   </dl>
 
@@ -469,6 +480,8 @@ def main():
             "cache_read": sum(int(t["cache_read"]) for t in tasks.values()),
             "errors": sum(int(t["errors"]) for t in tasks.values()),
             "seconds": sum(int(t["duration_s"]) for t in tasks.values()),
+            "sessions": sum(int(t["sessions"]) for t in tasks.values()),
+            "dates": sorted({t["run"].split("-")[0] for t in tasks.values()}),
             "missing": sorted(set(TASK_POINTS) - set(tasks)),
         })
 
