@@ -81,12 +81,28 @@ panel never configured. Measured against `/v1/messages` on the local ollama prox
     glm-5.2          1024               ~1487 tok    45% over budget
     kimi-k2.7-code   not sent           ~3443 tok
     kimi-k2.7-code   1024               ~3428 tok    3.3x over budget
+    glm-5.3-flash    not sent           ~9.7k tok
+    glm-5.3-flash    512                ~8.3k tok    16x over budget
+    glm-5.3-flash    8192               ~9.8k tok
 
 Two findings there: both models emit a thinking block whether or not one is asked
 for, and a budget that should bind is ignored outright — the with/without pairs
 differ by under half a percent. So `kimi-ollama.yaml` and `glm-ollama.yaml`
 deliberately declare no `effort`, and adding one is not a knob, it is a comment
 that lies. To change how hard those models work, change `model` or the prompt.
+
+**Re-measured 2026-08-28 on glm-5.3-flash, because the vendor says otherwise.**
+Z.ai publishes an effort ladder for this model driven by Claude Code itself
+(Z.ai Code Bench v1.0 on Claude Code 2.1.207: low 21.5%, high 28.0%, max 29.0%
+accuracy, at roughly 41k/69k/138k output tokens per task) — so the MODEL does
+read a thinking budget, on Z.ai's own endpoint. The route is what decides. Against
+`/v1/messages` on the local ollama proxy, a 512-token budget produced 33,075
+characters of thinking (~8.3k tokens) inside a 10,541-token response — 16x the cap
+it was handed — and raising the budget to 8192 moved it no further than the
+no-budget run. The rule is unchanged and its reason is sharper: `effort` is dropped
+here not because these models cannot reason to a budget, but because THIS ROUTE
+does not forward the field. Reaching that ladder means a different route, which by
+the section below is a different agent file, not an added key on this one.
 
 ## Naming: the route is part of the identity
 
