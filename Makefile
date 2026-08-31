@@ -155,6 +155,7 @@ bench:
 BENCH_RUST_OUT ?= /tmp/fixpoint-bench-rust
 BENCH_JAVA_OUT ?= /tmp/fixpoint-bench-java
 BENCH_CS_OUT ?= /tmp/fixpoint-bench-csharp
+BENCH_CPP_OUT ?= /tmp/fixpoint-bench-cpp
 
 bench-seeds:
 	python3 bench/report.py --seeds
@@ -170,12 +171,14 @@ bench-check:
 	python3 bench/score.py --check bench/manifest-java.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-typescript.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-csharp.yaml >/dev/null
+	python3 bench/score.py --check bench/manifest-cpp.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-design.yaml >/dev/null
 	python3 bench/score.py --selftest bench/manifest-go.yaml
 	python3 bench/score.py --selftest bench/manifest-rust.yaml
 	python3 bench/score.py --selftest bench/manifest-java.yaml
 	python3 bench/score.py --selftest bench/manifest-typescript.yaml
 	python3 bench/score.py --selftest bench/manifest-csharp.yaml
+	python3 bench/score.py --selftest bench/manifest-cpp.yaml
 	python3 bench/score.py --selftest bench/manifest-design.yaml
 	cd bench/testdata/target-go && go build ./...
 	# --offline and an out-of-tree CARGO_TARGET_DIR: the target has no
@@ -187,6 +190,8 @@ bench-check:
 	# strict type-check only; the seeds are all defects tsc cannot catch
 	cd bench/testdata/target-typescript && tsc -p .
 	cd bench/testdata/target-csharp && dotnet build -v q --nologo -o $(BENCH_CS_OUT) >/dev/null
+	@mkdir -p $(BENCH_CPP_OUT)
+	cd bench/testdata/target-cpp && clang++ -std=c++20 -w -o $(BENCH_CPP_OUT)/linkd *.cpp
 	@echo "bench: manifests and targets OK"
 
 ## review-branch: one review round over only what this branch changed
