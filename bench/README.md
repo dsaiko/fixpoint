@@ -92,7 +92,8 @@ across the panel is <4%, so non-overlap is the panel's whole value).
   files, 60 seeded defects: correctness for `review-bugs`, concurrency for
   `review-concurrency`, and 14 security defects — unsalted hashes, a
   predictable token, an open redirect, a path traversal, a client-controlled
-  admin header — for `review-security`) and `testdata/target-design` (a
+  admin header — for `review-security`), `testdata/target-rust` (**the same
+  service in Rust**, 59 seeds — see below) and `testdata/target-design` (a
   sync-service design, 40 seeded flaws: 24 failure-and-operation for
   `design-failure`, 16 data-model for `design-data`). **Never fix the seeded
   bugs** — the target's value is that it does not change between
@@ -167,6 +168,33 @@ design) rather than everything on disk, because that pair is what every
 published score out of 100 means and what every seat decision on record quotes;
 widening it silently would change both the cost and the total of a "comparable"
 run.
+
+### One service, many languages
+
+Every language target is **the same link-shortener service** as `target-go`, on
+purpose. Holding the domain constant makes the language the only variable, which
+is what turns "the field scores 87% on Go and 40% on Rust" into a readable
+result rather than a confound about one target simply being a harder program.
+
+Seeds come in two kinds, and the split is the whole point:
+
+- **Parallel** seeds are the same logical defect as a numbered Go seed (marked
+  `parallel: Cnn` in the manifest): the inverted expiry check, the off-by-one
+  page slice, the missing ownership check on delete, the client-controlled admin
+  header. A model that finds these in Go and misses them in Rust is failing at
+  the **language**, not at the defect class — and that is a fact no
+  single-language bench can produce.
+- **Language-only** seeds cannot exist in Go at all. `target-rust` carries
+  `unwrap()` on an absent `Option`, an atomic incremented with load-then-store
+  instead of `fetch_add`, mutex poisoning propagated by unwrapping every
+  `lock()`, a lock-order inversion between two locks, `usize` division that is
+  always zero, and `JoinHandle`s dropped without joining.
+
+`target-rust` has **no dependencies**, so `cargo build --offline` works and a
+reviewer can read the whole target without a crates.io detour. `make bench-check`
+compiles it with `CARGO_TARGET_DIR` pointed outside the tree, because the bench
+reviews the target directory with no excludes and a `target/` directory inside it
+would be handed to the reviewer as source.
 
 ### Targets and tasks are different axes
 

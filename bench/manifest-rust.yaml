@@ -1,0 +1,453 @@
+# Seeded defects in bench/testdata/target-rust. Same matcher rules as
+# manifest-go.yaml: a seed is FOUND when a finding names the right file, lands
+# within `span` lines of the seed's anchor, and mentions at least `need` of the
+# keywords. Every finding is credited to at most one seed. Frozen: never fix
+# these bugs.
+#
+# 59 seeds, matching the Go target's 60 closely enough to compare directly.
+# This target is the SAME SERVICE as target-go, deliberately: the
+# domain is held constant so the language is the only variable, which is what
+# makes "the field finds this bug in Go and misses it in Rust" a readable
+# result rather than a confound.
+#
+# Two kinds of seed, and the split is the point:
+#
+#   PARALLEL   the same logical defect as a numbered Go seed, noted as
+#              "parallel: Cnn". These answer the cross-language question --
+#              does a reviewer that finds the inverted expiry in Go find it in
+#              Rust? A model that scores well on Go and badly here is failing
+#              at the LANGUAGE, not at the defect class.
+#   RUST-ONLY  defects that only exist in this language: unwrap on absent
+#              Option, atomics used non-atomically, lock poisoning, lock-order
+#              inversion, integer division on usize, threads never joined.
+#              These are what a Go-only bench cannot measure at all.
+task: code
+target: rust
+root: testdata/target-rust
+seeds:
+  # ---------------- store.rs ----------------
+  - id: RS01
+    file: src/store.rs
+    anchor: "*self.quota.get_mut(owner).unwrap() += 1;"
+    span: 6
+    need: 1
+    keywords: [unwrap, panic, None, "get_mut", "first link", absent, missing]
+    note: "RUST-ONLY (parallel: C01) quota has no entry for a new owner, so get_mut returns None and the first create panics on unwrap"
+  - id: RS02
+    file: src/store.rs
+    anchor: "SystemTime::now() < link.expires_at"
+    span: 6
+    need: 1
+    keywords: [inverted, backwards, reversed, expir, "less than", "greater"]
+    note: "parallel: C02 expiry comparison inverted: live links are deleted, expired ones resolve"
+  - id: RS03
+    file: src/store.rs
+    anchor: "pub fn rename"
+    span: 9
+    need: 1
+    keywords: [twice, "validate_code(to)", "never validated", duplicate, "copy-paste", "same argument"]
+    note: "parallel: C03 rename validates `from` twice; `to` is never validated"
+  - id: RS04
+    file: src/store.rs
+    anchor: "end = all.len() + 1;"
+    span: 6
+    need: 1
+    keywords: ["out of range", "off-by-one", bounds, panic, "len() + 1", slice, clamp]
+    note: "parallel: C04 page clamps end past the slice length, so the last page panics"
+  - id: RS05
+    file: src/store.rs
+    anchor: "(used / self.links.len() * 100) as u32"
+    span: 6
+    need: 1
+    keywords: ["integer division", truncat, "always 0", "order of operations", usize, float]
+    note: "RUST-ONLY (parallel: C05) usize division before scaling yields 0 for every rate under 100%"
+  - id: RS06
+    file: src/store.rs
+    anchor: "let _ = link.owner;"
+    span: 6
+    need: 1
+    keywords: [quota, "never decrement", "not released", refund, "give the owner", discard]
+    note: "parallel: C09 delete drops the link but never returns the owner's quota slot the doc promises"
+  - id: RS07
+    file: src/store.rs
+    anchor: "all.sort_by(|a, b| a.hits.cmp(&b.hits));"
+    span: 6
+    need: 1
+    keywords: [ascending, least, reversed, "wrong order", "most hits", backwards, "sort_by"]
+    note: "parallel: C10 top sorts by hits ascending, so the leaderboard shows the least followed links"
+  - id: RS08
+    file: src/store.rs
+    anchor: "l.owner.contains(owner)"
+    span: 6
+    need: 1
+    keywords: [contains, substring, exact, "other owners", tenant, leak, prefix]
+    note: "parallel: C11 by_owner matches owners by substring, so one owner sees another's links"
+  - id: RS09
+    file: src/store.rs
+    anchor: "pub fn extend"
+    span: 8
+    need: 1
+    keywords: [expired, resurrect, revive, "back to life", "already expired", dead]
+    note: "parallel: C12 extend re-dates an already-expired link, resurrecting a code the doc calls final"
+  - id: RS10
+    file: src/store.rs
+    anchor: "pub fn quotas(&mut self) -> &mut HashMap<String, u32>"
+    span: 6
+    need: 1
+    keywords: [snapshot, "&mut", mutable, interior, alias, "internal", expose, copy]
+    note: "RUST-ONLY (parallel: C14) quotas hands out a mutable reference to the store's own map while the doc calls it a snapshot"
+  - id: RS11
+    file: src/store.rs
+    anchor: "pub fn import"
+    span: 10
+    need: 1
+    keywords: [atomic, partial, rollback, half, "already stored", "not all", "?", early]
+    note: "parallel: C13 import inserts as it validates, so a bad code leaves the earlier half of the batch stored"
+  - id: RS12
+    file: src/store.rs
+    anchor: "let _ = before;"
+    span: 8
+    need: 1
+    keywords: [removed, remaining, count, "wrong", returns, "len()"]
+    note: "parallel: C15 prune computes the before-count, throws it away, and returns the number of links left"
+  - id: RS13
+    file: src/store.rs
+    anchor: "self.links.get(code).unwrap().expires_at"
+    span: 5
+    need: 1
+    keywords: [unwrap, panic, None, missing, absent, "get(code)"]
+    note: "RUST-ONLY expires_at unwraps a missing code and panics instead of returning an Option"
+  - id: RS14
+    file: src/store.rs
+    anchor: "let nanos = SystemTime::now()"
+    span: 8
+    need: 1
+    keywords: [predictable, guess, clock, "subsec_nanos", collision, random, "not cryptographically", enumerat]
+    note: "RUST-ONLY (parallel: S02) short codes come from the clock's nanosecond field: predictable and collision-prone, not random"
+
+  # ---------------- auth.rs ----------------
+  - id: RA01
+    file: src/auth.rs
+    anchor: '"dev-secret-do-not-use".to_string()'
+    span: 6
+    need: 1
+    keywords: [hardcoded, "default secret", "dev-secret", fallback, weak, credential]
+    note: "parallel: S01 the signing secret falls back to a hardcoded development value when the environment is unset"
+  - id: RA02
+    file: src/auth.rs
+    anchor: "seed = seed.wrapping_mul(6364136223846793005)"
+    span: 8
+    need: 1
+    keywords: [predictable, "linear congruential", LCG, "not cryptographically", forge, guess, seeded, CSPRNG]
+    note: "RUST-ONLY (parallel: S02) session tokens come from a hand-rolled LCG seeded on the current second, so they are predictable and forgeable"
+  - id: RA03
+    file: src/auth.rs
+    anchor: 'println!("auth: issued token {} for {}"'
+    span: 6
+    need: 1
+    keywords: [log, token, secret, "written to", disclos, redact, stdout]
+    note: "parallel: S03 every issued session token is printed in cleartext"
+  - id: RA04
+    file: src/auth.rs
+    anchor: "pub fn verify"
+    span: 9
+    need: 1
+    keywords: [expir, "expires_at", "never expire", lifetime, "not checked", stale]
+    note: "parallel: S04 verify never looks at expires_at, so a token works forever despite the documented 12-hour lifetime"
+  - id: RA05
+    file: src/auth.rs
+    anchor: "acc = acc.wrapping_mul(33) ^ (*byte as u64);"
+    span: 8
+    need: 1
+    keywords: [salt, bcrypt, argon, scrypt, "not a", djb2, "fast hash", KDF, unsalted, "64-bit"]
+    note: "RUST-ONLY (parallel: S05) passwords are hashed with a djb2-style 64-bit accumulator: unsalted, not a KDF, and trivially collidable"
+  - id: RA06
+    file: src/auth.rs
+    anchor: "parts[1].to_string()"
+    span: 6
+    need: 1
+    keywords: [panic, index, "out of bounds", "parts[1]", malformed, "missing header", crash]
+    note: "RUST-ONLY (parallel: S06) bearer_token indexes parts[1] without checking, so a request with no or malformed Authorization panics the thread"
+  - id: RA07
+    file: src/auth.rs
+    anchor: 'if session.role != "admin" || session.role != "owner" {'
+    span: 6
+    need: 1
+    keywords: ["always true", tautolog, "&&", "||", never, "every session", "cannot be false"]
+    note: "parallel: S07 the admin check is always true, so require_admin rejects every session including admins"
+  - id: RA08
+    file: src/auth.rs
+    anchor: "pub fn secret_eq"
+    span: 12
+    need: 1
+    keywords: ["constant time", "constant-time", timing, "early return", "short-circuit", side channel, length]
+    note: "RUST-ONLY secret_eq is documented as constant-time and is not: it returns early on a length mismatch and on the first differing byte"
+  - id: RA09
+    file: src/auth.rs
+    anchor: "for session in self.sessions.values() {"
+    span: 6
+    need: 1
+    keywords: ["linear", "O(n)", scan, iterat, "hash", lookup, "get(", inefficient]
+    note: "verify scans every session linearly although the map is already keyed by token"
+
+  # ---------------- cache.rs ----------------
+  - id: RC01
+    file: src/cache.rs
+    anchor: "pub fn get(&self, code: &str) -> Option<String>"
+    span: 8
+    need: 2
+    keywords: [write, "read", RwLock, contention, serial, "read path", exclusive, "read_lock"]
+    note: "RUST-ONLY get takes the WRITE lock on the read path, so every cache read serializes against every other"
+  - id: RC02
+    file: src/cache.rs
+    anchor: "let victim = guard.keys().next().cloned();"
+    span: 6
+    need: 1
+    keywords: ["least recently used", LRU, arbitrary, random, "iteration order", "not the least", used]
+    note: "parallel: CA08 eviction drops whatever key iteration yields first, not the least recently used; the `used` field is written and never read"
+  - id: RC03
+    file: src/cache.rs
+    anchor: "guard.len() / self.limit * 100"
+    span: 6
+    need: 1
+    keywords: ["integer division", "always 0", truncat, "divide by zero", "division by zero", panic, usize]
+    note: "RUST-ONLY utilization divides usizes before scaling so it is always 0, and panics outright when limit is 0"
+  - id: RC04
+    file: src/cache.rs
+    anchor: "pub fn warm"
+    span: 8
+    need: 2
+    keywords: ["check-then-act", race, TOCTOU, between, peek, set, "not atomic", "two locks"]
+    note: "parallel: CA06 warm's peek and set are separately locked, so the janitor and a handler can both fill the same key"
+  - id: RC05
+    file: src/cache.rs
+    anchor: "pub fn flush"
+    span: 8
+    need: 2
+    keywords: [deadlock, "lock order", inversion, "opposite order", ordering, hits, entries]
+    note: "RUST-ONLY flush locks hits then entries while get locks entries then hits: a lock-order inversion that deadlocks"
+  - id: RC06
+    file: src/cache.rs
+    anchor: "pub fn sweep"
+    span: 14
+    need: 2
+    keywords: [race, TOCTOU, "between", "read lock", "released", drop, "re-acquir", recheck]
+    note: "sweep collects expired keys under a read lock, drops it, then deletes: an entry refreshed in between is deleted anyway"
+  - id: RC07
+    file: src/cache.rs
+    # No line gate: .unwrap() on lock() is on every method, and a reviewer cites
+    # whichever one they read first.
+    need: 2
+    keywords: [poison, panic, unwrap, "lock()", propagat, "every method", cascad]
+    note: "RUST-ONLY every lock() is unwrapped, so one panicking thread poisons the mutex and every later request panics too"
+
+  # ---------------- config.rs ----------------
+  - id: RF01
+    file: src/config.rs
+    anchor: "cfg.port = v.parse().unwrap_or(0);"
+    span: 6
+    need: 1
+    keywords: ["unwrap_or", silently, "port 0", ignored, error, invalid, default]
+    note: "parallel: CF01 a malformed LINKD_PORT silently becomes port 0"
+  - id: RF02
+    file: src/config.rs
+    anchor: 'println!("config: bad LINKD_TIMEOUT_MS {:?}, keeping default", v);'
+    span: 6
+    need: 1
+    keywords: ["keeping default", contradic, anyway, "does not", zero, "still", assigned]
+    note: "parallel: CF02 the parse-error branch logs 'keeping default' and then sets the timeout to zero"
+  - id: RF03
+    file: src/config.rs
+    anchor: "cfg.cache_ttl = Duration::from_secs(n);"
+    span: 6
+    need: 1
+    keywords: [millisecond, "from_secs", unit, "1000", documented, wrong, "from_millis"]
+    note: "parallel: CF03 LINKD_CACHE_TTL_MS is documented in milliseconds and built with from_secs: 1000x too long"
+  - id: RF04
+    file: src/config.rs
+    anchor: "let _ = limit;"
+    span: 6
+    need: 1
+    keywords: [discarded, "no effect", ignored, "never", unused, "let _"]
+    note: "parallel: CF04 LINKD_FETCH_LIMIT is parsed and validated, then thrown away; the setting does nothing"
+  - id: RF05
+    file: src/config.rs
+    anchor: "fs::read_to_string(path).unwrap_or_default()"
+    span: 6
+    need: 1
+    keywords: ["unwrap_or_default", "read error", permission, unreadable, silently, ignored, distinguish]
+    note: "RUST-ONLY (parallel: CF05) any read error -- not just a missing file -- silently yields an empty config"
+  - id: RF06
+    file: src/config.rs
+    anchor: "pub fn validate(&self) -> Result<(), String>"
+    span: 16
+    need: 1
+    keywords: ["returns Ok", "always Ok", "never returns", logs, "does not fail", startup, "Err"]
+    note: "parallel: CF06 validate logs the problems it finds and returns Ok, so a bad config starts the service anyway"
+
+  # ---------------- export.rs ----------------
+  - id: RE01
+    file: src/export.rs
+    anchor: 'let name = if name.is_empty() { "links" } else { name };'
+    span: 8
+    need: 1
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", join, arbitrary]
+    note: "parallel: EX01 the report name comes from the query string and goes into Path::join unchecked"
+  - id: RE02
+    file: src/export.rs
+    anchor: "fs::write(&path, body).map_err"
+    span: 6
+    need: 1
+    keywords: [permission, mode, "0644", "world", readable, umask, "set_permissions", restrict]
+    note: "parallel: EX02 the export holding every owner's links is written with default permissions, world-readable"
+  - id: RE03
+    file: src/export.rs
+    anchor: '"{},{},{},{}\n",'
+    span: 8
+    need: 1
+    keywords: [escap, quot, comma, inject, "csv", formula, malformed]
+    note: "parallel: EX03 CSV rows are built with format!, so a comma or quote in a target breaks the file and a leading = is a formula injection"
+  - id: RE04
+    file: src/export.rs
+    anchor: 'let path = Path::new(dir).join(format!("{}.csv", owner));'
+    span: 6
+    need: 1
+    keywords: [owner, traversal, "path", sanitiz, "file_name", basename, escape]
+    note: "archive_all builds a filename straight from the owner string, so an owner containing a path separator escapes dir"
+  - id: RE05
+    file: src/export.rs
+    anchor: 'let tmp = Path::new("/tmp").join("linkd-snapshot.json");'
+    span: 10
+    need: 1
+    keywords: ["fixed", predictable, "/tmp", symlink, race, collision, "sync", fsync, durab, "concurrent"]
+    note: "parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp (symlink and collision hazard), nothing fsyncs, and the rename's error is discarded"
+  - id: RE06
+    file: src/export.rs
+    anchor: 'format!("read {:?} failed: {}", path, e)'
+    span: 6
+    need: 1
+    keywords: [path, leak, "internal", disclos, expose, "error message", filesystem]
+    note: "parallel: C21 the read error carries the server's filesystem path back to the caller"
+
+  # ---------------- worker.rs ----------------
+  - id: RW01
+    file: src/worker.rs
+    anchor: "let current = self.resolved.load(Ordering::Relaxed);"
+    span: 6
+    need: 1
+    keywords: ["fetch_add", "load", "store", "not atomic", "read-modify-write", lost, race, increment]
+    note: "RUST-ONLY (parallel: X01) add_resolved does load-then-store instead of fetch_add, so concurrent increments are lost"
+  - id: RW02
+    file: src/worker.rs
+    anchor: "thread::sleep(interval);"
+    span: 10
+    need: 1
+    keywords: [stop, "try_recv", "full interval", shutdown, "60", sleep, responsive, "lock held"]
+    note: "the janitor checks for stop only before a 60s sleep, so shutdown waits a full interval, and it holds the store lock across the whole sweep"
+  - id: RW03
+    file: src/worker.rs
+    anchor: "let _ = handles;"
+    span: 8
+    need: 1
+    keywords: [join, "never joined", detach, "returns before", handles, discard, wait]
+    note: "RUST-ONLY (parallel: X03) warm_cache drops its JoinHandles without joining, so it returns before any probe has run, contradicting its doc"
+  - id: RW04
+    file: src/worker.rs
+    anchor: "let (tx, rx) = mpsc::sync_channel::<Result<(), String>>(0);"
+    span: 18
+    need: 1
+    keywords: [block, forever, leak, "rendezvous", unbuffered, "sync_channel", drain, "first error", thread]
+    note: "parallel: X04 check_targets returns on the first error; the remaining threads block forever sending into a rendezvous channel"
+  - id: RW05
+    file: src/worker.rs
+    anchor: "let second = store.lock().unwrap();"
+    span: 6
+    need: 1
+    keywords: [deadlock, "twice", "same mutex", reentran, "already held", "self-deadlock", recursive]
+    note: "RUST-ONLY (parallel: CA04) count_by_owner locks the same mutex a second time while the first guard is still alive: an immediate self-deadlock"
+
+  # ---------------- main.rs ----------------
+  - id: RM01
+    file: src/main.rs
+    anchor: "let _ = stream.read_to_end(&mut body);"
+    span: 6
+    need: 1
+    keywords: [unbounded, "size limit", "read_to_end", memory, exhaust, DoS, "take(", block]
+    note: "parallel: C24 the handler reads the whole request body with no size limit and blocks until the client closes"
+  - id: RM02
+    file: src/main.rs
+    anchor: "fn delete_link"
+    span: 10
+    need: 1
+    keywords: [owner, authoriz, "access check", "any user", anyone, permission, IDOR, session]
+    note: "parallel: C17 delete_link never checks the owner its doc promises to check: any caller deletes any link"
+  - id: RM03
+    file: src/main.rs
+    anchor: "fn out"
+    span: 12
+    need: 1
+    keywords: ["open redirect", redirect, phish, next, unvalidated, arbitrary]
+    note: "parallel: C18 /out redirects to any address in ?next= -- an open redirect, cached permanently by the 301"
+  - id: RM04
+    file: src/main.rs
+    anchor: 'if headers.get("x-admin").map(|v| v.as_str()) != Some("true") {'
+    span: 6
+    need: 1
+    keywords: ["x-admin", header, "client-controlled", spoof, privilege, forge, trivially]
+    note: "parallel: C19 the admin endpoint is gated on a request header the caller sets themselves"
+  - id: RM05
+    file: src/main.rs
+    anchor: "let per_link = hits / guard.len() as i64;"
+    span: 6
+    need: 1
+    keywords: ["divide by zero", "division by zero", panic, empty, zero, "len()"]
+    note: "parallel: C20 /stats divides by the link count, panicking whenever the store is empty"
+  - id: RM06
+    file: src/main.rs
+    anchor: "guard.resolve(&code.to_lowercase())"
+    span: 6
+    need: 1
+    keywords: ["to_lowercase", case, lowercas, mismatch, "never resolve", "case-sensitive"]
+    note: "parallel: C16 redirect lowercases the code before lookup, but codes are stored case-sensitively"
+  - id: RM07
+    file: src/main.rs
+    anchor: "Access-Control-Allow-Credentials: true"
+    span: 6
+    need: 1
+    keywords: [CORS, wildcard, credentials, "any origin", "Allow-Origin", "cross-origin", "*"]
+    note: "parallel: C23 wildcard CORS combined with Allow-Credentials on every response"
+  - id: RM08
+    file: src/main.rs
+    anchor: '&format!("unauthorized: unknown token (token {})", token),'
+    span: 6
+    need: 1
+    keywords: [echo, token, reflect, "error message", disclos, leak, response]
+    note: "parallel: S08 the 401 response echoes the rejected token back to the caller"
+  - id: RM09
+    file: src/main.rs
+    anchor: "let token = auth::bearer_token(&authorization);"
+    span: 6
+    need: 2
+    keywords: [panic, "every request", unauthenticated, "before", crash, thread, "missing header", "denial"]
+    note: "RUST-ONLY the auth path calls bearer_token on an absent Authorization header, so every unauthenticated request panics its handler thread"
+  - id: RM10
+    file: src/main.rs
+    anchor: "janitor.stop();"
+    span: 6
+    need: 1
+    keywords: [unreachable, "never runs", "infinite", loop, shutdown, graceful, "after the"]
+    note: "parallel: C26 janitor.stop() sits after an infinite accept loop, so it is unreachable and there is no graceful shutdown"
+  - id: RM11
+    file: src/main.rs
+    anchor: "let listener = TcpListener::bind"
+    span: 8
+    need: 1
+    keywords: [timeout, "read timeout", "write timeout", slowloris, "set_read_timeout", "no timeout", hang]
+    note: "parallel: C25 no read or write timeout is ever set on an accepted stream, so one slow client holds a thread forever"
+  - id: RM12
+    file: src/main.rs
+    anchor: "fn parse_query"
+    span: 10
+    need: 1
+    keywords: ["percent", "url", decode, unescap, "urlencod", "%20", "content-type", raw]
+    note: "parse_query never percent-decodes, and the POST body is parsed as a query string with no content-type check"
