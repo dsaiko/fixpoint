@@ -90,6 +90,8 @@ def read_manifest(path):
                 cur[key] = parse_list(val)
             elif key in ("line", "span", "need"):
                 cur[key] = int(val)
+            elif key == "retired":
+                cur[key] = val.strip().lower() in ("true", "yes", "1")
             else:
                 # Anchors carry code, so they are quoted with whichever quote
                 # the code itself does not use.
@@ -209,7 +211,9 @@ def check(manifest_path):
     task, target, root, seeds = read_manifest(manifest_path)
     problems = resolve_anchors(manifest_path, root, seeds)
     anchored = sum(1 for s in seeds if s.get("anchor"))
-    print(f"{manifest_path}: task {task}, {len(seeds)} seeds, "
+    live = sum(1 for s in seeds if not s.get("retired"))
+    print(f"{manifest_path}: task {task}, {len(seeds)} seeds "
+          f"({live} scored, {len(seeds) - live} retired), "
           f"{anchored} anchored, {len(seeds) - anchored} matched on keywords alone")
     for p in problems:
         print(f"  BROKEN {p}")
@@ -277,10 +281,18 @@ def main():
     findings = [f for r in rounds for f in (r.get("findings") or [])]
     steps = [s for r in rounds for s in (r.get("steps") or [])]
 
+    # Retired seeds still take part in matching, deliberately. The defect is
+    # still in the frozen target, so a reviewer will still report it; if the
+    # seed were simply deleted, that correct finding would land in `extras` and
+    # be counted as NOISE against the model. Retiring a seed must sharpen the
+    # scale, not manufacture false noise -- so the seed keeps absorbing its
+    # finding and only leaves the denominator.
     hit, extras = assign(seeds, findings)
 
-    found = sum(1 for v in hit.values() if v)
-    recall = found / len(seeds)
+    active = [s for s in seeds if not s.get("retired")]
+    retired = [s for s in seeds if s.get("retired")]
+    found = sum(1 for s in active if hit[s["id"]])
+    recall = found / len(active) if active else 0.0
     tok_in = sum(s.get("usage", {}).get("input_tokens", 0) for s in steps)
     tok_out = sum(s.get("usage", {}).get("output_tokens", 0) for s in steps)
     tok_cache = sum(s.get("usage", {}).get("cache_read_tokens", 0) for s in steps)
@@ -317,19 +329,30 @@ def main():
                         "findings", "matched_seeds", "seeds", "recall", "extras",
                         "tokens_in", "tokens_out", "cache_read", "duration_s", "found_per_mtok"])
         w.writerow([run_id, task, target, model, repeat, sessions, errors,
-                    len(findings), found, len(seeds), f"{recall:.2f}", len(extras),
+                    len(findings), found, len(active), f"{recall:.2f}", len(extras),
                     tok_in, tok_out, tok_cache, int(duration_s), eff])
 
     lines = [f"# {model} · {target} · run {run_id} (repeat {repeat})", ""]
-    lines.append(f"recall **{found}/{len(seeds)}** · {len(findings)} finding(s), "
-                 f"{len(extras)} unmatched · {tok_in + tok_out} tokens · {int(duration_s)}s")
+    lines.append(f"recall **{found}/{len(active)}** · {len(findings)} finding(s), "
+                 f"{len(extras)} unmatched · {tok_in + tok_out} tokens · {int(duration_s)}s"
+                 + (f" · {len(retired)} retired seed(s) not scored" if retired else ""))
     lines.append("")
     lines.append("| seed | found | note | matched by |")
     lines.append("|---|---|---|---|")
-    for s in seeds:
+    for s in active:
         got = hit[s["id"]]
         by = "; ".join(f"{g.get('lens', '?')}: {g.get('title', '')[:60]}" for g in got[:2])
         lines.append(f"| {s['id']} | {'YES' if got else '—'} | {s.get('note', '')[:70]} | {by} |")
+    if retired:
+        lines.append("")
+        lines.append("Retired seeds — still matched so their findings are not counted as "
+                     "noise, but out of the denominator:")
+        lines.append("")
+        lines.append("| seed | found | note |")
+        lines.append("|---|---|---|")
+        for s in retired:
+            got = hit[s["id"]]
+            lines.append(f"| {s['id']} | {'YES' if got else '—'} | {s.get('note', '')[:70]} |")
     if extras:
         lines.append("")
         lines.append("Unmatched findings (noise, or genuinely new — skim before dismissing):")
@@ -339,7 +362,7 @@ def main():
     report = outdir / f"{model.replace(':', '_').replace('/', '_')}-{target}-{run_id}.md"
     report.write_text("\n".join(lines) + "\n")
 
-    print(f"bench: {model} {target}: recall {found}/{len(seeds)}, {len(extras)} unmatched, "
+    print(f"bench: {model} {target}: recall {found}/{len(active)}, {len(extras)} unmatched, "
           f"{tok_in + tok_out} tok, {int(duration_s)}s -> {report}")
 
 

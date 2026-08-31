@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Combine bench/results.csv into one score out of 100 per model.
+"""Combine bench/results.csv into one score per model, out of the live seed pool.
 
 Usage: bench/report.py [results.csv]
        bench/report.py [results.csv] --html <out.html>
 
-The benchmark's 100 points are split across two TARGETS -- 60 seeded defects in
-the Go target, 40 seeded flaws in the design target -- so a model's score is
+The benchmark's points are split across two calibrated TARGETS -- the Go target
+and the design target -- so a model's score is
 only complete once both have run. Further language targets are reported in the
 by-target matrix rather than folded into that total: a score is comparable only
 to runs sharing its scale. Repeats are shown separately and then as a
@@ -13,8 +13,9 @@ median, because single-run recall on a hundred seeds is noisy and the variance
 is itself information: a model that scores 61 then 38 is worse than one that
 scores 49 twice.
 
-A row missing one of the two tasks is reported as incomplete rather than
-silently scored out of 60.
+A row missing one of the two targets is reported as incomplete rather than
+silently scored out of one target's pool. The denominator comes from each row's
+own `seeds` column, so a retired seed changes the scale everywhere at once.
 """
 
 import csv
@@ -23,9 +24,12 @@ import re
 import statistics
 import sys
 
-# Points per TARGET, not per task: several targets share task "code" (one per
-# language) and each carries its own seed pool.
-TARGET_POINTS = {"go": 60, "design": 40}
+# Each row carries its own seed total, and that is what the score is out of --
+# NOT a constant here. Retiring a seed changes the live pool, and a hardcoded
+# denominator would keep reporting a score out of a scale that no longer
+# exists. Kept only as the documented shape of the calibrated pair at the time
+# it was calibrated.
+CALIBRATED_2026_08_20 = {"go": 60, "design": 40}
 
 # The calibrated pair the published /100 has always meant. New language targets
 # are reported per-target instead of being folded into this total, because a
@@ -520,6 +524,10 @@ def seed_value(results_dir):
     is meant to surface. With every row at one repeat today the two are equal.
     """
     RETIRE, DEAD = 0.90, 0.0
+    # Below this many runs a hit rate is not a measurement: with one run every
+    # found seed reads 100% and every miss 0%, which would flag most of a fresh
+    # target for retirement on a sample of one.
+    MIN_RUNS = 5
     tasks = {}
     rx = re.compile(r"^\|\s*([A-Z]+\d+)\s*\|\s*(YES|—)\s*\|", re.M)
     for f in sorted(pathlib.Path(results_dir).glob("*.md")):
@@ -542,19 +550,49 @@ def seed_value(results_dir):
     if not tasks:
         sys.exit(f"{results_dir}: no per-run tables to read")
 
+    # A retired seed is out of the denominator already; listing it as a retire
+    # candidate would be noise, and its rate is still worth showing so the
+    # decision stays auditable.
+    root = pathlib.Path(results_dir).parent
+    retired = {}
+    for task in tasks:
+        mf = root / f"manifest-{task}.yaml"
+        if not mf.exists():
+            continue
+        cur = None
+        for line in mf.read_text().splitlines():
+            t = line.strip()
+            if t.startswith("- id:"):
+                cur = t.split(":", 1)[1].strip()
+            elif cur and t.startswith("retired:") and "true" in t.lower():
+                retired.setdefault(task, set()).add(cur)
+
     for task in sorted(tasks):
         d = tasks[task]
         n = d["runs"]
+        out = retired.get(task, set())
         rows = sorted(((sid, d["hit"][sid] / n) for sid in d["order"]),
                       key=lambda kv: (-kv[1], kv[0]))
-        retire = [sid for sid, r in rows if r >= RETIRE]
-        dead = [sid for sid, r in rows if r <= DEAD]
-        live = len(rows) - len(retire) - len(dead)
-        print(f"\n{task}: {len(rows)} seeds over {n} run(s)  "
-              f"[{len(retire)} near-dead >={RETIRE:.0%}, {live} discriminating, "
-              f"{len(dead)} never found]")
+        scored = [(sid, r) for sid, r in rows if sid not in out]
+        thin = n < MIN_RUNS
+        retire = [sid for sid, r in scored if r >= RETIRE]
+        dead = [sid for sid, r in scored if r <= DEAD]
+        live = len(scored) - len(retire) - len(dead)
+        head = (f"\n{task}: {len(scored)} scored seeds over {n} run(s)"
+                + (f", {len(out)} already retired" if out else ""))
+        if thin:
+            print(head + f"  -- ONLY {n} RUN(S): rates below are not a measurement, "
+                  f"no seed should be retired on them")
+        else:
+            print(head + f"  [{len(retire)} near-dead >={RETIRE:.0%}, "
+                  f"{live} discriminating, {len(dead)} never found]")
         for sid, rate in rows:
-            flag = "RETIRE" if rate >= RETIRE else ("DEAD  " if rate <= DEAD else "      ")
+            if sid in out:
+                flag = "(gone)"
+            elif thin:
+                flag = "      "
+            else:
+                flag = "RETIRE" if rate >= RETIRE else ("DEAD  " if rate <= DEAD else "      ")
             bar = "#" * round(rate * 20)
             print(f"  {flag} {sid:5s} {rate*100:5.1f}%  {bar}")
     print("\nRETIRE = found by nearly every model, so it no longer separates them; "
@@ -598,7 +636,7 @@ def main():
     for (model, repeat), tasks in sorted(runs.items()):
         scored = {t: r for t, r in tasks.items() if t in LEGACY_SCALE}
         points = sum(int(r["matched_seeds"]) for r in scored.values())
-        possible = sum(TARGET_POINTS.get(t, int(r["seeds"])) for t, r in scored.items())
+        possible = sum(int(r["seeds"]) for r in scored.values())
         per_model.setdefault(model, []).append({
             "repeat": repeat,
             "points": points,
@@ -683,8 +721,10 @@ def main():
         print(f"{'field median':30s}{foot}")
 
     print()
-    print(f"{len(ranked)} model(s); {sum(TARGET_POINTS[t] for t in LEGACY_SCALE)} points = "
-          + " + ".join(f"{TARGET_POINTS[t]} {t}" for t in LEGACY_SCALE) + " seeds")
+    scales = sorted({e["possible"] for _, es in ranked for e in es})
+    print(f"{len(ranked)} model(s); score is {'+'.join(LEGACY_SCALE)}, out of "
+          + (str(scales[0]) if len(scales) == 1 else
+             f"{scales[0]}-{scales[-1]} (SCALES DIFFER -- rows are not comparable)"))
     if len(all_targets) > len(LEGACY_SCALE):
         extra = [t for t in all_targets if t not in LEGACY_SCALE]
         print(f"score covers {'+'.join(LEGACY_SCALE)} only, the calibrated scale; "

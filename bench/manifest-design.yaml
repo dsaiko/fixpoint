@@ -33,6 +33,7 @@ seeds:
     keywords: [clock, skew, last-write, "wall clock", wins, discarded, "silently", "lost"]
     note: "conflict resolution by client wall clock silently discards edits, contradicting the never-lost goal"
   - id: D04
+    retired: true # RETIRED 2026-09-01: 95.2%; D03 stays as the design floor
     file: DESIGN.md
     line: 0
     span: 0
@@ -126,6 +127,7 @@ seeds:
     keywords: [index, "no index", scan, "primary key", query, slow, "modified_at", performance]
     note: "the changes query filters on (user_id, modified_at) with no index planned beyond the primary key"
   - id: D17
+    retired: true # RETIRED 2026-09-01: 0/21. No degraded read-only mode drew ZERO candidate findings across every re-scorable run
     file: DESIGN.md
     line: 0
     span: 0
@@ -182,6 +184,7 @@ seeds:
     keywords: ["losing copy", discard, merge, "do not keep", recover, conflict, irrecoverab, "no record"]
     note: "the conflict loser is discarded with no copy kept, so a wrong resolution is unrecoverable and undebuggable"
   - id: D25
+    retired: true # RETIRED 2026-09-01: 95.2%; 32-bit id collision, and it is the seed that keeps absorbing bundled findings
     file: DESIGN.md
     line: 0
     span: 0
@@ -226,6 +229,7 @@ seeds:
     keywords: [tombstone, "deleted = true", forever, grow, "garbage", retention, "never removed", unbounded]
     note: "tombstones are kept forever in both databases with no GC horizon; the client DB grows without bound"
   - id: D31
+    retired: true # RETIRED 2026-09-01: 95.2%; account-deletion orphans
     file: DESIGN.md
     line: 0
     span: 0
@@ -240,6 +244,7 @@ seeds:
     keywords: ["one cursor", "per user", "per device", devices, cursor, share, "second device", skip]
     note: "one cursor per account with several devices: whichever device syncs first advances it and the others never see those changes"
   - id: D33
+    retired: true # RETIRED 2026-09-01: 0/21, and not a matcher bug: the one model that raised it bundled it with the 32-bit id namespace, and that finding matched D25 on three keywords against this seed's one. A bundling-ceiling casualty
     file: DESIGN.md
     line: 0
     span: 0
@@ -290,6 +295,7 @@ seeds:
     keywords: [device, "per-device", "which device", identify, "no record", state, register]
     note: "the server holds no per-device state at all, so it cannot tell two devices apart, expire one, or reason about their cursors"
   - id: D39
+    retired: true # RETIRED 2026-09-01: 0/21. Apparent candidates are all about cursor semantics and wire versioning, not the server's own receipt time
     file: DESIGN.md
     line: 0
     span: 0
