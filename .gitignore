@@ -14,6 +14,7 @@ config/agents/bench-candidate.yaml
 # `linkd` got staged once.
 bench/testdata/target-*/linkd
 bench/testdata/target-*/target/
+bench/testdata/target-*/**/*.class
 bench/.run.lock
 # GoReleaser's output. Built artifacts, never reviewed and never committed --
 # and the archives contain a copy of the bundle, so a committed dist/ would put
