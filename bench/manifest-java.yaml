@@ -1,0 +1,508 @@
+# Seeded defects in bench/testdata/target-java. Same matcher rules as
+# manifest-go.yaml. Frozen: never fix these bugs.
+#
+# The SAME link-shortener service as target-go and target-rust, so the language
+# is the only variable. See "One service, many languages" in bench/README.md.
+#
+#   PARALLEL   the same logical defect as a numbered Go seed, marked
+#              "parallel: Cnn" -- these answer the cross-language question.
+#   JAVA-ONLY  defects that cannot exist in Go: reference comparison on boxed
+#              strings, autounboxing a null Integer, equals without hashCode,
+#              a shared SimpleDateFormat, ConcurrentModificationException,
+#              a swallowed InterruptedException, an unshut ExecutorService,
+#              and a lazily-created singleton with no synchronization.
+task: code
+target: java
+root: testdata/target-java
+seeds:
+  # ---------------- Link.java ----------------
+  - id: J01
+    file: src/linkd/Link.java
+    anchor: "public boolean equals(Object other)"
+    span: 10
+    need: 1
+    keywords: [hashCode, "equals", contract, HashMap, HashSet, "map key", override]
+    note: "JAVA-ONLY equals is overridden without hashCode, so links break as map keys and set members -- exactly what the doc promises they support"
+
+  # ---------------- Store.java ----------------
+  - id: J02
+    file: src/linkd/Store.java
+    anchor: "quota.put(owner, quota.get(owner) + 1);"
+    span: 6
+    need: 1
+    keywords: [NullPointerException, NPE, unbox, autobox, null, "new owner", "first link", getOrDefault]
+    note: "JAVA-ONLY (parallel: C01) quota has no entry for a new owner, so unboxing the null Integer throws NullPointerException on the first create"
+  - id: J03
+    file: src/linkd/Store.java
+    anchor: "if (Instant.now().isBefore(link.expiresAt))"
+    span: 6
+    need: 1
+    keywords: [inverted, backwards, reversed, expir, isBefore, isAfter]
+    note: "parallel: C02 expiry comparison inverted: live links are deleted, expired ones resolve"
+  - id: J04
+    file: src/linkd/Store.java
+    anchor: "public void rename(String from, String to)"
+    span: 8
+    need: 1
+    keywords: [twice, "validateCode(to)", "never validated", duplicate, "copy-paste", "same argument"]
+    note: "parallel: C03 rename validates `from` twice; `to` is never validated"
+  - id: J05
+    file: src/linkd/Store.java
+    anchor: "end = all.size() + 1;"
+    span: 6
+    need: 1
+    keywords: ["IndexOutOfBounds", "out of range", "off-by-one", bounds, subList, "size() + 1"]
+    note: "parallel: C04 page clamps end past the list size, so the last page throws IndexOutOfBoundsException"
+  - id: J06
+    file: src/linkd/Store.java
+    anchor: "return used / links.size() * 100;"
+    span: 6
+    need: 1
+    keywords: ["integer division", integer-divid, truncat, "always 0", "order of operations", float]
+    note: "parallel: C05 integer division before scaling yields 0 for every rate under 100%"
+  - id: J07
+    file: src/linkd/Store.java
+    anchor: "public void delete(String code)"
+    span: 8
+    need: 1
+    keywords: [quota, "never decrement", "not released", refund, "give the owner", slot]
+    note: "parallel: C09 delete drops the link but never returns the owner's quota slot the doc promises"
+  - id: J08
+    file: src/linkd/Store.java
+    anchor: "all.sort((a, b) -> Long.compare(a.hits, b.hits));"
+    span: 6
+    need: 1
+    keywords: [ascending, least, reversed, "wrong order", "most hits", backwards, descending]
+    note: "parallel: C10 top sorts by hits ascending, so the leaderboard shows the least followed links"
+  - id: J09
+    file: src/linkd/Store.java
+    anchor: "if (link.owner.contains(owner))"
+    span: 6
+    need: 1
+    keywords: [contains, substring, exact, "other owners", tenant, leak, equals]
+    note: "parallel: C11 byOwner matches owners by substring, so one owner sees another's links"
+  - id: J10
+    file: src/linkd/Store.java
+    anchor: "if (link.code == code)"
+    span: 6
+    need: 1
+    keywords: ["==", "reference", identity, "equals()", intern, "string comparison"]
+    note: "JAVA-ONLY findByCode compares strings with == instead of equals, so it matches only interned references"
+  - id: J11
+    file: src/linkd/Store.java
+    anchor: "public void extend(String code, Duration ttl)"
+    span: 8
+    need: 1
+    keywords: [expired, resurrect, revive, "back to life", "already expired", dead]
+    note: "parallel: C12 extend re-dates an already-expired link, resurrecting a code the doc calls final"
+  - id: J12
+    file: src/linkd/Store.java
+    anchor: "public Map<String, Integer> quotas()"
+    span: 6
+    need: 1
+    keywords: [snapshot, "internal", mutable, alias, expose, copy, unmodifiable]
+    note: "parallel: C14 quotas hands out the store's own map while the doc calls it a snapshot"
+  - id: J13
+    file: src/linkd/Store.java
+    anchor: "public void importAll(List<Link> batch)"
+    span: 8
+    need: 1
+    keywords: [atomic, partial, rollback, half, "already stored", "not all", validate]
+    note: "parallel: C13 importAll stores as it validates, so a bad code leaves the earlier half of the batch stored"
+  - id: J14
+    file: src/linkd/Store.java
+    anchor: "for (String code : links.keySet())"
+    span: 8
+    need: 1
+    keywords: [ConcurrentModificationException, "while iterating", iterator, remove, "keySet", modif]
+    note: "JAVA-ONLY (parallel: C15) prune removes from the map while iterating its keySet, throwing ConcurrentModificationException on the first expired link"
+  - id: J15
+    file: src/linkd/Store.java
+    anchor: "return all.subList(offset, end);"
+    span: 6
+    need: 1
+    keywords: [subList, view, "backed by", copy, "not a copy", reference, retain]
+    note: "JAVA-ONLY page returns a subList VIEW backed by the temporary list rather than a copy, so it retains the whole list and breaks on structural change"
+  - id: J16
+    file: src/linkd/Store.java
+    anchor: "return Long.toHexString(random.nextLong()).substring(0, 8);"
+    span: 6
+    need: 1
+    keywords: ["SecureRandom", predictable, "java.util.Random", guess, "not cryptographically", substring, StringIndexOutOfBounds]
+    note: "JAVA-ONLY (parallel: S02) codes come from java.util.Random, and substring(0,8) throws whenever the hex string is shorter than eight characters"
+  - id: J17
+    file: src/linkd/Store.java
+    anchor: "private final Map<String, Link> links = new HashMap<>();"
+    span: 6
+    need: 2
+    keywords: [HashMap, ConcurrentHashMap, thread, synchron, race, "not thread-safe", janitor, concurrent]
+    note: "parallel: X02 the store's HashMap is mutated by request threads and the janitor with no synchronization at all"
+
+  # ---------------- Authenticator.java ----------------
+  - id: J18
+    file: src/linkd/Authenticator.java
+    anchor: 'env = "dev-secret-do-not-use";'
+    span: 6
+    need: 1
+    keywords: [hardcoded, "default secret", "dev-secret", fallback, weak, credential]
+    note: "parallel: S01 the signing secret falls back to a hardcoded development value when the environment is unset"
+  - id: J19
+    file: src/linkd/Authenticator.java
+    anchor: "session.token = Long.toHexString(random.nextLong());"
+    span: 6
+    need: 1
+    keywords: ["SecureRandom", predictable, "java.util.Random", forge, guess, "not cryptographically"]
+    note: "parallel: S02 session tokens come from java.util.Random, so they are predictable and forgeable"
+  - id: J20
+    file: src/linkd/Authenticator.java
+    anchor: 'System.out.println("auth: issued token "'
+    span: 6
+    need: 1
+    keywords: [log, token, secret, "written to", disclos, redact, stdout, print]
+    note: "parallel: S03 every issued session token is printed in cleartext"
+  - id: J21
+    file: src/linkd/Authenticator.java
+    anchor: "public Session verify(String token)"
+    span: 10
+    need: 1
+    keywords: [expir, "expiresAt", "never expire", lifetime, "not checked", stale]
+    note: "parallel: S04 verify never looks at expiresAt, so a token works forever despite the documented 12-hour lifetime"
+  - id: J22
+    file: src/linkd/Authenticator.java
+    anchor: "if (session.token == token)"
+    span: 6
+    need: 1
+    keywords: ["==", reference, identity, "equals()", intern, "string comparison"]
+    note: "JAVA-ONLY verify compares the token with == rather than equals, so authentication depends on string interning"
+  - id: J23
+    file: src/linkd/Authenticator.java
+    anchor: 'MessageDigest digest = MessageDigest.getInstance("SHA-256");'
+    span: 8
+    need: 1
+    keywords: [salt, bcrypt, argon, scrypt, PBKDF2, "fast hash", unsalted, rainbow, KDF]
+    note: "parallel: S05 passwords are stored as a single unsalted SHA-256, crackable offline at speed"
+  - id: J24
+    file: src/linkd/Authenticator.java
+    anchor: "return parts[1];"
+    span: 6
+    need: 1
+    keywords: ["ArrayIndexOutOfBounds", index, "out of bounds", "parts[1]", malformed, "missing header", crash]
+    note: "parallel: S06 bearerToken indexes parts[1] without checking, so a malformed Authorization header throws"
+  - id: J25
+    file: src/linkd/Authenticator.java
+    anchor: 'if (!session.role.equals("admin") || !session.role.equals("owner"))'
+    span: 6
+    need: 1
+    keywords: ["always true", tautolog, "&&", "||", never, "every session", "cannot be false"]
+    note: "parallel: S07 the admin check is always true, so requireAdmin rejects every session including admins"
+  - id: J26
+    file: src/linkd/Authenticator.java
+    anchor: "public static boolean secretEquals(String presented, String expected)"
+    span: 6
+    need: 1
+    keywords: ["constant time", "constant-time", timing, "MessageDigest.isEqual", "short-circuit", "side channel"]
+    note: "secretEquals is documented as not leaking how much matched and uses String.equals, which short-circuits on the first differing character"
+  - id: J27
+    file: src/linkd/Authenticator.java
+    anchor: "private final Map<String, Session> sessions = new HashMap<>();"
+    span: 6
+    need: 2
+    keywords: [HashMap, ConcurrentHashMap, thread, synchron, race, "not thread-safe", concurrent, session]
+    note: "the sessions map is read and written from every request thread with no synchronization"
+  - id: J28
+    file: src/linkd/Authenticator.java
+    anchor: "} catch (NoSuchAlgorithmException e) {"
+    span: 6
+    need: 1
+    keywords: ["empty string", "returns", swallow, silent, "every password", identical, catch]
+    note: "JAVA-ONLY hashPassword returns the empty string when the digest is unavailable, so every password hashes to the same value"
+
+  # ---------------- Cache.java ----------------
+  - id: J29
+    file: src/linkd/Cache.java
+    anchor: "if (instance == null)"
+    span: 8
+    need: 1
+    keywords: [singleton, "double-checked", volatile, race, "lazy", synchron, "two instances"]
+    note: "JAVA-ONLY getInstance is an unsynchronized lazy singleton, so concurrent callers can build and use two different caches"
+  - id: J30
+    file: src/linkd/Cache.java
+    anchor: "public boolean peek(String code)"
+    span: 6
+    need: 2
+    keywords: [synchron, lock, race, "not synchronized", concurrent, peek, visibility]
+    note: "parallel: CA02 peek reads the map with no synchronization while synchronized methods are writing it"
+  - id: J31
+    file: src/linkd/Cache.java
+    anchor: "public long stats()"
+    span: 6
+    need: 2
+    keywords: [synchron, volatile, race, hits, stale, "not synchronized", visibility, torn]
+    note: "parallel: CA07 stats reads the non-volatile hit counter with no synchronization while get is incrementing it"
+  - id: J32
+    file: src/linkd/Cache.java
+    anchor: "Iterator<String> it = entries.keySet().iterator();"
+    span: 8
+    need: 1
+    keywords: ["least recently used", LRU, arbitrary, "iteration order", "not the least", used, first]
+    note: "parallel: CA08 eviction drops whatever key the iterator yields first, not the least recently used; the `used` field is written and never read"
+  - id: J33
+    file: src/linkd/Cache.java
+    anchor: "public void warm(Map<String, String> pairs)"
+    span: 8
+    need: 2
+    keywords: ["check-then-act", race, TOCTOU, between, peek, set, "not atomic"]
+    note: "parallel: CA06 warm's peek and set are separately locked, so the janitor and a handler can both fill the same key"
+  - id: J34
+    file: src/linkd/Cache.java
+    anchor: "public synchronized void sweep()"
+    span: 8
+    need: 1
+    keywords: [ConcurrentModificationException, "while iterating", iterator, remove, keySet, modif]
+    note: "JAVA-ONLY sweep removes entries while iterating the keySet, throwing ConcurrentModificationException as soon as one has expired"
+  - id: J35
+    file: src/linkd/Cache.java
+    anchor: "return entries.size() / limit * 100;"
+    span: 6
+    need: 1
+    keywords: ["integer division", integer-divid, "always 0", truncat, "divide by zero", "division by zero"]
+    note: "parallel: C05 utilization divides before scaling so it is always 0, and throws when limit is 0"
+
+  # ---------------- Config.java ----------------
+  - id: J36
+    file: src/linkd/Config.java
+    anchor: 'cfg.port = Integer.parseInt(port);'
+    span: 8
+    need: 1
+    keywords: ["empty catch", swallow, silent, ignored, "no log", NumberFormatException, invalid]
+    note: "parallel: CF01 a malformed LINKD_PORT is swallowed by an empty catch block with no log and no failure"
+  - id: J37
+    file: src/linkd/Config.java
+    anchor: 'System.out.println("config: bad LINKD_TIMEOUT_MS "'
+    span: 6
+    need: 1
+    keywords: ["keeping default", contradic, anyway, "does not", zero, "still", assigned]
+    note: "parallel: CF02 the parse-error branch logs 'keeping default' and then sets the timeout to zero"
+  - id: J38
+    file: src/linkd/Config.java
+    anchor: "cfg.cacheTtlSeconds = Long.parseLong(ttl);"
+    span: 6
+    need: 1
+    keywords: [millisecond, second, unit, "1000", documented, wrong, unguarded, NumberFormatException]
+    note: "parallel: CF03 LINKD_CACHE_TTL_MS is documented in milliseconds and stored as seconds (1000x), and the parse is unguarded so a bad value kills startup"
+  - id: J39
+    file: src/linkd/Config.java
+    anchor: "parsed = parsed;"
+    span: 6
+    need: 1
+    keywords: ["self-assign", "no effect", ignored, never, unused, discarded, "fetchLimit"]
+    note: "parallel: CF04 LINKD_FETCH_LIMIT is parsed and self-assigned, so the setting does nothing"
+  - id: J40
+    file: src/linkd/Config.java
+    anchor: "raw = new String(Files.readAllBytes(Paths.get(path)));"
+    span: 8
+    need: 1
+    keywords: ["empty catch", swallow, "read error", permission, unreadable, silently, ignored, distinguish]
+    note: "parallel: CF05 loadFile swallows every IOException, so an unreadable config is indistinguishable from a missing one"
+  - id: J41
+    file: src/linkd/Config.java
+    anchor: "public boolean validate()"
+    span: 16
+    need: 1
+    keywords: ["returns true", "always true", logs, "does not fail", startup, "never returns false"]
+    note: "parallel: CF06 validate logs the problems it finds and returns true, so a bad config starts the service anyway"
+
+  # ---------------- Export.java ----------------
+  - id: J42
+    file: src/linkd/Export.java
+    anchor: "public static final SimpleDateFormat STAMP"
+    span: 6
+    need: 1
+    keywords: [SimpleDateFormat, "thread-safe", "not thread", shared, static, DateTimeFormatter, race, corrupt]
+    note: "JAVA-ONLY a static SimpleDateFormat is shared across request threads; it is not thread-safe and produces corrupted or wrong timestamps under load"
+  - id: J43
+    file: src/linkd/Export.java
+    anchor: 'name = "links";'
+    span: 8
+    need: 1
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", arbitrary]
+    note: "parallel: EX01 the report name comes from the query string and is joined onto dir unchecked"
+  - id: J44
+    file: src/linkd/Export.java
+    anchor: "FileWriter writer = new FileWriter(path);"
+    span: 8
+    need: 1
+    keywords: ["try-with-resources", leak, close, "not closed", exception, finally, descriptor]
+    note: "JAVA-ONLY the FileWriter is closed only on the success path; any exception leaks the descriptor"
+  - id: J45
+    file: src/linkd/Export.java
+    anchor: 'body.append(link.code).append(",")'
+    span: 10
+    need: 1
+    keywords: [escap, quot, comma, inject, "csv", formula, malformed]
+    note: "parallel: EX03 CSV rows are built by concatenation, so a comma or quote in a target breaks the file and a leading = is a formula injection"
+  - id: J46
+    file: src/linkd/Export.java
+    anchor: 'new FileWriter(new File(dir, entry.getKey() + ".csv"))'
+    span: 6
+    need: 1
+    keywords: [owner, traversal, "path", sanitiz, basename, escape, separator]
+    note: "archiveAll builds a filename straight from the owner string, so an owner containing a path separator escapes dir"
+  - id: J47
+    file: src/linkd/Export.java
+    anchor: 'tmp.renameTo(new File(dir, "snapshot.json"));'
+    span: 6
+    need: 1
+    keywords: [renameTo, "return value", ignored, "silently", fails, "different filesystem", "cross-device", Files.move]
+    note: "parallel: EX06 renameTo's boolean result is discarded and it fails silently across filesystems, so the snapshot never lands"
+  - id: J48
+    file: src/linkd/Export.java
+    anchor: 'File tmp = new File("/tmp", "linkd-snapshot.json");'
+    span: 6
+    need: 1
+    keywords: ["fixed", predictable, "/tmp", symlink, race, collision, "concurrent", temp]
+    note: "parallel: EX07 the snapshot temp file has one fixed name in /tmp: a symlink target and a collision between concurrent writers"
+  - id: J49
+    file: src/linkd/Export.java
+    anchor: "public static String exportCsv(String dir, String name, List<Link> links)"
+    span: 8
+    need: 2
+    keywords: [permission, mode, "world", readable, "POSIX", umask, restrict, "every owner"]
+    note: "parallel: EX02 the report holding every owner's links is written with default permissions, readable by anyone on the box"
+
+  # ---------------- Worker.java ----------------
+  - id: J50
+    file: src/linkd/Worker.java
+    anchor: "public void addCreated()"
+    span: 6
+    need: 1
+    keywords: [synchron, race, "lost update", "not synchronized", atomic, increment, inconsistent]
+    note: "parallel: X01 addCreated is unsynchronized while addResolved is, so concurrent creations are lost"
+  - id: J51
+    file: src/linkd/Worker.java
+    anchor: "private long errors;"
+    span: 6
+    need: 1
+    keywords: [errors, "never increment", "always 0", unused, dashboard, "no method", zero]
+    note: "the errors counter is exposed on /stats and never incremented anywhere, so the dashboard always reports zero errors"
+  - id: J52
+    file: src/linkd/Worker.java
+    anchor: "} catch (InterruptedException e) {"
+    span: 6
+    need: 1
+    keywords: [InterruptedException, "interrupt", swallow, "restore", "Thread.currentThread", flag, ignored]
+    note: "JAVA-ONLY the janitor swallows InterruptedException without restoring the interrupt flag, so the thread cannot be interrupted awake"
+  - id: J53
+    file: src/linkd/Worker.java
+    anchor: "for (String code : store.all().keySet())"
+    span: 8
+    need: 1
+    keywords: [ConcurrentModificationException, "while iterating", remove, keySet, race, "another thread", synchron]
+    note: "JAVA-ONLY the janitor mutates the store's map while iterating it, from a thread that holds no lock on it"
+  - id: J54
+    file: src/linkd/Worker.java
+    anchor: "ExecutorService pool = Executors.newFixedThreadPool(8);"
+    span: 8
+    need: 1
+    keywords: [shutdown, "never shut", leak, "thread pool", awaitTermination, "returns before", join]
+    note: "JAVA-ONLY (parallel: X03) warmCache never shuts down its ExecutorService and never awaits it, so threads leak and it returns before any probe has run"
+  - id: J55
+    file: src/linkd/Worker.java
+    anchor: "Integer count = store.quotas().get(owner);"
+    span: 6
+    need: 1
+    keywords: [NullPointerException, NPE, unbox, autobox, null, "unknown owner", getOrDefault]
+    note: "JAVA-ONLY countForOwner unboxes a possibly-null Integer, throwing NullPointerException for an owner with no quota entry"
+  - id: J56
+    file: src/linkd/Worker.java
+    anchor: "janitor.start();"
+    span: 6
+    need: 1
+    keywords: [daemon, "setDaemon", "never exits", JVM, shutdown, join, "does not stop"]
+    note: "the janitor thread is not a daemon and is never joined, so the JVM cannot exit and stopJanitor waits a full interval"
+
+  # ---------------- Main.java ----------------
+  - id: J57
+    file: src/linkd/Main.java
+    anchor: 'HttpServer server = HttpServer.create(new InetSocketAddress(cfg.port), 0);'
+    span: 8
+    need: 1
+    keywords: [executor, "single", serial, "setExecutor", "one request", concurren, "default executor", thread]
+    note: "JAVA-ONLY no executor is set on HttpServer, so it uses the default single-threaded one and serves every request serially"
+  - id: J58
+    file: src/linkd/Main.java
+    anchor: "String token = Authenticator.bearerToken(header);"
+    span: 6
+    need: 1
+    keywords: [null, NullPointerException, NPE, "missing header", absent, "Authorization", 500]
+    note: "parallel: S06 the Authorization header may be absent, and bearerToken splits it without a null check, so an unauthenticated request 500s"
+  - id: J59
+    file: src/linkd/Main.java
+    anchor: '"unauthorized: unknown token (token " + token + ")"'
+    span: 6
+    need: 1
+    keywords: [echo, token, reflect, "error message", disclos, leak, response]
+    note: "parallel: S08 the 401 response echoes the rejected token back to the caller"
+  - id: J60
+    file: src/linkd/Main.java
+    anchor: 'String owner = fields.get("owner");'
+    span: 6
+    need: 1
+    keywords: [owner, body, session, "query", authenticated, spoof, impersonat, "any user"]
+    note: "parallel: C28 the link owner comes from the request instead of the authenticated session, so any caller creates links as anyone"
+  - id: J61
+    file: src/linkd/Main.java
+    anchor: "store.delete(code);"
+    span: 8
+    need: 1
+    keywords: [owner, authoriz, "access check", "any user", anyone, permission, IDOR, session]
+    note: "parallel: C17 the delete branch never checks the owner its comment promises to check: any caller deletes any link"
+  - id: J62
+    file: src/linkd/Main.java
+    anchor: 'String next = query(exchange).get("next");'
+    span: 10
+    need: 1
+    keywords: ["open redirect", redirect, phish, next, unvalidated, arbitrary]
+    note: "parallel: C18 /out redirects to any address in ?next= -- an open redirect, cached permanently by the 301"
+  - id: J63
+    file: src/linkd/Main.java
+    anchor: 'String admin = exchange.getRequestHeaders().getFirst("X-Admin");'
+    span: 6
+    need: 1
+    keywords: ["X-Admin", header, "client-controlled", spoof, privilege, forge, trivially]
+    note: "parallel: C19 the admin endpoint is gated on a request header the caller sets themselves"
+  - id: J64
+    file: src/linkd/Main.java
+    anchor: "long perLink = hits / store.size();"
+    span: 6
+    need: 1
+    keywords: ["divide by zero", "division by zero", ArithmeticException, empty, zero, crash]
+    note: "parallel: C20 /stats divides by the link count, throwing ArithmeticException whenever the store is empty"
+  - id: J65
+    file: src/linkd/Main.java
+    anchor: "String target = store.resolve(code.toLowerCase());"
+    span: 6
+    need: 1
+    keywords: [toLowerCase, case, lowercas, mismatch, "never resolve", "case-sensitive", Locale]
+    note: "parallel: C16 redirect lowercases the code before lookup, but codes are stored case-sensitively (and toLowerCase uses the default locale)"
+  - id: J66
+    file: src/linkd/Main.java
+    anchor: 'exchange.getResponseHeaders().add("Access-Control-Allow-Credentials", "true");'
+    span: 6
+    need: 1
+    keywords: [CORS, wildcard, credentials, "any origin", "Allow-Origin", "cross-origin"]
+    note: "parallel: C23 wildcard CORS combined with Allow-Credentials on every response"
+  - id: J67
+    file: src/linkd/Main.java
+    anchor: 'int offset = Integer.parseInt(query(exchange).getOrDefault("offset", "0"));'
+    span: 6
+    need: 1
+    keywords: [NumberFormatException, parseInt, unguarded, "500", validate, "bad input", crash]
+    note: "offset and size are parsed with unguarded parseInt, so any non-numeric query value returns a 500"
+  - id: J68
+    file: src/linkd/Main.java
+    anchor: "String path = Export.exportCsv(cfg.exportDir, name, store.page(0, 1000));"
+    span: 8
+    need: 2
+    keywords: [tenant, "every owner", "all owners", "other users", scope, isolation, "any authenticated", 1000, truncat]
+    note: "parallel: C29 /report exports every owner's links to any authenticated caller, and silently truncates at 1000"
