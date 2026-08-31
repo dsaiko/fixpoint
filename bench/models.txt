@@ -65,6 +65,17 @@ glm-5.3-flash:cloud
 # tier is the better MODEL (64 to flash's 62) and the worse SEAT (+1 seed over
 # claude+codex+minimax, against flash's +3). Not seated; see bench/README.md.
 glm-5.3:cloud
+
+# NOT DROPPED, retry later (operator decision 2026-09-01). mistral-large-3 and
+# nemotron-3-super are the only two models that have ever failed the contract
+# here -- 2 failures and 1 respectively -- and the decision rule disqualifies
+# them from a SEAT. They are deliberately kept on this list anyway, because a
+# contract failure is a fact about a model version at a point in time, not a
+# permanent property: a later release, or a fixed harness on the provider's
+# side, can change it. Re-measure them when there is quota to spare; just do
+# not spend a full grid on them before they clear the contract.
+#   mistral-large-3:675b-cloud   3/100, 2 contract failures, 5127s
+#   nemotron-3-super:cloud      19/100, 1 contract failure, 2.67M tokens
 # OpenRouter candidates (a slash in the id selects the OpenRouter template;
 # bills a card at the listed per-token price -- x-ai/grok-4.6 is $2/M in,
 # $6/M out. This route caches, unlike ollama).

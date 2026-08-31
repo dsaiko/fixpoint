@@ -179,8 +179,12 @@ while [ "$rep" -le "$REPEATS" ]; do
     *)
         # Comma- or space-separated list, so one invocation can sweep several
         # targets: TASK=go,rust,design
+        # `|| true`, because `set -e` would otherwise abort the whole sweep on the
+        # first target that fails to score. A calibration pass is 11 runs over ~2
+        # hours; losing the remaining ten to one bad summary is not a tradeoff
+        # worth making, and the failure is recorded either way.
         for one in $(echo "$TASKS" | tr ',' ' '); do
-            run_task "$one" "$rep"
+            run_task "$one" "$rep" || echo "bench: $one did not score; continuing" >&2
         done
         ;;
     esac
