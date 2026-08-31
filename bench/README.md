@@ -209,6 +209,41 @@ under rule 2's design floor (15/40). A fourth-seat argument would have to be
 made on marginal coverage against the quota, and against the standing rule that
 the panel seats ONE ollama agent so a single dead one cannot take quorum with it.
 
+`glm-5.3:cloud` — the 753B depth tier of the same family, a different
+architecture (`glm_dsa_moe`) — was measured on 2026-08-31, one repeat:
+**64/100**, code 47/60, design 17/40, 2 unmatched on code, 854k tokens, 572s, no
+contract failures. It outscores its own flash tier by 2 points and is the weaker
+seat by every measure the panel buys with:
+
+| as the single ollama seat | panel coverage |
+|---|---|
+| claude + codex (no ollama seat) | 79/100 |
+| **+ minimax-m3 (seated today)** | **85/100** |
+| + nemotron-3-ultra | 85/100 |
+| + qwen/qwen3.8-max | 84/100 |
+| + glm-5.3-flash | 83/100 |
+| + kimi-k3 | 83/100 |
+| + glm-5.3 | 82/100 |
+| + deepseek-v4-pro | 82/100 |
+
+As a fourth seat it adds **1** seed (D19), tying deepseek-v4-pro (D12) and kimi-k3
+(C24) at the bottom of that list, where its own flash tier adds 3. It also spends
+59% more quota than minimax for the privilege (13.3k tokens per point against
+9.4k) at the same wall clock, and it is the first GLM row here with unmatched
+findings.
+
+So the flash/pro question this bench asked of deepseek gets the same answer from
+GLM, and it is worth stating as a pattern rather than a coincidence: **the depth
+tier is the better reviewer and the smaller marginal contributor.** deepseek-v4-pro
+beats minimax 66 to 57 alone and adds 1 seed where minimax adds 4; glm-5.3 beats
+glm-5.3-flash 64 to 62 and adds 1 where flash adds 3. Depth buys seeds the panel
+already has. The two GLM tiers share only 54 of their seeds — flash finds 8 the
+depth tier misses — so they are genuinely different reviewers, not one model at
+two sizes, which is why the smaller one is the better panel member.
+
+No panel change on this measurement. If the ollama seat is ever widened, the
+measured candidate is glm-5.3-**flash** at 88/100, not glm-5.3.
+
 `results.csv` was emptied on 2026-08-20, when the bench went from 20 seeds to
 100. The 46 rows measured against the old target are in git history at
 `70b9113` and are **not** comparable: different targets, more lenses, and a
