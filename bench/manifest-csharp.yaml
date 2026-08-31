@@ -1,0 +1,504 @@
+# Seeded defects in bench/testdata/target-csharp. Same matcher rules as
+# manifest-go.yaml. Frozen: never fix these bugs.
+#
+# The SAME link-shortener service as target-go, so the language is the only
+# variable. See "One service, many languages" in bench/README.md.
+#
+#   PARALLEL   the same logical defect as a numbered Go seed, marked
+#              "parallel: Cnn".
+#   CS-ONLY    defects that need this language: `async void`, sync-over-async
+#              with .Result, `lock (this)`, a Dictionary indexer that throws
+#              rather than returning a zero value, collection-modified-during-
+#              enumeration, deferred LINQ enumerated twice, DateTime.Now for
+#              expiry, and culture-sensitive ToLower.
+#
+# The build emits two warnings (CS1717 self-assignment, CS0649 never-assigned
+# field) and they are both seeds. That is deliberate and realistic: warnings of
+# this kind are routinely ignored in real projects, and a reviewer is still
+# expected to catch them.
+task: code
+target: csharp
+root: testdata/target-csharp
+seeds:
+  # ---------------- Store.cs ----------------
+  - id: N01
+    file: Store.cs
+    anchor: "quota[owner] = quota[owner] + 1;"
+    span: 6
+    need: 1
+    keywords: [KeyNotFound, exception, throw, "new owner", "first link", indexer, TryGetValue, missing]
+    note: "CS-ONLY (parallel: C01) the Dictionary indexer throws KeyNotFoundException for an owner with no entry, so the first create for any user crashes"
+  - id: N02
+    file: Store.cs
+    anchor: "if (DateTime.Now < link.ExpiresAt)"
+    span: 6
+    need: 1
+    keywords: [inverted, backwards, reversed, expir, "less than", "greater"]
+    note: "parallel: C02 expiry comparison inverted: live links are deleted, expired ones resolve"
+  - id: N03
+    file: Store.cs
+    anchor: "public void Rename(string from, string to)"
+    span: 8
+    need: 1
+    keywords: [twice, "ValidateCode(to)", "never validated", duplicate, "copy-paste", "same argument"]
+    note: "parallel: C03 rename validates `from` twice; `to` is never validated"
+  - id: N04
+    file: Store.cs
+    anchor: "end = all.Count + 1;"
+    span: 6
+    need: 1
+    keywords: ["out of range", "off-by-one", bounds, GetRange, ArgumentException, "Count + 1"]
+    note: "parallel: C04 page clamps end past the list size, so GetRange throws on the last page"
+  - id: N05
+    file: Store.cs
+    anchor: "return used / links.Count * 100;"
+    span: 6
+    need: 1
+    keywords: ["integer division", integer-divid, truncat, "always 0", "order of operations", double]
+    note: "parallel: C05 integer division before scaling yields 0 for every rate under 100%"
+  - id: N06
+    file: Store.cs
+    anchor: "public void Delete(string code)"
+    span: 10
+    need: 1
+    keywords: [quota, "never decrement", "not released", refund, "give the owner", slot]
+    note: "parallel: C09 delete drops the link but never returns the owner's quota slot the doc promises"
+  - id: N07
+    file: Store.cs
+    anchor: "all.Sort((a, b) => a.Hits.CompareTo(b.Hits));"
+    span: 6
+    need: 1
+    keywords: [ascending, least, reversed, "wrong order", "most hits", descending, backwards]
+    note: "parallel: C10 top sorts by hits ascending, so the leaderboard shows the least followed links"
+  - id: N08
+    file: Store.cs
+    anchor: "links.Values.Where(l => l.Owner.Contains(owner))"
+    span: 6
+    need: 1
+    keywords: [Contains, substring, exact, "other owners", tenant, leak, equal]
+    note: "parallel: C11 ByOwner matches owners by substring, so one owner sees another's links"
+  - id: N09
+    file: Store.cs
+    anchor: "public void Extend(string code, TimeSpan ttl)"
+    span: 10
+    need: 1
+    keywords: [expired, resurrect, revive, "back to life", "already expired", dead]
+    note: "parallel: C12 Extend re-dates an already-expired link, resurrecting a code the doc calls final"
+  - id: N10
+    file: Store.cs
+    anchor: "public Dictionary<string, int> Quotas()"
+    span: 6
+    need: 1
+    keywords: [snapshot, "internal", mutable, alias, expose, copy, ReadOnly]
+    note: "parallel: C14 Quotas hands out the store's own dictionary while the doc calls it a snapshot"
+  - id: N11
+    file: Store.cs
+    anchor: "public void ImportAll(List<Link> batch)"
+    span: 8
+    need: 1
+    keywords: [atomic, partial, rollback, half, "already stored", "not all", validate]
+    note: "parallel: C13 ImportAll stores as it validates, so a bad code leaves the earlier half of the batch stored"
+  - id: N12
+    file: Store.cs
+    anchor: "return links.Count;"
+    span: 6
+    need: 1
+    keywords: [removed, remaining, count, "wrong", returns, "links.Count"]
+    note: "parallel: C15 Prune counts removals into `removed` and then returns the number of links left instead"
+  - id: N13
+    file: Store.cs
+    anchor: "foreach (var code in links.Keys)"
+    span: 8
+    need: 1
+    keywords: ["InvalidOperationException", "collection was modified", "during enumeration", foreach, remove, ToList]
+    note: "CS-ONLY Prune removes from the dictionary while enumerating its Keys, throwing InvalidOperationException on the first expired link"
+  - id: N14
+    file: Store.cs
+    anchor: "CreatedAt = DateTime.Now,"
+    span: 6
+    need: 1
+    keywords: ["DateTime.Now", "UtcNow", timezone, "local time", DST, clock, offset]
+    note: "CS-ONLY expiry is computed from DateTime.Now, so every link's lifetime shifts by an hour at a DST boundary and differs across machines"
+  - id: N15
+    file: Store.cs
+    anchor: 'return random.Next().ToString("x8");'
+    span: 6
+    need: 1
+    keywords: ["System.Random", predictable, RandomNumberGenerator, guess, "not cryptographically", collision, "31-bit"]
+    note: "CS-ONLY (parallel: S02) codes come from System.Random, which is not a CSPRNG, and Next() is capped at 31 bits so the space is half what the format suggests"
+  - id: N16
+    file: Store.cs
+    anchor: "public IEnumerable<Link> Followed()"
+    span: 8
+    need: 1
+    keywords: [deferred, "lazy", "IEnumerable", "multiple enumeration", "ToList", "side effect", re-execut]
+    note: "CS-ONLY Followed returns a deferred LINQ query with a side-effecting log, so every enumeration re-runs the scan and logs again"
+
+  # ---------------- Authenticator.cs ----------------
+  - id: N17
+    file: Authenticator.cs
+    anchor: '"dev-secret-do-not-use" : env;'
+    span: 6
+    need: 1
+    keywords: [hardcoded, "default secret", "dev-secret", fallback, weak, credential]
+    note: "parallel: S01 the signing secret falls back to a hardcoded development value when the environment is unset"
+  - id: N18
+    file: Authenticator.cs
+    anchor: 'Token = random.Next().ToString("x8") + random.Next().ToString("x8"),'
+    span: 6
+    need: 1
+    keywords: ["System.Random", predictable, RandomNumberGenerator, forge, guess, "not cryptographically"]
+    note: "parallel: S02 session tokens come from System.Random, so they are predictable and forgeable"
+  - id: N19
+    file: Authenticator.cs
+    anchor: 'Console.WriteLine($"auth: issued token {session.Token} for {owner}");'
+    span: 6
+    need: 1
+    keywords: [log, token, secret, "written to", disclos, redact, console]
+    note: "parallel: S03 every issued session token is logged in cleartext"
+  - id: N20
+    file: Authenticator.cs
+    anchor: "public Session? Verify(string token)"
+    span: 10
+    need: 1
+    keywords: [expir, "ExpiresAt", "never expire", lifetime, "not checked", stale]
+    note: "parallel: S04 Verify never looks at ExpiresAt, so a token works forever despite the documented 12-hour lifetime"
+  - id: N21
+    file: Authenticator.cs
+    anchor: "public bool RequireAdmin(Session session)"
+    span: 10
+    need: 1
+    keywords: ["always true", "both branches", "returns true", never, "every session", tautolog]
+    note: "parallel: S07 RequireAdmin returns true from both branches, so every session is an administrator"
+  - id: N22
+    file: Authenticator.cs
+    anchor: "byte[] sum = sha.ComputeHash(Encoding.UTF8.GetBytes(password));"
+    span: 8
+    need: 1
+    keywords: [salt, bcrypt, argon, scrypt, PBKDF2, "fast hash", unsalted, rainbow, KDF]
+    note: "parallel: S05 passwords are stored as a single unsalted SHA-256, crackable offline at speed"
+  - id: N23
+    file: Authenticator.cs
+    anchor: "return parts[1];"
+    span: 6
+    need: 1
+    keywords: ["IndexOutOfRange", index, "out of range", "parts[1]", malformed, "missing header", crash]
+    note: "parallel: S06 BearerToken indexes parts[1] without checking, so a malformed Authorization header throws"
+  - id: N24
+    file: Authenticator.cs
+    anchor: "public static bool SecretEquals(string presented, string expected)"
+    span: 6
+    need: 1
+    keywords: ["constant time", "constant-time", timing, "FixedTimeEquals", "short-circuit", "side channel"]
+    note: "SecretEquals is documented as not leaking how much matched and uses ==, which short-circuits on the first differing character"
+  - id: N25
+    file: Authenticator.cs
+    anchor: "private readonly Dictionary<string, Session> sessions = new();"
+    span: 6
+    need: 2
+    keywords: [Dictionary, ConcurrentDictionary, thread, lock, race, "not thread-safe", concurrent]
+    note: "the sessions dictionary is read and written from every request task with no synchronization"
+  - id: N26
+    file: Authenticator.cs
+    anchor: "public void Revoke(string token)"
+    span: 6
+    need: 1
+    keywords: ["never", evict, expire, unbounded, grow, memory, leak, "only on revoke"]
+    note: "sessions are removed only by an explicit Revoke, so an untouched session lives for the life of the process and the dictionary grows without bound"
+
+  # ---------------- Cache.cs ----------------
+  - id: N27
+    file: Cache.cs
+    anchor: "public string? Get(string code)"
+    span: 6
+    need: 1
+    keywords: ["lock (this)", "lock(this)", "publicly", "private object", external, deadlock, "SyncRoot"]
+    note: "CS-ONLY every method locks on `this`, which any external caller can also lock, so an unrelated caller can deadlock the cache"
+  - id: N28
+    file: Cache.cs
+    anchor: "public bool Peek(string code)"
+    span: 6
+    need: 2
+    keywords: [lock, "no lock", race, unsynchron, concurrent, Peek, "not locked"]
+    note: "parallel: CA02 Peek reads the dictionary with no lock at all while locked methods are writing it"
+  - id: N29
+    file: Cache.cs
+    anchor: "public long Stats()"
+    span: 6
+    need: 2
+    keywords: [lock, race, hits, unsynchron, volatile, Interlocked, torn, stale]
+    note: "parallel: CA07 Stats reads the hit counter outside the lock while Get is incrementing it"
+  - id: N30
+    file: Cache.cs
+    anchor: "var victim = entries.Keys.First();"
+    span: 6
+    need: 1
+    keywords: ["least recently used", LRU, arbitrary, "insertion order", "not the least", Used, first]
+    note: "parallel: CA08 eviction drops whatever key comes first, not the least recently used; the Used field is written and never read"
+  - id: N31
+    file: Cache.cs
+    anchor: "public void Warm(Dictionary<string, string> pairs)"
+    span: 8
+    need: 2
+    keywords: ["check-then-act", race, TOCTOU, between, Peek, Set, "not atomic"]
+    note: "parallel: CA06 Warm's Peek and Set are separately locked, so the janitor and a handler can both fill the same key"
+  - id: N32
+    file: Cache.cs
+    anchor: "foreach (var code in entries.Keys)"
+    span: 8
+    need: 1
+    keywords: ["InvalidOperationException", "collection was modified", "during enumeration", foreach, remove, ToList]
+    note: "CS-ONLY Sweep removes entries while enumerating Keys, throwing InvalidOperationException as soon as one has expired"
+  - id: N33
+    file: Cache.cs
+    anchor: "return entries.Count / limit * 100;"
+    span: 6
+    need: 1
+    keywords: ["integer division", integer-divid, "always 0", truncat, "divide by zero", DivideByZero]
+    note: "parallel: C05 Utilization divides before scaling so it always reports 0, and throws when limit is 0"
+
+  # ---------------- Config.cs ----------------
+  - id: N34
+    file: Config.cs
+    anchor: "int.TryParse(port, out cfg.Port);"
+    span: 6
+    need: 1
+    keywords: [TryParse, "return value", ignored, "port 0", silently, invalid, "out"]
+    note: "parallel: CF01 TryParse's result is discarded and it writes 0 into Port on failure, so a malformed LINKD_PORT silently becomes port 0"
+  - id: N35
+    file: Config.cs
+    anchor: 'Console.WriteLine($"config: bad LINKD_TIMEOUT_MS {timeout}, keeping default");'
+    span: 6
+    need: 1
+    keywords: ["keeping default", contradic, anyway, "does not", zero, "still", assigned]
+    note: "parallel: CF02 the parse-error branch logs 'keeping default' and then assigns the failed value anyway"
+  - id: N36
+    file: Config.cs
+    anchor: "cfg.CacheTtl = TimeSpan.FromSeconds(n);"
+    span: 6
+    need: 1
+    keywords: [millisecond, FromSeconds, unit, "1000", documented, wrong, FromMilliseconds]
+    note: "parallel: CF03 LINKD_CACHE_TTL_MS is documented in milliseconds and built with FromSeconds: 1000x too long"
+  - id: N37
+    file: Config.cs
+    anchor: "parsed = parsed;"
+    span: 6
+    need: 1
+    keywords: ["self-assign", "no effect", ignored, never, unused, discarded, FetchLimit, CS1717]
+    note: "parallel: CF04 LINKD_FETCH_LIMIT is parsed, validated and self-assigned, so the setting does nothing"
+  - id: N38
+    file: Config.cs
+    anchor: "catch (Exception)"
+    span: 6
+    need: 1
+    keywords: ["catch (Exception)", swallow, "empty catch", "read error", permission, unreadable, silently, distinguish]
+    note: "parallel: CF05 LoadFile swallows every exception, so an unreadable config is indistinguishable from a missing one"
+  - id: N39
+    file: Config.cs
+    anchor: "public bool Validate()"
+    span: 18
+    need: 1
+    keywords: ["returns true", "always true", logs, "does not fail", startup, "never returns false"]
+    note: "parallel: CF06 Validate logs the problems it finds and returns true, so a bad config starts the service anyway"
+  - id: N40
+    file: Config.cs
+    anchor: "CacheSize = int.Parse(value);"
+    span: 6
+    need: 1
+    keywords: ["int.Parse", unguarded, FormatException, throw, "TryParse", crash, "config file"]
+    note: "LoadFile parses cache_size with int.Parse inside the try's successor, so a malformed config file throws out of a method documented not to fail"
+
+  # ---------------- Export.cs ----------------
+  - id: N41
+    file: Export.cs
+    anchor: 'name = "links";'
+    span: 8
+    need: 1
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", "Path.Combine", absolute]
+    note: "parallel: EX01 the report name comes from the query string; Path.Combine also DISCARDS dir entirely if the name is absolute"
+  - id: N42
+    file: Export.cs
+    anchor: "var writer = new StreamWriter(path);"
+    span: 8
+    need: 1
+    keywords: ["using", dispose, leak, close, "not disposed", exception, IDisposable, finally]
+    note: "CS-ONLY the StreamWriter is closed only on the success path with no `using`, so any exception leaks the handle and loses buffered bytes"
+  - id: N43
+    file: Export.cs
+    anchor: 'body.Append($"{link.Code},{link.Target},{link.Owner},{link.Hits}'
+    span: 6
+    need: 1
+    keywords: [escap, quot, comma, inject, "csv", formula, malformed, interpolat]
+    note: "parallel: EX03 CSV rows are built by interpolation, so a comma or quote in a target breaks the file and a leading = is a formula injection"
+  - id: N44
+    file: Export.cs
+    anchor: 'new StreamWriter(Path.Combine(dir, entry.Key + ".csv"))'
+    span: 6
+    need: 1
+    keywords: [owner, traversal, sanitiz, basename, escape, separator, path]
+    note: "ArchiveAll builds a filename straight from the owner string, so an owner containing a path separator escapes dir"
+  - id: N45
+    file: Export.cs
+    anchor: "public static string ExportCsv(string dir, string name, List<Link> links)"
+    span: 8
+    need: 2
+    keywords: [permission, mode, "world", readable, UnixFileMode, umask, restrict, "every owner"]
+    note: "parallel: EX02 the report holding every owner's links is written with default permissions, readable by anyone on the box"
+  - id: N46
+    file: Export.cs
+    anchor: 'string tmp = Path.Combine("/tmp", "linkd-snapshot.json");'
+    span: 8
+    need: 1
+    keywords: ["fixed", predictable, "/tmp", symlink, race, collision, "concurrent", flush, durab]
+    note: "parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp -- a symlink target and a collision between concurrent writers -- and nothing flushes to disk before the move the doc calls durable"
+  - id: N47
+    file: Export.cs
+    anchor: "public static async void ExportCsvAsync(string dir, string name, List<Link> links)"
+    span: 8
+    need: 1
+    keywords: ["async void", "async Task", "cannot be awaited", "unobserved", crash, "fire and forget", exception]
+    note: "CS-ONLY async void: the caller cannot await it and an exception inside it cannot be caught, so a failed export tears down the process"
+
+  # ---------------- Worker.cs ----------------
+  - id: N48
+    file: Worker.cs
+    anchor: "created++;"
+    span: 6
+    need: 1
+    keywords: [Interlocked, race, "lost update", "not atomic", increment, inconsistent, "++"]
+    note: "parallel: X01 AddCreated increments with ++ while AddResolved uses Interlocked, so concurrent creations are lost"
+  - id: N49
+    file: Worker.cs
+    anchor: "private long errors;"
+    span: 6
+    need: 1
+    keywords: [errors, "never assigned", "never increment", "always 0", unused, dashboard, CS0649, zero]
+    note: "the errors counter is reported by Snapshot and never assigned anywhere, so the dashboard always shows zero errors"
+  - id: N50
+    file: Worker.cs
+    anchor: "foreach (var code in store.All().Keys)"
+    span: 10
+    need: 1
+    keywords: ["InvalidOperationException", "collection was modified", enumeration, lock, race, "another thread", foreach]
+    note: "CS-ONLY (parallel: X02) the janitor mutates the store's dictionary while enumerating it, from a timer thread that holds no lock on it"
+  - id: N51
+    file: Worker.cs
+    anchor: "Task.Run(() => cache.Set(link.Code, link.Target));"
+    span: 8
+    need: 1
+    keywords: ["not awaited", "fire and forget", "returns before", Task, WhenAll, join, discard]
+    note: "parallel: X03 WarmCache starts a Task per link and awaits none of them, so it returns before any probe has run"
+  - id: N52
+    file: Worker.cs
+    anchor: "bool ok = ProbeAsync(link.Target).Result;"
+    span: 6
+    need: 1
+    keywords: [".Result", "sync over async", deadlock, block, GetAwaiter, await, "thread pool"]
+    note: "CS-ONLY blocking on .Result is sync-over-async: it ties up a thread-pool thread per target and deadlocks under a synchronization context"
+  - id: N53
+    file: Worker.cs
+    anchor: "return store.Quotas()[owner];"
+    span: 6
+    need: 1
+    keywords: [KeyNotFound, exception, throw, "unknown owner", indexer, TryGetValue, missing]
+    note: "CS-ONLY CountForOwner indexes the dictionary directly, throwing KeyNotFoundException for an owner with no quota entry"
+  - id: N54
+    file: Worker.cs
+    anchor: "var followed = store.Followed();"
+    span: 6
+    need: 1
+    keywords: ["multiple enumeration", "twice", deferred, "ToList", re-execut, "Count()", LINQ]
+    note: "CS-ONLY FollowedSummary enumerates the deferred query twice -- once for Count and once for FirstOrDefault -- re-running the whole scan"
+
+  # ---------------- Program.cs ----------------
+  - id: N55
+    file: Program.cs
+    anchor: "string token = Authenticator.BearerToken(header);"
+    span: 6
+    need: 1
+    keywords: ["IndexOutOfRange", "missing header", empty, throw, unauthenticated, crash, 500]
+    note: "parallel: S06 an absent Authorization header becomes the empty string and BearerToken indexes parts[1], so every unauthenticated request throws"
+  - id: N56
+    file: Program.cs
+    anchor: '$"unauthorized: unknown token (token {token})"'
+    span: 6
+    need: 1
+    keywords: [echo, token, reflect, "error message", disclos, leak, response]
+    note: "parallel: S08 the 401 response echoes the rejected token back to the caller"
+  - id: N57
+    file: Program.cs
+    anchor: 'store.Delete(query["code"] ?? "");'
+    span: 8
+    need: 1
+    keywords: [owner, authoriz, "access check", "any user", anyone, permission, IDOR, session]
+    note: "parallel: C17 the delete branch never checks the owner its comment promises to check: any caller deletes any link"
+  - id: N58
+    file: Program.cs
+    anchor: 'string next = context.Request.QueryString["next"] ?? "";'
+    span: 10
+    need: 1
+    keywords: ["open redirect", redirect, phish, next, unvalidated, arbitrary]
+    note: "parallel: C18 /out redirects to any address in ?next= -- an open redirect, cached permanently by the 301"
+  - id: N59
+    file: Program.cs
+    anchor: 'if (context.Request.Headers["X-Admin"] != "true")'
+    span: 6
+    need: 1
+    keywords: ["X-Admin", header, "client-controlled", spoof, privilege, forge, trivially]
+    note: "parallel: C19 the admin endpoint is gated on a request header the caller sets themselves"
+  - id: N60
+    file: Program.cs
+    anchor: "long perLink = store.TotalHits() / store.Count;"
+    span: 6
+    need: 1
+    keywords: ["divide by zero", DivideByZero, empty, zero, crash, exception]
+    note: "parallel: C20 /stats divides by the link count, throwing DivideByZeroException whenever the store is empty"
+  - id: N61
+    file: Program.cs
+    anchor: "string? target = store.Resolve(code.ToLower());"
+    span: 6
+    need: 1
+    keywords: [ToLower, case, lowercas, mismatch, "never resolve", culture, ToLowerInvariant]
+    note: "parallel: C16 redirect lowercases the code before lookup although codes are case-sensitive, using the culture-sensitive ToLower"
+  - id: N62
+    file: Program.cs
+    anchor: 'response.Headers["Access-Control-Allow-Credentials"] = "true";'
+    span: 6
+    need: 1
+    keywords: [CORS, wildcard, credentials, "any origin", "Allow-Origin", "cross-origin"]
+    note: "parallel: C23 wildcard CORS combined with Allow-Credentials on every response"
+  - id: N63
+    file: Program.cs
+    anchor: 'string owner = query["owner"] ?? "";'
+    span: 6
+    need: 1
+    keywords: [owner, query, session, "request", authenticated, spoof, impersonat, "any user"]
+    note: "parallel: C28 the link owner comes from the query string instead of the authenticated session, so any caller creates links as anyone"
+  - id: N64
+    file: Program.cs
+    anchor: "string path = Export.ExportCsv(cfg.ExportDir, name, store.Page(0, 1000));"
+    span: 8
+    need: 2
+    keywords: [tenant, "every owner", "all owners", "other users", scope, isolation, "any authenticated", 1000, truncat]
+    note: "parallel: C29 /report exports every owner's links to any authenticated caller, and silently truncates at 1000"
+  - id: N65
+    file: Program.cs
+    anchor: 'int offset = int.Parse(query["offset"] ?? "0");'
+    span: 6
+    need: 1
+    keywords: ["int.Parse", unguarded, FormatException, TryParse, "500", crash, "bad input"]
+    note: "offset and size are parsed with unguarded int.Parse, so any non-numeric query value throws out of the handler"
+  - id: N66
+    file: Program.cs
+    anchor: "Task.Run(() => Handle(context));"
+    span: 8
+    need: 2
+    keywords: [thread, race, "not thread-safe", Dictionary, concurrent, lock, shared, store]
+    note: "parallel: X02 every request runs on a thread-pool thread against a Store whose Dictionary has no synchronization at all"
+  - id: N67
+    file: Program.cs
+    anchor: "while (true)"
+    span: 8
+    need: 1
+    keywords: [shutdown, graceful, "StopJanitor", "never", drain, cancellation, "infinite"]
+    note: "parallel: C26 the accept loop never exits, so StopJanitor is unreachable and there is no graceful shutdown"
