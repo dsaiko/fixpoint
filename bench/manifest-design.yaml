@@ -243,8 +243,16 @@ seeds:
     file: DESIGN.md
     line: 0
     span: 0
-    need: 2
-    keywords: [ownership, authoriz, "who may write", "access check", tenant, "user_id", permission, spoof]
+    # need 1, and the generic entries are GONE. This seed read 0/21 and was not
+    # a hard seed: qwen3.8-27b reported it in as many words ("sync edits are
+    # never stated to be ownership-checked") and hit only `ownership`, one short
+    # of the old need: 2. Meanwhile `user_id`, `permission` and `tenant` were
+    # firing on 27 findings about missing indexes and file modes -- generic
+    # enough to nearly steal the seed, useless for reaching its threshold.
+    # Bare `ownership` is deliberately not here either: it is D06's word for the
+    # two processes sharing notes.db with no named owner.
+    need: 1
+    keywords: [authoriz, "access control", "who may write", "write access", "note ownership", "ownership-checked", "ownership check", IDOR, "any user can", cross-user]
     note: "nothing states who may write a given note: /sync applies whatever edits arrive, with user ownership never checked"
   - id: D34
     file: DESIGN.md

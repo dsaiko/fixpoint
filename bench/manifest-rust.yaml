@@ -4,7 +4,7 @@
 # keywords. Every finding is credited to at most one seed. Frozen: never fix
 # these bugs.
 #
-# 59 seeds, matching the Go target's 60 closely enough to compare directly.
+# 64 seeds, matching the Go target's 60 closely enough to compare directly.
 # This target is the SAME SERVICE as target-go, deliberately: the
 # domain is held constant so the language is the only variable, which is what
 # makes "the field finds this bug in Go and misses it in Rust" a readable
@@ -444,6 +444,47 @@ seeds:
     need: 1
     keywords: [timeout, "read timeout", "write timeout", slowloris, "set_read_timeout", "no timeout", hang]
     note: "parallel: C25 no read or write timeout is ever set on an accepted stream, so one slow client holds a thread forever"
+  # RM13-RM17 were NOT planted deliberately. They are real defects the claude
+  # baseline reported against this target on its calibration run (2026-08-31)
+  # that no seed covered -- exactly the "skim the unmatched findings before
+  # dismissing them" rule, applied. Adding them is free: the run is re-scorable
+  # from its summary, so the baseline is re-measured on the wider manifest
+  # rather than re-run.
+  - id: RM13
+    file: src/main.rs
+    anchor: "export::read_report(&self.cfg.export_dir, &name)"
+    span: 6
+    need: 1
+    keywords: ["links.csv", empty, default, mismatch, "no name", ".csv", "always fails", inconsistent]
+    note: "export_csv defaults an empty name to links.csv but read_report is handed the original empty name, so /report with no name always fails"
+  - id: RM14
+    file: src/main.rs
+    anchor: 'Duration::from_secs(v.parse::<u64>().unwrap_or(0) * 3600)'
+    span: 6
+    need: 1
+    keywords: ["unwrap_or", overflow, "instantly", "already expired", zero, "bad ttl", multiply, panic]
+    note: "a bad ttl parses to 0 and mints an already-expired link, and a large value overflows the multiplication"
+  - id: RM15
+    file: src/main.rs
+    # No line gate: every handler does it, and a reviewer cites whichever it
+    # read first.
+    need: 2
+    keywords: ["holding", "lock", "while writing", response, "mutex", serial, contention, "across the", block]
+    note: "every handler writes its HTTP response while still holding the global store mutex, serializing all requests on the slowest client"
+  - id: RM16
+    file: src/main.rs
+    anchor: 'let owner = fields.get("owner").cloned().unwrap_or_default();'
+    span: 6
+    need: 1
+    keywords: [owner, body, session, "request body", authenticated, spoof, impersonat, "from the client"]
+    note: "the link owner is taken from the request body instead of the authenticated session, so any caller can create links as anyone"
+  - id: RM17
+    file: src/main.rs
+    anchor: 'let body = format!("{{\"code\":\"{}\",\"target\":\"{}\"}}", link.code, link.target);'
+    span: 6
+    need: 1
+    keywords: [escap, "string interpolation", inject, JSON, quot, malformed, serializ]
+    note: "JSON responses are built by string interpolation with no escaping, so a target containing a quote produces malformed JSON"
   - id: RM12
     file: src/main.rs
     anchor: "fn parse_query"
