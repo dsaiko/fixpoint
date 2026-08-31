@@ -23,8 +23,10 @@ disqualifier, and one decision rule.
 | **cost** | input+output tokens (CLI-reported, real) and wall-clock seconds | tokens are the quota drawdown; wall clock is what gates a panel round, which runs at the slowest reviewer's pace |
 | **found_per_mtok** | matched seeds per million tokens | the headline: quality per unit of the thing being spent |
 
-The two tasks are one benchmark: **60 code seeds + 40 design seeds = 100
-points**, one point per seed. `bench/report.py` sums a model's two rows into
+The two calibrated targets are one benchmark: **56 go seeds + 34 design seeds
+= 90 points**, one point per seed. The score is out of whatever the live pool
+is — `report.py` reads each row's own seed total rather than a constant, so
+retiring a seed cannot leave the table quoting a scale that no longer exists. `bench/report.py` sums a model's two rows into
 that score; a model that has run only one task is reported as INCOMPLETE
 rather than scored out of 60.
 
@@ -46,10 +48,16 @@ disqualifies regardless of recall.
 
 ### The calibration, measured 2026-08-20
 
-| baseline | code | design | **score** | tokens | wall |
+| baseline | go | design | **score** | tokens | wall |
 |---|---|---|---|---|---|
-| claude (opus-5, effort high) | 52/60 | 23/40 | **75/100** | 76k | 901s |
-| codex | 45/60 | 16/40 | **61/100** | 315k | 941s |
+| claude (opus-5, effort high) | 43/56 | 20/34 | **63/90** | 123k | 1490s |
+| codex | 39/56 | 13/34 | **52/90** | 315k | 941s |
+
+Re-measured on the **2026-09-01 scale** (56 go + 34 design = 90 points) by
+re-scoring the original summaries — no re-run. On the retired 100-point scale
+the same two runs read 75/100 and 61/100; the drop is the scale getting harder,
+not the models getting worse. claude also scores **53/64 (83%)** on the Rust
+target.
 
 Zero contract failures either side. That is the readable scale: 75 is what the
 best reviewer available does, so a candidate at 50 is doing two thirds of the

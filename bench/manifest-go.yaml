@@ -24,6 +24,7 @@ target: go
 root: testdata/target-go
 seeds:
   - id: C01
+    retired: true # RETIRED 2026-09-01: 90.5% of the field finds it; C04 keeps the panic family in the floor
     file: store.go
     # No line gate: the defect is legitimately reported at NewStore (the map
     # not made) or at Create (the write that panics) -- calibration saw both.
@@ -59,7 +60,7 @@ seeds:
     anchor: "return used / len(s.links) * 100"
     span: 6
     need: 1
-    keywords: [integer division, truncat, "always 0", "always returns 0", float, order of operations]
+    keywords: [integer division, integer-divid, truncat, "always 0", "always returns 0", float, order of operations]
     note: "used/len*100 in integer arithmetic is 0 for every rate under 100%"
   - id: C09
     file: store.go
@@ -69,6 +70,7 @@ seeds:
     keywords: [quota, "never decrement", "not released", refund, "give the owner", leak]
     note: "Delete drops the link but never returns the owner's quota slot the doc comment promises"
   - id: C10
+    retired: true # RETIRED 2026-09-01: 90.5%; an inverted sort, and C02 already holds the inverted-comparison floor
     file: store.go
     anchor: "return all[i].Hits < all[j].Hits"
     span: 6
@@ -76,6 +78,7 @@ seeds:
     keywords: [ascending, "least", reversed, "wrong order", "most hits", backwards, sort]
     note: "Top sorts by hits ascending, so the leaderboard shows the least followed links"
   - id: C11
+    retired: true # RETIRED 2026-09-01: 95.2%; substring tenancy leak, fully covered by the floor's security seeds
     file: store.go
     anchor: "if strings.Contains(l.Owner, owner) {"
     span: 6
@@ -104,6 +107,7 @@ seeds:
     keywords: [snapshot, "internal map", copy, alias, mutate, "shared", expose]
     note: "Quotas hands out the store's own map; a caller mutating it rewrites the store's state"
   - id: C15
+    retired: true # RETIRED 2026-09-01: 90.5%; wrong return value, the same shape as C05 which stays
     file: store.go
     anchor: "return len(s.links)"
     span: 6
@@ -146,6 +150,7 @@ seeds:
     keywords: [owner, authoriz, "access check", "any user", "anyone", permission, IDOR]
     note: "deleteLink never checks the owner its comment promises to check: any caller deletes any link"
   - id: C18
+    retired: true # RETIRED 2026-09-01: 90.5%; open redirect, and C27 keeps a security seed in the floor
     file: main.go
     anchor: "func (s *server) out"
     span: 12
@@ -244,6 +249,7 @@ seeds:
     keywords: [salt, bcrypt, argon, scrypt, "fast hash", "unsalted", rainbow, KDF]
     note: "passwords are stored as a single unsalted SHA-256, crackable offline at speed"
   - id: S06
+    retired: true # RETIRED 2026-09-01: 95.2%; index panic, and C04 keeps the panic family
     file: auth.go
     anchor: "return parts[1]"
     span: 6
@@ -301,6 +307,7 @@ seeds:
     keywords: ["never", "discarded", "no effect", ignored, "_ = limit", unused]
     note: "LINKD_FETCH_LIMIT is parsed and validated, then thrown away; the setting does nothing"
   - id: CF05
+    retired: true # RETIRED 2026-09-01: 0/21. A swallowed read error in LoadFile, which main never calls, and whose doc already excuses a missing file. Zero candidate findings in every re-scorable run
     file: config.go
     anchor: "raw, _ := os.ReadFile(path)"
     span: 6
@@ -378,6 +385,7 @@ seeds:
     keywords: [unlock, "early return", deadlock, "still held", defer, "never released", "holding the write lock", wedg, "returns while holding", "still holding", "permanently locked"]
     note: "Delete returns without unlocking when the code is absent, deadlocking every later caller"
   - id: CA04
+    retired: true # RETIRED 2026-09-01: 90.5%; self-deadlock, and CA01 keeps the concurrency floor
     file: cache.go
     anchor: "if _, alive := c.Get(code); !alive {"
     span: 6
@@ -412,6 +420,69 @@ seeds:
     need: 1
     keywords: ["least recently used", LRU, random, "map iteration", arbitrary, "not the least"]
     note: "evict drops whatever entry map iteration yields first, not the least recently used one"
+  # ---- REPLACEMENTS, added 2026-09-01 for the eleven retired seeds ----
+  #
+  # None of these required touching the target. Every one is a real defect that
+  # was ALREADY in the Go tree and that no seed covered -- harvested from the
+  # unmatched findings of the seven re-scorable runs, which is the "skim the
+  # unmatched findings before dismissing them" rule applied to a whole sweep.
+  #
+  # That is why they were chosen over authoring new bugs: adding a defect to the
+  # target would mean the seven existing runs reviewed code that did not contain
+  # it, so they could never be re-scored honestly against the new manifest.
+  # Harvested seeds keep every one of those runs valid.
+  #
+  # They also land in the discriminating band the retired seeds left: each was
+  # reported by 1-3 of the 7 models, against the >=90% the retired ones scored.
+  - id: C28
+    file: main.go
+    anchor: "link, err := s.store.Create(req.Target, req.Owner, ttl)"
+    span: 8
+    need: 1
+    keywords: [owner, body, session, "request body", authenticated, spoof, impersonat, "any user"]
+    note: "the link owner is taken from the request body instead of the authenticated session, so any caller creates links as anyone"
+  - id: C29
+    file: main.go
+    # No line gate: reported at /report, at the listing, or at /stats -- three
+    # handlers with the same defect, and calibration cited two of them.
+    need: 2
+    keywords: [tenant, "every owner", "all owners", "other users", cross-user, scope, isolation, "any authenticated"]
+    note: "listing, stats and report all return every owner's links to any authenticated caller; nothing scopes them to the session"
+  - id: C30
+    file: store.go
+    anchor: "s.links[code] = l"
+    span: 6
+    need: 1
+    keywords: [collision, overwrite, "already exists", duplicate, clobber, "existing link", unchecked]
+    note: "Create never checks whether the generated code is already in use, so a collision silently overwrites a live link"
+  - id: X05
+    file: worker.go
+    anchor: "delete(s.links, code)"
+    span: 8
+    need: 1
+    keywords: [quota, stale, "not decrement", janitor, expiry, "never released", accounting]
+    note: "the janitor expires links without touching the quota map, so an owner's quota is consumed forever by links that no longer exist"
+  - id: X06
+    file: worker.go
+    anchor: "func WarmCache(links []*Link, client *http.Client)"
+    span: 8
+    need: 1
+    keywords: [context, cancel, "context.Context", shutdown, "cannot be cancelled", deadline, abort]
+    note: "WarmCache and CheckTargets take no context, so their in-flight probes cannot be cancelled at shutdown"
+  - id: EX08
+    file: export.go
+    anchor: 'path := filepath.Join(dir, name+".csv")'
+    span: 6
+    need: 1
+    keywords: [concurrent, race, "same file", "same name", overwrite, atomic, "two requests", interleav]
+    note: "two concurrent /report requests with the same name write the same path, so one reader can serve a half-written or interleaved file"
+  - id: EX09
+    file: export.go
+    anchor: 'f.WriteString(fmt.Sprintf("%s,%s,%d\n", l.Code, l.Target, l.Hits))'
+    span: 6
+    need: 1
+    keywords: ["ignored", "WriteString", error, "returns nil", silent, partial, unchecked, discard]
+    note: "ArchiveAll discards every WriteString error and still returns nil, so a partial archive reports success"
   - id: C08
     file: worker.go
     # No line gate: reported at mustHead itself or at the client.Do call site
@@ -427,6 +498,7 @@ seeds:
     keywords: [value receiver, copies, copied, copylocks, pointer receiver]
     note: "AddResolved has a value receiver; the mutex is copied and the increment is lost"
   - id: X02
+    retired: true # RETIRED 2026-09-01: 90.5%; unsynchronized map, same family as CA01
     # Reported from either side of the race: the unlocked Store or the
     # janitor that sweeps it. No line gate for the same reason.
     file: store.go|worker.go
@@ -434,6 +506,7 @@ seeds:
     keywords: [race, lock, mutex, concurrent, unsynchronized, synchroniz, janitor, handler]
     note: "janitor iterates and deletes s.links concurrently with HTTP handlers; Store has no lock"
   - id: X03
+    retired: true # RETIRED 2026-09-01: 90.5%; wg.Add race, same family as CA01
     file: worker.go
     anchor: "wg.Add(1)"
     span: 6
@@ -441,6 +514,7 @@ seeds:
     keywords: [wg.Add, goroutine, race, before, Wait, inside]
     note: "wg.Add inside the goroutine races wg.Wait; WarmCache can return before probes start"
   - id: X04
+    retired: true # RETIRED 2026-09-01: 90.5%; unbuffered-channel leak, same family as CA01
     file: worker.go
     anchor: "results := make(chan error)"
     span: 18

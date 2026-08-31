@@ -1,27 +1,22 @@
-# glm-5.3:cloud · code · run 20260831-155305 (repeat 1)
+# glm-5.3:cloud · go · run 20260831-155305 (repeat 1)
 
-recall **47/60** · 58 finding(s), 2 unmatched · 614935 tokens · 284s
+recall **39/56** · 58 finding(s), 0 unmatched · 614935 tokens · 284s · 11 retired seed(s) not scored
 
 | seed | found | note | matched by |
 |---|---|---|---|
-| C01 | YES | s.quota is never initialized in NewStore; first Create panics with nil | review-bugs: quota map is never initialized; Create panics on nil-map ass |
 | C02 | YES | expiry comparison inverted: live links are deleted, expired ones resol | review-bugs: Resolve's expiry check is inverted: live links are deleted,  |
 | C03 | YES | Rename validates `from` twice; `to` is never validated | review-bugs: Rename validates `from` twice and never validates `to` |
 | C04 | YES | Page clamps end to len(all)+1; last page slices out of range | review-bugs: Page clamps end to len(all)+1, causing an out-of-range slice |
 | C05 | — | used/len*100 in integer arithmetic is 0 for every rate under 100% |  |
 | C09 | YES | Delete drops the link but never returns the owner's quota slot the doc | review-bugs: Delete never returns the quota slot despite the documented p |
-| C10 | YES | Top sorts by hits ascending, so the leaderboard shows the least follow | review-bugs: Top sorts ascending and returns the LEAST followed links |
-| C11 | YES | ByOwner matches owners by substring, so one owner sees another's links | review-bugs: ByOwner uses substring matching, not exact-owner matching |
 | C12 | YES | Extend re-dates an already-expired link, resurrecting a code the comme | review-bugs: Extend resurrects expired links, contradicting its documente |
 | C13 | YES | Import writes links as it validates, so a bad code leaves the earlier  | review-bugs: Import is not atomic: a validation failure mid-batch leaves  |
 | C14 | YES | Quotas hands out the store's own map; a caller mutating it rewrites th | review-bugs: Quotas hands out the live internal map, not a snapshot |
-| C15 | YES | Prune counts removals but returns the number of links left | review-bugs: Prune returns the surviving link count instead of the number |
 | C06 | — | strconv.Atoi error discarded; bad TTL silently becomes 0 hours |  |
 | C07 | YES | preview never closes resp.Body; connections leak | review-bugs: preview never closes the fetched response body, leaking conn |
 | C27 | YES | preview fetches any registered target server-side and returns its body | review-security: SSRF: /preview fetches attacker-chosen URLs server-side and  |
 | C16 | YES | redirect lowercases the code before lookup, but codes are stored case- | review-bugs: redirect lowercases the code, which is case-sensitive base64 |
 | C17 | YES | deleteLink never checks the owner its comment promises to check: any c | review-security: deleteLink never checks ownership despite the documented own |
-| C18 | YES | /out redirects to any address in ?next= -- an open redirect, cached pe | review-security: Open redirect: /out redirects to unvalidated ?next= |
 | C19 | YES | the admin endpoint is gated on a request header the caller sets themse | review-security: Admin endpoint gated on a client-controlled X-Admin header |
 | C20 | YES | /stats divides by the link count, panicking whenever the store is empt | review-bugs: stats divides by zero on an empty store |
 | C21 | — | the export handler returns the server's filesystem path and raw error  |  |
@@ -35,7 +30,6 @@ recall **47/60** · 58 finding(s), 2 unmatched · 614935 tokens · 284s
 | S03 | YES | every issued session token is written to the log in cleartext | review-security: Session tokens written to the log in plaintext |
 | S04 | YES | Verify never looks at ExpiresAt, so a token works forever despite the  | review-bugs: Verify never checks session expiry, and does a linear scan i; review-security: Session expiry is never enforced in Verify |
 | S05 | YES | passwords are stored as a single unsalted SHA-256, crackable offline a | review-security: Password hashing is a single unsalted SHA-256 |
-| S06 | YES | BearerToken indexes parts[1] without checking; a request with no Autho | review-bugs: BearerToken panics on requests with no Authorization header; review-security: BearerToken panics on any request without a two-part Authori |
 | S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin's condition is always true, so it rejects every; review-security: RequireAdmin's condition is inverted — the control rejects e |
 | S08 | — | the 401 response echoes the rejected token back to the caller |  |
 | S09 | YES | the sessions map is read and written from every request goroutine with | review-concurrency: Authenticator.sessions is an unguarded map written by Issue/ |
@@ -43,7 +37,6 @@ recall **47/60** · 58 finding(s), 2 unmatched · 614935 tokens · 284s
 | CF02 | YES | the parse-error branch logs 'keeping default' and then assigns the fai | review-bugs: Bad LINKD_TIMEOUT_MS zeroes the timeout despite the log sayi |
 | CF03 | YES | LINKD_CACHE_TTL_MS is documented in milliseconds and multiplied by tim | review-bugs: LINKD_CACHE_TTL_MS is interpreted as seconds, inflating the  |
 | CF04 | YES | LINKD_FETCH_LIMIT is parsed and validated, then thrown away; the setti | review-bugs: LINKD_FETCH_LIMIT is parsed, validated, then discarded |
-| CF05 | — | any read error -- not just a missing file -- silently yields an empty  |  |
 | CF06 | YES | Validate logs the problems it finds and returns nil, so a bad config s | review-bugs: Validate always returns nil, so invalid configurations are a |
 | EX01 | YES | the report name comes from the query string and goes into filepath.Joi | review-bugs: ExportCSV does not confine the user-supplied name to dir; review-security: Path traversal in CSV export lets any user write an arbitrar |
 | EX02 | YES | the export holding every owner's links is written world-readable | review-security: Export file created world-readable and world-writable (0666) |
@@ -54,17 +47,32 @@ recall **47/60** · 58 finding(s), 2 unmatched · 614935 tokens · 284s
 | CA01 | YES | Get deletes from the map and increments hits while holding only a read | review-concurrency: Cache.Get mutates map, entry, and hit counter under RLock |
 | CA02 | YES | Peek reads the map with no lock at all while other goroutines are writ | review-concurrency: Cache.Peek and Cache.Stats read shared state with no lock at |
 | CA03 | YES | Delete returns without unlocking when the code is absent, deadlocking  | review-bugs: Cache.Delete returns early while holding the write lock, dea; review-concurrency: Cache.Delete early-returns without unlocking, permanently we |
-| CA04 | YES | evict runs under the write lock and calls Get, which takes the read lo | review-bugs: evict calls c.Get while holding the write lock: self-deadloc; review-concurrency: Set deadlocks: evict calls c.Get (RLock) while Set holds the |
 | CA05 | YES | one timer per Set is stored and never stopped, so timers and their gor | review-bugs: Set's timers are never stopped or removed: unbounded growth ; review-concurrency: Set's per-entry timers are never cancelled: stale timer dele |
 | CA06 | — | Warm's Peek and Set are separately locked, so the janitor and a handle |  |
 | CA07 | — | Stats reads the hits counter with no lock while Get is incrementing it |  |
 | CA08 | — | evict drops whatever entry map iteration yields first, not the least r |  |
+| C28 | YES | the link owner is taken from the request body instead of the authentic | review-security: Link owner taken from the request body, not the session |
+| C29 | YES | listing, stats and report all return every owner's links to any authen | review-security: /report exports every owner's links to any authenticated use |
+| C30 | — | Create never checks whether the generated code is already in use, so a |  |
+| X05 | — | the janitor expires links without touching the quota map, so an owner' |  |
+| X06 | — | WarmCache and CheckTargets take no context, so their in-flight probes  |  |
+| EX08 | — | two concurrent /report requests with the same name write the same path |  |
+| EX09 | — | ArchiveAll discards every WriteString error and still returns nil, so  |  |
 | C08 | YES | mustHead logs and returns nil request; client.Do(nil) panics | review-bugs: mustHead returns nil on error and CheckTargets passes it to  |
 | X01 | YES | AddResolved has a value receiver; the mutex is copied and the incremen | review-bugs: AddResolved has a value receiver, so the resolved counter ne; review-concurrency: Metrics.AddResolved has a value receiver: increments a copy  |
-| X02 | YES | janitor iterates and deletes s.links concurrently with HTTP handlers;  | review-concurrency: Store has no synchronization despite concurrent access from  |
-| X03 | YES | wg.Add inside the goroutine races wg.Wait; WarmCache can return before | review-bugs: WarmCache calls wg.Add(1) inside the goroutine, so wg.Wait c; review-concurrency: WarmCache races wg.Add against wg.Wait and can return before |
-| X04 | YES | CheckTargets returns on first error; remaining sends to the unbuffered | review-concurrency: CheckTargets leaks every remaining probe goroutine on the fi |
 
-Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) main.go:182 — /report exports every owner's links to any authenticated user
-- (medium) main.go:67 — Link owner taken from the request body, not the session
+Retired seeds — still matched so their findings are not counted as noise, but out of the denominator:
+
+| seed | found | note |
+|---|---|---|
+| C01 | YES | s.quota is never initialized in NewStore; first Create panics with nil |
+| C10 | YES | Top sorts by hits ascending, so the leaderboard shows the least follow |
+| C11 | YES | ByOwner matches owners by substring, so one owner sees another's links |
+| C15 | YES | Prune counts removals but returns the number of links left |
+| C18 | YES | /out redirects to any address in ?next= -- an open redirect, cached pe |
+| S06 | YES | BearerToken indexes parts[1] without checking; a request with no Autho |
+| CF05 | — | any read error -- not just a missing file -- silently yields an empty  |
+| CA04 | YES | evict runs under the write lock and calls Get, which takes the read lo |
+| X02 | YES | janitor iterates and deletes s.links concurrently with HTTP handlers;  |
+| X03 | YES | wg.Add inside the goroutine races wg.Wait; WarmCache can return before |
+| X04 | YES | CheckTargets returns on first error; remaining sends to the unbuffered |
