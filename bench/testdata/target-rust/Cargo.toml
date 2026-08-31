@@ -1,0 +1,8 @@
+[package]
+name = "linkd"
+version = "0.1.0"
+edition = "2021"
+
+# No dependencies, deliberately: `cargo build` must work offline, and a
+# reviewer must be able to read the whole target without a crates.io detour.
+[dependencies]
