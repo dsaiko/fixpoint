@@ -172,6 +172,7 @@ bench-check:
 	python3 bench/score.py --check bench/manifest-typescript.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-csharp.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-cpp.yaml >/dev/null
+	python3 bench/score.py --check bench/manifest-python.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-design.yaml >/dev/null
 	python3 bench/score.py --selftest bench/manifest-go.yaml
 	python3 bench/score.py --selftest bench/manifest-rust.yaml
@@ -179,6 +180,7 @@ bench-check:
 	python3 bench/score.py --selftest bench/manifest-typescript.yaml
 	python3 bench/score.py --selftest bench/manifest-csharp.yaml
 	python3 bench/score.py --selftest bench/manifest-cpp.yaml
+	python3 bench/score.py --selftest bench/manifest-python.yaml
 	python3 bench/score.py --selftest bench/manifest-design.yaml
 	cd bench/testdata/target-go && go build ./...
 	# --offline and an out-of-tree CARGO_TARGET_DIR: the target has no
@@ -192,6 +194,11 @@ bench-check:
 	cd bench/testdata/target-csharp && dotnet build -v q --nologo -o $(BENCH_CS_OUT) >/dev/null
 	@mkdir -p $(BENCH_CPP_OUT)
 	cd bench/testdata/target-cpp && clang++ -std=c++20 -w -o $(BENCH_CPP_OUT)/linkd *.cpp
+	# IMPORT, not just compile: py_compile accepts a dataclass with a mutable
+	# default that `import` rejects outright, and a target that cannot be
+	# imported is broken rather than seeded.
+	cd bench/testdata/target-python && python3 -c 'import store, auth, cache, config, export, worker'
+	@rm -rf bench/testdata/target-python/__pycache__
 	@echo "bench: manifests and targets OK"
 
 ## review-branch: one review round over only what this branch changed

@@ -1,0 +1,490 @@
+# Seeded defects in bench/testdata/target-python. Same matcher rules as
+# manifest-go.yaml. Frozen: never fix these bugs.
+#
+# The SAME link-shortener service as target-go, so the language is the only
+# variable. See "One service, many languages" in bench/README.md.
+#
+#   PARALLEL   the same logical defect as a numbered Go seed, marked
+#              "parallel: Cnn".
+#   PY-ONLY    defects that need this language: three mutable default arguments,
+#              two bare `except:` clauses, dict-mutation during iteration, a
+#              generator consumed while its source is mutated, `//` where `/`
+#              was meant, random.getrandbits for secrets, and a module whose
+#              import starts a thread as a side effect.
+#
+# `make bench-check` IMPORTS every module rather than only compiling it. That
+# was not cosmetic: the first draft put the mutable-default seed on a dataclass
+# field, which py_compile accepts and `import` rejects outright -- a target that
+# cannot be imported is broken rather than seeded, and the check now catches it.
+task: code
+target: python
+root: testdata/target-python
+seeds:
+  # ---------------- store.py ----------------
+  - id: Y01
+    file: store.py
+    anchor: "def create(self, target, owner, ttl, tags=[]):"
+    span: 6
+    need: 1
+    keywords: ["mutable default", "default argument", "shared", "[]", "None", "same list", evaluated once]
+    note: "PY-ONLY the default `tags=[]` is created once at definition time and shared by every link that does not pass one, so appending to one link's tags appends to all of them"
+  - id: Y02
+    file: store.py
+    anchor: "self.quota[owner] = self.quota[owner] + 1"
+    span: 6
+    need: 1
+    keywords: [KeyError, "new owner", "first link", get, setdefault, defaultdict, missing, crash]
+    note: "PY-ONLY (parallel: C01) the quota dict has no entry for a new owner, so the first create for any user raises KeyError"
+  - id: Y03
+    file: store.py
+    anchor: "if time.time() < link.expires_at:"
+    span: 6
+    need: 1
+    keywords: [inverted, backwards, reversed, expir, "less than", "greater"]
+    note: "parallel: C02 expiry comparison inverted: live links are deleted, expired ones resolve"
+  - id: Y04
+    file: store.py
+    anchor: "def rename(self, frm, to):"
+    span: 8
+    need: 1
+    keywords: [twice, "validate_code(to)", "never validated", duplicate, "copy-paste", "same argument"]
+    note: "parallel: C03 rename validates `frm` twice; `to` is never validated"
+  - id: Y05
+    file: store.py
+    anchor: "end = len(all_links) + 1"
+    span: 6
+    need: 1
+    keywords: ["off-by-one", bounds, "len(", slice, clamp, "silently", short]
+    note: "parallel: C04 page clamps end past the list length; Python slicing silently returns a short page instead of raising"
+  - id: Y06
+    file: store.py
+    anchor: "return used // len(self.links) * 100"
+    span: 6
+    need: 1
+    keywords: ["floor division", "//", "always 0", truncat, integer, "order of operations"]
+    note: "PY-ONLY (parallel: C05) floor division is applied before the multiply, so every rate under 100% reports 0"
+  - id: Y07
+    file: store.py
+    anchor: "def delete(self, code):"
+    span: 10
+    need: 1
+    keywords: [quota, "never decrement", "not released", refund, "give the owner", slot]
+    note: "parallel: C09 delete drops the link but never returns the owner's quota slot the doc promises"
+  - id: Y08
+    file: store.py
+    anchor: "all_links = sorted(self.links.values(), key=lambda l: l.hits)"
+    span: 6
+    need: 1
+    keywords: [ascending, least, reversed, "wrong order", "most hits", descending, backwards]
+    note: "parallel: C10 top sorts by hits ascending, so the leaderboard shows the least followed links"
+  - id: Y09
+    file: store.py
+    anchor: "return [l for l in self.links.values() if owner in l.owner]"
+    span: 6
+    need: 1
+    keywords: [substring, "in", exact, "other owners", tenant, leak, equal]
+    note: "parallel: C11 by_owner uses `in`, a substring test, so one owner sees another's links"
+  - id: Y10
+    file: store.py
+    anchor: "def extend(self, code, ttl):"
+    span: 10
+    need: 1
+    keywords: [expired, resurrect, revive, "back to life", "already expired", dead]
+    note: "parallel: C12 extend re-dates an already-expired link, resurrecting a code the doc calls final"
+  - id: Y11
+    file: store.py
+    anchor: "def quotas(self):"
+    span: 8
+    need: 1
+    keywords: [snapshot, "internal", mutable, alias, expose, copy, reference]
+    note: "parallel: C14 quotas hands out the store's own dict while the doc calls it a snapshot"
+  - id: Y12
+    file: store.py
+    anchor: "def import_all(self, batch):"
+    span: 10
+    need: 1
+    keywords: [atomic, partial, rollback, half, "already stored", "not all", validate]
+    note: "parallel: C13 import_all stores as it validates, so a bad code leaves the earlier half of the batch stored"
+  - id: Y13
+    file: store.py
+    anchor: "for code in self.links:"
+    span: 8
+    need: 1
+    keywords: ["RuntimeError", "changed size during iteration", "while iterating", "dictionary changed", list, copy]
+    note: "PY-ONLY prune deletes from the dict while iterating it, raising RuntimeError: dictionary changed size during iteration"
+  - id: Y14
+    file: store.py
+    anchor: "removed = 0"
+    span: 10
+    need: 1
+    keywords: [removed, remaining, count, "wrong", returns, "len("]
+    note: "parallel: C15 prune counts removals into `removed` and then returns the number of links left instead"
+  - id: Y15
+    file: store.py
+    anchor: "def find_expired(self, cutoff):"
+    span: 6
+    need: 1
+    keywords: [generator, lazy, "changed size", iteration, list, consumed, "RuntimeError"]
+    note: "PY-ONLY find_expired returns a GENERATOR over the live dict, so the janitor deleting while consuming it raises RuntimeError"
+  - id: Y16
+    file: store.py
+    anchor: 'return "%08x" % random.getrandbits(32)'
+    span: 6
+    need: 1
+    keywords: ["getrandbits", random, predictable, secrets, "not cryptographically", guess, collision, "32-bit"]
+    note: "PY-ONLY (parallel: S02) codes come from the `random` module rather than `secrets`: predictable, and 32 bits collides readily"
+
+  # ---------------- auth.py ----------------
+  - id: Y17
+    file: auth.py
+    anchor: '"dev-secret-do-not-use"'
+    span: 6
+    need: 1
+    keywords: [hardcoded, "default secret", "dev-secret", fallback, weak, credential]
+    note: "parallel: S01 the signing secret falls back to a hardcoded development value when the environment is unset"
+  - id: Y18
+    file: auth.py
+    anchor: 'token = "%08x%08x" % (random.getrandbits(32), random.getrandbits(32))'
+    span: 6
+    need: 1
+    keywords: ["getrandbits", random, predictable, secrets, forge, guess, "not cryptographically", "token_hex"]
+    note: "parallel: S02 session tokens come from the `random` module, which is seeded from the clock and fully predictable"
+  - id: Y19
+    file: auth.py
+    anchor: 'print("auth: issued token %s for %s" % (token, owner))'
+    span: 6
+    need: 1
+    keywords: [log, token, secret, "written to", disclos, redact, print]
+    note: "parallel: S03 every issued session token is printed in cleartext"
+  - id: Y20
+    file: auth.py
+    anchor: "def verify(self, token):"
+    span: 10
+    need: 1
+    keywords: [expir, "expires_at", "never expire", lifetime, "not checked", stale]
+    note: "parallel: S04 verify never looks at expires_at, so a token works forever despite the documented 12-hour lifetime"
+  - id: Y21
+    file: auth.py
+    anchor: 'if session.role != "admin" or session.role != "owner":'
+    span: 6
+    need: 1
+    keywords: ["always true", tautolog, "and", "or", never, "every session", "cannot be false"]
+    note: "parallel: S07 the admin check is always true, so require_admin rejects every session including admins"
+  - id: Y22
+    file: auth.py
+    anchor: "return hashlib.sha256(password.encode()).hexdigest()"
+    span: 6
+    need: 1
+    keywords: [salt, bcrypt, argon, scrypt, pbkdf2, "fast hash", unsalted, rainbow, KDF]
+    note: "parallel: S05 passwords are stored as a single unsalted SHA-256, crackable offline at speed"
+  - id: Y23
+    file: auth.py
+    anchor: 'return header.split(" ")[1]'
+    span: 6
+    need: 1
+    keywords: [IndexError, index, "missing header", malformed, crash, "[1]", empty]
+    note: "parallel: S06 bearer_token indexes [1] without checking, so a request with no or malformed Authorization raises IndexError"
+  - id: Y24
+    file: auth.py
+    anchor: "def secret_equals(presented, expected):"
+    span: 6
+    need: 1
+    keywords: ["constant time", "constant-time", timing, "compare_digest", "short-circuit", "side channel", hmac]
+    note: "secret_equals is documented as not leaking how much matched and uses ==, which short-circuits on the first differing character"
+  - id: Y25
+    file: auth.py
+    anchor: "    except:"
+    span: 6
+    need: 1
+    keywords: ["bare except", "except:", broad, KeyboardInterrupt, SystemExit, swallow, "BaseException"]
+    note: "PY-ONLY a bare `except:` in parse_lifetime catches KeyboardInterrupt and SystemExit too, so the process cannot be interrupted while parsing"
+  - id: Y26
+    file: auth.py
+    anchor: "del self.sessions[token]"
+    span: 6
+    need: 1
+    keywords: [KeyError, "unknown token", "already revoked", pop, missing, crash]
+    note: "PY-ONLY revoke deletes by key without a guard, so revoking an unknown or already-revoked token raises KeyError"
+
+  # ---------------- cache.py ----------------
+  - id: Y27
+    file: cache.py
+    anchor: "def peek(self, code):"
+    span: 6
+    need: 2
+    keywords: [lock, "no lock", race, unsynchron, concurrent, peek, "not held"]
+    note: "parallel: CA02 peek reads the dict without the lock every other method takes"
+  - id: Y28
+    file: cache.py
+    anchor: "victim = list(self.entries.keys())[0]"
+    span: 6
+    need: 1
+    keywords: ["least recently used", LRU, arbitrary, "insertion order", "not the least", used, first, OrderedDict]
+    note: "parallel: CA08 eviction drops the first key in insertion order, not the least recently used; the `used` field is written and never read"
+  - id: Y29
+    file: cache.py
+    anchor: "def warm(self, pairs):"
+    span: 8
+    need: 2
+    keywords: ["check-then-act", race, TOCTOU, peek, set, "not atomic", between]
+    note: "parallel: CA06 warm's peek and set take the lock separately, so the janitor and a handler can both fill the same key"
+  - id: Y30
+    file: cache.py
+    anchor: "for code in self.entries:"
+    span: 8
+    need: 1
+    keywords: ["RuntimeError", "changed size during iteration", "while iterating", "dictionary changed", list, copy]
+    note: "PY-ONLY sweep deletes from the dict while iterating it, raising RuntimeError as soon as one entry has expired"
+  - id: Y31
+    file: cache.py
+    anchor: "return len(self.entries) // self.limit * 100"
+    span: 6
+    need: 1
+    keywords: ["floor division", "//", "always 0", truncat, "ZeroDivisionError", "divide by zero"]
+    note: "PY-ONLY utilization floor-divides before scaling so it always reports 0, and raises ZeroDivisionError when limit is 0"
+  - id: Y32
+    file: cache.py
+    anchor: 'self.delete("__sentinel__")'
+    span: 8
+    need: 1
+    keywords: [deadlock, "same lock", reentran, "not reentrant", "Lock()", RLock, "already held", hang]
+    note: "PY-ONLY flush holds the non-reentrant Lock and calls delete, which takes the same Lock: an immediate self-deadlock"
+  - id: Y33
+    file: cache.py
+    anchor: "def stats(self):"
+    span: 6
+    need: 2
+    keywords: [lock, race, hits, unsynchron, "not held", concurrent, stale]
+    note: "parallel: CA07 stats reads the hit counter outside the lock while get is incrementing it"
+
+  # ---------------- config.py ----------------
+  - id: Y34
+    file: config.py
+    anchor: 'cfg.port = int(port)'
+    span: 8
+    need: 1
+    keywords: ["pass", swallow, silent, ignored, "no log", invalid, port]
+    note: "parallel: CF01 a malformed LINKD_PORT is swallowed silently with no log and no failure"
+  - id: Y35
+    file: config.py
+    anchor: 'print("config: bad LINKD_TIMEOUT_MS %s, keeping default" % timeout)'
+    span: 8
+    need: 1
+    keywords: ["keeping default", contradic, anyway, "does not", zero, "still", assigned]
+    note: "parallel: CF02 the parse-error branch logs 'keeping default' and then assigns zero anyway"
+  - id: Y36
+    file: config.py
+    anchor: "cfg.cache_ttl = int(ttl)"
+    span: 6
+    need: 1
+    keywords: [millisecond, second, unit, "1000", documented, wrong, unguarded, ValueError]
+    note: "parallel: CF03 LINKD_CACHE_TTL_MS is documented in milliseconds and stored as seconds (1000x), and the int() is unguarded so a bad value kills startup"
+  - id: Y37
+    file: config.py
+    anchor: "parsed = parsed"
+    span: 6
+    need: 1
+    keywords: ["self-assign", "no effect", ignored, never, unused, discarded, fetch_limit]
+    note: "parallel: CF04 LINKD_FETCH_LIMIT is parsed, validated and self-assigned, so the setting does nothing"
+  - id: Y38
+    file: config.py
+    anchor: "        raw = open(path).read()"
+    span: 8
+    need: 1
+    keywords: ["bare except", "except:", swallow, "read error", permission, unreadable, silently, distinguish, "not closed"]
+    note: "PY-ONLY (parallel: CF05) load_file wraps the read in a bare `except:`, hiding permission errors as well as a missing file, and never closes the handle"
+  - id: Y39
+    file: config.py
+    anchor: "def validate(cfg):"
+    span: 18
+    need: 1
+    keywords: ["returns True", "always True", logs, "does not fail", startup, "never returns False"]
+    note: "parallel: CF06 validate logs the problems it finds and returns True, so a bad config starts the service anyway"
+
+  # ---------------- export.py ----------------
+  - id: Y40
+    file: export.py
+    anchor: 'path = os.path.join(directory, name + ".csv")'
+    span: 6
+    need: 1
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", "os.path.join", absolute]
+    note: "parallel: EX01 the report name comes from the query string; os.path.join also DISCARDS directory entirely if the name is absolute"
+  - id: Y41
+    file: export.py
+    anchor: 'handle = open(path, "w")'
+    span: 8
+    need: 2
+    keywords: ["with", "context manager", close, leak, exception, permission, mode, "0o600", umask]
+    note: "parallel: EX02 the report is written with default permissions and without a `with`, so any exception leaves the handle open and the file truncated"
+  - id: Y42
+    file: export.py
+    anchor: 'body += "%s,%s,%s,%d'
+    span: 6
+    need: 1
+    keywords: [escap, quot, comma, inject, csv, formula, malformed, "csv.writer"]
+    note: "parallel: EX03 CSV rows are built by string formatting, so a comma or quote in a target breaks the file and a leading = is a formula injection"
+  - id: Y43
+    file: export.py
+    anchor: 'handle = open(os.path.join(directory, owner + ".csv"), "w")'
+    span: 6
+    need: 1
+    keywords: [owner, traversal, sanitiz, basename, escape, separator, path]
+    note: "archive_all builds a filename straight from the owner string, so an owner containing a path separator escapes directory"
+  - id: Y44
+    file: export.py
+    anchor: 'tmp = "/tmp/linkd-snapshot.json"'
+    span: 10
+    need: 1
+    keywords: ["fixed", predictable, "/tmp", symlink, race, collision, "not closed", flush, fsync, durab]
+    note: "PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is never closed or flushed before os.rename, so the buffered bytes have not reached the file the doc calls durable"
+  - id: Y45
+    file: export.py
+    anchor: "def parse_report(body, rows=[]):"
+    span: 8
+    need: 1
+    keywords: ["mutable default", "default argument", "shared", "[]", accumulat, "same list", "grows"]
+    note: "PY-ONLY the default `rows=[]` is shared across calls, so every parse appends to the same list and the second caller sees the first caller's rows"
+
+  # ---------------- worker.py ----------------
+  - id: Y46
+    file: worker.py
+    anchor: "self.errors = 0"
+    span: 6
+    need: 1
+    keywords: [errors, "never increment", "always 0", unused, dashboard, "no method", zero]
+    note: "the errors counter is reported by snapshot and never incremented anywhere, so the dashboard always shows zero errors"
+  - id: Y47
+    file: worker.py
+    anchor: "for code in store.find_expired(cutoff):"
+    span: 8
+    need: 1
+    keywords: ["RuntimeError", "changed size during iteration", generator, lazy, list, "while iterating"]
+    note: "PY-ONLY the janitor deletes from store.links while consuming the generator find_expired returns over that same dict"
+  - id: Y48
+    file: worker.py
+    anchor: "def warm_cache(pairs, cache):"
+    span: 10
+    need: 1
+    keywords: [join, "never joined", "returns before", threads, daemon, wait]
+    note: "parallel: X03 warm_cache collects its threads and never joins them, so it returns before any probe has run, contradicting its docstring"
+  - id: Y49
+    file: worker.py
+    anchor: "return problems[0]"
+    span: 6
+    need: 1
+    keywords: [IndexError, empty, "no failures", "problems[0]", crash, "success"]
+    note: "PY-ONLY check_targets indexes problems[0] unconditionally, so the all-healthy case raises IndexError instead of reporting success"
+  - id: Y50
+    file: worker.py
+    anchor: "return store.quotas()[owner]"
+    span: 6
+    need: 1
+    keywords: [KeyError, "unknown owner", get, missing, crash, default]
+    note: "PY-ONLY count_for_owner indexes the dict directly, raising KeyError for an owner with no quota entry"
+  - id: Y51
+    file: worker.py
+    anchor: 'def summarize(links, prefix=""):'
+    span: 8
+    need: 1
+    keywords: ["mutable default", "default argument", "shared", string, immutable, accumulat, "+="]
+    note: "summarize accumulates into its parameter; the default is an immutable string so it is not shared, but a caller passing a list would be mutated in place"
+  - id: Y52
+    file: worker.py
+    anchor: "_janitor = threading.Thread(target=loop)"
+    span: 8
+    need: 1
+    keywords: [daemon, "not a daemon", "never exits", join, shutdown, "does not stop", interval]
+    note: "the janitor thread is not a daemon and is never joined, so the interpreter cannot exit and stop_janitor waits a full interval"
+  - id: Y53
+    file: worker.py
+    anchor: "self.resolved += 1"
+    span: 6
+    need: 1
+    keywords: [race, "not atomic", lock, thread, "read-modify-write", concurrent, GIL]
+    note: "parallel: X01 the counters are incremented from the janitor thread and request paths with no lock; += is not atomic even under the GIL"
+
+  # ---------------- main.py ----------------
+  - id: Y54
+    file: main.py
+    anchor: "start_janitor(store, cache, 60)"
+    span: 6
+    need: 1
+    keywords: ["import", "side effect", "module level", "at import", thread, starts, testable]
+    note: "PY-ONLY importing this module builds the whole service and STARTS A THREAD as an import side effect, so merely importing it for a test spawns a janitor"
+  - id: Y55
+    file: main.py
+    anchor: 'token = auth.bearer_token(request["headers"].get("authorization", ""))'
+    span: 6
+    need: 1
+    keywords: [IndexError, empty, "missing header", crash, unauthenticated, 500]
+    note: "parallel: S06 an absent Authorization header becomes the empty string, and bearer_token indexes [1] on it, so every unauthenticated request raises"
+  - id: Y56
+    file: main.py
+    anchor: 'return respond(401, "unauthorized: unknown token (token %s)" % token)'
+    span: 6
+    need: 1
+    keywords: [echo, token, reflect, "error message", disclos, leak, response]
+    note: "parallel: S08 the 401 response echoes the rejected token back to the caller"
+  - id: Y57
+    file: main.py
+    anchor: 'link = store.create(payload["target"], payload["owner"], ttl)'
+    span: 6
+    need: 1
+    keywords: [owner, body, session, "request body", authenticated, spoof, impersonat, KeyError]
+    note: "parallel: C28 the link owner is taken from the request body instead of the authenticated session, and a missing key raises KeyError"
+  - id: Y58
+    file: main.py
+    anchor: 'store.delete(request["query"]["code"])'
+    span: 8
+    need: 1
+    keywords: [owner, authoriz, "access check", "any user", anyone, permission, IDOR, session]
+    note: "parallel: C17 delete_link never checks the owner its docstring promises to check: any caller deletes any link"
+  - id: Y59
+    file: main.py
+    anchor: 'nxt = request["query"].get("next")'
+    span: 10
+    need: 1
+    keywords: ["open redirect", redirect, phish, next, unvalidated, arbitrary]
+    note: "parallel: C18 /out redirects to any address in ?next= -- an open redirect, cached permanently by the 301"
+  - id: Y60
+    file: main.py
+    anchor: 'if request["headers"].get("x-admin") != "true":'
+    span: 6
+    need: 1
+    keywords: ["x-admin", header, "client-controlled", spoof, privilege, forge, trivially]
+    note: "parallel: C19 the admin endpoint is gated on a request header the caller sets themselves"
+  - id: Y61
+    file: main.py
+    anchor: 'snap["hits_per_link"] = store.total_hits() / store.size()'
+    span: 6
+    need: 1
+    keywords: ["ZeroDivisionError", "divide by zero", empty, zero, crash]
+    note: "parallel: C20 /stats divides by the link count, raising ZeroDivisionError whenever the store is empty"
+  - id: Y62
+    file: main.py
+    anchor: "target = store.resolve(code.lower())"
+    span: 6
+    need: 1
+    keywords: [lower, case, lowercas, mismatch, "never resolve", "case-sensitive"]
+    note: "parallel: C16 redirect lowercases the code before lookup, but codes are stored case-sensitively"
+  - id: Y63
+    file: main.py
+    anchor: '"Access-Control-Allow-Credentials": "true",'
+    span: 6
+    need: 1
+    keywords: [CORS, wildcard, credentials, "any origin", "Allow-Origin", "cross-origin"]
+    note: "parallel: C23 wildcard CORS combined with Allow-Credentials on every response"
+  - id: Y64
+    file: main.py
+    anchor: "path = export.export_csv(cfg.export_dir, name, store.page(0, 1000))"
+    span: 8
+    need: 2
+    keywords: [tenant, "every owner", "all owners", "other users", scope, isolation, "any authenticated", 1000, truncat]
+    note: "parallel: C29 /report exports every owner's links to any authenticated caller, and silently truncates at 1000"
+  - id: Y65
+    file: main.py
+    anchor: "except IOError as e:"
+    span: 6
+    need: 1
+    keywords: [IOError, OSError, "wrong exception", ValueError, uncaught, "does not catch", traversal]
+    note: "report catches only IOError, so the ValueError and KeyError the same call can raise escape as an unhandled 500"

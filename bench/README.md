@@ -96,14 +96,25 @@ across the panel is <4%, so non-overlap is the panel's whole value).
 
 ## Protocol
 
-- **Frozen targets.** `testdata/target-go` (a Go link shortener in seven
-  files, 60 seeded defects: correctness for `review-bugs`, concurrency for
-  `review-concurrency`, and 14 security defects — unsalted hashes, a
-  predictable token, an open redirect, a path traversal, a client-controlled
-  admin header — for `review-security`), `testdata/target-rust` (**the same
-  service in Rust**, 59 seeds — see below) and `testdata/target-design` (a
-  sync-service design, 40 seeded flaws: 24 failure-and-operation for
-  `design-failure`, 16 data-model for `design-data`). **Never fix the seeded
+- **Frozen targets.** The same link-shortener service in **seven languages**,
+  plus a design document:
+
+  | target | seeds | built by `make bench-check` |
+  |---|---|---|
+  | `target-go` | 56 scored (11 retired) | `go build` |
+  | `target-rust` | 64 | `cargo build --offline` |
+  | `target-java` | 68 | `javac` |
+  | `target-typescript` | 62 | `tsc -p .` (strict) |
+  | `target-csharp` | 67 | `dotnet build` |
+  | `target-cpp` | 63 | `clang++ -std=c++20` |
+  | `target-python` | 65 | `import` (not just `py_compile`) |
+  | `target-design` | 34 scored (6 retired) | — |
+
+  The Go target's 60 original seeds split across `review-bugs`,
+  `review-concurrency` and `review-security` (14 security defects — unsalted
+  hashes, a predictable token, an open redirect, a path traversal, a
+  client-controlled admin header); the design target's 40 split across
+  `design-failure` (24) and `design-data` (16). **Never fix the seeded
   bugs** — the target's value is that it does not change between
   measurements. `**/testdata/**` is excluded by the default config, so real
   review runs over this repository never trip on them.
@@ -198,11 +209,24 @@ Seeds come in two kinds, and the split is the whole point:
   `lock()`, a lock-order inversion between two locks, `usize` division that is
   always zero, and `JoinHandle`s dropped without joining.
 
-`target-rust` has **no dependencies**, so `cargo build --offline` works and a
-reviewer can read the whole target without a crates.io detour. `make bench-check`
-compiles it with `CARGO_TARGET_DIR` pointed outside the tree, because the bench
-reviews the target directory with no excludes and a `target/` directory inside it
-would be handed to the reviewer as source.
+**No target has dependencies.** Every one builds offline, and a reviewer can
+read the whole thing without a package-registry detour. `make bench-check` builds
+each with its output pointed OUTSIDE the tree, because the bench reviews these
+directories with no excludes and a build directory inside one would be handed to
+the reviewer as source.
+
+Three findings the languages produced that a single-language bench could not:
+
+- The always-true admin check (`role != "admin" || role != "owner"`) is a
+  **compile error in TypeScript** — control-flow narrowing proves it. It is
+  replaced there by the `indexOf` truthiness bug, which rejects admins and
+  admits everyone else.
+- `quota[owner] = quota[owner] + 1` is a crash in Go, Java, C#, TypeScript and
+  Python, and **not a defect at all in C++**, where `std::map::operator[]`
+  value-initializes. The same operator IS the defect in that target's
+  `count_for_owner`, where a read silently inserts.
+- `py_compile` accepts a dataclass with a mutable default that `import`
+  rejects, so the Python check imports every module.
 
 ### Targets and tasks are different axes
 
