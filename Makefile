@@ -167,10 +167,12 @@ bench-check:
 	python3 bench/score.py --check bench/manifest-go.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-rust.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-java.yaml >/dev/null
+	python3 bench/score.py --check bench/manifest-typescript.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-design.yaml >/dev/null
 	python3 bench/score.py --selftest bench/manifest-go.yaml
 	python3 bench/score.py --selftest bench/manifest-rust.yaml
 	python3 bench/score.py --selftest bench/manifest-java.yaml
+	python3 bench/score.py --selftest bench/manifest-typescript.yaml
 	python3 bench/score.py --selftest bench/manifest-design.yaml
 	cd bench/testdata/target-go && go build ./...
 	# --offline and an out-of-tree CARGO_TARGET_DIR: the target has no
@@ -179,6 +181,8 @@ bench-check:
 	cd bench/testdata/target-rust && CARGO_TARGET_DIR=$(BENCH_RUST_OUT) cargo build --offline -q
 	@mkdir -p $(BENCH_JAVA_OUT)
 	cd bench/testdata/target-java && javac -nowarn -d $(BENCH_JAVA_OUT) $$(find src -name '*.java')
+	# strict type-check only; the seeds are all defects tsc cannot catch
+	cd bench/testdata/target-typescript && tsc -p .
 	@echo "bench: manifests and targets OK"
 
 ## review-branch: one review round over only what this branch changed

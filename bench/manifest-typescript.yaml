@@ -1,0 +1,472 @@
+# Seeded defects in bench/testdata/target-typescript. Same matcher rules as
+# manifest-go.yaml. Frozen: never fix these bugs.
+#
+# The SAME link-shortener service as target-go, so the language is the only
+# variable. See "One service, many languages" in bench/README.md.
+#
+# The target type-checks under `strict: true`, deliberately. Every defect here
+# survives the compiler, which is the honest way to measure a TypeScript
+# reviewer: the bugs tsc already catches are not the ones a review has to find.
+# One seed had to be replaced for exactly that reason -- the always-true admin
+# check that Go, Rust and Java all carry is a COMPILE ERROR in TypeScript, because
+# control-flow narrowing proves `role !== "admin" || role !== "owner"` can never
+# be false. It is replaced by the indexOf-truthiness bug, which tsc cannot see.
+#
+#   PARALLEL   the same logical defect as a numbered Go seed, marked
+#              "parallel: Cnn".
+#   TS-ONLY    defects that need this language: non-null assertions that are
+#              wrong, `as any` erasing a parsed body, floating promises,
+#              Math.random for secrets, `==` against a string, for..in over a
+#              Map, parseInt with no radix, and Math.floor applied before the
+#              multiply instead of after.
+task: code
+target: typescript
+root: testdata/target-typescript
+seeds:
+  # ---------------- store.ts ----------------
+  - id: T01
+    file: src/store.ts
+    anchor: "this.quota[owner] = this.quota[owner]! + 1;"
+    span: 6
+    need: 1
+    keywords: ["non-null", "!", NaN, undefined, "new owner", assertion, "first link"]
+    note: "TS-ONLY (parallel: C01) a new owner has no quota entry, and the non-null assertion hides it: undefined + 1 is NaN, so every quota silently becomes NaN"
+  - id: T02
+    file: src/store.ts
+    anchor: "if (Date.now() < link.expiresAt)"
+    span: 6
+    need: 1
+    keywords: [inverted, backwards, reversed, expir, "less than", "greater"]
+    note: "parallel: C02 expiry comparison inverted: live links are deleted, expired ones resolve"
+  - id: T03
+    file: src/store.ts
+    anchor: "rename(from: string, to: string): void"
+    span: 8
+    need: 1
+    keywords: [twice, "validateCode(to)", "never validated", duplicate, "copy-paste", "same argument"]
+    note: "parallel: C03 rename validates `from` twice; `to` is never validated"
+  - id: T04
+    file: src/store.ts
+    anchor: "end = all.length + 1;"
+    span: 6
+    need: 1
+    keywords: ["off-by-one", bounds, "length + 1", slice, clamp, "out of range"]
+    note: "parallel: C04 page clamps end past the array length; slice silently returns a short page instead of erroring"
+  - id: T05
+    file: src/store.ts
+    anchor: "return Math.floor(used / this.links.size) * 100;"
+    span: 6
+    need: 1
+    keywords: ["Math.floor", "always 0", truncat, "order", "before", multiply, integer]
+    note: "TS-ONLY (parallel: C05) Math.floor is applied to the ratio BEFORE multiplying by 100, so every rate under 100% reports 0"
+  - id: T06
+    file: src/store.ts
+    anchor: "delete(code: string): void"
+    span: 10
+    need: 1
+    keywords: [quota, "never decrement", "not released", refund, "give the owner", slot]
+    note: "parallel: C09 delete drops the link but never returns the owner's quota slot the doc promises"
+  - id: T07
+    file: src/store.ts
+    anchor: "all.sort((a, b) => (a.hits > b.hits ? 1 : -1));"
+    span: 6
+    need: 1
+    keywords: [ascending, least, reversed, "wrong order", "most hits", comparator, "never returns 0", unstable]
+    note: "parallel: C10 top sorts ascending, and the comparator never returns 0, so equal-hit links reorder unpredictably between calls"
+  - id: T08
+    file: src/store.ts
+    anchor: "filter((l) => l.owner.includes(owner))"
+    span: 6
+    need: 1
+    keywords: [includes, substring, exact, "other owners", tenant, leak, "==="]
+    note: "parallel: C11 byOwner matches owners by substring, so one owner sees another's links"
+  - id: T09
+    file: src/store.ts
+    anchor: "extend(code: string, ttlMs: number): void"
+    span: 8
+    need: 1
+    keywords: [expired, resurrect, revive, "back to life", "already expired", dead]
+    note: "parallel: C12 extend re-dates an already-expired link, resurrecting a code the doc calls final"
+  - id: T10
+    file: src/store.ts
+    anchor: "quotas(): { [owner: string]: number }"
+    span: 6
+    need: 1
+    keywords: [snapshot, "internal", mutable, alias, expose, copy, reference]
+    note: "parallel: C14 quotas hands out the store's own object while the doc calls it a snapshot"
+  - id: T11
+    file: src/store.ts
+    anchor: "importAll(batch: Link[]): void"
+    span: 8
+    need: 1
+    keywords: [atomic, partial, rollback, half, "already stored", "not all", validate]
+    note: "parallel: C13 importAll stores as it validates, so a bad code leaves the earlier half of the batch stored"
+  - id: T12
+    file: src/store.ts
+    anchor: 'let removed = 0;'
+    span: 12
+    need: 1
+    keywords: [removed, remaining, count, "wrong", returns, size]
+    note: "parallel: C15 prune counts removals into `removed` and then returns the number of links left instead"
+  - id: T13
+    file: src/store.ts
+    anchor: "return this.links.get(code)!.expiresAt;"
+    span: 5
+    need: 1
+    keywords: ["non-null", "!", assertion, undefined, crash, missing, TypeError]
+    note: "TS-ONLY expiresAt asserts non-null on a lookup that can miss, throwing at runtime on a code the janitor already removed"
+  - id: T14
+    file: src/store.ts
+    anchor: "return Math.random().toString(36).substring(2, 10);"
+    span: 6
+    need: 1
+    keywords: ["Math.random", predictable, "crypto", guess, "not cryptographically", collision, randomUUID]
+    note: "TS-ONLY (parallel: S02) short codes come from Math.random, which is not a CSPRNG and collides readily at this length"
+
+  # ---------------- auth.ts ----------------
+  - id: T15
+    file: src/auth.ts
+    anchor: 'process.env.LINKD_SECRET || "dev-secret-do-not-use"'
+    span: 6
+    need: 1
+    keywords: [hardcoded, "default secret", "dev-secret", fallback, weak, credential]
+    note: "parallel: S01 the signing secret falls back to a hardcoded development value when the environment is unset"
+  - id: T16
+    file: src/auth.ts
+    anchor: "token: Math.random().toString(16).slice(2) + Date.now().toString(16),"
+    span: 6
+    need: 1
+    keywords: ["Math.random", predictable, forge, guess, "not cryptographically", "crypto", timestamp]
+    note: "TS-ONLY (parallel: S02) session tokens are Math.random plus a timestamp: guessable, and the timestamp half is fully known to the attacker"
+  - id: T17
+    file: src/auth.ts
+    anchor: "console.log(`auth: issued token ${session.token} for ${owner}`);"
+    span: 6
+    need: 1
+    keywords: [log, token, secret, "written to", disclos, redact, console]
+    note: "parallel: S03 every issued session token is logged in cleartext"
+  - id: T18
+    file: src/auth.ts
+    anchor: "verify(token: string): Session | undefined"
+    span: 10
+    need: 1
+    keywords: [expir, "expiresAt", "never expire", lifetime, "not checked", stale]
+    note: "parallel: S04 verify never looks at expiresAt, so a token works forever despite the documented 12-hour lifetime"
+  - id: T19
+    file: src/auth.ts
+    anchor: "if (session.token == token)"
+    span: 6
+    need: 1
+    keywords: ["==", "===", loose, coercion, equality, strict]
+    note: "TS-ONLY verify uses loose equality on the token, so type coercion decides authentication"
+  - id: T20
+    file: src/auth.ts
+    anchor: "if (allowed.indexOf(session.role))"
+    span: 8
+    need: 1
+    keywords: [indexOf, truthy, "0", "-1", falsy, includes, inverted, "always"]
+    note: "TS-ONLY indexOf returns 0 for admin (falsy, so admins are rejected) and -1 for an unknown role (truthy, so everyone else is allowed)"
+  - id: T21
+    file: src/auth.ts
+    anchor: 'createHash("sha256").update(password).digest("hex")'
+    span: 6
+    need: 1
+    keywords: [salt, bcrypt, argon, scrypt, PBKDF2, "fast hash", unsalted, rainbow, KDF]
+    note: "parallel: S05 passwords are stored as a single unsalted SHA-256, crackable offline at speed"
+  - id: T22
+    file: src/auth.ts
+    anchor: 'const parts = header!.split(" ");'
+    span: 6
+    need: 1
+    keywords: ["non-null", "!", undefined, "missing header", TypeError, crash, assertion]
+    note: "TS-ONLY (parallel: S06) bearerToken asserts the header is present and indexes parts[1], so a request without Authorization throws"
+  - id: T23
+    file: src/auth.ts
+    anchor: "export function secretEquals(presented: string, expected: string): boolean"
+    span: 6
+    need: 1
+    keywords: ["constant time", "constant-time", timing, "===", "short-circuit", "side channel", timingSafeEqual]
+    note: "secretEquals is documented as not leaking how much matched and uses ===, which short-circuits on the first differing character"
+  - id: T24
+    file: src/auth.ts
+    anchor: "return parseInt(raw);"
+    span: 5
+    need: 1
+    keywords: [radix, parseInt, "base", "10", octal, NaN, Number]
+    note: "TS-ONLY parseInt is called with no radix, so a leading-zero lifetime is parsed unpredictably and a bad value yields NaN with no check"
+  - id: T25
+    file: src/auth.ts
+    anchor: "private sessions = new Map<string, Session>();"
+    span: 6
+    need: 1
+    keywords: ["never", evict, expire, unbounded, grow, memory, leak, "sessionCount"]
+    note: "sessions are inserted and never evicted, so the map grows without bound for the life of the process"
+
+  # ---------------- cache.ts ----------------
+  - id: T26
+    file: src/cache.ts
+    anchor: "const victim = this.entries.keys().next().value;"
+    span: 8
+    need: 1
+    keywords: ["least recently used", LRU, arbitrary, "insertion order", "not the least", used, first]
+    note: "parallel: CA08 eviction drops the first key in insertion order, not the least recently used; the `used` field is written and never read"
+  - id: T27
+    file: src/cache.ts
+    anchor: "setTimeout(() => this.delete(code), this.ttlMs),"
+    span: 8
+    need: 1
+    keywords: [timer, clearTimeout, leak, "never cleared", overwrit, accumulate, delete]
+    note: "TS-ONLY a timer is stored per set and never cleared -- delete leaves it armed and re-setting a key overwrites the handle, so timers accumulate"
+  - id: T28
+    file: src/cache.ts
+    anchor: "delete(code: string): void"
+    span: 6
+    need: 1
+    keywords: [timer, "clearTimeout", "still", stops, "scheduled", doc, contradic]
+    note: "delete promises to stop the work scheduled for the entry and never touches the timer map"
+  - id: T29
+    file: src/cache.ts
+    anchor: "return Math.floor(this.entries.size / this.limit) * 100;"
+    span: 6
+    need: 1
+    keywords: ["Math.floor", "always 0", truncat, "before", multiply, "divide by zero", Infinity]
+    note: "TS-ONLY utilization floors the ratio before multiplying so it always reports 0, and yields NaN or Infinity when limit is 0"
+  - id: T30
+    file: src/cache.ts
+    anchor: "for (const key in this.entries)"
+    span: 8
+    need: 1
+    keywords: ["for..in", "for in", Map, "does not iterate", entries, empty, "of"]
+    note: "TS-ONLY keys() uses for..in over a Map, which enumerates own enumerable properties and never the Map's contents, so it always returns an empty array"
+  - id: T31
+    file: src/cache.ts
+    anchor: "warm(pairs: Map<string, string>): void"
+    span: 8
+    need: 1
+    keywords: ["check-then-act", race, peek, set, "not atomic", TOCTOU, "between"]
+    note: "parallel: CA06 warm's peek and set are separate operations, so a concurrent handler can fill the same key in between"
+
+  # ---------------- config.ts ----------------
+  - id: T32
+    file: src/config.ts
+    anchor: "const cfg = DEFAULT_CONFIG;"
+    span: 6
+    need: 1
+    keywords: ["shared", mutate, "same object", reference, copy, spread, "DEFAULT_CONFIG", global]
+    note: "TS-ONLY loadConfig assigns the exported DEFAULT_CONFIG object rather than copying it, so every call mutates the shared defaults permanently"
+  - id: T33
+    file: src/config.ts
+    anchor: "cfg.port = parseInt(process.env.LINKD_PORT);"
+    span: 6
+    need: 1
+    keywords: [radix, parseInt, NaN, "no check", invalid, silently, port]
+    note: "parallel: CF01 LINKD_PORT is parsed with no radix and no NaN check, so a malformed value silently becomes NaN"
+  - id: T34
+    file: src/config.ts
+    anchor: "console.log(`config: bad LINKD_TIMEOUT_MS, keeping default`);"
+    span: 6
+    need: 1
+    keywords: ["keeping default", contradic, anyway, "does not", NaN, "still", assigned]
+    note: "parallel: CF02 the NaN branch logs 'keeping default' and then assigns the NaN anyway"
+  - id: T35
+    file: src/config.ts
+    anchor: "cfg.cacheTtlMs = Number(process.env.LINKD_CACHE_TTL_MS) * 1000;"
+    span: 6
+    need: 1
+    keywords: [millisecond, "1000", unit, documented, wrong, multiplied, second]
+    note: "parallel: CF03 LINKD_CACHE_TTL_MS is documented in milliseconds and multiplied by 1000 again: the TTL is 1000x too long"
+  - id: T36
+    file: src/config.ts
+    anchor: "void limit;"
+    span: 6
+    need: 1
+    keywords: ["no effect", ignored, never, unused, discarded, "fetchLimit", "void"]
+    note: "parallel: CF04 LINKD_FETCH_LIMIT is parsed, validated, and then discarded; the setting does nothing"
+  - id: T37
+    file: src/config.ts
+    anchor: "} catch {"
+    span: 6
+    need: 1
+    keywords: ["empty catch", swallow, "read error", permission, unreadable, silently, distinguish]
+    note: "parallel: CF05 loadFile swallows every error, so an unreadable config is indistinguishable from a missing one"
+  - id: T38
+    file: src/config.ts
+    anchor: "export function validate(cfg: Config): boolean"
+    span: 16
+    need: 1
+    keywords: ["returns true", "always true", logs, "does not fail", startup, "never returns false"]
+    note: "parallel: CF06 validate logs the problems it finds and returns true, so a bad config starts the service anyway"
+
+  # ---------------- export.ts ----------------
+  - id: T39
+    file: src/export.ts
+    anchor: "const path = join(dir, `${reportName}.csv`);"
+    span: 6
+    need: 1
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", join, arbitrary]
+    note: "parallel: EX01 the report name comes from the query string and is joined onto dir unchecked"
+  - id: T40
+    file: src/export.ts
+    anchor: "writeFileSync(path, body);"
+    span: 6
+    need: 1
+    keywords: [permission, mode, "0o600", "world", readable, umask, chmod, restrict]
+    note: "parallel: EX02 the report holding every owner's links is written with default permissions, readable by anyone on the box"
+  - id: T41
+    file: src/export.ts
+    anchor: 'body += `${link.code},${link.target},${link.owner},${link.hits}'
+    span: 6
+    need: 1
+    keywords: [escap, quot, comma, inject, "csv", formula, malformed, template]
+    note: "parallel: EX03 CSV rows are built by template interpolation, so a comma or quote in a target breaks the file and a leading = is a formula injection"
+  - id: T42
+    file: src/export.ts
+    anchor: "writeFileSync(join(dir, `${owner}.csv`), body);"
+    span: 6
+    need: 1
+    keywords: [owner, traversal, sanitiz, basename, escape, separator, path]
+    note: "archiveAll builds a filename straight from the owner string, so an owner containing a path separator escapes dir"
+  - id: T43
+    file: src/export.ts
+    anchor: 'const tmp = join("/tmp", "linkd-snapshot.json");'
+    span: 8
+    need: 1
+    keywords: ["fixed", predictable, "/tmp", symlink, race, collision, "concurrent", fsync, durab]
+    note: "parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp -- a symlink target and a collision between concurrent writers -- and nothing fsyncs before the rename the doc calls durable"
+  - id: T44
+    file: src/export.ts
+    anchor: 'const header = lines[0]!.split(",");'
+    span: 10
+    need: 1
+    keywords: ["non-null", "!", empty, undefined, "as string", cast, blank, trailing]
+    note: "TS-ONLY parseReport asserts a header row exists and casts every cell with `as string`, so an empty body or a short row yields undefined values typed as strings"
+
+  # ---------------- worker.ts ----------------
+  - id: T45
+    file: src/worker.ts
+    anchor: "private errors = 0;"
+    span: 6
+    need: 1
+    keywords: [errors, "never increment", "always 0", unused, dashboard, "no method", zero]
+    note: "the errors counter is reported by snapshot and never incremented anywhere, so the dashboard always shows zero errors"
+  - id: T46
+    file: src/worker.ts
+    anchor: "pairs.forEach(async ([code, target]) => {"
+    span: 8
+    need: 1
+    keywords: ["forEach", async, await, "floating", "not awaited", "Promise.all", "returns before", unhandled]
+    note: "TS-ONLY warmCache passes an async callback to forEach, which ignores the returned promises, so it resolves before any probe has run and rejections go unhandled"
+  - id: T47
+    file: src/worker.ts
+    anchor: "const results = await Promise.all(targets.map((t) => probe(t)));"
+    span: 10
+    need: 1
+    keywords: ["Promise.all", reject, "first failure", allSettled, "abandoned", throw, "never returns"]
+    note: "TS-ONLY checkTargets is documented to report the first failure, but probe REJECTS rather than returning false, so Promise.all throws and the return value is unreachable"
+  - id: T48
+    file: src/worker.ts
+    anchor: "export function flushAudit(write: () => Promise<void>): void"
+    span: 6
+    need: 1
+    keywords: ["floating", "not awaited", promise, unhandled, rejection, catch, "fire and forget"]
+    note: "TS-ONLY flushAudit calls an async function and neither awaits it nor attaches a catch, so a failed write is an unhandled rejection and the retry the doc promises never happens"
+  - id: T49
+    file: src/worker.ts
+    anchor: "return quotas[owner] + 0;"
+    span: 6
+    need: 1
+    keywords: [undefined, NaN, "unknown owner", "no entry", "??", default, indexed]
+    note: "TS-ONLY countForOwner adds 0 to a possibly-undefined lookup, returning NaN for an owner with no quota entry"
+  - id: T50
+    file: src/worker.ts
+    anchor: "export function startJanitor(store: Store, cache: Cache, intervalMs: number)"
+    span: 12
+    need: 1
+    keywords: [cache, sweep, "never", unused, parameter, "not swept", stale]
+    note: "the janitor takes the cache and never sweeps it, so expired cache entries outlive the links they point at"
+
+  # ---------------- main.ts ----------------
+  - id: T51
+    file: src/main.ts
+    anchor: "const payload = JSON.parse(req.body) as any;"
+    span: 8
+    need: 1
+    keywords: ["as any", "any", unvalidated, cast, schema, "no validation", untyped, JSON.parse]
+    note: "TS-ONLY the request body is cast to `any`, so target and owner reach the store completely unvalidated and every type guarantee is erased"
+  - id: T52
+    file: src/main.ts
+    anchor: 'payload.ttl ? parseInt(payload.ttl) * 3600 * 1000 : DEFAULT_TTL_MS'
+    span: 6
+    need: 1
+    keywords: [parseInt, radix, NaN, "already expired", overflow, "no check", zero]
+    note: "a bad ttl parses to NaN and produces a link whose expiry is NaN, which compares false against every clock reading"
+  - id: T53
+    file: src/main.ts
+    anchor: 'store.resolve(req.query["code"]!.toLowerCase())'
+    span: 6
+    need: 1
+    keywords: [toLowerCase, case, lowercas, mismatch, "never resolve", "non-null", "!"]
+    note: "parallel: C16 redirect lowercases the code before lookup although codes are case-sensitive, and asserts the query parameter is present"
+  - id: T54
+    file: src/main.ts
+    anchor: "function deleteLink(req: Request): Response"
+    span: 10
+    need: 1
+    keywords: [owner, authoriz, "access check", "any user", anyone, permission, IDOR, session]
+    note: "parallel: C17 deleteLink never checks the owner its doc promises to check: any caller deletes any link"
+  - id: T55
+    file: src/main.ts
+    anchor: 'const next = req.query["next"];'
+    span: 10
+    need: 1
+    keywords: ["open redirect", redirect, phish, next, unvalidated, arbitrary]
+    note: "parallel: C18 /out redirects to any address in ?next= -- an open redirect, cached permanently by the 301"
+  - id: T56
+    file: src/main.ts
+    anchor: 'if (req.headers["x-admin"] !== "true")'
+    span: 6
+    need: 1
+    keywords: ["x-admin", header, "client-controlled", spoof, privilege, forge, trivially]
+    note: "parallel: C19 the admin endpoint is gated on a request header the caller sets themselves"
+  - id: T57
+    file: src/main.ts
+    anchor: "hits_per_link: store.totalHits() / store.size(),"
+    span: 6
+    need: 1
+    keywords: ["divide by zero", NaN, Infinity, empty, zero, "size()"]
+    note: "parallel: C20 /stats divides by the link count, producing NaN on an empty store rather than an error"
+  - id: T58
+    file: src/main.ts
+    anchor: '"Access-Control-Allow-Credentials": "true",'
+    span: 6
+    need: 1
+    keywords: [CORS, wildcard, credentials, "any origin", "Allow-Origin", "cross-origin"]
+    note: "parallel: C23 wildcard CORS combined with Allow-Credentials on every JSON response"
+  - id: T59
+    file: src/main.ts
+    anchor: "return text(401, `unauthorized: unknown token (token ${token})`);"
+    span: 6
+    need: 1
+    keywords: [echo, token, reflect, "error message", disclos, leak, response]
+    note: "parallel: S08 the 401 response echoes the rejected token back to the caller"
+  - id: T60
+    file: src/main.ts
+    anchor: "const link = store.create(payload.target, payload.owner, ttl);"
+    span: 6
+    need: 1
+    keywords: [owner, body, session, "request body", authenticated, spoof, impersonat]
+    note: "parallel: C28 the link owner is taken from the request body instead of the authenticated session, so any caller creates links as anyone"
+  - id: T61
+    file: src/main.ts
+    anchor: "const path = exportCsv(cfg.exportDir, name, store.page(0, 1000));"
+    span: 8
+    need: 2
+    keywords: [tenant, "every owner", "all owners", "other users", scope, isolation, "any authenticated", 1000, truncat]
+    note: "parallel: C29 /report exports every owner's links to any authenticated caller, and silently truncates at 1000"
+  - id: T62
+    file: src/main.ts
+    anchor: "return json(201, link);"
+    span: 6
+    need: 1
+    keywords: [owner, "internal", expose, serializ, "whole object", field, leak]
+    note: "the created link is serialized wholesale, returning the owner field and internal timestamps to whoever called"
