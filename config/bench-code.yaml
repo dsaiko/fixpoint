@@ -1,6 +1,6 @@
 # Reviewer benchmark, code task: ONE candidate model reviews the frozen,
-# seeded Go target in bench/testdata/target-code. Scored deterministically by
-# bench/score.py against bench/manifest-code.yaml -- no judge and no
+# seeded Go target in bench/testdata/target-go. Scored deterministically by
+# bench/score.py against bench/manifest-go.yaml -- no judge and no
 # refutation on purpose, so the run measures the candidate and nothing else.
 # Methodology and decision rule: bench/README.md. Run via `make bench`.
 description: Benchmark one candidate reviewer against the seeded code target.

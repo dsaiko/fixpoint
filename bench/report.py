@@ -4,9 +4,11 @@
 Usage: bench/report.py [results.csv]
        bench/report.py [results.csv] --html <out.html>
 
-The benchmark's 100 points are split across two tasks -- 60 seeded defects in
-the code target, 40 seeded flaws in the design target -- so a model's score is
-only complete once both have run. Repeats are shown separately and then as a
+The benchmark's 100 points are split across two TARGETS -- 60 seeded defects in
+the Go target, 40 seeded flaws in the design target -- so a model's score is
+only complete once both have run. Further language targets are reported in the
+by-target matrix rather than folded into that total: a score is comparable only
+to runs sharing its scale. Repeats are shown separately and then as a
 median, because single-run recall on a hundred seeds is noisy and the variance
 is itself information: a model that scores 61 then 38 is worse than one that
 scores 49 twice.
@@ -17,10 +19,19 @@ silently scored out of 60.
 
 import csv
 import pathlib
+import re
 import statistics
 import sys
 
-TASK_POINTS = {"code": 60, "design": 40}
+# Points per TARGET, not per task: several targets share task "code" (one per
+# language) and each carries its own seed pool.
+TARGET_POINTS = {"go": 60, "design": 40}
+
+# The calibrated pair the published /100 has always meant. New language targets
+# are reported per-target instead of being folded into this total, because a
+# score is only comparable to the runs it shares a scale with -- and every seat
+# decision on record quotes this one.
+LEGACY_SCALE = ("go", "design")
 AGENTS = pathlib.Path(__file__).resolve().parent.parent / "config" / "agents"
 
 # (input, output, cache-read) $/MTok. Two kinds of row live here and the
@@ -306,6 +317,8 @@ tr.failed { background: var(--critical-fill); }
 .score span { position: relative; font-size: 14px; font-weight: 600; }
 .score .of { color: var(--muted); font-weight: 400; font-size: 12px; }
 .err { color: var(--critical); font-weight: 600; }
+.pct { font-weight: 600; }
+tfoot td { border-top: 1px solid var(--rule); border-bottom: 0; padding-top: 12px; color: var(--muted); }
 .zero { color: var(--muted); }
 .notes {
   border-top: 1px solid var(--rule);
@@ -332,7 +345,7 @@ def _esc(text):
     return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
-def write_html(ranked, out_path):
+def write_html(ranked, all_targets, out_path):
     """Emit the standings as one self-contained page, for sharing."""
     top = max((max(e["points"] for e in entries) for _, entries in ranked), default=100)
     # Counted, not assumed: 5 sessions per repeat is the protocol, but an
@@ -378,6 +391,49 @@ def write_html(ranked, out_path):
         <td>{e['seconds']:,}</td>
         <td class="{'err' if e['errors'] else 'zero'}">{e['errors']}</td>
       </tr>""")
+
+    # By-target matrix. Omitted while only one target exists, because a
+    # single-column matrix says nothing the score column has not already said.
+    matrix_html = ""
+    if len(all_targets) > 1:
+        cols = "".join(f'<th scope="col">{_esc(t)}</th>' for t in all_targets)
+        body = []
+        for model, entries in ranked:
+            e = entries[0]
+            cells = ""
+            for t in all_targets:
+                got = e["by_target"].get(t)
+                if got is None:
+                    cells += '<td class="zero">&mdash;</td>'
+                else:
+                    pct = got[0] / got[1] * 100
+                    cells += (f'<td><span class="pct">{pct:.0f}%</span>'
+                              f'<span class="sub"> {got[0]}/{got[1]}</span></td>')
+            body.append(f'      <tr><td class="left"><div class="name">'
+                        f'{_esc(model)}</div></td>{cells}</tr>')
+        foot = ""
+        for t in all_targets:
+            rates = [e[0] / e[1] for m, es in ranked
+                     for e in [es[0]["by_target"].get(t)] if e]
+            foot += ('<td class="zero">&mdash;</td>' if not rates else
+                     f'<td><span class="pct">'
+                     f'{statistics.median(rates) * 100:.0f}%</span></td>')
+        rows = "\n".join(body)
+        matrix_html = f"""  <div class="scroller">
+    <table>
+      <caption>Recall per target. The score above collapses these into one
+      number, which is what hides a target the whole field is weak on.</caption>
+      <thead>
+        <tr><th class="left" scope="col">Candidate</th>{cols}</tr>
+      </thead>
+      <tbody>
+{rows}
+      </tbody>
+      <tfoot>
+        <tr><td class="left"><div class="name">field median</div></td>{foot}</tr>
+      </tfoot>
+    </table>
+  </div>"""
 
     page = f"""<title>Fixpoint Reviewer Bench</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -427,6 +483,8 @@ def write_html(ranked, out_path):
     </table>
   </div>
 
+  {matrix_html}
+
   <div class="notes">
     <p><b>Per point</b> is what one found defect cost. <code>$</code> is spent from prepaid
     credits and appears on an invoice; <code>~$</code> is notional &mdash; the subscription
@@ -446,8 +504,71 @@ def write_html(ranked, out_path):
     print(f"wrote {out_path}")
 
 
+def seed_value(results_dir):
+    """Per-seed hit rate across every scored run, the retire/replace instrument.
+
+    A panel seat is decided by measurement; a SEED is worth keeping by the same
+    standard. Reads the per-run tables score.py already writes to results/ and,
+    for each seed, reports the fraction of runs that found it. A seed nearly
+    everyone finds carries almost no information about the model under test --
+    it costs tokens and never moves a score -- and a seed nobody finds is either
+    broken or beyond the whole field; both are candidates to retire. The
+    discriminating middle is what the bench is actually made of.
+
+    Denominator is runs-per-target, not models: repeats count, because a seed a
+    model finds once and misses once is exactly the kind of low-signal seed this
+    is meant to surface. With every row at one repeat today the two are equal.
+    """
+    RETIRE, DEAD = 0.90, 0.0
+    tasks = {}
+    rx = re.compile(r"^\|\s*([A-Z]+\d+)\s*\|\s*(YES|—)\s*\|", re.M)
+    for f in sorted(pathlib.Path(results_dir).glob("*.md")):
+        # {model}-{target}-{runid}.md, and a model name may itself contain
+        # dashes -- so the target is the token immediately before the run id,
+        # not a fixed alternation. Anchoring on the run id keeps this working
+        # for every target added later without another edit here.
+        m = re.match(r".+-([A-Za-z0-9_.+#]+)-\d{8}-\d{6}\.md$", f.name)
+        if not m:
+            continue
+        task = m.group(1)
+        seen = tasks.setdefault(task, {"runs": 0, "hit": {}, "order": []})
+        seen["runs"] += 1
+        for sid, verdict in rx.findall(f.read_text()):
+            if sid not in seen["hit"]:
+                seen["hit"][sid] = 0
+                seen["order"].append(sid)
+            if verdict == "YES":
+                seen["hit"][sid] += 1
+    if not tasks:
+        sys.exit(f"{results_dir}: no per-run tables to read")
+
+    for task in sorted(tasks):
+        d = tasks[task]
+        n = d["runs"]
+        rows = sorted(((sid, d["hit"][sid] / n) for sid in d["order"]),
+                      key=lambda kv: (-kv[1], kv[0]))
+        retire = [sid for sid, r in rows if r >= RETIRE]
+        dead = [sid for sid, r in rows if r <= DEAD]
+        live = len(rows) - len(retire) - len(dead)
+        print(f"\n{task}: {len(rows)} seeds over {n} run(s)  "
+              f"[{len(retire)} near-dead >={RETIRE:.0%}, {live} discriminating, "
+              f"{len(dead)} never found]")
+        for sid, rate in rows:
+            flag = "RETIRE" if rate >= RETIRE else ("DEAD  " if rate <= DEAD else "      ")
+            bar = "#" * round(rate * 20)
+            print(f"  {flag} {sid:5s} {rate*100:5.1f}%  {bar}")
+    print("\nRETIRE = found by nearly every model, so it no longer separates them; "
+          "replace with a harder defect.")
+    print("DEAD   = found by nobody: broken anchor/keywords, or beyond the field. "
+          "Check the manifest before assuming it is just hard.")
+    return 0
+
+
 def main():
     args = sys.argv[1:]
+    if "--seeds" in args:
+        here = pathlib.Path(__file__).resolve().parent
+        return seed_value(here / "results")
     html_out = None
     if "--html" in args:
         i = args.index("--html")
@@ -464,16 +585,26 @@ def main():
     runs = {}
     for r in rows:
         key = (r["model"], r["repeat"])
-        runs.setdefault(key, {})[r["task"]] = r
+        # Rows written before the target column carry only a task; a code row
+        # then meant the Go target, the only one that existed.
+        tgt = r.get("target") or ("go" if r["task"] == "code" else r["task"])
+        runs.setdefault(key, {})[tgt] = r
+
+    all_targets = sorted({t for tasks in runs.values() for t in tasks},
+                         key=lambda t: (LEGACY_SCALE.index(t) if t in LEGACY_SCALE
+                                        else len(LEGACY_SCALE), t))
 
     per_model = {}
     for (model, repeat), tasks in sorted(runs.items()):
-        points = sum(int(t["matched_seeds"]) for t in tasks.values())
-        possible = sum(TASK_POINTS.get(task, int(t["seeds"])) for task, t in tasks.items())
+        scored = {t: r for t, r in tasks.items() if t in LEGACY_SCALE}
+        points = sum(int(r["matched_seeds"]) for r in scored.values())
+        possible = sum(TARGET_POINTS.get(t, int(r["seeds"])) for t, r in scored.items())
         per_model.setdefault(model, []).append({
             "repeat": repeat,
             "points": points,
             "possible": possible,
+            # Cost columns cover every target measured, not just the scored
+            # pair: the quota a sweep actually drew is the whole of it.
             "tokens": sum(int(t["tokens_in"]) + int(t["tokens_out"]) for t in tasks.values()),
             "tok_in": sum(int(t["tokens_in"]) for t in tasks.values()),
             "tok_out": sum(int(t["tokens_out"]) for t in tasks.values()),
@@ -482,14 +613,17 @@ def main():
             "seconds": sum(int(t["duration_s"]) for t in tasks.values()),
             "sessions": sum(int(t["sessions"]) for t in tasks.values()),
             "dates": sorted({t["run"].split("-")[0] for t in tasks.values()}),
-            "missing": sorted(set(TASK_POINTS) - set(tasks)),
+            "missing": sorted(set(LEGACY_SCALE) - set(scored)),
+            # recall per target, for the by-target matrix
+            "by_target": {t: (int(r["matched_seeds"]), int(r["seeds"]))
+                          for t, r in tasks.items()},
         })
 
     ranked = sorted(per_model.items(),
                     key=lambda kv: -statistics.median(r["points"] for r in kv[1]))
 
     if html_out:
-        write_html(ranked, html_out)
+        write_html(ranked, all_targets, html_out)
         return
 
     print(f"{'candidate':30s} {'model measured':22s} {'route':11s} {'pays':13s} "
@@ -514,9 +648,47 @@ def main():
                   f"{e['seconds']:>6d} {e['errors']:>4d}{flag}")
         if len(entries) > 1:
             print(f"{'  median':30s} {'':22s} {'':11s} {'':13s} {median:>4.0f}/100")
+    # --- by-target matrix: recall per target, per model ---
+    #
+    # The headline score collapses every target into one number, which is
+    # exactly what hides a target the whole field is bad at. A column per
+    # target makes "the field gets 87% on Go and 30% on Rust" visible at a
+    # glance, and that gap is a fact about the TARGET -- either the language is
+    # genuinely harder to review or its seeds are miscalibrated -- not about any
+    # one model.
+    if len(all_targets) > 1:
+        print()
+        # "55/60 92%" is 9 characters; +3 keeps the columns apart.
+        width = max(12, max(len(t) for t in all_targets) + 3)
+        head = "".join(f"{t:>{width}s}" for t in all_targets)
+        print(f"{'by target (recall)':30s}{head}")
+        print("-" * (30 + width * len(all_targets)))
+        for model, entries in ranked:
+            e = entries[0]
+            cells = ""
+            for t in all_targets:
+                got = e["by_target"].get(t)
+                cells += f"{'-':>{width}s}" if got is None else \
+                    f"{f'{got[0]}/{got[1]} {got[0] / got[1] * 100:.0f}%':>{width}s}"
+            print(f"{model[:29]:30s}{cells}")
+        print("-" * (30 + width * len(all_targets)))
+        # The field's own rate per target: the number that says a target is
+        # saturated (everyone near 100%) or broken/too hard (everyone near 0).
+        foot = ""
+        for t in all_targets:
+            rates = [e[0] / e[1] for m, es in ranked
+                     for e in [es[0]["by_target"].get(t)] if e]
+            foot += f"{'-':>{width}s}" if not rates else \
+                f"{f'med {statistics.median(rates) * 100:.0f}%':>{width}s}"
+        print(f"{'field median':30s}{foot}")
+
     print()
-    print(f"{len(ranked)} model(s); 100 points = {TASK_POINTS['code']} code seeds "
-          f"+ {TASK_POINTS['design']} design seeds")
+    print(f"{len(ranked)} model(s); {sum(TARGET_POINTS[t] for t in LEGACY_SCALE)} points = "
+          + " + ".join(f"{TARGET_POINTS[t]} {t}" for t in LEGACY_SCALE) + " seeds")
+    if len(all_targets) > len(LEGACY_SCALE):
+        extra = [t for t in all_targets if t not in LEGACY_SCALE]
+        print(f"score covers {'+'.join(LEGACY_SCALE)} only, the calibrated scale; "
+              f"{', '.join(extra)} are reported per target above")
     print("per point: cost of one seeded defect found. $ = spent from prepaid "
           "credits, ~$ = notional (subscription,")
     print("           nothing billed per token), k = thousands of tokens "

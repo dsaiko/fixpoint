@@ -70,13 +70,15 @@ def parse_list(val):
 
 def read_manifest(path):
     """Parse the two-level manifest without a YAML library."""
-    task, root, seeds, cur = None, None, [], None
+    task, target, root, seeds, cur = None, None, None, [], None
     for raw in pathlib.Path(path).read_text().splitlines():
         line = raw.split(" #")[0].rstrip() if not raw.lstrip().startswith("#") else ""
         if not line.strip():
             continue
         if line.startswith("task:"):
             task = line.split(":", 1)[1].strip()
+        elif line.startswith("target:"):
+            target = line.split(":", 1)[1].strip()
         elif line.startswith("root:"):
             root = line.split(":", 1)[1].strip()
         elif line.strip().startswith("- id:"):
@@ -97,6 +99,10 @@ def read_manifest(path):
                 cur[key] = val
     if task is None or not seeds:
         sys.exit(f"{path}: no task or no seeds parsed")
+    # A manifest that predates the target dimension scores under its task name,
+    # which is what the design target's own target value already is.
+    if target is None:
+        target = task
     ids = [s["id"] for s in seeds]
     if len(set(ids)) != len(ids):
         dupes = sorted({i for i in ids if ids.count(i) > 1})
@@ -107,7 +113,7 @@ def read_manifest(path):
         seed.setdefault("need", 1)
         if not seed.get("keywords"):
             sys.exit(f"{path}: seed {seed['id']} has no keywords")
-    return task, root, seeds
+    return task, target, root, seeds
 
 
 def resolve_anchors(manifest_path, root, seeds):
@@ -200,7 +206,7 @@ def match_score(seed, finding):
 
 def check(manifest_path):
     """Validate a manifest against its target without running anything."""
-    task, root, seeds = read_manifest(manifest_path)
+    task, target, root, seeds = read_manifest(manifest_path)
     problems = resolve_anchors(manifest_path, root, seeds)
     anchored = sum(1 for s in seeds if s.get("anchor"))
     print(f"{manifest_path}: task {task}, {len(seeds)} seeds, "
@@ -224,7 +230,7 @@ def selftest(manifest_path):
     two others cannot be told apart from, which at 100 seeds is the failure
     mode that quietly caps everyone's recall.
     """
-    task, root, seeds = read_manifest(manifest_path)
+    task, target, root, seeds = read_manifest(manifest_path)
     problems = resolve_anchors(manifest_path, root, seeds)
     if problems:
         for p in problems:
@@ -260,7 +266,7 @@ def main():
     manifest_path, summary_path, model = sys.argv[1], sys.argv[2], sys.argv[3]
     repeat = sys.argv[4] if len(sys.argv) > 4 else "1"
 
-    task, root, seeds = read_manifest(manifest_path)
+    task, target, root, seeds = read_manifest(manifest_path)
     problems = resolve_anchors(manifest_path, root, seeds)
     if problems:
         # Scoring against a manifest that no longer fits the target would
@@ -307,14 +313,14 @@ def main():
         # working copy would differ from HEAD after every single run.
         w = csv.writer(fh, lineterminator="\n")
         if new:
-            w.writerow(["run", "task", "model", "repeat", "sessions", "errors",
+            w.writerow(["run", "task", "target", "model", "repeat", "sessions", "errors",
                         "findings", "matched_seeds", "seeds", "recall", "extras",
                         "tokens_in", "tokens_out", "cache_read", "duration_s", "found_per_mtok"])
-        w.writerow([run_id, task, model, repeat, sessions, errors,
+        w.writerow([run_id, task, target, model, repeat, sessions, errors,
                     len(findings), found, len(seeds), f"{recall:.2f}", len(extras),
                     tok_in, tok_out, tok_cache, int(duration_s), eff])
 
-    lines = [f"# {model} · {task} · run {run_id} (repeat {repeat})", ""]
+    lines = [f"# {model} · {target} · run {run_id} (repeat {repeat})", ""]
     lines.append(f"recall **{found}/{len(seeds)}** · {len(findings)} finding(s), "
                  f"{len(extras)} unmatched · {tok_in + tok_out} tokens · {int(duration_s)}s")
     lines.append("")
@@ -330,10 +336,10 @@ def main():
         for f in extras:
             lines.append(f"- ({f.get('severity', '?')}) {f.get('file', '?')}:{f.get('line', '?')} "
                          f"— {f.get('title', '')[:90]}")
-    report = outdir / f"{model.replace(':', '_').replace('/', '_')}-{task}-{run_id}.md"
+    report = outdir / f"{model.replace(':', '_').replace('/', '_')}-{target}-{run_id}.md"
     report.write_text("\n".join(lines) + "\n")
 
-    print(f"bench: {model} {task}: recall {found}/{len(seeds)}, {len(extras)} unmatched, "
+    print(f"bench: {model} {target}: recall {found}/{len(seeds)}, {len(extras)} unmatched, "
           f"{tok_in + tok_out} tok, {int(duration_s)}s -> {report}")
 
 

@@ -12,7 +12,7 @@ STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.12.5
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench implement-go implement-node implement-web \
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds implement-go implement-node implement-web \
         fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help \
         release-check release-snapshot release-verify
 
@@ -150,17 +150,22 @@ bench:
 	@test -n "$(MODEL)" || { echo "usage: make bench MODEL=<ollama-model> [TASK=code|design|all] [N=repeats]"; exit 2; }
 	bench/run.sh "$(MODEL)" "$(or $(TASK),all)" "$(or $(N),1)"
 
+## bench-seeds: per-seed hit rate across every scored run -- which seeds still
+## discriminate, which are near-dead, which nobody has ever found. No quota.
+bench-seeds:
+	python3 bench/report.py --seeds
+
 ## bench-check: validate both seed manifests against the frozen targets -- no model, no quota
 ## Every anchor must resolve to exactly one line, and every seed must recover
 ## its own finding instead of losing it to a neighbouring seed. Run it after
 ## any manifest or target edit; a broken manifest scores a model low and calls
 ## it a measurement.
 bench-check:
-	python3 bench/score.py --check bench/manifest-code.yaml >/dev/null
+	python3 bench/score.py --check bench/manifest-go.yaml >/dev/null
 	python3 bench/score.py --check bench/manifest-design.yaml >/dev/null
-	python3 bench/score.py --selftest bench/manifest-code.yaml
+	python3 bench/score.py --selftest bench/manifest-go.yaml
 	python3 bench/score.py --selftest bench/manifest-design.yaml
-	cd bench/testdata/target-code && go build ./...
+	cd bench/testdata/target-go && go build ./...
 	@echo "bench: manifests and target OK"
 
 ## review-branch: one review round over only what this branch changed

@@ -6,7 +6,14 @@ logs/
 coverage.out
 # Generated per-run by bench/run.sh; a committed candidate would shadow a real agent.
 config/agents/bench-candidate.yaml
-bench/testdata/target-code/linkd
+# `make bench-check` compiles every target to prove it still builds, and the
+# output must never be committed: the bench reviews these directories with no
+# excludes, so build artifacts would be handed to a reviewer as source. The
+# pattern is per-target-directory rather than a bare name so a rename cannot
+# quietly move a binary out from under it -- which is exactly how a 10 MB
+# `linkd` got staged once.
+bench/testdata/target-*/linkd
+bench/testdata/target-*/target/
 bench/.run.lock
 # GoReleaser's output. Built artifacts, never reviewed and never committed --
 # and the archives contain a copy of the bundle, so a committed dist/ would put
