@@ -318,6 +318,34 @@ def main():
     outdir = pathlib.Path(__file__).parent / "results"
     outdir.mkdir(exist_ok=True)
 
+    # Keep a re-scoring extract, so a manifest change never costs a sweep.
+    #
+    # This exists because it already did. The 2026-09-01 retire/replace could
+    # re-score only 15 of 43 runs onto the new scale: the other 28 runs'
+    # .fixpoint directories had been cleaned up, so 14 models -- including the
+    # seated one -- had nothing left to re-score and had to be archived on a
+    # scale that no longer exists. Every seed edit before this was one `rm -rf
+    # .fixpoint` away from costing a full re-sweep.
+    #
+    # Only the fields this scorer reads are kept, which is a fraction of the
+    # summary: findings and per-step usage, not prompts, diffs or agent output.
+    # A full summary averages ~75 KB and carries the reviewed code with it.
+    keep = {"run": run_id, "task": task, "target": target, "model": model,
+            "repeat": repeat, "rounds": []}
+    for r in rounds:
+        keep["rounds"].append({
+            "findings": [{k: f.get(k) for k in
+                          ("file", "line", "title", "description", "lens", "severity")}
+                         for f in (r.get("findings") or [])],
+            "steps": [{"usage": s_.get("usage", {}), "duration_ms": s_.get("duration_ms", 0),
+                       "failed": s_.get("failed", False),
+                       "output_bytes": s_.get("output_bytes", 0)}
+                      for s_ in (r.get("steps") or [])],
+        })
+    keepdir = pathlib.Path(__file__).parent / "summaries"
+    keepdir.mkdir(exist_ok=True)
+    (keepdir / f"{run_id}-{target}.json").write_text(json.dumps(keep, indent=1))
+
     csv_path = pathlib.Path(__file__).parent / "results.csv"
     new = not csv_path.exists()
     with csv_path.open("a", newline="") as fh:

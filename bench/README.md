@@ -338,6 +338,24 @@ two sizes, which is why the smaller one is the better panel member.
 No panel change on this measurement. If the ollama seat is ever widened, the
 measured candidate is glm-5.3-**flash** at 88/100, not glm-5.3.
 
+### Every scored run is re-scorable, now
+
+`bench/summaries/` holds a re-scoring extract of every run `score.py` has
+scored — findings and per-step usage, about a fifth the size of the full
+summary, with no prompts, diffs or agent output. Re-score any of them for free:
+
+```sh
+python3 bench/score.py bench/manifest-go.yaml bench/summaries/<run>-go.json <model>
+```
+
+This exists because its absence already cost a sweep. The 2026-09-01
+retire/replace could re-score only **15 of 43** runs onto the new scale — the
+other 28 runs' `.fixpoint/` directories had been cleaned up, so 14 models,
+**including the seated one**, had nothing left to re-score and had to be
+archived on a scale that no longer exists (`results-archive-2026-08-20.csv`, and
+the README beside it says which of its columns are still true). Every seed edit
+before this was one `rm -rf .fixpoint` away from the same bill.
+
 `results.csv` was emptied on 2026-08-20, when the bench went from 20 seeds to
 100. The 46 rows measured against the old target are in git history at
 `70b9113` and are **not** comparable: different targets, more lenses, and a

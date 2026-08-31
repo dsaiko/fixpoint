@@ -120,6 +120,13 @@ roles:
   # the same reason a panel is not a leaderboard, one paragraph up. bench/ does
   # not compute this; recompute it from the per-seed tables in bench/results/.
   #
+  # THE NUMBERS IN THIS PARAGRAPH ARE ON THE RETIRED 100-POINT SCALE. The
+  # 2026-09-01 retire/replace moved the bench to 90 points, and neither model
+  # here has been re-measured on it -- their summaries were already gone, so the
+  # rows live in bench/results-archive-2026-08-20.csv and the per-seed tables in
+  # the directory beside it, NOT in bench/results/. The seat reasoning stands;
+  # the scores it quotes are not comparable to a current row.
+  #
   # ONE ollama seat, not two, deliberately. Quorum is a strict majority, so a
   # 4-seat panel requires 3: seating both rather than swapping holds the tolerance
   # at one dead agent while doubling the seats that can die. deepseek has a failure

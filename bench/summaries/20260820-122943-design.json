@@ -1,0 +1,179 @@
+{
+ "run": "20260820-122943",
+ "task": "design",
+ "target": "design",
+ "model": "x-ai/grok-4.6",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Client wall-clock is both LWW winner and sync cursor",
+     "description": "The cursor is the client's `modified_at` (wall clock, milliseconds), and conflict resolution is last-write-wins on that same field. A single device whose clock is ahead writes one note and every peer that pulls it advances its cursor into the future; later notes with real timestamps fail `modified_at > cursor` and are never fetched. There is no server time, no device id in the ordering, and no catch-up other than that cursor. NTP is asserted as sufficient; skewed mobile clocks are normal, not rare. Consequence: one wrong clock silently stops incremental sync for the whole account, and concurrent edits on a slow clock are discarded with no retained copy (lines 61-63, 111-113). Nothing in dashboards will show the hole \u2014 the server still returns 200 with an empty change set.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Backup restore cannot re-converge with client cursors",
+     "description": "Recovery is a nightly `pg_dump` loaded into a fresh instance, unrehearsed, with no client-side story. After restore, any device that already synced past the dump has an empty outbox and a cursor newer than every restored row. It will POST `{cursor: future, edits: []}`, receive no changes, and never re-upload the notes the dump is missing. Other devices never see those notes. Conversely, server rows that were deleted after the dump are reapplied by clients and resurrect. Goal line 13 claims one code path for recovery; this path is not that code path, and there is no trigger to force a first-sync. Consequence: the designed disaster-recovery procedure permanently splits the replica set and loses acknowledged edits, with RPO up to 24 hours and no way to trust the system afterwards.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "Partial batch apply contradicts the retry and ack rules",
+     "description": "`/sync` is a single transaction, yet a validation failure on row N leaves rows 1..N-1 applied so the client 'never has to resend' them. The client protocol is the opposite: one POST of the entire outbox, retries of that same POST on timeout/5xx/drop, and on any response the batch is acknowledged and the outbox is cleared (lines 46-50, 56-57, 98-100). Those cannot be true together. If any response is an ack, the failed row and everything after it is dropped from the outbox while the server never stored them. If the client instead retries the full POST, already-applied rows are replayed with no idempotency key and equal `modified_at` is undefined under LWW. If validation returns 4xx (not in the retry list), a single bad outbox row is a poison pill: oldest-first drain, whole outbox in one request, later valid edits stuck forever. A crash-rollback (line 104-105) and a partial-commit validation path cannot share one transaction model without that state machine being written down.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Sync payload, duration, and result set are unbounded",
+     "description": "The client sends the entire outbox in one POST; bodies and outbox depth are explicitly uncapped (lines 28-35); the changes query returns every matching row with no pagination (lines 83-86); deleted rows and orphaned notes after account deletion stay forever (lines 151-157); the server has no request timeout because 'failing a large first sync would be worse' (lines 89-91). A device that was offline for weeks, or a first sync of years of deleted notes, is one multi-hundred-MB JSON round trip held until Postgres or the client gives up. On client timeout the same huge POST is retried. There is no backpressure. Consequence: the first thing that saturates is Postgres connections and memory, not the stateless HTTP tier; at 10x note size or a regional reconnect this is a self-DoS, and the 30-second sync goal cannot be met.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "Refresh 401 wipes notes.db including never-synced edits",
+     "description": "Any refresh 401 \u2014 revocation, password change, or token corruption \u2014 signs the user out and deletes local state, outbox included. The next launch is a first sync from the server. Offline edits that were never acknowledged are gone, which directly violates goal line 10. Password change on one device is normal operation, not a stolen-device event, and it will 401 every other device that still has a drainable outbox. Token corruption is also named as a 401 cause, so a disk glitch is treated as a wipe. Consequence: the only durable copy of an offline note is destroyed by a security path that does not first drain the outbox, and there is no path back.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 85,
+     "title": "Reconnect storm is aimed at HTTP instances; the DB scan is unindexed",
+     "description": "Every client uses the same 1s-to-1min doubled backoff with no jitter (lines 58-59). After a regional outage they all sync at once; the planned absorption is 'adding instances' (lines 143-146). `/sync` then runs `SELECT * FROM notes WHERE user_id = $1 AND modified_at > $2 ORDER BY modified_at` with no index beyond the BIGSERIAL primary key, no pagination, and no per-user rate limit (lines 83-86, 147-148). Horizontal HTTP scale does not help a sequential scan of a table that only grows (live notes + forever tombstones + leftover rows after account deletion). Round-robin plus identical retry clocks is a synchronized herd onto one Postgres. Consequence: the saturation point in normal reconnect \u2014 let alone 10x users \u2014 is the database, and backpressure is explicitly nobody\u2019s job ('a support conversation, not a mechanism').",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 117,
+     "title": "/healthz does not observe the only dependency",
+     "description": "`/healthz` is 200 while the process is up. Database connectivity, replication lag, and disk are dashboard-only and do not gate the probe, so the load balancer keeps sending `/sync` to instances that can only 500 or, with no request timeout, hold connections indefinitely. Three failed probes remove an instance \u2014 but a live process with a dead Postgres never fails those probes. Consequence: operator dashboards may show 5xx and latency, yet the LB cannot distinguish quiet-healthy from broken, which lengthens every Postgres incident and multiplies connection pile-up.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 125,
+     "title": "A device that never syncs is invisible by design",
+     "description": "Goal lines 14-15 require a support engineer to explain a missing note from dashboards alone. Operations then states that a client which stops sending is not an alertable signal and that support tickets cover that class, and section 9 states there is no audit trail of which device sent which batch because 'the note rows carry everything'. Note rows do not carry per-device cursor, last-success time, outbox depth, or rejected-conflict bodies. Consequence: the failure the product exists to prevent \u2014 this device does not have my note \u2014 cannot be diagnosed from the planned telemetry; quiet and broken look the same until a user files a ticket, and even then there is no record to inspect.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deploys will run two versions; the protocol cannot name them",
+     "description": "Deploys are rolling, migrations run first, in-flight requests are not drained, and the text claims old and new versions 'never run concurrently against the same schema because deploys are quick'. Rolling deploys are concurrent by definition; speed does not remove overlap. The wire format has no version number because 'adding a field is backwards compatible' (lines 65-67), which does not cover field meaning changes, required fields, or LWW/cursor behavior. Killed in-flight `/sync`s rely on client retry, which is the same underspecified retry as the partial-apply hole. Consequence: a migration that old binaries cannot read, or a new server that writes rows an old client mis-cursors, lands during every rollout, and rollback reads data the old code does not understand.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 50,
+     "title": "Ack clears the whole outbox, dropping in-flight local edits",
+     "description": "After a successful POST the client applies server changes, advances the cursor, and clears the outbox. Sync is triggered on foreground and on a 15-minute timer while the user can still type. An edit appended after the request leaves, or a crash between apply and a selective ack, is not in the batch the server acknowledged \u2014 and is then deleted locally. That silently loses an unaudited note, contradicting \u201ca note edited offline is never lost\u201d and \u201cno acknowledged edit is ever lost\u201d (the lost row was never acknowledged).",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "401 refresh wipe destroys unsynced notes",
+     "description": "A failed refresh (revocation, password change, or token corruption) signs the user out and deletes notes.db, outbox included. Password change and corruption are normal, not just stolen-device, paths. Any edit that has not yet received a /sync response is unrecoverable on this device and was never on the server \u2014 a direct violation of the \u201cnever lost\u201d goal. First-sync after sign-in cannot reconstruct what only the outbox held.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 53,
+     "title": "Client modified_at is both sync cursor and LWW key",
+     "description": "The cursor is the newest modified_at the client has seen; the server returns rows with modified_at > cursor; conflicts keep the newer modified_at and discard the other body. modified_at is a per-device wall clock in milliseconds, not a causal order. Two notes (or two devices) that share a millisecond are skipped on the next pull once the cursor sits on that timestamp \u2014 the lagging device never sees the sibling row. A device whose clock is behind never delivers new notes to peers whose cursor is already ahead, and a fast clock permanently wins LWW. NTP is unavailable while offline, which is the product\u2019s core mode. Superseded bodies are overwritten, so the miss cannot be reconstructed.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Two note identities and 32-bit client ids, no mapping protocol",
+     "description": "A note is created with a random 32-bit id on the device; the server primary key is a BIGSERIAL and the client id is only a secondary lookup column. The wire payload never says which id travels, how a device learns the server id, or what uniqueness applies (global vs (user_id, client_id)). Timeout retries re-POST the same creates (line 56) onto a serial PK, so a committed-but-unacked sync inserts a second row. Two devices of one user can also mint the same 32-bit id offline; lookup then merges unrelated notes or, without a unique constraint, stores duplicates. Peers then disagree about \u201cthe same note,\u201d so LWW cannot even target the right row.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 80,
+     "title": "Partial apply contradicts the single transaction and has no client ack protocol",
+     "description": "/sync is described as one transaction per request, and a server crash is said to roll the batch back. The same section says that if row N fails validation, rows 1..N-1 stay applied and the client must not resend them. The POST contract only has full-success (clear outbox) or failure (retry the same body). Those three stories cannot be true together: a real transaction drops 1..N-1 and the client will retry a poison row forever; a real partial commit duplicates 1..N-1 on retry and never tells the client which prefix to drop. Either way the outbox and the notes table diverge under a validation failure or a timeout after a prefix commit \u2014 the failure path the design itself names.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "Latest-only notes cannot answer the support goal",
+     "description": "A support engineer must explain from dashboards alone why a device lacks a note. The server stores only the current body, discards conflict losers immediately, and writes no record of which device sent which batch. Dashboards see request rate and 5xx; a client that stops syncing is explicitly not an alert. After LWW or a missed cursor delivery, the note row looks like a consistent latest version \u2014 there is no discarded body, no device id, no batch id, no cursor the device advertised. The question the ops goal asks is unanswerable without reworking what is stored.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 20,
+     "title": "Desktop and CLI both write notes.db with no owner",
+     "description": "Two processes open the same SQLite file directly; whoever starts first creates it. No writer lock, WAL/busy policy, or single-owner rule is specified. Concurrent outbox appends and note updates can interleave, fail with 'database is locked', or tear a note-vs-outbox pair. The same fact (current body) then exists in two tables with nothing that keeps them agreeing, and the next sync ships a stale snapshot.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Unbounded outbox is sent as one all-or-nothing batch",
+     "description": "There is no outbox cap, each row copies the full uncapped body, and sync POSTs the entire outbox in one request with no protocol version or chunking. A long-offline device or a large note edited many times produces a payload that cannot finish in the 30-second goal; the client retries that same POST until ack. Because ack is all-or-nothing, a batch that never fits never drains, so recovery is not the same path as incremental sync.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves note rows in place",
+     "description": "Deleting an account removes the user row and leaves every notes row (bodies, tombstones) keyed by that user_id. No job, TTL, or restore path is specified \u2014 only that a nightly cleaner \u201ccould\u201d exist. Those rows still contain user content, still match `user_id = $1` if an id is reused or a stale token hits /sync, and there is no audit of the delete. The lifecycle of the data the product actually stores is undefined after the user is gone.",
+     "lens": "design-data",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 36102,
+      "output_tokens": 16203,
+      "cache_read_tokens": 31872
+     },
+     "duration_ms": 284652,
+     "failed": false,
+     "output_bytes": 12161
+    },
+    {
+     "usage": {
+      "input_tokens": 35921,
+      "output_tokens": 15076,
+      "cache_read_tokens": 31872
+     },
+     "duration_ms": 348524,
+     "failed": false,
+     "output_bytes": 9720
+    }
+   ]
+  }
+ ]
+}

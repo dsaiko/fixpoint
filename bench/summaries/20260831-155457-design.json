@@ -1,0 +1,209 @@
+{
+ "run": "20260831-155457",
+ "task": "design",
+ "target": "design",
+ "model": "glm-5.3:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "401 on refresh wipes notes.db, destroying unacknowledged offline edits",
+     "description": "The auth design treats any 401 on refresh \u2014 explicitly including 'token corruption' and password change \u2014 as grounds to wipe local state, including notes.db. The outbox lives in notes.db and holds edits that have never reached the server (offline period, a sync that hasn't run yet). A user who changes their password on the web while their laptop is offline with unsynced edits loses those edits permanently on next launch. The same wipe fires en masse if the auth service ever returns spurious 401s during an incident, or if a client-side bug corrupts the token. Section 6 promises 'no acknowledged edit is ever lost' and Goal 1 says an offline edit is never lost at all; this path loses unacknowledged edits in normal operation, with no path back. The revocation rationale only justifies wiping credentials, not content that exists nowhere else.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Cursor derived from client wall clocks silently drops edits from slow-clock devices",
+     "description": "The cursor is the modified_at (client wall clock) of the newest change seen, and clients fetch only changes strictly newer than their cursor. A device whose clock is behind (dead CMOS battery, phone before NTP fix, manually-set time) writes edits stamped in the past; the server applies them, but every peer whose cursor is already past that timestamp never receives them \u2014 the changes query `modified_at > $cursor` excludes them forever. The edit diverges silently across devices, and the conflict rule (newer modified_at wins, loser discarded with no copy kept, line 111) can then destroy it outright. The document acknowledges skew only as a conflict-resolution nuisance ('rare, NTP handles it') but the cursor makes skew a permanent propagation failure with no detection signal. Ties at the same millisecond are also skipped by the strict `>` comparison. This breaks Goal 1 and Goal 5 with nothing on any dashboard showing it happened.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Entire outbox in one unbounded POST against a server with no timeout",
+     "description": "Body length is uncapped (line 28), the outbox is uncapped (line 33), each row carries a full body copy, and sync sends the whole outbox in a single request to a server that deliberately has no request timeout (line 89). A device offline for a month with heavy editing produces a batch of arbitrary size; over a slow link it exceeds any intermediary's body/time limits (the LB or a mobile carrier will kill it even if the server won't), the client retries the identical oversized POST on backoff forever, and the device can never complete a sync again \u2014 a permanent stall with no operator-visible signal, since a client that stops syncing is 'not an alertable signal' (line 125). On the server side, a single transaction per request (line 78) held open for the duration means a handful of stuck large syncs pins Postgres connections and long transactions; the pool exhausts and the whole service goes down. This also makes the 30-second sync goal (line 11) unmeetable for exactly the clients with the most to sync.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 79,
+     "title": "Retry and partial-application semantics are contradictory and undefined",
+     "description": "Three interacting rules leave the retry path undefined. (1) On partial failure the server keeps rows 1..N-1 and says the client 'never has to resend work the server already has', but the outbox is cleared only on acknowledgment of the batch, and the retry rule says the client retries 'the same POST' \u2014 so on timeout (where no partial response exists) or on a poison row N, the client resends rows 1..N-1 on every attempt. Whether re-applying an already-applied row is an idempotent upsert keyed on the client note id or a blind write is never stated; a blind write re-asserts an old body over a newer edit made by another device in between, and a non-upsert insert duplicates every note. (2) A row that permanently fails validation (the only validation surface is the uncapped body, so an over-limit body is the plausible case) blocks the head of the oldest-first outbox forever: the device never syncs again and the failure is invisible to operators. (3) If the client instead drops the failing row to unblock, that is silent edit loss contradicting Goal 1. No option is specified.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "Changes query is a full-table seq scan per sync at target scale; the table also grows without bound",
+     "description": "The design explicitly declines any index beyond the primary key. The changes query filters on (user_id, modified_at), neither of which is the PK, so at the stated target of 50k users with a few hundred notes each (~15M rows) every /sync request \u2014 fired on every foreground plus every 15 minutes per running client \u2014 is a sequential scan of the entire notes table. The database, the one component that does not 'scale horizontally' by adding instances (line 144), is the first thing to saturate, by explicit decision. The table also grows without bound: deleted rows are retained forever (line 153) and every first sync downloads every tombstone, so both the scan and the per-user response size increase monotonically. Normal operation at the stated target load degrades the service; retrofitting the index requires the migration path this design has not thought through (see the deploy finding).",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "The support-dashboard goal is unmeetable: no device identity or last-sync state is recorded anywhere",
+     "description": "Goal 5 promises a support engineer can answer 'why does this device not have my note' from the dashboards alone, but the design records no device identifier on sync, no per-device last-synced timestamp, and explicitly no audit trail of which device sent which batch (line 159-160). The client-side failure modes most likely to generate that ticket \u2014 a stalled outbox, a poison row, a cursor stuck behind a slow clock \u2014 produce silence, and the design states that a client which stops requesting is not alertable (line 125). The dashboards carry aggregate request/error rates that cannot distinguish 'device quiet' from 'device broken', so the goal fails on its own terms and incidents run on support-ticket latency.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 129,
+     "title": "Rolling-deploy premise is false: two versions do run concurrently, against a migrated schema",
+     "description": "The claim that 'old and new versions never run concurrently against the same schema because deploys are quick' contradicts what a rolling deploy is: by construction, mid-roll both versions are serving traffic, and since migrations run before the new version starts, the old version is running against the new schema during that window. Any migration that is not purely additive breaks the old instances mid-deploy. In-flight requests are additionally not drained on shutdown, so each instance kill aborts syncs mid-transaction (the rollback covers the server side, but the client then retries onto a half-migrated fleet). Relatedly, the protocol carries no version number (line 66) on the theory that only additive fields will ever be added \u2014 while server versions roll in minutes, mobile client versions persist for years, so any non-additive protocol change has no negotiation path at all.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Nightly pg_dump contradicts the no-loss guarantee and restore is unrehearsed",
+     "description": "The core guarantee is that no acknowledged edit is ever lost (line 98), but the only durability mechanism beyond live replication is a nightly pg_dump: a Postgres data-loss event (disk failure, corruption, bad migration applied before anyone noticed) destroys up to 24 hours of acknowledged edits across all users, with no stated RPO and no user-facing story for that case. Restore 'has not been rehearsed' and the procedure is one sentence, so the actual incident duration and success rate of recovery are unknown \u2014 the first rehearsal will be during the incident. The design should either state the 24-hour loss window as an accepted risk against the guarantee, or close it.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Random 32-bit client note ids with no collision detection",
+     "description": "Note ids are random 32-bit integers generated per device, and nothing in the design detects a collision. Within one account, two devices that generate the same id produce two server rows (server has its own PK), but on sync-back each device resolves the incoming change against its local note with that id \u2014 the conflict rule then discards one body or interleaves edits across what are actually two distinct notes, silently merging one note's content into another. Tombstones are retained forever, so the consumed id space per account only grows. At a few hundred notes per user the per-account probability is small but across 50k users (and multi-device accounts) collisions are expected events, and the failure mode is content cross-contamination with no signal.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 20,
+     "title": "Two processes open one SQLite file with no concurrency policy stated",
+     "description": "The desktop client and the CLI both open notes.db directly, and the design is silent on how concurrent access works: no WAL mode, no busy timeout, no answer to which process owns writes when both run. A user running the CLI while the desktop app is open hits SQLITE_BUSY on outbox appends or note edits; what the user sees (failed edit? lost edit? blocked UI?) is unspecified, and the failure lands on the exact path Goal 1 protects \u2014 recording an edit while offline or busy. SQLite is safe against corruption under its default locking, but 'the edit failed because another process held the lock' is a normal-operation failure this design will meet weekly and has no answer for.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 58,
+     "title": "Identical retry schedule with no jitter; no rate limit or cost cap on the open endpoint",
+     "description": "Every client uses the same backoff schedule with no jitter, so after a regional outage (the scenario of section 8) the entire fleet retries in lockstep at 1s, 2s, 4s... \u2014 synchronized load spikes recurring on the same schedule indefinitely, exactly the spike the design plans to absorb by adding instances. Compounding it, there is no per-user rate limit and no cap on request size or server-side storage per user: an uncapped body (line 28) means a single client, or an attacker with a stolen access token, can push unbounded bytes into Postgres per request, and the stated response to a misbehaving client is 'a support conversation, not a mechanism'. Costs and abuse at the boundary where the design meets the outside are nobody's job.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Timestamp cursor with strict '>' silently and permanently drops edits",
+     "description": "The cursor is the client wall-clock `modified_at` of the newest change seen, and the server query is strictly newer (`modified_at > $2`), with server rows carrying the client-supplied timestamp. Any change later written with a `modified_at` at or below another device's cursor is never delivered to that device: a briefly-fast clock poisons every other device's cursor into the future, and two NTP-synced devices editing in the same millisecond lose one edit to the tie. The divergence is silent and, with no audit trail (line 159), undiagnosable. This makes goal 1 ('a note edited offline is never lost') unmeetable without reworking how change identity is held.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 71,
+     "title": "Auth-failure wipe deletes the outbox, destroying unacknowledged edits",
+     "description": "On any refresh 401 the client 'wipes local state, including notes.db'. The design itself enumerates token corruption as a 401 cause, so a corrupted token file \u2014 not revocation, not the user's intent \u2014 erases the outbox holding every offline edit not yet acknowledged, plus the only local copy of notes for a single-device user. This directly violates the core posture that no unacknowledged edit is ever lost, and conflates two very different events (remote revocation, where wiping is the point, and local corruption, where it is pure data loss).",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 50,
+     "title": "'Clears the outbox' as written discards edits appended during sync",
+     "description": "Step 4 clears the outbox on acknowledgment, but the lifecycle of rows appended between request assembly (step 1) and the ack is never specified \u2014 and the window is long, since the server has no request timeout (line 90) and sync runs every 15 minutes while the user may be typing. Implemented as written, an edit made during a sync is deleted from the outbox without ever having been sent, and never reaches the server. This is exactly the 'lifecycles left implicit' case: the ack covers the batch, but the delete covers the whole table.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "No sync record makes the stated support goal unanswerable",
+     "description": "The design discards conflict losers immediately (line 111), keeps only the latest version (line 93), and writes no record of which device sent which batch (line 159), while the dashboards track only per-endpoint rate/error/p99 (line 123) and a never-syncing client is explicitly not alertable (line 125). After any conflict or missed delivery, no data exists anywhere to answer 'why does this device not have my note' \u2014 there is no evidence the losing copy ever existed, no per-device delivery state, no batch application log. Goal 5 cannot be met without reworking what the system retains.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "32-bit random note ids collide at the design's own stated scale",
+     "description": "Note ids are random 32-bit integers, and the server keeps the client id 'in a secondary column for lookup' without stating whether uniqueness is global or per-user. At the stated volume (50k users x a few hundred notes = ~10M ids in a 2^32 space) expected birthday collisions are in the thousands. If the lookup key is global, one user's edit lands on another user's note \u2014 silent cross-user data corruption and exposure; even scoped per-user, a handful of same-user collisions are expected, merging two distinct notes. The design's own scale guarantees this, not growth.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 80,
+     "title": "Batch atomicity contract is self-contradictory between sections 5 and 6",
+     "description": "Section 5 says '/sync' runs 'in a single transaction per request' yet also that a failing row N leaves rows 1..N-1 applied \u2014 both cannot be true. Section 6 then asserts 'a crash mid-sync on the server: the transaction rolls back', which is false under the partial-application reading. The actual semantics (all-or-nothing vs. visible partial state, and whether replaying an already-applied prefix on retry is idempotent) are left undefined, so a concurrent device can observe a torn batch and a client retrying after a crash may reapply rows with no stated idempotency guarantee.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion orphans note rows and their deletion lifecycle is unowned",
+     "description": "Account deletion removes the user row and deliberately leaves the notes 'in place', with cleanup delegated to a nightly job that 'could' exist. The result is rows referencing a deleted user with no named owner or schedule, and \u2014 depending on whether a foreign key exists \u2014 either orphans that accumulate forever or a cascade that contradicts 'left in place'. Separately, keeping a user's notes after they deleted their account is a likely regulatory problem (right-to-erasure) the design does not acknowledge.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 20,
+     "title": "Two processes share one SQLite file with no named writer or locking policy",
+     "description": "The desktop client and the CLI tool both open notes.db directly, and 'whichever process starts first creates it'. Who may write, in what journal mode, and what happens when both are open concurrently is unspecified \u2014 SQLite's default rollback journal with zero busy timeout produces immediate 'database is locked' failures on overlapping writes, and the creation race can produce two processes initializing the file with different schemas. Ownership of the client database is exactly the decision the design leaves implicit.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 86,
+     "title": "Changes scan has no index, no pagination, unbounded rows, and no server timeout",
+     "description": "Every sync (every 15 minutes per running client, plus all foregrounds) runs a query filtered on (user_id, modified_at) with 'no index beyond the primary key', so each one scans the global notes table \u2014 which grows forever by the design's own choice to retain deleted rows (line 154). Combined with uncapped note bodies (line 29), a first sync returns the user's entire corpus in one unbounded JSON response while the server holds the connection indefinitely (line 90). This combination makes the 30-second sync goal and the horizontal-scaling claim (line 145) progressively unmeetable as the table grows.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 66,
+     "title": "Versionless wire protocol and no client version recorded anywhere",
+     "description": "The protocol carries no version number on the theory that adding fields is backwards compatible \u2014 but the inevitable changes are not additive-only: the attachments phase (line 162) will change what a note row means, cursor semantics may need to change, and old clients that update slowly will keep sending the old shape. Since requests also carry no client version and the server keeps no batch record (line 159), a future incident caused by an old client's behavior is undiagnosable from the server side.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 134,
+     "title": "Nightly backup plus unrehearsed restore contradicts the never-lost posture",
+     "description": "Backups are nightly, so a database loss discards up to 24 hours of acknowledged edits \u2014 and acknowledged edits exist nowhere else by design (the outbox is cleared on ack, line 50, and the server keeps only the latest version). Partial recovery depends on whatever local copies happen to survive on clients, which the design neither counts on nor verifies. The restore procedure has never been rehearsed, so its first execution will be during the incident.",
+     "lens": "design-data",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 133724,
+      "output_tokens": 10449
+     },
+     "duration_ms": 180101,
+     "failed": false,
+     "output_bytes": 15649
+    },
+    {
+     "usage": {
+      "input_tokens": 84147,
+      "output_tokens": 10861
+     },
+     "duration_ms": 108766,
+     "failed": false,
+     "output_bytes": 13687
+    }
+   ]
+  }
+ ]
+}
