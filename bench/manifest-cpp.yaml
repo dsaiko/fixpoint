@@ -1,0 +1,480 @@
+# Seeded defects in bench/testdata/target-cpp. Same matcher rules as
+# manifest-go.yaml. Frozen: never fix these bugs.
+#
+# The SAME link-shortener service as target-go, so the language is the only
+# variable. See "One service, many languages" in bench/README.md.
+#
+#   PARALLEL   the same logical defect as a numbered Go seed, marked
+#              "parallel: Cnn".
+#   CPP-ONLY   defects that only this language can have, and they are the most
+#              severe on the bench: two dangling returns (a string_view and a
+#              char* to a stack buffer), a strcpy buffer overflow, four
+#              iterator invalidations, a leaked Entry on every eviction, threads
+#              never joined so the destructor calls std::terminate, an
+#              uninitialized member read, an off-by-one past the end of a
+#              vector, and std::map::operator[] inserting on what reads like a
+#              lookup.
+#
+# NOTE ON A NON-SEED: `quota_[owner] = quota_[owner] + 1` is the C01 parallel in
+# every other language and is NOT a defect here -- std::map::operator[]
+# value-initializes to 0. The same operator IS a defect in count_for_owner,
+# where it silently inserts. Same call, opposite verdict, which is exactly the
+# kind of thing a cross-language bench is for.
+task: code
+target: cpp
+root: testdata/target-cpp
+seeds:
+  # ---------------- store.cpp ----------------
+  - id: P01
+    file: store.cpp
+    anchor: 'std::sprintf(buf, "%08x", std::rand());'
+    span: 6
+    need: 1
+    keywords: [rand, predictable, srand, "not cryptographically", sprintf, snprintf, guess, deprecated]
+    note: "CPP-ONLY (parallel: S02) codes come from std::rand into a fixed buffer via sprintf: predictable, never seeded, and written with a deprecated unbounded call"
+  - id: P02
+    file: store.cpp
+    anchor: "if (Clock::now() < it->second.expires_at)"
+    span: 6
+    need: 1
+    keywords: [inverted, backwards, reversed, expir, "less than", "greater"]
+    note: "parallel: C02 expiry comparison inverted: live links are deleted, expired ones resolve"
+  - id: P03
+    file: store.cpp
+    anchor: "void Store::rename(const std::string& from, const std::string& to)"
+    span: 8
+    need: 1
+    keywords: [twice, "validate_code(to)", "never validated", duplicate, "copy-paste", "same argument"]
+    note: "parallel: C03 rename validates `from` twice; `to` is never validated"
+  - id: P04
+    file: store.cpp
+    anchor: "end = all.size() + 1;"
+    span: 8
+    need: 1
+    keywords: ["out of range", "off-by-one", bounds, "undefined behavior", iterator, "past the end", "size() + 1"]
+    note: "CPP-ONLY (parallel: C04) page builds an iterator one past the end and constructs a vector from it -- undefined behaviour, not an exception"
+  - id: P05
+    file: store.cpp
+    anchor: "return used / links_.size() * 100;"
+    span: 6
+    need: 1
+    keywords: ["integer division", integer-divid, truncat, "always 0", unsigned, "size_t", "order of operations"]
+    note: "parallel: C05 integer division before scaling yields 0, and the int/size_t mix converts the numerator to unsigned"
+  - id: P06
+    file: store.cpp
+    anchor: "void Store::remove(const std::string& code)"
+    span: 10
+    need: 1
+    keywords: [quota, "never decrement", "not released", refund, "give the owner", slot]
+    note: "parallel: C09 remove drops the link but never returns the owner's quota slot the doc promises"
+  - id: P07
+    file: store.cpp
+    anchor: "[](const Link& a, const Link& b) { return a.hits < b.hits; });"
+    span: 6
+    need: 1
+    keywords: [ascending, least, reversed, "wrong order", "most hits", descending, backwards]
+    note: "parallel: C10 top sorts by hits ascending, so the leaderboard shows the least followed links"
+  - id: P08
+    file: store.cpp
+    anchor: "all.resize(n);"
+    span: 6
+    need: 1
+    keywords: [resize, grow, "default-constructed", "larger than", empty, clamp, "std::min"]
+    note: "CPP-ONLY top calls resize(n) without clamping, so asking for more links than exist GROWS the vector with blank Link objects"
+  - id: P09
+    file: store.cpp
+    anchor: "pair.second.owner.find(owner) != std::string::npos"
+    span: 6
+    need: 1
+    keywords: [find, substring, exact, "other owners", tenant, leak, npos]
+    note: "parallel: C11 by_owner matches owners by substring, so one owner sees another's links"
+  - id: P10
+    file: store.cpp
+    anchor: "void Store::extend(const std::string& code, Seconds ttl)"
+    span: 10
+    need: 1
+    keywords: [expired, resurrect, revive, "back to life", "already expired", dead]
+    note: "parallel: C12 extend re-dates an already-expired link, resurrecting a code the doc calls final"
+  - id: P11
+    file: store.cpp
+    anchor: "std::map<std::string, int>& Store::quotas()"
+    span: 6
+    need: 1
+    keywords: [snapshot, reference, "non-const", mutable, alias, expose, copy]
+    note: "parallel: C14 quotas hands out a non-const reference to the store's own map while the doc calls it a snapshot"
+  - id: P12
+    file: store.cpp
+    anchor: "void Store::import_all(const std::vector<Link>& batch)"
+    span: 8
+    need: 1
+    keywords: [atomic, partial, rollback, half, "already stored", "not all", validate]
+    note: "parallel: C13 import_all stores as it validates, so a bad code leaves the earlier half of the batch stored"
+  - id: P13
+    file: store.cpp
+    anchor: "for (auto it = links_.begin(); it != links_.end(); ++it) {"
+    span: 8
+    need: 1
+    keywords: ["iterator invalidation", invalidat, erase, "undefined behavior", "++it", dangling, "erase returns"]
+    note: "CPP-ONLY prune erases through the iterator and then increments it: the increment is on an invalidated iterator, which is undefined behaviour"
+  - id: P14
+    file: store.cpp
+    anchor: "return links_.size();"
+    span: 6
+    need: 1
+    keywords: [removed, remaining, count, "wrong", returns, "links_.size"]
+    note: "parallel: C15 prune counts removals into `removed` and then returns the number of links left instead"
+  - id: P15
+    file: store.cpp
+    anchor: "std::string_view Store::last_code() const"
+    span: 10
+    need: 1
+    keywords: ["string_view", dangling, "local", "out of scope", lifetime, "destroyed", "returns a view"]
+    note: "CPP-ONLY last_code returns a string_view onto a function-local std::string, so every caller reads freed memory"
+  - id: P16
+    file: store.cpp
+    anchor: "return &links_[code];"
+    span: 6
+    need: 1
+    keywords: ["raw pointer", dangling, erase, lifetime, invalidat, "into the map", reference]
+    note: "CPP-ONLY create returns a raw pointer into the map; any later erase or prune leaves the caller holding a dangling Link*"
+
+  # ---------------- auth.cpp ----------------
+  - id: P17
+    file: auth.cpp
+    anchor: 'secret_ = "dev-secret-do-not-use";'
+    span: 6
+    need: 1
+    keywords: [hardcoded, "default secret", "dev-secret", fallback, weak, credential]
+    note: "parallel: S01 the signing secret falls back to a hardcoded development value when the environment is unset"
+  - id: P18
+    file: auth.cpp
+    anchor: 'std::sprintf(buf, "%08x%08x", std::rand(), std::rand());'
+    span: 6
+    need: 1
+    keywords: [rand, predictable, forge, guess, "not cryptographically", sprintf, srand, deprecated]
+    note: "parallel: S02 session tokens come from std::rand, never seeded, written with a deprecated unbounded call"
+  - id: P19
+    file: auth.cpp
+    anchor: 'std::cout << "auth: issued token "'
+    span: 6
+    need: 1
+    keywords: [log, token, secret, "written to", disclos, redact, cout]
+    note: "parallel: S03 every issued session token is printed in cleartext"
+  - id: P20
+    file: auth.cpp
+    anchor: "Session* Authenticator::verify(const std::string& token)"
+    span: 10
+    need: 1
+    keywords: [expir, "expires_at", "never expire", lifetime, "not checked", stale]
+    note: "parallel: S04 verify never looks at expires_at, so a token works forever despite the documented 12-hour lifetime"
+  - id: P21
+    file: auth.cpp
+    anchor: 'if (session.role != "admin" || session.role != "owner")'
+    span: 6
+    need: 1
+    keywords: ["always true", tautolog, "&&", "||", never, "every session", "cannot be false"]
+    note: "parallel: S07 the admin check is always true, so require_admin rejects every session including admins"
+  - id: P22
+    file: auth.cpp
+    anchor: "acc = acc * 33 + (unsigned char)c;"
+    span: 8
+    need: 1
+    keywords: [salt, bcrypt, argon, scrypt, djb2, "fast hash", unsalted, KDF, "64-bit"]
+    note: "parallel: S05 passwords are hashed with a djb2 accumulator: unsalted, not a KDF, and trivially collidable"
+  - id: P23
+    file: auth.cpp
+    anchor: "std::strcpy(copy, header.c_str());"
+    span: 8
+    need: 1
+    keywords: ["buffer overflow", strcpy, "stack", overflow, bounds, strncpy, "64", smash]
+    note: "CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64-byte stack buffer: a straight stack buffer overflow"
+  - id: P24
+    file: auth.cpp
+    anchor: "return std::string(space + 1);"
+    span: 6
+    need: 1
+    keywords: [nullptr, null, strchr, "no space", dereference, "undefined behavior", crash]
+    note: "CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no space, and the code adds one to it and dereferences"
+  - id: P25
+    file: auth.cpp
+    anchor: "bool secret_equals(const std::string& presented, const std::string& expected)"
+    span: 12
+    need: 1
+    keywords: ["constant time", "constant-time", timing, "early return", "short-circuit", "side channel", length]
+    note: "secret_equals is documented as not leaking how much matched and returns early both on a length mismatch and on the first differing byte"
+  - id: P26
+    file: auth.cpp
+    anchor: "return &pair.second;"
+    span: 6
+    need: 1
+    keywords: ["raw pointer", dangling, revoke, erase, lifetime, invalidat, reference]
+    note: "CPP-ONLY verify hands out a pointer into the sessions map; a concurrent revoke leaves the caller dereferencing freed memory"
+
+  # ---------------- cache.cpp ----------------
+  - id: P27
+    file: cache.cpp
+    anchor: "Entry* entry = new Entry();"
+    span: 8
+    need: 1
+    keywords: [leak, delete, "new", "unique_ptr", "never freed", owning, RAII]
+    note: "CPP-ONLY entries are heap-allocated raw pointers and nothing ever deletes them, so every eviction and every erase leaks an Entry"
+  - id: P28
+    file: cache.cpp
+    anchor: "Cache::~Cache()"
+    span: 6
+    need: 1
+    keywords: [destructor, leak, delete, clear, "does not free", RAII, "unique_ptr"]
+    note: "CPP-ONLY the destructor clears the map without deleting the Entry pointers it owned, leaking the whole cache"
+  - id: P29
+    file: cache.cpp
+    anchor: "auto victim = entries_.begin();"
+    span: 6
+    need: 1
+    keywords: ["least recently used", LRU, arbitrary, "key order", "not the least", used, first, leak]
+    note: "parallel: CA08 eviction drops the first key in map order, not the least recently used; the `used` field is written and never read, and the Entry is leaked"
+  - id: P30
+    file: cache.cpp
+    anchor: "void Cache::sweep()"
+    span: 10
+    need: 1
+    keywords: ["iterator invalidation", invalidat, erase, "undefined behavior", "++it", dangling]
+    note: "CPP-ONLY sweep erases through the iterator it then increments: undefined behaviour on the first expired entry"
+  - id: P31
+    file: cache.cpp
+    anchor: "return entries_.size() / limit_ * 100;"
+    span: 6
+    need: 1
+    keywords: ["integer division", integer-divid, "always 0", truncat, "divide by zero", unsigned]
+    note: "parallel: C05 utilization divides size_t by size_t before scaling so it always reports 0, and divides by zero when limit is 0"
+  - id: P32
+    file: cache.cpp
+    anchor: "bool Cache::get(const std::string& code, std::string& out)"
+    span: 10
+    need: 2
+    keywords: [mutex, lock, race, thread, "not thread-safe", concurrent, janitor, synchron]
+    note: "parallel: CA02 the cache has no mutex at all, while the janitor thread sweeps it and handlers read it"
+
+  # ---------------- config.cpp ----------------
+  - id: P33
+    file: config.cpp
+    anchor: "cfg.port = std::atoi(port);"
+    span: 6
+    need: 1
+    keywords: [atoi, "no error", "port 0", silently, invalid, strtol, "cannot fail"]
+    note: "parallel: CF01 atoi cannot report failure and returns 0, so a malformed LINKD_PORT silently becomes port 0"
+  - id: P34
+    file: config.cpp
+    anchor: '"config: bad LINKD_TIMEOUT_MS "'
+    span: 8
+    need: 1
+    keywords: ["keeping default", contradic, anyway, "does not", zero, "still", assigned]
+    note: "parallel: CF02 the failure branch logs 'keeping default' and then assigns the zero anyway -- and cannot tell a real 0 from a parse failure"
+  - id: P35
+    file: config.cpp
+    anchor: "cfg.cache_ttl = Seconds{std::atoi(ttl)};"
+    span: 6
+    need: 1
+    keywords: [millisecond, Seconds, unit, "1000", documented, wrong, milliseconds]
+    note: "parallel: CF03 LINKD_CACHE_TTL_MS is documented in milliseconds and stored as seconds: 1000x too long"
+  - id: P36
+    file: config.cpp
+    anchor: "(void)parsed;"
+    span: 6
+    need: 1
+    keywords: ["no effect", ignored, never, unused, discarded, "fetch_limit", "(void)"]
+    note: "parallel: CF04 LINKD_FETCH_LIMIT is parsed, validated and discarded; the setting does nothing"
+  - id: P37
+    file: config.cpp
+    anchor: "std::ifstream in(path);"
+    span: 8
+    need: 1
+    keywords: ["is_open", "not checked", "read error", permission, unreadable, silently, distinguish, fail]
+    note: "parallel: CF05 load_file never checks whether the stream opened, so an unreadable config is indistinguishable from a missing one"
+  - id: P38
+    file: config.cpp
+    anchor: "bool validate(const Config& cfg)"
+    span: 20
+    need: 1
+    keywords: ["returns true", "always true", logs, "does not fail", startup, "never returns false"]
+    note: "parallel: CF06 validate logs the problems it finds and returns true, so a bad config starts the service anyway"
+
+  # ---------------- export.cpp ----------------
+  - id: P39
+    file: export.cpp
+    anchor: 'std::string path = dir + "/" + report + ".csv";'
+    span: 6
+    need: 1
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", arbitrary]
+    note: "parallel: EX01 the report name comes from the query string and is concatenated onto dir unchecked"
+  - id: P40
+    file: export.cpp
+    anchor: "std::ofstream out(path);"
+    span: 8
+    need: 2
+    keywords: ["not checked", "is_open", fail, permission, mode, "world", readable, umask, silent]
+    note: "parallel: EX02 the report holding every owner's links is written with default permissions, and neither the open nor the write is checked for failure"
+  - id: P41
+    file: export.cpp
+    anchor: 'body << link.code << "," << link.target << "," << link.owner'
+    span: 6
+    need: 1
+    keywords: [escap, quot, comma, inject, "csv", formula, malformed]
+    note: "parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in a target breaks the file and a leading = is a formula injection"
+  - id: P42
+    file: export.cpp
+    anchor: 'std::ofstream out(dir + "/" + pair.first + ".csv");'
+    span: 6
+    need: 1
+    keywords: [owner, traversal, sanitiz, basename, escape, separator, path]
+    note: "archive_all builds a filename straight from the owner string, so an owner containing a path separator escapes dir"
+  - id: P43
+    file: export.cpp
+    anchor: 'const char* tmp = "/tmp/linkd-snapshot.json";'
+    span: 10
+    need: 1
+    keywords: ["fixed", predictable, "/tmp", symlink, race, collision, "still open", flush, close, durab]
+    note: "CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's result discarded, and the ofstream is STILL OPEN when the rename happens, so buffered bytes have not reached the file the doc calls durable"
+  - id: P44
+    file: export.cpp
+    anchor: "return row;"
+    span: 6
+    need: 1
+    keywords: ["stack", dangling, "local", "out of scope", lifetime, "returns", "char*", "address of"]
+    note: "CPP-ONLY format_row returns a pointer to a function-local char array, so every caller reads a dead stack frame"
+
+  # ---------------- worker.cpp ----------------
+  - id: P45
+    file: linkd.h
+    anchor: "long errors_;"
+    span: 6
+    need: 1
+    keywords: [uninitialized, indeterminate, "not initialized", garbage, "= 0", member, undefined]
+    note: "CPP-ONLY the errors_ counter has no initializer while its siblings do, so /stats reads an indeterminate value"
+  - id: P46
+    file: linkd.h
+    anchor: "void add_resolved() { resolved_++; }"
+    span: 6
+    need: 1
+    keywords: [atomic, race, "data race", "not atomic", increment, concurrent, mutex]
+    note: "parallel: X01 the counters are plain longs incremented from the janitor thread and request paths with no atomicity"
+  - id: P47
+    file: worker.cpp
+    anchor: "for (auto it = store.all().begin(); it != store.all().end(); ++it)"
+    span: 10
+    need: 1
+    keywords: ["iterator invalidation", invalidat, erase, "undefined behavior", "++it", race, lock]
+    note: "CPP-ONLY (parallel: X02) the janitor erases through the iterator it then increments, from a thread that holds no lock on the store at all"
+  - id: P48
+    file: worker.cpp
+    anchor: "std::vector<std::thread> workers;"
+    span: 10
+    need: 1
+    keywords: [join, "never joined", terminate, detach, "std::terminate", destructor, "returns before"]
+    note: "CPP-ONLY warm_cache never joins its threads, so the vector's destructor calls std::terminate and aborts the process"
+  - id: P49
+    file: worker.cpp
+    anchor: "workers.emplace_back([&cache, &link]() { cache.set(link.code, link.target); });"
+    span: 6
+    need: 1
+    keywords: ["by reference", capture, dangling, "loop variable", lifetime, "&link", copy]
+    note: "CPP-ONLY the thread lambda captures the loop variable by reference, so it reads a reference that may already be gone when it runs"
+  - id: P50
+    file: worker.cpp
+    anchor: "for (size_t i = 0; i <= links.size(); i++)"
+    span: 8
+    need: 1
+    keywords: ["off-by-one", "<=", "out of bounds", "past the end", "undefined behavior", bounds]
+    note: "CPP-ONLY check_targets loops with <= and reads one element past the end of the vector"
+  - id: P51
+    file: worker.cpp
+    anchor: "return store.quotas()[owner];"
+    span: 6
+    need: 1
+    keywords: ["operator[]", insert, "side effect", "creates", grows, find, "at()", mutat]
+    note: "CPP-ONLY count_for_owner uses map::operator[], which INSERTS a zero entry for every unknown owner it is asked about, so a read grows the map"
+  - id: P52
+    file: worker.cpp
+    anchor: "g_janitor = new std::thread("
+    span: 8
+    need: 1
+    keywords: [join, "never joined", leak, detach, "stop_janitor", "use-after-free", shutdown]
+    note: "CPP-ONLY the janitor thread is heap-allocated, never joined and never deleted; stop_janitor only sets a flag, so the thread can outlive the Store it holds references to"
+
+  # ---------------- main.cpp ----------------
+  - id: P53
+    file: main.cpp
+    anchor: 'std::string target = req.query.at("target");'
+    span: 6
+    need: 1
+    keywords: ["at(", "out_of_range", throw, missing, "count(", exception, uncaught]
+    note: "CPP-ONLY the handler reads query parameters with .at(), which throws std::out_of_range for a request that simply omits one"
+  - id: P54
+    file: main.cpp
+    anchor: 'std::string owner = req.query.at("owner");'
+    span: 6
+    need: 1
+    keywords: [owner, query, session, authenticated, spoof, impersonat, "any user"]
+    note: "parallel: C28 the link owner comes from the query string instead of the authenticated session, so any caller creates links as anyone"
+  - id: P55
+    file: main.cpp
+    anchor: "static Response delete_link(const Request& req)"
+    span: 10
+    need: 1
+    keywords: [owner, authoriz, "access check", "any user", anyone, permission, IDOR, session]
+    note: "parallel: C17 delete_link never checks the owner its comment promises to check: any caller deletes any link"
+  - id: P56
+    file: main.cpp
+    anchor: 'std::string next = req.query.at("next");'
+    span: 10
+    need: 1
+    keywords: ["open redirect", redirect, phish, next, unvalidated, arbitrary]
+    note: "parallel: C18 /out redirects to any address in ?next= -- an open redirect, cached permanently by the 301"
+  - id: P57
+    file: main.cpp
+    anchor: 'req.headers.at("x-admin") != "true"'
+    span: 6
+    need: 1
+    keywords: ["x-admin", header, "client-controlled", spoof, privilege, forge, trivially]
+    note: "parallel: C19 the admin endpoint is gated on a request header the caller sets themselves"
+  - id: P58
+    file: main.cpp
+    anchor: "long per_link = g_store->total_hits() / g_store->size();"
+    span: 6
+    need: 1
+    keywords: ["divide by zero", "division by zero", empty, zero, "undefined behavior", crash]
+    note: "parallel: C20 /stats divides by the link count: division by zero, which is undefined behaviour rather than an exception"
+  - id: P59
+    file: main.cpp
+    anchor: "c = std::tolower(c);"
+    span: 8
+    need: 1
+    keywords: [tolower, "unsigned char", negative, "undefined behavior", case, lowercas, locale]
+    note: "CPP-ONLY (parallel: C16) the code is lowercased before a case-sensitive lookup, and std::tolower is passed a plain char, which is undefined for negative values"
+  - id: P60
+    file: main.cpp
+    anchor: 'r.headers["Access-Control-Allow-Credentials"] = "true";'
+    span: 6
+    need: 1
+    keywords: [CORS, wildcard, credentials, "any origin", "Allow-Origin", "cross-origin"]
+    note: "parallel: C23 wildcard CORS combined with Allow-Credentials on every response"
+  - id: P61
+    file: main.cpp
+    anchor: '"unauthorized: unknown token (token " + token + ")"'
+    span: 6
+    need: 1
+    keywords: [echo, token, reflect, "error message", disclos, leak, response]
+    note: "parallel: S08 the 401 response echoes the rejected token back to the caller"
+  - id: P62
+    file: main.cpp
+    anchor: "std::string path = export_csv(g_cfg.export_dir, name, g_store->page(0, 1000));"
+    span: 8
+    need: 2
+    keywords: [tenant, "every owner", "all owners", "other users", scope, isolation, "any authenticated", 1000, truncat]
+    note: "parallel: C29 /report exports every owner's links to any authenticated caller, and silently truncates at 1000"
+  - id: P63
+    file: main.cpp
+    anchor: "g_store = new Store();"
+    span: 8
+    need: 1
+    keywords: [leak, delete, "never freed", "unique_ptr", "raw new", global, RAII]
+    note: "every service object is heap-allocated with raw new and never deleted, and their lifetime is shorter than the janitor thread that holds references to them"
