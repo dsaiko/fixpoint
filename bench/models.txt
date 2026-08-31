@@ -53,6 +53,18 @@ qwen3.5:397b-cloud
 # endpoint and dead on this route -- see "effort (claude)" in
 # config/agents/_README.md before assuming the number can be tuned upward.
 glm-5.3-flash:cloud
+# The depth tier of the same family, added 2026-08-31: 753B against flash's 320B,
+# a different architecture (glm_dsa_moe vs glm5_next), 1M context, FP8, no vision.
+# One :cloud tag again, and no extra-credit note on its page either. Same question
+# the deepseek flash/pro pair answered on this bench -- whether the depth tier is
+# worth its tokens as a reviewer -- asked of the family that currently holds no
+# seat.
+# Measured 2026-08-31, 1 repeat: 64/100 (code 47/60, design 17/40), 2 unmatched on
+# code, 854k tokens, 572s, no contract failures. It answers the family question
+# the way deepseek's pair did and the panel should read it the same way: the depth
+# tier is the better MODEL (64 to flash's 62) and the worse SEAT (+1 seed over
+# claude+codex+minimax, against flash's +3). Not seated; see bench/README.md.
+glm-5.3:cloud
 # OpenRouter candidates (a slash in the id selects the OpenRouter template;
 # bills a card at the listed per-token price -- x-ai/grok-4.6 is $2/M in,
 # $6/M out. This route caches, unlike ollama).
