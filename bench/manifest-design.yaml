@@ -9,6 +9,7 @@
 # design-data), so the seeds are split roughly evenly between what breaks when
 # things go wrong (D01-D24) and what the data model gets wrong (D25-D40).
 task: design
+target: design
 seeds:
   - id: D01
     file: DESIGN.md

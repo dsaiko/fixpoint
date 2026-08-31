@@ -88,7 +88,7 @@ across the panel is <4%, so non-overlap is the panel's whole value).
 
 ## Protocol
 
-- **Frozen targets.** `testdata/target-code` (a Go link shortener in seven
+- **Frozen targets.** `testdata/target-go` (a Go link shortener in seven
   files, 60 seeded defects: correctness for `review-bugs`, concurrency for
   `review-concurrency`, and 14 security defects — unsalted hashes, a
   predictable token, an open redirect, a path traversal, a client-controlled
@@ -150,11 +150,45 @@ across the panel is <4%, so non-overlap is the panel's whole value).
 ## Running it
 
 ```sh
-make bench MODEL=glm-5.2:cloud                 # both tasks, 1 repeat
-make bench MODEL=kimi-k3:cloud TASK=code N=3   # one task, 3 repeats
+make bench MODEL=glm-5.2:cloud                 # the calibrated pair, 1 repeat
+make bench MODEL=kimi-k3:cloud TASK=go N=3     # one target, 3 repeats
+make bench MODEL=kimi-k3:cloud TASK=go,design  # a list of targets
 make bench-check                               # validate the manifests, no model
-python3 bench/report.py                        # every model's score out of 100
+make bench-seeds                               # per-seed hit rate: what still discriminates
+python3 bench/report.py                        # scores, plus recall per target
+python3 bench/report.py --html out.html        # the same as a shareable page
 ```
+
+`TASK` names a **target**, not a task: `go`, `design`, or any language target
+added under `bench/testdata/target-<name>` with a matching
+`bench/manifest-<name>.yaml` -- `run.sh` resolves those with no edit of its own.
+`code` remains an alias for `go`. `all` stays the **calibrated pair** (go +
+design) rather than everything on disk, because that pair is what every
+published score out of 100 means and what every seat decision on record quotes;
+widening it silently would change both the cost and the total of a "comparable"
+run.
+
+### Targets and tasks are different axes
+
+A **target** is a scored artifact with its own seed pool; a **task** is the lens
+family run over it. Every language target shares `task: code` and the three code
+lenses, so results are keyed on **target** -- keyed on task alone, a second
+language's row silently overwrote the first's in the report, which is why the
+manifests now declare `target:` explicitly.
+
+### Reading the seed-value report
+
+`make bench-seeds` is the retire/replace instrument, and it costs nothing: it
+re-reads the per-run tables in `results/`. A seed found by nearly every model
+carries almost no information about the model under test -- it spends tokens and
+never moves a score -- and a seed found by nobody is either miscalibrated or
+beyond the whole field. **Check a never-found seed against the raw findings
+before retiring it.** D33 (no authorization model on `/sync`) read 0/21 and was
+not a hard seed at all: one model reported it in as many words, but the seed
+needs 2 keywords and that finding hit only `ownership`, while the same seed's
+generic entries (`user_id`, `permission`, `tenant`) were firing on 27 unrelated
+findings about indexes and file modes. That is a matcher bug wearing a hard
+seed's clothes, and retiring it would have hidden the bug and kept the noise.
 
 Candidates for the current sweep are listed in `models.txt`. Model names route
 the harness: an existing agent name (`claude`, `codex`) runs through its own
@@ -171,7 +205,7 @@ to `results.csv` (committed — measurements are project knowledge); per-run
 seed tables land in `results/`. Re-score an old run without re-paying for it:
 
 ```sh
-python3 bench/score.py bench/manifest-code.yaml .fixpoint/<ts>/summary-<ts>.json <model>
+python3 bench/score.py bench/manifest-go.yaml .fixpoint/<ts>/summary-<ts>.json <model>
 ```
 
 ## History

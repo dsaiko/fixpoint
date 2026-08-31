@@ -1,4 +1,4 @@
-# Seeded defects in bench/testdata/target-code. The matcher (bench/score.py)
+# Seeded defects in bench/testdata/target-go. The matcher (bench/score.py)
 # counts a seed as FOUND when a finding names the right file, lands within
 # `span` lines of the seed's line, and mentions at least `need` of the keywords
 # (case-insensitive, in title+description). Every finding is credited to at
@@ -16,7 +16,12 @@
 # matched on file and keywords alone -- used where the defect is legitimately
 # reported from either of two places.
 task: code
-root: testdata/target-code
+# The TARGET is the scored artifact; the TASK is the lens family run over it.
+# Several targets share task: code (one per language), so results are keyed on
+# target -- keying on task alone let a second language silently overwrite the
+# first's row in the report.
+target: go
+root: testdata/target-go
 seeds:
   - id: C01
     file: store.go

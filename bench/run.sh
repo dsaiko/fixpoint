@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run the reviewer benchmark for one model.
 #
-#   bench/run.sh <model> [code|design|all] [repeats]
+#   bench/run.sh <model> [go|design|all|<lang>,...] [repeats]
 #   bench/run.sh mistral-large-3:675b-cloud all 3
 #
 # Generates config/agents/bench-candidate.yaml from bench/agent-template.yaml,
@@ -10,7 +10,7 @@
 # exit. Methodology: bench/README.md.
 set -eu
 
-MODEL=${1:?usage: bench/run.sh <model> [code|design|all] [repeats]}
+MODEL=${1:?usage: bench/run.sh <model> [go|design|all|<lang>,...] [repeats]}
 TASKS=${2:-all}
 REPEATS=${3:-1}
 
@@ -111,9 +111,25 @@ make build >/dev/null
 
 run_task() {
     task=$1 rep=$2
+    # One line per target. Every code-flavoured language shares bench-code.yaml
+    # -- the config names the lenses, and -target below points them at a
+    # different tree -- so adding a language is an entry here plus a manifest,
+    # not a new config. `code` stays as an alias for `go`, which is what every
+    # invocation and every row in results.csv meant before the rename.
     case $task in
-    code)   cfg=bench-code   target=bench/testdata/target-code   manifest=bench/manifest-code.yaml ;;
-    design) cfg=bench-design target=bench/testdata/target-design manifest=bench/manifest-design.yaml ;;
+    go | code) cfg=bench-code   manifest=bench/manifest-go.yaml     target=bench/testdata/target-go ;;
+    design)    cfg=bench-design manifest=bench/manifest-design.yaml target=bench/testdata/target-design ;;
+    *)
+        # A language target added to bench/testdata/target-<name> with a
+        # matching bench/manifest-<name>.yaml is runnable with no edit here.
+        cfg=bench-code
+        manifest=bench/manifest-$task.yaml
+        target=bench/testdata/target-$task
+        if [ ! -f "$manifest" ] || [ ! -d "$target" ]; then
+            echo "bench: unknown task '$task' (no $manifest / $target)" >&2
+            return 1
+        fi
+        ;;
     esac
     echo "bench: $MODEL / $task / repeat $rep"
     # Remember what existed BEFORE this invocation: the summary to score is the
@@ -152,14 +168,20 @@ run_task() {
 rep=1
 while [ "$rep" -le "$REPEATS" ]; do
     case $TASKS in
-    code | design) run_task "$TASKS" "$rep" ;;
     all)
-        run_task code "$rep"
+        # `all` is deliberately the CALIBRATED pair, not every target on disk:
+        # it is what every published score out of 100 means, and silently
+        # widening it as languages are added would change what a comparable
+        # run costs and what its total is. Name a language to measure it.
+        run_task go "$rep"
         run_task design "$rep"
         ;;
     *)
-        echo "bench: unknown task set '$TASKS' (want code|design|all)" >&2
-        exit 2
+        # Comma- or space-separated list, so one invocation can sweep several
+        # targets: TASK=go,rust,design
+        for one in $(echo "$TASKS" | tr ',' ' '); do
+            run_task "$one" "$rep"
+        done
         ;;
     esac
     rep=$((rep + 1))
