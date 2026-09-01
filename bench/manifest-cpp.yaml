@@ -478,3 +478,10 @@ seeds:
     need: 1
     keywords: [leak, delete, "never freed", "unique_ptr", "raw new", global, RAII]
     note: "every service object is heap-allocated with raw new and never deleted, and their lifetime is shorter than the janitor thread that holds references to them"
+  - id: P64
+    file: main.cpp
+    anchor: 'std::string path = export_csv(g_cfg.export_dir, name, g_store->page(0, 1000));'
+    span: 8
+    need: 1
+    keywords: ["links.csv", "different", mismatch, "empty", default, "no name", "reads back", "always fails"]
+    note: "HARVESTED from calibration (2026-09-01, reported by both baselines). export defaults an empty report name to links.csv while the read-back is handed the original empty name, so /report with no name always fails -- parallel to rust RM13, which was the only target that had it seeded"

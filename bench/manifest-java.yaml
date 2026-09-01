@@ -315,8 +315,11 @@ seeds:
   # ---------------- Export.java ----------------
   - id: J42
     file: src/linkd/Export.java
+    # span 16, not 6: the defect is the shared static formatter, and a reviewer
+    # cites either the declaration or the STAMP.format() call 13 lines below it.
+    # Calibration reported it at the call site and the gate rejected it.
     anchor: "public static final SimpleDateFormat STAMP"
-    span: 6
+    span: 16
     need: 1
     keywords: [SimpleDateFormat, "thread-safe", "not thread", shared, static, DateTimeFormatter, race, corrupt]
     note: "JAVA-ONLY a static SimpleDateFormat is shared across request threads; it is not thread-safe and produces corrupted or wrong timestamps under load"
@@ -506,3 +509,10 @@ seeds:
     need: 2
     keywords: [tenant, "every owner", "all owners", "other users", scope, isolation, "any authenticated", 1000, truncat]
     note: "parallel: C29 /report exports every owner's links to any authenticated caller, and silently truncates at 1000"
+  - id: J69
+    file: src/linkd/Main.java
+    anchor: 'String path = Export.exportCsv(cfg.exportDir, name, store.page(0, 1000));'
+    span: 8
+    need: 1
+    keywords: ["links.csv", "different", mismatch, "empty", default, "no name", "reads back", "always fails"]
+    note: "HARVESTED from calibration (2026-09-01, reported by both baselines). export defaults an empty report name to links.csv while the read-back is handed the original empty name, so /report with no name always fails -- parallel to rust RM13, which was the only target that had it seeded"

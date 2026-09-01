@@ -1,0 +1,429 @@
+{
+ "run": "20260901-021107",
+ "task": "code",
+ "target": "python",
+ "model": "codex",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.py",
+     "line": 57,
+     "title": "Live links are deleted while expired links resolve",
+     "description": "The expiry condition is inverted. Any link whose expiry is still in the future is deleted and returns None, while an expired link proceeds to increment its hit count and return its target. Normal redirects therefore destroy valid links and permit expired links to remain usable.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.py",
+     "line": 46,
+     "title": "Creating a link for a new owner always raises KeyError",
+     "description": "quota starts as an empty dictionary, but create reads self.quota[owner] before the owner has an entry. The first link creation for every owner crashes instead of returning a link.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 66,
+     "title": "Missing or malformed Authorization headers crash request handling",
+     "description": "bearer_token unconditionally indexes the second element of header.split(\" \"). handle calls it even when the header is absent, passing an empty string, so unauthenticated requests raise IndexError instead of receiving a 401 response.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 130,
+     "title": "The stats endpoint crashes when the store is empty",
+     "description": "store.size() is zero on a fresh service, so calculating total_hits() / store.size() raises ZeroDivisionError. The dashboard cannot be queried until at least one link exists.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 40,
+     "title": "The janitor dies when it removes an expired link",
+     "description": "find_expired returns a generator iterating store.links, while the loop deletes from that same dictionary. After the first deletion, advancing the generator raises RuntimeError because the dictionary changed size, terminating the janitor thread.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 46,
+     "title": "Snapshots are renamed before their contents are flushed or made durable",
+     "description": "write_snapshot leaves the file open and renames it immediately after write. Buffered bytes have not been flushed or fsynced when the snapshot becomes visible, so readers or a crash can observe an empty or incomplete snapshot despite the function's durability guarantee.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 63,
+     "title": "Sweeping an expired cache entry raises RuntimeError",
+     "description": "sweep deletes entries while directly iterating self.entries. As soon as an expired entry is removed, Python raises RuntimeError for changing the dictionary size during iteration, preventing the remaining expired entries from being swept.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.py",
+     "line": 41,
+     "title": "Cache eviction is not least-recently-used",
+     "description": "Eviction always selects the first inserted dictionary key. get updates an entry's used timestamp, but eviction never consults it, so a recently accessed old entry is evicted before a less recently used newer entry.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.py",
+     "line": 73,
+     "title": "Cache utilization is zero until the cache is completely full",
+     "description": "Integer floor division happens before multiplication. For example, 512 entries in a 1024-entry cache produces 0 rather than 50, making dashboard utilization incorrect.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 41,
+     "title": "Timeout milliseconds are stored as seconds",
+     "description": "LINKD_TIMEOUT_MS is documented in milliseconds, while the default timeout is expressed in seconds, but the parsed value is assigned without conversion. A value such as 10000 therefore becomes 10000 seconds instead of 10 seconds.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 45,
+     "title": "Cache TTL milliseconds are treated as seconds",
+     "description": "LINKD_CACHE_TTL_MS is assigned directly to Cache.ttl, which Cache.set adds to time.time() as seconds. Configured cache entries consequently live 1000 times longer than requested.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 53,
+     "title": "LINKD_FETCH_LIMIT is parsed but never applied",
+     "description": "The positive parsed value is assigned back to the local variable instead of cfg.fetch_limit. Supplying LINKD_FETCH_LIMIT therefore has no effect and the default value always remains active.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 94,
+     "title": "A zero cache size is accepted even though it crashes cache operations",
+     "description": "validate rejects only negative cache sizes. With size zero, Cache.utilization divides by zero and Cache.set attempts to evict from an empty dictionary, so an accepted configuration can crash at runtime.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 98,
+     "title": "Invalid configurations are always reported as valid",
+     "description": "validate prints collected problems but always returns True, and the startup caller does not otherwise stop. Invalid ports, timeouts, and cache sizes therefore do not produce the documented startup refusal.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 17,
+     "title": "CSV fields are written without CSV escaping",
+     "description": "Codes, targets, and owners are interpolated directly with commas and newlines. A valid URL or owner containing either character changes the column or row structure, producing a corrupt report that cannot be parsed reliably.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 61,
+     "title": "Parsed report rows leak across calls",
+     "description": "rows is a mutable default list shared by every invocation. Parsing a second report appends to and returns the rows from earlier reports, mixing unrelated report data.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 65,
+     "title": "Every newline-terminated report gains a bogus empty row",
+     "description": "Reports written by export_csv end with a newline, so split produces a final empty string. parse_report processes that string and appends a dictionary containing empty cells.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 67,
+     "title": "Malformed create requests escape as server errors",
+     "description": "JSON decoding, missing required fields, and invalid ttl conversion all occur outside the ValueError handler around store.create. Common invalid client payloads therefore raise JSONDecodeError, KeyError, or ValueError instead of returning a controlled 400 response.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 141,
+     "title": "The default report name is read back from the wrong path",
+     "description": "When no name is supplied, export_csv substitutes \"links\" and writes links.csv, but report then passes the original empty name to read_report, which attempts to open .csv. A default report request writes a file and then returns a 500 error.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 45,
+     "title": "Generated-code collisions overwrite existing links",
+     "description": "create stores a newly generated 32-bit code without checking whether it is already present. A collision silently replaces an existing user's link while leaving quota bookkeeping inconsistent, causing data loss.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 66,
+     "title": "rename validates the source code twice and never validates the destination",
+     "description": "The second validate_code call also receives frm. Invalid destination codes can therefore be inserted into the store, despite the method otherwise enforcing code syntax.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 91,
+     "title": "Success rates are truncated to either zero or one hundred",
+     "description": "Integer floor division is performed before multiplying by 100. Any partially used set of links reports 0 percent; only the all-used case reports 100 percent.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 101,
+     "title": "Deleting a link does not return its owner's quota slot",
+     "description": "delete removes the link but never decrements self.quota for its owner, contradicting the method contract. Quota counts remain permanently inflated after deletions.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 105,
+     "title": "The leaderboard returns the least-followed links",
+     "description": "top sorts hit counts in ascending order and returns the first n elements, which are the least followed links rather than the most followed links promised by the method.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 110,
+     "title": "Owner lookup uses substring matching",
+     "description": "by_owner checks whether the requested owner string occurs inside each stored owner. Looking up \"ann\", for example, also returns links owned by \"joann\", so owner reports contain unrelated links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 121,
+     "title": "extend revives already-expired links",
+     "description": "The method unconditionally replaces expires_at with a future timestamp. This directly violates its documented final-expiry behavior and makes dead codes usable again.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 136,
+     "title": "Batch imports are not atomic",
+     "description": "Each link is inserted immediately after its individual validation. If a later link has an invalid code, the exception leaves all earlier links committed, despite the documented all-or-nothing guarantee.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 143,
+     "title": "prune crashes when it removes an expired link",
+     "description": "prune deletes keys while directly iterating self.links. Removing the first eligible link changes the dictionary size and raises RuntimeError before pruning completes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 147,
+     "title": "prune reports the remaining size instead of the removed count",
+     "description": "The method maintains a removed counter but returns len(self.links). Even when no link is removed from a nonempty store, it reports a positive removal count.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 69,
+     "title": "Target checking crashes when every target is valid",
+     "description": "problems is empty for an empty input or when all links use HTTPS, but the function unconditionally returns problems[0]. Successful checks therefore raise IndexError instead of reporting no failure.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 40,
+     "title": "Janitor unsafely iterates and mutates the live store",
+     "description": "find_expired() returns a generator over store.links, and the janitor deletes from that same dictionary while consuming it. Resuming the generator after a deletion raises RuntimeError and permanently terminates the janitor. A concurrent request can also create or delete an entry during iteration, or delete a yielded code before line 41, causing RuntimeError or KeyError. Expired entries then accumulate and affected requests may fail.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 80,
+     "title": "Cache flush self-deadlocks on a non-reentrant lock",
+     "description": "flush() holds self.lock and then calls delete(), which attempts to acquire the same threading.Lock again. Because the lock is not reentrant, the calling thread blocks forever while retaining the lock, and every subsequent cache operation needing that lock also blocks.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 21,
+     "title": "Concurrent reports with the same name race through one file",
+     "description": "Every request for a given report name truncates and rewrites the same path. For example, request A can finish writing, request B can open and truncate the file, and A can then read the empty or partially rewritten file in main.report(). Thus one request can return incomplete data or data generated by another concurrent request.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 59,
+     "title": "Cache warming returns before its worker threads finish",
+     "description": "warm_cache() starts one thread per pair but never joins the collected threads. Contrary to its contract, the function returns while cache updates are still pending, so callers can immediately observe a partially warmed cache and the background threads outlive the operation that created them.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 51,
+     "title": "Stopping the janitor neither interrupts nor joins it",
+     "description": "If stop_janitor() runs while the janitor is sleeping, it returns immediately but the janitor wakes later and performs one final store and cache sweep before checking _running again. Teardown code can therefore proceed while the supposedly stopped thread still accesses shared objects, and the non-daemon thread can remain alive for the entire interval.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 27,
+     "title": "Session tokens use a predictable non-cryptographic PRNG",
+     "description": "Bearer tokens are built from outputs of Python's Mersenne Twister. An attacker able to obtain enough issued tokens can reconstruct its state and predict later tokens, allowing session hijacking.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 35,
+     "title": "Valid bearer tokens are written to logs",
+     "description": "Every issued session token is printed in plaintext. Anyone with access to application or aggregated support logs can copy the token into an Authorization header and impersonate its owner.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 44,
+     "title": "Expired sessions remain valid indefinitely",
+     "description": "verify returns a matching session without comparing expires_at to the current time. A stolen token therefore continues authorizing requests after its documented 12-hour lifetime.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 61,
+     "title": "Passwords are stored using fast unsalted SHA-256",
+     "description": "A database or backup leak exposes deterministic SHA-256 password hashes that can be tested extremely quickly with dictionaries and precomputed tables, making common passwords readily recoverable.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 40,
+     "title": "Malformed Authorization headers trigger an uncaught exception",
+     "description": "bearer_token indexes the second space-delimited field unconditionally, so an unauthenticated request with an absent or one-word Authorization header raises IndexError before the intended 401 response. Repeated malformed requests can produce unbounded 500 responses and exception-log volume, and can exhaust workers if the hosting adapter terminates them on handler exceptions.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 70,
+     "title": "Clients can create links under another user's identity",
+     "description": "create_link takes owner from the JSON body instead of the authenticated session. An authenticated attacker can submit an existing victim's owner value, attribute malicious links to that victim, and consume or corrupt the victim's quota accounting.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 101,
+     "title": "Any authenticated user can delete any owner's link",
+     "description": "delete_link passes only the requested code to Store.delete and never checks the link's owner against the authenticated session. An attacker can obtain other users' codes from the unscoped report endpoint and delete those links, causing direct cross-tenant data loss.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.py",
+     "line": 123,
+     "title": "Administrative access is granted by a spoofable request header",
+     "description": "The quotas endpoint trusts x-admin: true and never checks the authenticated session's role. Any authenticated user can set this header and retrieve the complete owner and quota map.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 140,
+     "title": "Report endpoint exports every tenant's links",
+     "description": "The endpoint exports store.page directly without filtering by the authenticated owner or requiring an administrative role. Any authenticated user can download up to 1,000 links containing other users' targets, owner identifiers, codes, and hit counts.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 13,
+     "title": "User-controlled report names permit arbitrary-path file overwrite",
+     "description": "name is appended to directory without validation or a containment check. An authenticated request using an absolute name such as /tmp/report, or a ../../ traversal, makes open write outside the export directory. Existing symlinks are followed as well, allowing a local attacker to redirect the service's write to another service-writable file.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 17,
+     "title": "Unescaped CSV fields allow spreadsheet formula injection",
+     "description": "Target and owner values are concatenated directly into CSV cells. An attacker can create a link whose owner starts with a spreadsheet formula such as =WEBSERVICE(...); when support opens the resulting report in spreadsheet software, the formula may execute and make attacker-controlled network requests.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 21,
+     "title": "Sensitive exports are not restricted to the service account",
+     "description": "open(path, \"w\") uses the process umask, despite the report containing every owner's links and the comment promising service-user-only access. With the common 022 umask, newly created reports are mode 0644 and can be read by other local users.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 34,
+     "title": "URL validation permits HTTP response-header injection",
+     "description": "The target check only tests its prefix and permits control characters. An authenticated attacker can store a JSON target containing an escaped CRLF after https://; redirect later copies that value into the Location header, enabling response splitting, injected cookies, or cache poisoning in an HTTP adapter that serializes the returned headers.",
+     "lens": "review-security",
+     "severity": "high"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 63874,
+      "output_tokens": 8498,
+      "cache_read_tokens": 49408
+     },
+     "duration_ms": 435964,
+     "failed": false,
+     "output_bytes": 15609
+    },
+    {
+     "usage": {
+      "input_tokens": 61415,
+      "output_tokens": 5494,
+      "cache_read_tokens": 49408
+     },
+     "duration_ms": 204201,
+     "failed": false,
+     "output_bytes": 3837
+    },
+    {
+     "usage": {
+      "input_tokens": 62173,
+      "output_tokens": 9144,
+      "cache_read_tokens": 48384
+     },
+     "duration_ms": 344901,
+     "failed": false,
+     "output_bytes": 8050
+    }
+   ]
+  }
+ ]
+}

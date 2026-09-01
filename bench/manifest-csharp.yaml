@@ -502,3 +502,10 @@ seeds:
     need: 1
     keywords: [shutdown, graceful, "StopJanitor", "never", drain, cancellation, "infinite"]
     note: "parallel: C26 the accept loop never exits, so StopJanitor is unreachable and there is no graceful shutdown"
+  - id: N68
+    file: Program.cs
+    anchor: 'string path = Export.ExportCsv(cfg.ExportDir, name, store.Page(0, 1000));'
+    span: 8
+    need: 1
+    keywords: ["links.csv", "different", mismatch, "empty", default, "no name", "reads back", "always fails"]
+    note: "HARVESTED from calibration (2026-09-01, reported by both baselines). export defaults an empty report name to links.csv while the read-back is handed the original empty name, so /report with no name always fails -- parallel to rust RM13, which was the only target that had it seeded"
