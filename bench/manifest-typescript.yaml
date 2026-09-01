@@ -470,3 +470,10 @@ seeds:
     need: 1
     keywords: [owner, "internal", expose, serializ, "whole object", field, leak]
     note: "the created link is serialized wholesale, returning the owner field and internal timestamps to whoever called"
+  - id: T63
+    file: src/main.ts
+    anchor: 'const path = exportCsv(cfg.exportDir, name, store.page(0, 1000));'
+    span: 8
+    need: 1
+    keywords: ["links.csv", "different", mismatch, "empty", default, "no name", "reads back", "always fails"]
+    note: "HARVESTED from calibration (2026-09-01, reported by both baselines). export defaults an empty report name to links.csv while the read-back is handed the original empty name, so /report with no name always fails -- parallel to rust RM13, which was the only target that had it seeded"
