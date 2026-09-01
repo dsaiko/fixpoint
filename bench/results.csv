@@ -112,3 +112,4 @@ run,task,target,model,repeat,sessions,errors,findings,matched_seeds,seeds,recall
 20260901-182529,code,typescript,glm-5.2:cloud,1,3,0,46,37,63,0.59,2,460762,27921,0,416,75.71
 20260901-182816,code,csharp,glm-5.2:cloud,1,3,0,52,38,68,0.56,5,268348,25118,0,369,129.49
 20260901-183123,code,cpp,glm-5.2:cloud,1,3,0,51,40,64,0.62,0,706803,33943,0,530,54.0
+20260901-183534,code,python,glm-5.2:cloud,1,3,0,48,39,66,0.59,1,357278,32389,0,410,100.09
