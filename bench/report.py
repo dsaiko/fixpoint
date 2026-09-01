@@ -429,7 +429,9 @@ def write_html(ranked, all_targets, out_path):
                     cells += '<td class="zero">&mdash;</td>'
                 else:
                     pct = got[0] / got[1] * 100
-                    cells += (f'<td><span class="pct">{pct:.0f}%</span>'
+                    bad = len(got) > 2 and got[2]
+                    cells += (f'<td{" class=\"err\"" if bad else ""}>'
+                              f'<span class="pct">{pct:.0f}%{"!" if bad else ""}</span>'
                               f'<span class="sub"> {got[0]}/{got[1]}</span></td>')
             body.append(f'      <tr><td class="left"><div class="name">'
                         f'{_esc(model)}</div></td>{cells}</tr>')
@@ -522,6 +524,11 @@ def write_html(ranked, all_targets, out_path):
     Both models that failed here have failed before.</p>
     <p><b>Wall clock</b> matters as much as tokens: a panel round runs at the pace of its
     slowest reviewer.</p>
+    <p><b>!</b> marks a cell whose run lost a lens to a contract failure. That recall is
+    <em>deflated, not low</em> &mdash; the findings the failed lens would have contributed were
+    never parsed &mdash; so it is not comparable to a clean cell and is excluded from the field
+    median. Re-run the target to get a real number; the failure itself still counts against the
+    model.</p>
   </div>
 </div>
 """
@@ -674,7 +681,12 @@ def main():
             "dates": sorted({t["run"].split("-")[0] for t in tasks.values()}),
             "missing": sorted(set(LEGACY_SCALE) - set(scored)),
             # recall per target, for the by-target matrix
-            "by_target": {t: (int(r["matched_seeds"]), int(r["seeds"]))
+            # errors per target too: a run that lost a LENS to a contract
+            # failure has a deflated recall, not a low one. On the python target
+            # the failing lens normally supplies two thirds of all credited
+            # findings, so an unmarked cell reads as "weak at python" when it
+            # means "measured with a third of the review discarded".
+            "by_target": {t: (int(r["matched_seeds"]), int(r["seeds"]), int(r["errors"]))
                           for t, r in tasks.items()},
         })
 
@@ -728,16 +740,23 @@ def main():
             cells = ""
             for t in all_targets:
                 got = e["by_target"].get(t)
-                cells += f"{'-':>{width}s}" if got is None else \
-                    f"{f'{got[0]}/{got[1]} {got[0] / got[1] * 100:.0f}%':>{width}s}"
+                if got is None:
+                    cells += f"{'-':>{width}s}"
+                else:
+                    mark = "!" if len(got) > 2 and got[2] else ""
+                    cells += f"{f'{got[0]}/{got[1]} {got[0] / got[1] * 100:.0f}%{mark}':>{width}s}"
             print(f"{model[:29]:30s}{cells}")
         print("-" * (30 + width * len(all_targets)))
         # The field's own rate per target: the number that says a target is
         # saturated (everyone near 100%) or broken/too hard (everyone near 0).
         foot = ""
         for t in all_targets:
+            # A deflated cell is excluded from the median: it would drag the
+            # field's rate for that target down for a reason that is about one
+            # model's output contract, not about the target.
             rates = [e[0] / e[1] for m, es in ranked
-                     for e in [es[0]["by_target"].get(t)] if e]
+                     for e in [es[0]["by_target"].get(t)]
+                     if e and not (len(e) > 2 and e[2])]
             foot += f"{'-':>{width}s}" if not rates else \
                 f"{f'med {statistics.median(rates) * 100:.0f}%':>{width}s}"
         print(f"{'field median':30s}{foot}")
