@@ -154,6 +154,23 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
     return f"{prefix}${usd / points:.3f}"
 
 
+def measured_on(dates):
+    """When this model's rows were produced, from the run ids.
+
+    A model's rows can span days -- claude's go and design are from the
+    2026-08-20 sweep while its language rows are from 2026-09-01 -- and the gap
+    matters, because a row is only as current as the manifest it was scored
+    against. A range is shown rather than just the latest, so a stale half is
+    visible instead of hidden behind a fresh date.
+    """
+    if not dates:
+        return "-"
+    def d(x):
+        return f"{x[0:4]}-{x[4:6]}-{x[6:8]}"
+    lo, hi = min(dates), max(dates)
+    return d(hi) if lo == hi else f"{d(lo)[5:]}\u2026{d(hi)}"
+
+
 PAGE_CSS = """
 :root {
   color-scheme: light dark;
@@ -394,6 +411,7 @@ def write_html(ranked, all_targets, out_path):
         <td>{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']))}</td>
         <td>{e['seconds']:,}</td>
         <td class="{'err' if e['errors'] else 'zero'}">{e['errors']}</td>
+        <td class="sub">{measured_on(e['dates'])}</td>
       </tr>""")
 
     # By-target matrix. Omitted while only one target exists, because a
@@ -481,6 +499,7 @@ def write_html(ranked, all_targets, out_path):
           <th scope="col">Per point</th>
           <th scope="col">Wall (s)</th>
           <th scope="col">Err</th>
+          <th scope="col">Measured</th>
         </tr>
       </thead>
       <tbody>
@@ -668,8 +687,8 @@ def main():
 
     print(f"{'candidate':30s} {'model measured':22s} {'route':11s} {'pays':13s} "
           f"{'score':>9s} {'tok':>9s} {'pts/Mtok':>9s} {'per point':>10s} "
-          f"{'sec':>6s} {'err':>4s}")
-    print("-" * 141)
+          f"{'sec':>6s} {'err':>4s} {'measured on':>17s}")
+    print("-" * 159)
     for model, entries in ranked:
         median = statistics.median(e["points"] for e in entries)
         for e in entries:
@@ -685,7 +704,8 @@ def main():
                   f"{harness:11s} {billing(model, harness):13s} "
                   f"{e['points']:>4d}/{e['possible']:<4d} {e['tokens']:>9d} {eff:>9.1f} "
                   f"{cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']):>10s} "
-                  f"{e['seconds']:>6d} {e['errors']:>4d}{flag}")
+                  f"{e['seconds']:>6d} {e['errors']:>4d} "
+                  f"{measured_on(e['dates']):>17s}{flag}")
         if len(entries) > 1:
             print(f"{'  median':30s} {'':22s} {'':11s} {'':13s} {median:>4.0f}/100")
     # --- by-target matrix: recall per target, per model ---
