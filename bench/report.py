@@ -449,17 +449,19 @@ def write_html(ranked, all_targets, out_path):
   <header>
     <div class="eyebrow">Reviewer benchmark &middot; {when}</div>
     <h1>Which model is worth a panel seat</h1>
-    <p class="lede">Every candidate reviews the same two frozen targets and is scored against
-    <strong>100 planted defects</strong> &mdash; 60 in a Go service, 40 in a design document.
-    No judge, no taste: a deterministic matcher credits each finding to at most one seed.
-    Nobody scores 100, and that is the point. What matters is the distance to the
-    <strong>claude baseline</strong>, and what the points cost.</p>
+    <p class="lede">Every candidate reviews the same frozen targets &mdash; the same
+    link-shortener service in <strong>{len(all_targets) - 1} languages</strong>, plus a design
+    document &mdash; and is scored against planted defects. No judge, no taste: a deterministic
+    matcher credits each finding to at most one seed. Nobody scores full marks, and that is the
+    point. What matters is the distance to the <strong>claude baseline</strong>, and what the
+    points cost. The headline score is go+design; every other language is in the matrix below,
+    because one number cannot show a language the whole field is weak on.</p>
   </header>
 
   <dl class="facts">
     <div class="fact"><dt>Candidates</dt><dd>{len(ranked)}</dd></div>
     <div class="fact"><dt>Sessions</dt><dd>{sessions}</dd></div>
-    <div class="fact"><dt>Points available</dt><dd>100</dd></div>
+    <div class="fact"><dt>Targets</dt><dd>{len(all_targets)}</dd></div>
     <div class="fact"><dt>Repeats</dt><dd>{repeats}</dd></div>
     <div class="fact"><dt>Contract failures</dt><dd>{failures}</dd></div>
   </dl>

@@ -1,6 +1,6 @@
 # codex · typescript · run 20260901-014824 (repeat 1)
 
-recall **40/62** · 50 finding(s), 6 unmatched · 195225 tokens · 882s
+recall **41/63** · 50 finding(s), 5 unmatched · 195225 tokens · 882s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -66,9 +66,9 @@ recall **40/62** · 50 finding(s), 6 unmatched · 195225 tokens · 882s
 | T60 | YES | parallel: C28 the link owner is taken from the request body instead of | review-security: Callers can create records under arbitrary owners |
 | T61 | YES | parallel: C29 /report exports every owner's links to any authenticated | review-bugs: Reports silently omit links after the first 1000 |
 | T62 | — | the created link is serialized wholesale, returning the owner field an |  |
+| T63 | YES | HARVESTED from calibration (2026-09-01, reported by both baselines). e | review-bugs: Unnamed reports are written and read under different names |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) src/main.ts:160 — Unnamed reports are written and read under different names
 - (medium) src/main.ts:25 — Startup ignores the validation result
 - (medium) src/config.ts:100 — NaN numeric settings bypass validation
 - (medium) src/cache.ts:46 — Refreshing an existing entry can evict an unrelated entry

@@ -314,7 +314,12 @@ def main():
     mtok = (tok_in + tok_out) / 1e6
     eff = round(found / mtok, 2) if mtok else 0.0
 
-    run_id = pathlib.Path(summary_path).parent.name
+    # An extract from bench/summaries/ carries its own identity; a raw
+    # .fixpoint summary is identified by the directory holding it. Deriving the
+    # id from the path in both cases wrote run="summaries" into every re-scored
+    # row and produced a second set of per-run tables named "-summaries.md",
+    # silently detaching those rows from the run that produced them.
+    run_id = summary.get("run") or pathlib.Path(summary_path).parent.name
     outdir = pathlib.Path(__file__).parent / "results"
     outdir.mkdir(exist_ok=True)
 
