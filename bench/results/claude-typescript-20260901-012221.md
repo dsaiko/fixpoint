@@ -1,6 +1,6 @@
 # claude · typescript · run 20260901-012221 (repeat 1)
 
-recall **54/62** · 70 finding(s), 5 unmatched · 39499 tokens · 430s
+recall **55/63** · 70 finding(s), 4 unmatched · 39499 tokens · 430s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -66,9 +66,9 @@ recall **54/62** · 70 finding(s), 5 unmatched · 39499 tokens · 430s
 | T60 | YES | parallel: C28 the link owner is taken from the request body instead of | review-security: createLink takes the link owner from the request body, not t |
 | T61 | — | parallel: C29 /report exports every owner's links to any authenticated |  |
 | T62 | — | the created link is serialized wholesale, returning the owner field an |  |
+| T63 | YES | HARVESTED from calibration (2026-09-01, reported by both baselines). e | review-bugs: report() writes one filename and reads back another when ?na |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) src/main.ts:160 — report() writes one filename and reads back another when ?name= is empty
 - (medium) src/store.ts:24 — newCode() can collide or produce a code shorter than the 4-char minimum
 - (low) src/cache.ts:37 — peek() reports expired entries as present, so warm() skips refreshing them
 - (low) src/config.ts:103 — validate accepts a cache size of zero, which breaks the Cache
