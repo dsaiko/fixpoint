@@ -165,8 +165,13 @@ run_task() {
     python3 bench/score.py "$manifest" "$summary" "$MODEL" "$rep"
 }
 
-rep=1
-while [ "$rep" -le "$REPEATS" ]; do
+# REPEAT_START lets a re-run be labelled repeat 2 rather than colliding with the
+# repeat-1 row it is correcting. A target re-run after a contract failure must
+# NOT overwrite the failed row -- that row is the record of the failure, which
+# is the benchmark's disqualifier and the most important thing it measured.
+rep=${REPEAT_START:-1}
+last=$((rep + REPEATS - 1))
+while [ "$rep" -le "$last" ]; do
     case $TASKS in
     all)
         # `all` is deliberately the CALIBRATED pair, not every target on disk:
