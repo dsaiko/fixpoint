@@ -648,17 +648,40 @@ def main():
     if not rows:
         sys.exit(f"{path}: no measurements yet")
 
-    runs = {}
+    # Rows are grouped per (model, target) across repeats, and a target's
+    # representative run is chosen CLEAN-FIRST.
+    #
+    # A re-run after a contract failure is not a variance repeat, it is a
+    # correction: the failed run lost a whole lens, so its recall is deflated
+    # rather than low, and averaging it with the clean run would carry that
+    # damage into the number. The failed row is still counted in `errors` and
+    # in the cost columns -- the failure is the disqualifier and must not
+    # disappear just because the target was measured again. Where several CLEAN
+    # runs of a target exist, that IS a real repeat and they are medianed.
+    by_mt = {}
     for r in rows:
-        key = (r["model"], r["repeat"])
-        # Rows written before the target column carry only a task; a code row
-        # then meant the Go target, the only one that existed.
         tgt = r.get("target") or ("go" if r["task"] == "code" else r["task"])
-        runs.setdefault(key, {})[tgt] = r
+        by_mt.setdefault((r["model"], tgt), []).append(r)
 
-    all_targets = sorted({t for tasks in runs.values() for t in tasks},
+    all_targets = sorted({t for (_, t) in by_mt},
                          key=lambda t: (LEGACY_SCALE.index(t) if t in LEGACY_SCALE
                                         else len(LEGACY_SCALE), t))
+
+    runs = {}
+    for (model, tgt), rs in by_mt.items():
+        clean = [r for r in rs if int(r["errors"]) == 0]
+        use = clean or rs
+        rep = dict(use[-1])
+        rep["matched_seeds"] = str(int(statistics.median(
+            int(r["matched_seeds"]) for r in use)))
+        rep["_deflated"] = "" if clean else "1"
+        rep["_repeats"] = str(len(use))
+        # cost and failures are the whole model's, not just the chosen run's
+        for col in ("tokens_in", "tokens_out", "cache_read", "duration_s",
+                    "errors", "sessions"):
+            rep[col] = str(sum(int(r[col]) for r in rs))
+        rep["_dates"] = sorted({r["run"].split("-")[0] for r in rs})
+        runs.setdefault((model, "1"), {})[tgt] = rep
 
     per_model = {}
     for (model, repeat), tasks in sorted(runs.items()):
@@ -678,7 +701,7 @@ def main():
             "errors": sum(int(t["errors"]) for t in tasks.values()),
             "seconds": sum(int(t["duration_s"]) for t in tasks.values()),
             "sessions": sum(int(t["sessions"]) for t in tasks.values()),
-            "dates": sorted({t["run"].split("-")[0] for t in tasks.values()}),
+            "dates": sorted({d for t in tasks.values() for d in t["_dates"]}),
             "missing": sorted(set(LEGACY_SCALE) - set(scored)),
             # recall per target, for the by-target matrix
             # errors per target too: a run that lost a LENS to a contract
@@ -686,7 +709,8 @@ def main():
             # the failing lens normally supplies two thirds of all credited
             # findings, so an unmarked cell reads as "weak at python" when it
             # means "measured with a third of the review discarded".
-            "by_target": {t: (int(r["matched_seeds"]), int(r["seeds"]), int(r["errors"]))
+            "by_target": {t: (int(r["matched_seeds"]), int(r["seeds"]),
+                              1 if r["_deflated"] else 0)
                           for t, r in tasks.items()},
         })
 
