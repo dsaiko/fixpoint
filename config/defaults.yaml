@@ -90,11 +90,22 @@ roles:
   # argues against it.
   #
   # glm-5.2 remains the standing alternative if the ollama seat underperforms live
-  # (20/20 with zero extras, glm-ollama.yaml). If the weekly limit is hit again,
-  # drop the ollama seat -- minimax first when both are seated (it spends ~2x
-  # kimi's input tokens on the code suite), then deepseek. A dead ollama agent
-  # burns its full 30m timeout and can flip quorum to INCONCLUSIVE, so a spent
-  # limit means a smaller panel, never a waiting one.
+  # (20/20 with zero extras, glm-ollama.yaml).
+  #
+  # THE QUOTA RULE THAT USED TO BE HERE IS DEAD, 2026-09-01. Ollama replaced the
+  # 5-hour and weekly limits with per-token pricing against a monthly credit pool
+  # that refreshes and then continues pay-as-you-go, so there is no weekly limit
+  # to hit and no reset to wait for. The instruction to drop the ollama seat when
+  # the limit was spent -- minimax first, then deepseek -- no longer has a
+  # trigger. Cost is money now, and it is per model rather than per plan: a full
+  # 8-target bench sweep measured $0.78 for glm-5.3-flash against $7.31 for
+  # glm-5.3, a 9.4x spread that identical token counts had hidden completely.
+  # Rates live in bench/report.py as OLLAMA_RATES.
+  #
+  # What SURVIVES from that rule and still matters: a dead ollama agent burns its
+  # full 30m timeout and can flip quorum to INCONCLUSIVE. That is about the
+  # timeout and quorum arithmetic, not about quota, so it is unaffected -- if an
+  # agent cannot answer, the panel must be smaller rather than waiting.
   #
   # BOTH OLLAMA SEATS PULLED 2026-08-21, on that rule: the weekly Ollama Cloud
   # limit was running out, a dead ollama agent writes nothing for its full 30m

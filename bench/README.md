@@ -20,7 +20,7 @@ disqualifier, and one decision rule.
 |---|---|---|
 | **recall** | seeded defects found / seeded (60 code, 40 design) | quality against ground truth — no judge, no taste, no drift between runs |
 | **noise** | findings matching no seed | not automatically false (models find real unseeded bugs; skim the per-run report before dismissing) — but a model whose output is mostly unmatched is expensive to triage |
-| **cost** | input+output tokens (CLI-reported, real) and wall-clock seconds | tokens are the quota drawdown; wall clock is what gates a panel round, which runs at the slowest reviewer's pace |
+| **cost** | real money, from each route's published per-token rates, plus wall-clock seconds | since 2026-09-01 every route including ollama publishes per-token prices, so cost is comparable across routes in one unit; wall clock is what gates a panel round, which runs at the slowest reviewer's pace |
 | **found_per_mtok** | matched seeds per million tokens | the headline: quality per unit of the thing being spent |
 
 The two calibrated targets are one benchmark: **56 go seeds + 34 design seeds
