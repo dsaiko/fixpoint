@@ -1,0 +1,226 @@
+{
+ "run": "20260901-103651",
+ "task": "code",
+ "target": "python",
+ "model": "minimax-m3:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.py",
+     "line": 28,
+     "title": "Store.links / Store.quota / Link.hits mutated without any lock",
+     "description": "Store.__init__ creates self.links and self.quota with no lock, no threading.Guard, no synchronization at all. Every request handler in main.py invokes create/resolve/delete concurrently against these dicts from worker threads. resolve() does a check-then-act: `link = self.links.get(code); if not link: ... link.hits += 1` \u2014 two concurrent resolves of the same code can both see the link, both mutate hits, and the dict mutation (del self.links[code] inside the expired branch at line 58) can run interleaved with a create() on the same code, raising KeyError or losing entries. rename() is a particularly severe check-then-act: it gets `frm`, deletes it, then re-inserts under `to` \u2014 concurrent create() that minted a code colliding with `to` between the `to in self.links` check and the insert will silently overwrite. import_all() is documented as atomic ('Either every link in the batch is stored, or none of them') but is not \u2014 a concurrent reader on store.page() may observe a half-imported batch.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.py",
+     "line": 33,
+     "title": "Janitor thread races with request handlers and reads unsynchronized global flag",
+     "description": "start_janitor launches a thread that, on every tick, iterates store.find_expired(cutoff) and then deletes from store.links directly (line 41). find_expired returns a generator that walks the dict \u2014 a concurrent create() can add new entries (or change expires_at) while the generator is being consumed, causing RuntimeError: dictionary changed size during iteration. The concurrent deletes from the janitor interleave with create/resolve/delete/rename on the handler threads, all of which mutate the same unsynchronized dict (see store.py finding). _running is a module-level bool read in the loop and written by stop_janitor() with no synchronization, so stop_janitor() is not reliably observed by the loop thread without further memory barriers (and even then, the loop may be parked inside time.sleep when stop returns).",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 23,
+     "title": "Authenticator.sessions mutated without a lock under concurrent verify/issue/revoke",
+     "description": "Authenticator stores self.sessions in a plain dict with no synchronization. verify() iterates the dict while issue()/revoke() mutate it from other threads: a revoke() during verify's `for session in self.sessions.values()` can raise RuntimeError, and a concurrent issue() that inserts a new session may or may not be visible depending on dict resizes. There is no check-then-act on the sessions dict \u2014 two threads can both pass the membership test for a token that is then revoked and reissued under a new owner, so the returned session can belong to a different principal than the requester presented.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 33,
+     "title": "peek reads cache without the lock, breaking the lock-protected invariant",
+     "description": "peek() returns `code in self.entries` while get/set/delete/sweep/flush mutate the same dict under self.lock. The other methods on this class are documented as thread-safe, so any caller that uses peek() followed by get()/set() (the pattern warm() itself uses at line 56-58: `if not self.peek(code): self.set(code, target)`) has a TOCTOU race: between the unlocked peek and the locked set, another thread can expire, evict, or delete the entry, and warm() can clobber a still-fresh value or insert one that another thread is about to delete. A concurrent get/set can also resize the dict while peek's `in` check reads its hash table, which is undefined behavior in CPython in practice (it does not raise, but it can return a wrong True).",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 75,
+     "title": "flush() deadlocks itself by calling delete() while holding the lock",
+     "description": "flush() enters `with self.lock:` at line 77, then on line 80 calls `self.delete(\"__sentinel__\")`, which on line 51 does `with self.lock:` again. threading.Lock is non-reentrant, so the second acquisition blocks forever on the same thread that already owns it. Every call to flush() from the admin endpoint will hang the request.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 60,
+     "title": "sweep() mutates the dict while iterating it",
+     "description": "sweep() does `for code in self.entries: ... del self.entries[code]`. CPython raises RuntimeError: dictionary changed size during iteration when a key is deleted during a `for` loop over the same dict (this is the documented behavior since Python 3). Because sweep() runs on the janitor thread concurrently with get/set/delete on handler threads, even without this self-mutation, concurrent inserts during the loop would still raise \u2014 and the call is supposed to run forever, every interval.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 54,
+     "title": "warm_cache leaks threads and returns before they finish",
+     "description": "warm_cache() spawns one thread per pair, appends them to a local `threads` list, then returns without ever calling join(). The threads are not stored anywhere and are not joined \u2014 they become detached, and the function returns before they run, contradicting the docstring ('Returns once every probe is done'). If the process exits between the early return and the threads scheduling, the threads are killed mid-update. If pairs is large, an unbounded number of threads is created, which can exhaust resources. The Cache.set path is also thread-safe in isolation, but the threads racing on a single Cache with no join means the caller cannot reason about completion or error propagation.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 49,
+     "title": "resolve() bug exposed as a concurrency hazard",
+     "description": "Not strictly a data race on its own, but resolve() at line 57 reads `time.time() < link.expires_at` and at line 58 then does `del self.links[code]` for the expired case, while the docstring says 'Expired links resolve to None so dead codes cannot be revived by traffic' \u2014 yet the deletion is on the OPPOSITE branch from the comment: a non-expired link is returned, and an expired link is silently dropped from the map. Two concurrent resolves for an expired code can both pass the `time.time() < link.expires_at` test, both attempt `del self.links[code]`, and the second one raises KeyError that is not caught here, propagating to the request handler. Combined with the missing lock, this is also where the race window lives.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 29,
+     "title": "stop_janitor only flips a flag; the loop can sleep past it",
+     "description": "stop_janitor() sets `_running = False`, but the loop is parked in `time.sleep(interval)` for up to `interval` seconds. Tests or shutdown paths that rely on stop_janitor returning promptly and the janitor actually stopping will observe a long-lived background thread. The flag is also a plain bool read/written from two threads with no synchronization, so the write may not be visible to the reader thread promptly.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "auth.py",
+     "line": 35,
+     "title": "Session tokens printed to stdout in plaintext",
+     "description": "`print(\"auth: issued token %s for %s\" % (token, owner))` writes every freshly minted bearer token to the service's standard output. Combined with auth.verify() never checking the session's expires_at, an operator reading container logs (or any log aggregator tailing stdout) captures a permanent credential for the named owner. Attack path: deploy the service in any environment that captures stdout \u2192 grep the log stream for `auth: issued token` \u2192 use the token in the Authorization header on any write endpoint. Any user can impersonate any other user, including the admin role assigned at issue time.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.py",
+     "line": 13,
+     "title": "Path traversal in CSV export/read_report",
+     "description": "`path = os.path.join(directory, name + \".csv\")` concatenates the user-supplied `name` from the `report` query string without sanitization. `os.path.join` discards the leading directory when `name` is absolute (e.g. `name=/etc/passwd` resolves to `/etc/passwd.csv`), and a `..` prefix walks out of the directory (`name=../../etc/shadow` resolves outside `cfg.export_dir`). The same construction is reused by `read_report()` at line 58, so the export endpoint both writes and reads attacker-controlled paths. Attack path: `GET /report?name=/var/lib/linkd/config` reads the service's runtime config; a relative name with `..` reaches arbitrary `.csv` files on the box. Because the file is opened for write before read, an attacker can also clobber files ending in `.csv`.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.py",
+     "line": 123,
+     "title": "Admin gate is a client-supplied header",
+     "description": "`if request[\"headers\"].get(\"x-admin\") != \"true\"` is the only check protecting `/admin/quotas`. Any caller can forge the header; there is no signing or session-role check. Attack path: `curl -H 'Authorization: Bearer <any-user-token>' -H 'x-admin: true' http://host/admin/quotas` returns the per-owner link counts. The same pattern would extend to any future admin endpoint added behind this check, making the entire admin surface trivially accessible.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.py",
+     "line": 43,
+     "title": "Bearer token echoed in 401 response body",
+     "description": "`return respond(401, \"unauthorized: unknown token (token %s)\" % token)` embeds the full bearer token from the Authorization header into the HTTP response. Any system that records responses (access logs, error trackers, APM, browser dev tools, intermediate proxies) captures a working credential. Combined with sessions that never expire (auth.verify never compares `expires_at`), the captured token grants permanent access to the owner's account.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 38,
+     "title": "Session expiration never checked",
+     "description": "`Session.expires_at` is set to `time.time() + 12 * 3600` at issue time, but `verify()` only compares the token string and never compares `session.expires_at` against `time.time()`. Every token minted by `issue()` works forever; the 12-hour lifetime is theatre. This amplifies every other token-leak finding (logging at line 35, reflection at main.py:43) into a permanent compromise instead of a 12-hour one.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 94,
+     "title": "delete_link does not enforce ownership",
+     "description": "The docstring says \"A link may only be deleted by the user who created it; the owner is taken from the authenticated session,\" but the handler calls `store.delete(request[\"query\"][\"code\"])` with only the code and no check that `link.owner == session.owner` (or that the caller has the admin role). Any authenticated user can delete any other user's link, removing it before its TTL expires. The same hole exists in `store.rename()` (no caller-side ownership gate).",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 61,
+     "title": "Passwords stored as unsalted SHA-256",
+     "description": "`hash_password` is `hashlib.sha256(password.encode()).hexdigest()`: a single-round, unsalted, fast hash. Given the in-memory user table (and any future persistence), an attacker who reads the table recovers most passwords in seconds with a GPU rainbow table or dictionary attack. There is also no key-stretching factor \u2014 every guess costs one SHA-256.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 107,
+     "title": "Open redirect on /out?next=",
+     "description": "`out(request)` accepts any value of `next` (including `https://evil.example/phish`) and sets `Location: <nxt>` with a 301. The handler is documented as a click counter for email templates, but the lack of any host allow-list turns it into an open redirect. Attack path: send a victim `https://shortener.example/out?next=https://attacker.example/login`; the 301 lands them on the attacker page, and the legitimate domain name makes the link look safe.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 34,
+     "title": "URL validation only checks scheme prefix \u2014 SSRF-friendly",
+     "description": "`target.startswith(\"http://\")`/`\"https://\"` accepts URLs such as `http://127.0.0.1:8500/v1/kv/`, `http://169.254.169.254/latest/meta-data/`, or `http://10.0.0.5/admin`. When the service later fetches a target (the docstring on `check_targets` in worker.py hints at probing every link), an attacker who can `POST /links` with a crafted `target` reaches internal services, cloud metadata endpoints, and the admin interface on the loopback. The check_targets probe runs the moment the link is created.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 22,
+     "title": "Hardcoded fallback secret `dev-secret-do-not-use`",
+     "description": "`self.secret = [REDACTED]\"LINKD_SECRET\") or \"dev-secret-do-not-use\"` silently falls back to a constant string when the env var is unset. The constant is in the source tree, so any deployment that forgets the env var signs sessions with a key the public already knows. Even though the current code does not sign tokens with this secret (sessions are random lookups), the value is still being captured as `self.secret` and advertised as a config knob, so a future change that does use it (HMAC of tokens, cookie signing, etc.) will be silently broken.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 110,
+     "title": "by_owner uses substring match on owner name",
+     "description": "`return [l for l in self.links.values() if owner in l.owner]` matches `owner` as a substring of the stored owner string. A caller searching for owner `\"alice\"` also returns links belonging to `\"alice2\"`, `\"malice\"`, or any string that contains the substring. Combined with the lack of any authorization gate (any authenticated user can call this through future handlers), one user can enumerate other users' links by probing substrings.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 27,
+     "title": "Session token and short-code generated from non-CSPRNG",
+     "description": "`random.getrandbits(32)` (and again, twice, at store.py:170) is the Mersenne Twister. After observing a handful of consecutive outputs from the same process, an attacker can recover the internal state and predict every subsequent session token and short code. The token has only 64 bits of entropy against a state-recovery adversary; even without state recovery, an online brute force over 64 bits is feasible. Predictable short codes collide with predictable URLs (an attacker can pre-generate the next batch and squat them).",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 71,
+     "title": "Timing-unsafe secret comparison",
+     "description": "`secret_equals` uses `presented == expected`, which short-circuits on the first differing byte. An attacker who can measure response times (co-located in the same datacenter, or via a side-channel like a CDN's timing) recovers the secret one byte at a time.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 30,
+     "title": "CORS advertises wildcard origin with credentials",
+     "description": "`Access-Control-Allow-Origin: *` paired with `Access-Control-Allow-Credentials: true` is rejected by spec-compliant browsers, but the configuration signals intent and would expose credentials if a future change replaces the wildcard with a reflected origin. There is no cookie-based session today (bearer tokens are used), so impact is currently misleading configuration rather than an active leak.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 263881,
+      "output_tokens": 26308
+     },
+     "duration_ms": 439614,
+     "failed": true,
+     "output_bytes": 37547
+    },
+    {
+     "usage": {
+      "input_tokens": 167694,
+      "output_tokens": 17958
+     },
+     "duration_ms": 329686,
+     "failed": false,
+     "output_bytes": 13207
+    },
+    {
+     "usage": {
+      "input_tokens": 84071,
+      "output_tokens": 10807
+     },
+     "duration_ms": 198551,
+     "failed": false,
+     "output_bytes": 13037
+    }
+   ]
+  }
+ ]
+}
