@@ -1,0 +1,394 @@
+{
+ "run": "20260901-112232",
+ "task": "code",
+ "target": "go",
+ "model": "deepseek-v4-pro:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.go",
+     "line": 54,
+     "title": "Create panics: quota map is never initialized",
+     "description": "NewStore only initializes `links`, leaving `quota` nil. The first call to Create executes `s.quota[owner]++`, which is an assignment to a nil map and panics. Every POST /links crashes the handler on the very first request.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.go",
+     "line": 65,
+     "title": "Resolve expiry check is inverted",
+     "description": "The condition `time.Now().Before(l.ExpiresAt)` is true while a link is still valid, so a fresh link is deleted and returns ErrNotFound on its first hit, while an actually-expired link (now after ExpiresAt) falls through, increments Hits, and resolves. The comment claims expired links resolve to ErrNotFound, but the code does the exact opposite.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.go",
+     "line": 78,
+     "title": "BearerToken panics on missing or malformed Authorization header",
+     "description": "BearerToken does `strings.Split(h, \" \")` and returns `parts[1]` unconditionally. A request with no Authorization header (or one without a space) yields a single-element slice, so `parts[1]` panics with index out of range. Since Middleware calls this on every request, any unauthenticated request crashes the handler.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 106,
+     "title": "Page panics with slice bounds out of range when the page extends past the end",
+     "description": "When `offset+size > len(all)`, the code sets `end = len(all) + 1` and then slices `all[offset:end]`, which is out of range and panics. This is the normal case for GET /links (default size 20) and /stats and /report (size 1000) whenever there are fewer links than the requested size.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 174,
+     "title": "stats divides by zero when the store is empty",
+     "description": "`hits / int64(len(links))` panics with integer division by zero when there are no links (Page(0,1000) returns nil). The /stats endpoint therefore crashes on an empty store.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 78,
+     "title": "redirect lowercases the code, breaking codes that contain uppercase",
+     "description": "newCode uses base64.RawURLEncoding, whose alphabet includes A-Z, so generated codes routinely contain uppercase letters. redirect resolves `strings.ToLower(code)`, which no longer matches the stored code, so any link whose code has an uppercase letter returns 404. preview and deleteLink do not lowercase, confirming the store is case-sensitive.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 60,
+     "title": "Verify never checks ExpiresAt, so sessions never expire",
+     "description": "Verify iterates sessions and returns the first token match without ever comparing against ExpiresAt, despite the doc comment promising an error when the token's lifetime has run out and Issue setting a 12-hour expiry. Tokens therefore remain valid forever.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 191,
+     "title": "writeJSON sets headers after WriteHeader, so they are dropped",
+     "description": "writeJSON calls `w.WriteHeader(status)` first, which commits the response headers, then sets Content-Type and the CORS headers. Those Header().Set calls are no-ops, so responses go out without the intended Content-Type or Access-Control-* headers.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 101,
+     "title": "preview never closes the response body",
+     "description": "After `s.client.Get(target)` succeeds, `resp.Body` is read via io.LimitReader but never closed, leaking the connection/file descriptor on every preview request (including the error path after a failed ReadAll).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 48,
+     "title": "Bad LINKD_TIMEOUT_MS sets Timeout to 0 instead of keeping the default",
+     "description": "On a parse error the code logs \"keeping default\" but then still executes `cfg.Timeout = time.Duration(ms) * time.Millisecond` with ms==0, silently disabling the HTTP client timeout.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 54,
+     "title": "LINKD_CACHE_TTL_MS is multiplied by time.Second, not milliseconds",
+     "description": "The doc comment says LINKD_CACHE_TTL_MS is a duration in milliseconds, but the code multiplies the parsed value by time.Second, making the TTL 1000x longer than documented.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 68,
+     "title": "LINKD_FETCH_LIMIT is parsed but never applied",
+     "description": "The block reads LINKD_FETCH_LIMIT, validates it, and then does `_ = limit`, discarding the value. cfg.FetchLimit is never updated, so the environment variable has no effect.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 123,
+     "title": "SuccessRate uses integer division and always returns 0 or 100",
+     "description": "`used / len(s.links) * 100` performs integer division first, so the fraction is 0 unless every link has hits, in which case it is 1. The dashboard therefore reports 0% or 100% and never an intermediate value.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 84,
+     "title": "RequireAdmin condition is always true",
+     "description": "`if s.Role != \"admin\" || s.Role != \"owner\"` is true for every role (a role cannot be both), so RequireAdmin always returns an error and would reject even admins and owners if it were wired up.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 92,
+     "title": "Cache.Delete returns without unlocking when the code is absent",
+     "description": "Delete takes the write lock, and if the code is not present it returns immediately without calling Unlock, leaving the mutex locked forever. The next Lock/RLock on the cache deadlocks. This is exactly the path the TTL timer callback hits after an entry was already evicted.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 79,
+     "title": "Cache.evict calls Get while holding the write lock, deadlocking",
+     "description": "Set holds c.mu.Lock() and calls evict, which calls c.Get(code); Get tries to acquire c.mu.RLock() on the same mutex already held for writing, so the goroutine blocks forever. Any Set on a full cache deadlocks.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 78,
+     "title": "Rename validates `from` twice and never validates `to`",
+     "description": "Both validation calls pass `from`, so the destination code `to` is never checked for length or allowed characters, and the second check is dead.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 146,
+     "title": "Top sorts ascending, returning the least-followed links",
+     "description": "The sort comparator `all[i].Hits < all[j].Hits` orders ascending, but the doc says \"most hits first\". Top returns the least popular links instead of the leaderboard.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 159,
+     "title": "ByOwner uses substring match instead of equality",
+     "description": "`strings.Contains(l.Owner, owner)` returns links whose owner merely contains the query as a substring, so ByOwner(\"alice\") also returns links owned by \"alice2\" or \"bobalice\", contradicting the \"exactly this owner\" contract.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 205,
+     "title": "Prune returns the remaining count instead of the removed count",
+     "description": "Prune counts `removed` but returns `len(s.links)`, the number of links left after pruning, contradicting the doc that it reports how many it removed.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "export.go",
+     "line": 40,
+     "title": "ArchiveAll defers Close inside the loop, leaking file descriptors",
+     "description": "`defer f.Close()` inside the for loop accumulates one open file per owner until ArchiveAll returns, leaking file descriptors for large owner sets. Write errors are also ignored.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "export.go",
+     "line": 60,
+     "title": "WriteSnapshot ignores the rename error and reports success",
+     "description": "`os.Rename(tmp.Name(), ...)`'s error is discarded and the function returns nil, so a failed move (e.g. cross-device rename from /tmp to a different filesystem) is reported as a successful durable snapshot.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 26,
+     "title": "Store maps are shared across goroutines with no synchronization",
+     "description": "Store.links and Store.quota are plain maps with no mutex, yet every HTTP handler (createLink, redirect, listLinks, deleteLink, stats, report, adminQuotas) reads/writes them concurrently, and StartJanitor (worker.go:51-54) iterates s.links and deletes from it every minute. Concurrent map read+write or iteration+write triggers a runtime 'fatal error: concurrent map read and map write' / 'concurrent map iteration and map write', crashing the process. Resolve also does l.Hits++ (store.go:69), a non-atomic read-modify-write on a shared field, racing across concurrent redirects.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.go",
+     "line": 91,
+     "title": "Delete returns without unlocking when the key is absent, deadlocking the cache",
+     "description": "Delete locks c.mu, and if c.m[code] is absent it returns without Unlock. The time.AfterFunc callback registered in Set calls Delete(code); after an entry is removed by Get's expiry path (or a prior Delete), the timer still fires, finds the key absent, and returns while still holding the lock. Every subsequent cache call then blocks forever on c.mu.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 79,
+     "title": "Set deadlocks when the cache is full: evict calls Get which re-locks",
+     "description": "Set holds the write lock (c.mu.Lock()) and, when len(c.m) >= c.limit, calls evict(), which calls c.Get(code). Get does c.mu.RLock(). Go's RWMutex is not reentrant: a goroutine holding the write lock blocks forever trying to take the read lock. The first Set that fills the cache hangs the process deterministically.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 44,
+     "title": "Get writes to the map and entry while holding only a read lock",
+     "description": "Get holds only RLock but performs delete(c.m, code) (a map write), e.used = time.Now() (a write to the shared entry), and c.hits++ (a non-atomic RMW). Two concurrent Get calls both holding RLock can delete the same map concurrently (concurrent map writes -> panic) or race on e.used and hits.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 54,
+     "title": "Peek and Stats read shared state without the lock",
+     "description": "Peek reads c.m[code] and Stats reads c.hits with no lock, racing with Set/Delete/Get writes. A concurrent map read during a write is a runtime panic, and hits is a torn/racy read.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 20,
+     "title": "AddResolved copies the mutex and counter, so resolved never increments",
+     "description": "AddResolved has a value receiver, so s.metrics.AddResolved() copies the Metrics struct, including its sync.Mutex and the resolved field. The lock and increment apply to the copy, which is discarded; the real resolved stays 0. This is also a 'lock copied after use' defect (go vet copylocks). The /stats endpoint therefore always reports 0 resolved even though redirect and out call it on every hit.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 68,
+     "title": "WaitGroup Add is called inside the goroutine, so Wait can return early",
+     "description": "WarmCache launches goroutines that call wg.Add(1) as their first statement, then the parent calls wg.Wait(). If Wait runs before any goroutine executes Add, the counter is 0 and Wait returns immediately, before any probe finishes; the goroutines keep running after the function returns (leak), contradicting the doc 'returns after every probe finished'. Calling Add concurrently with Wait when the counter is zero is also a documented WaitGroup misuse.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 92,
+     "title": "CheckTargets leaks goroutines blocked on an unbuffered channel after an early return",
+     "description": "Each probe goroutine sends its result on the unbuffered results channel. The reader returns on the first error, abandoning the remaining goroutines, which block forever on results <- ... with no reader. A single failing target leaks up to N-1 goroutines (and their HTTP client connections).",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 26,
+     "title": "sessions map has no mutex; Issue/Revoke race with Verify",
+     "description": "Authenticator.sessions is a plain map. Verify iterates it on every request (via Middleware), while Issue writes and Revoke deletes. If Issue/Revoke are ever called (they are the public token-lifecycle API), concurrent map read/write panics. Currently only Verify is wired, so the race is latent.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "cache.go",
+     "line": 71,
+     "title": "Set never stops the previous timer, so a stale timer deletes a fresh entry and timers leak",
+     "description": "Set stores a new time.AfterFunc timer under c.timers[code] but never stops a previous timer for the same code, and Delete never removes the timer from c.timers. Re-setting a code leaves the old timer armed; when it fires it calls Delete(code) and removes the newly-set entry early. The timers map also grows without bound.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "main.go",
+     "line": 96,
+     "title": "SSRF: /preview fetches an arbitrary user-controlled URL server-side",
+     "description": "preview() resolves a link's target and calls s.client.Get(target) with the server's own HTTP client, then returns the first 4096 bytes to the caller. createLink() accepts any http(s) URL as a target, so an attacker creates a link pointing at http://169.254.169.254/latest/meta-data/ (or any internal service / localhost port) and then GETs /preview/{code}. The server fetches the internal resource and echoes its body back, turning the shortener into a proxy for the internal network and cloud metadata.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 156,
+     "title": "Authorization bypass: adminQuotas trusts a client-supplied X-Admin header",
+     "description": "adminQuotas() gates on r.Header.Get(\"X-Admin\") == \"true\". Any client that can set a header (curl, a script, any non-browser HTTP client) simply sends X-Admin: true and reads every owner's link counts. The header is attacker-controlled input, not a server-asserted claim, so the 'Administrators only' check provides no protection.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 135,
+     "title": "IDOR: deleteLink deletes any link without checking ownership",
+     "description": "deleteLink() calls s.store.Delete(code) directly. The middleware sets X-Owner from the session, but the handler never compares it to the link's owner, and createLink() takes Owner from the request body rather than the session. Any authenticated user can delete any other user's link by guessing/learning its code, and can attribute links to arbitrary owners at creation time.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 44,
+     "title": "Session tokens minted with math/rand are predictable",
+     "description": "Issue() fills the 16-byte token with rand.Intn(256) from math/rand, a non-cryptographic PRNG, despite the comment claiming the token is 'unguessable'. An attacker who observes a few issued tokens (they are also written to the log and reflected in error responses) can recover the PRNG state and predict future tokens, forging sessions. store.go correctly uses crypto/rand for link codes; the auth token does not.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 59,
+     "title": "Verify never checks ExpiresAt, so sessions never expire",
+     "description": "Verify() returns the session as soon as the token matches, ignoring s.ExpiresAt entirely, even though Issue() sets a 12-hour expiry and the doc comment promises 'an error if ... its lifetime has run out'. A leaked or stolen token remains valid indefinitely; Revoke() is the only way to kill one and it is never called from any handler.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.go",
+     "line": 16,
+     "title": "Path traversal: export filename escapes the export directory",
+     "description": "ExportCSV() builds the path with filepath.Join(dir, name+\".csv\") where name comes straight from the ?name= query parameter. filepath.Join does not sanitize '..', so name=\"../../etc/cron.d/x\" (or a name containing '/') writes the CSV outside the export dir, letting an authenticated caller write attacker-controlled content to any path the service user can write. The comment 'confined to dir' is false.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 151,
+     "title": "Open redirect via ?next= in /out",
+     "description": "out() redirects to r.URL.Query().Get(\"next\") with no validation. An attacker crafts /out?next=https://evil.example and the server issues a 301 to an arbitrary external (or protocol-relative //evil.example) URL, useful for phishing and for laundering a trusted domain's redirects.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 26,
+     "title": "Export written world-readable (0666) despite 'service user only' intent",
+     "description": "ExportCSV() writes the report with os.WriteFile(..., 0666), making it readable by every local user, while the comment states the report 'carries every owner's links' and is 'written for the service user only -- nobody else on the box may read it'. The mode contradicts the stated confidentiality requirement and exposes all owners' link data to any local account.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 53,
+     "title": "Session token written to the log in plaintext",
+     "description": "Issue() logs the full bearer token: [REDACTED]\"auth: issued token %s for %s\", s.Token, owner). Logs are typically readable by operators and often shipped to a central store, so the credential that gates every write endpoint is persisted in plaintext and can be replayed by anyone with log access.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 78,
+     "title": "BearerToken panics on a malformed Authorization header",
+     "description": "BearerToken() does strings.Split(h, \" \") and returns parts[1] unconditionally. A request with an empty Authorization header, or one with no space (e.g. 'Authorization: Bearer'), yields a slice of length < 2 and panics with index out of range. This is reachable unauthenticated (Middleware calls it before any check); net/http recovers the panic per-connection, so an attacker can repeatedly crash request handling.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 84,
+     "title": "RequireAdmin always rejects due to || instead of &&",
+     "description": "RequireAdmin() tests s.Role != \"admin\" || s.Role != \"owner\", which is true for every possible role (a role cannot equal both), so it always returns an error. It is currently dead code (no handler calls it), but as written the intended admin/owner gate can never admit anyone, and if wired up it would silently lock out all administrators.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "main.go",
+     "line": 193,
+     "title": "Permissive CORS: wildcard origin with credentials flag",
+     "description": "writeJSON() sets Access-Control-Allow-Origin: * together with Access-Control-Allow-Credentials: true on every JSON response. The combination is invalid per the CORS spec (browsers ignore the credentials flag with a wildcard origin), and the wildcard exposes all JSON endpoints to any origin. It does not currently leak authenticated data cross-origin because auth is header-based, but it is a misconfiguration that will bite if cookie/session auth is ever added.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 255681,
+      "output_tokens": 19231
+     },
+     "duration_ms": 169919,
+     "failed": false,
+     "output_bytes": 11727
+    },
+    {
+     "usage": {
+      "input_tokens": 247986,
+      "output_tokens": 21604
+     },
+     "duration_ms": 192073,
+     "failed": false,
+     "output_bytes": 7419
+    },
+    {
+     "usage": {
+      "input_tokens": 133353,
+      "output_tokens": 14165
+     },
+     "duration_ms": 134258,
+     "failed": false,
+     "output_bytes": 9289
+    }
+   ]
+  }
+ ]
+}
