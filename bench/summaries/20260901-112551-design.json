@@ -1,0 +1,233 @@
+{
+ "run": "20260901-112551",
+ "task": "design",
+ "target": "design",
+ "model": "deepseek-v4-pro:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "A spurious 401 wipes notes.db, destroying unsynced offline edits",
+     "description": "Any 401 from the refresh endpoint \u2014 including 'token corruption', which the design itself lists as a cause \u2014 triggers deletion of the entire local database. A server-side bug, a key rotation, a clock-skewed token validation, or a bad deploy can all produce a 401 that is not a real revocation. The wipe deletes the outbox, which is the only copy of edits made offline, so a single spurious 401 permanently loses the user's offline work with no path back. This directly violates goal 1 ('A note edited offline is never lost').",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Wall-clock cursor plus LWW makes clock skew silently lose data",
+     "description": "The cursor is the client's wall-clock modified_at, and conflict resolution is last-write-wins by that same clock. A device whose clock is ahead writes future timestamps: its cursor advances past every other device's edits, so `modified_at > cursor` filters them out and the device permanently misses changes until its clock catches up. Its edits also always win conflicts, discarding other devices' edits. The design only says skew is 'rare' and 'NTP handles the common case', but NTP does not fix a device that was offline with a drifted clock or a manually set clock. The result is silent, unrecoverable data loss (the losing copy is discarded, section 6).",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "Changes query has no supporting index, so every sync is a full table scan",
+     "description": "The query filters on `user_id` and `modified_at` and orders by `modified_at`, but the only index planned is the primary key on `note_id`, which does not help this query at all. At the stated scale (50k users x a few hundred notes = ~10-15M rows) and cadence (foreground + every 15 minutes), this is millions of sequential scans per day. The database saturates first, and 'adding instances' (section 8) does not help a database bottleneck. The claim 'Postgres is fast and the working set per user is small' is wrong: the working set is the whole table, not the user's rows.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "Transactionality is internally inconsistent, leaving partial-failure behavior undefined",
+     "description": "Section 5 says /sync 'runs in a single transaction' and that if row N fails, 'rows 1..N-1 stay applied'; section 6 says a server crash 'rolls back' the transaction. These cannot all be true. If rows are committed incrementally, a crash mid-batch leaves a partial batch applied and the client's full-batch resend re-applies rows 1..N-1 (idempotency is never stated). If it is one transaction, the 'rows 1..N-1 stay applied' claim is false and the client's behavior on a reported failing row \u2014 does it clear the outbox, drop the failing row, or retry forever? \u2014 is unspecified. The 'no acknowledged edit is ever lost' posture has no answer for a batch whose response is lost after a partial apply.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Random 32-bit note id collides at fleet scale; lookup scoping is unspecified",
+     "description": "Note ids are random 32-bit integers. At 50k users x a few hundred notes (~10-15M notes) the birthday bound (~65k) is far exceeded, so collisions are certain across the fleet. The server 'keeps the client id in a secondary column for lookup' but never says the lookup is scoped by user_id. If it is not scoped, two users' colliding ids make one user's edit target the other user's note (cross-user corruption). Even scoped, the id space is needlessly fragile and the failure mode is silent.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 89,
+     "title": "No request timeout, no body cap, and no rate limit leave resources unbounded",
+     "description": "The body is uncapped (section 2), the server has no request timeout (section 5), and there is no per-user rate limit (section 8). A single huge note or a slow client holds a connection indefinitely, and a misbehaving client syncing in a tight loop generates unbounded load. Nothing enforces backpressure, so one client can exhaust connection pools and file descriptors. Combined with 'in-flight requests are not drained on shutdown' (section 7), a large first sync can be killed and retried across a rolling deploy indefinitely.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 117,
+     "title": "/healthz does not gate on the database, so the LB keeps routing to dead instances",
+     "description": "/healthz returns 200 while the process runs and deliberately excludes database connectivity. When Postgres is down, every instance still reports healthy, the load balancer keeps sending traffic, and every /sync returns 500. The operator cannot use the LB to shed load or route around the outage, and 'healthy' instances are indistinguishable from broken ones. The 5xx dashboard is the only signal, and it fires after the fact.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deploys run old and new concurrently, but the protocol has no version",
+     "description": "Section 7 claims 'old and new versions never run concurrently against the same schema because deploys are quick', which is false for a rolling deploy \u2014 there is always a window where both run. Section 3 carries no protocol version number on the grounds that 'adding a field is backwards compatible', but that only holds if both sides ignore unknown fields, which is never stated, and it says nothing about changed or removed fields. A schema migration run before the new version can break the still-running old instances, and a new client against an old server (or vice versa) has no way to detect the mismatch.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 123,
+     "title": "A silently failing client is invisible, contradicting the dashboards-only goal",
+     "description": "Section 7 states a client that stops syncing 'is not itself an alertable signal' and relies on support tickets, but goal 1.5 promises a support engineer can answer 'why does this device not have my note' from the dashboards alone. With no last-sync heartbeat or client-side telemetry, a device that is quietly failing (bad clock, corrupted outbox, auth loop) produces no server-side record, so the dashboards cannot answer the question the goal promises they can.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Restore is unrehearsed with no RPO/RTO, so recovery is unproven",
+     "description": "Backups are nightly pg_dump with 14-day retention, but 'restore has not been rehearsed' and the procedure is a one-liner. There is no stated recovery point or recovery time objective, no test that the dump actually restores, and no runbook for a partial or corrupted database. A data-loss incident would be the first time anyone tries to restore, with no idea how long it takes or whether it works.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 152,
+     "title": "Tombstones and orphaned rows grow without bound",
+     "description": "Rows with deleted=true stay in both databases 'forever', and account deletion leaves the user's note rows in place with only a 'nightly job could clean them up later'. The changes query returns every matching row including tombstones, so the table and every sync payload grow monotonically. The design calls them 'small', but the growth is unbounded and no cleanup is actually scheduled.",
+     "lens": "design-failure",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 37,
+     "title": "Clear-text notes.db contradicts the 'stolen device cannot read notes' claim",
+     "description": "Section 2 writes notes.db in the clear with default permissions, deferring to platform disk encryption. Section 4 then claims the wipe-on-401 exists 'so a stolen device cannot read notes after a remote revocation'. A stolen device can read the clear-text file regardless of revocation, and an offline stolen device never receives the 401 that would trigger the wipe. The security claim is false as stated.",
+     "lens": "design-failure",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Last-write-wins on client wall clock plus a wall-clock cursor silently drops edits under clock skew",
+     "description": "Conflict resolution is 'newer modified_at wins' (line 61) and the sync cursor is the modified_at of the newest change seen (line 52), where modified_at is the client's wall clock (line 22). A device whose clock is behind the fleet produces edits timestamped earlier than peers' cursors; those edits are never returned by 'strictly newer than cursor' and are silently lost to every other device. The design admits skew exists ('expected to be rare, NTP handles the common case') but NTP does not fix a device that is minutes off, and the stated goal 'a note edited offline is never lost' (line 10) fails exactly then.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 111,
+     "title": "'No acknowledged edit is ever lost' is contradicted by discarding the losing copy on conflict",
+     "description": "The failure posture (line 98) promises no acknowledged edit is ever lost, but conflict resolution (lines 61-63, 111-113) discards the losing copy immediately and keeps no record of it. The losing copy was an edit that was acknowledged on its own device, so it is an acknowledged edit that is silently destroyed. Because there is no audit trail (line 159), the loss is undetectable and unrecoverable.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "Single-transaction apply and partial application are asserted together and are mutually exclusive",
+     "description": "Line 78 says /sync 'runs in a single transaction per request', while lines 80-81 say that if row N fails validation, 'rows 1..N-1 stay applied'. In a single transaction a failure rolls back the whole batch; keeping rows 1..N-1 requires savepoints or per-row commits, which the design never specifies. The client's retry logic ('never resend work the server already has') depends on which behavior is real, and the document gives both.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deploys run old and new versions concurrently, contradicting the migration assumption",
+     "description": "Line 128 says deploys are rolling, but lines 129-130 assert 'old and new versions never run concurrently against the same schema because deploys are quick'. Rolling deploys inherently run both versions at once while the migration has already been applied, so the old version serves traffic against the new schema. Any non-backwards-compatible migration (rename, NOT NULL, dropped column) breaks the still-running old instances, and the protocol carries no version number (line 65) to gate them.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "No audit trail of syncs makes the stated support goal unanswerable",
+     "description": "Goal 5 (lines 14-15) requires a support engineer to answer 'why does this device not have my note' from dashboards alone, but line 159 states the server writes no record of which device sent which batch, and superseded bodies are overwritten in place (lines 93-94). With no sync log and no history, there is nothing to show whether a device ever sent the note, whether the server applied it, or whether a conflict discarded it.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 70,
+     "title": "Any refresh 401 wipes notes.db, destroying unsynced offline edits on password change or token corruption",
+     "description": "Lines 70-74 wipe local state including notes.db on any refresh 401, listing 'revocation, password change, or token corruption' as triggers. Password change and token corruption are not stolen-device scenarios, yet they destroy the outbox and all unsynced offline edits, violating 'a note edited offline is never lost' (line 10). A transient or buggy 401 on the server side has the same effect.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Random 32-bit client note id will collide across the fleet with no uniqueness enforcement",
+     "description": "Note id is a random 32-bit integer generated on-device (line 24). At the stated scale of 50k users with a few hundred notes each (~15M notes), the birthday bound gives roughly 26k expected collisions across the fleet. The design specifies no uniqueness check and no scoping of the client-id lookup, so two notes sharing an id can be conflated and one edit overwrites the other.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves note bodies in place with no owner and no scheduled cleanup",
+     "description": "Lines 156-157 remove only the user row and leave the notes rows (which carry the user's writing) in place, with cleanup deferred to 'a nightly job could clean them up later'. Personal data persists indefinitely after deletion, and if user_id is ever reused a new account inherits the old notes. There is no named owner for the cleanup and no lifecycle.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 28,
+     "title": "Unbounded body, unbounded outbox, full-copy-per-edit, and a single POST combine into unbounded growth and requests",
+     "description": "Body length is uncapped (lines 28-29), the outbox has no cap (lines 32-33), each outbox row stores a full copy of the body (lines 33-34), and sync sends the entire outbox in one request (line 46). A large note edited repeatedly offline stores N full copies and produces an arbitrarily large request, with no server timeout (line 89) and no rate limit (line 147) to bound it.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "The changes query filters on user_id and modified_at but no index supports it",
+     "description": "The changes query is 'WHERE user_id = $1 AND modified_at > $2 ORDER BY modified_at' (line 83), yet line 86 plans 'no index beyond the primary key', and the primary key is note_id (line 25), which does not help this predicate. Every sync (every 15 minutes per device, line 139) full-scans the table; at ~15M rows this is a real cost the 'working set per user is small' justification does not address.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 65,
+     "title": "Protocol carries no version number on the assumption all future changes are additive",
+     "description": "Line 65-66 asserts adding a field is backwards compatible and therefore no version number is needed. That only holds if every future change is additive and old clients ignore unknown fields; renaming, removing, or changing the semantics of a field (or the cursor) breaks old clients silently. Combined with rolling deploys (line 128), there is no way to negotiate capability between versions.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 56,
+     "title": "Retry-until-acknowledged is at-least-once delivery, but create deduplication is unspecified",
+     "description": "The client retries the same POST until acknowledged (lines 56-59), including after a connection drop where the server may have already committed. For a 'create note' edit, a re-sent batch would insert a duplicate unless the apply path upserts by client id. The design notes the server keeps the client id 'for lookup' (line 26) but never states that creates are deduplicated on it, so duplicate notes are a live risk on any lost response.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Nightly pg_dump with an unrehearsed restore leaves up to 24h of acknowledged edits unrecoverable",
+     "description": "Backups are nightly (line 133) and restore 'has not been rehearsed' (line 134). Under the design's own invariant that no acknowledged edit is ever lost, a failure between dumps loses up to 24 hours of acknowledged edits, and the recovery path is untested.",
+     "lens": "design-data",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 134885,
+      "output_tokens": 11312
+     },
+     "duration_ms": 68662,
+     "failed": false,
+     "output_bytes": 11827
+    },
+    {
+     "usage": {
+      "input_tokens": 85762,
+      "output_tokens": 14060
+     },
+     "duration_ms": 74459,
+     "failed": false,
+     "output_bytes": 11256
+    }
+   ]
+  }
+ ]
+}

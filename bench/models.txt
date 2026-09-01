@@ -65,6 +65,18 @@ glm-5.3-flash:cloud
 # tier is the better MODEL (64 to flash's 62) and the worse SEAT (+1 seed over
 # claude+codex+minimax, against flash's +3). Not seated; see bench/README.md.
 glm-5.3:cloud
+# Added as an ACTIVE entry 2026-09-01 on operator request. It was measured on the
+# retired 20-seed bench (17/20) but has never had a row on this one, and it was
+# only ever mentioned in a comment here -- an agent file exists
+# (config/agents/gemma4-ollama.yaml) with no candidate line, which is how it fell
+# off the list. 32.7B, 262k context, BF16.
+#
+# Read its old number with the caveat that cost it the seat: the bench measures
+# single-round seeded RECALL and was kinder to gemma4 than the live runs did,
+# which measure multi-round NOVEL yield -- it was replaced by kimi on 2026-08-01
+# for weak review yield in real rounds. Both facts are true at once, and the
+# seven-language bench has no bearing on the second one.
+gemma4:31b-cloud
 
 # NOT DROPPED, retry later (operator decision 2026-09-01). mistral-large-3 and
 # nemotron-3-super are the only two models that have ever failed the contract

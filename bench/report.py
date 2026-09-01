@@ -154,6 +154,24 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
     return f"{prefix}${usd / points:.3f}"
 
 
+def _cost_key(model, harness, e):
+    """A sortable key for the per-point column, whose units are not comparable.
+
+    Some rows are priced in dollars and some in thousands of tokens, because
+    ollama sells quota rather than tokens. Sorting the raw numbers would
+    interleave $0.137 with 16.1k meaninglessly, so token-priced rows are pushed
+    above every dollar-priced one and sorted among themselves. The column then
+    reads as two ordered groups rather than one nonsensical sequence.
+    """
+    raw = cost_per_point(model, harness, e["tok_in"], e["tok_out"],
+                         e["cache_read"], e["points"])
+    if raw == "-":
+        return -1
+    if raw.endswith("k"):
+        return 1e6 + float(raw[:-1])
+    return float(raw.lstrip("~$"))
+
+
 def measured_on(dates):
     """When this model's rows were produced, from the run ids.
 
@@ -170,6 +188,64 @@ def measured_on(dates):
     lo, hi = min(dates), max(dates)
     return d(hi) if lo == hi else f"{d(lo)[5:]}\u2026{d(hi)}"
 
+
+
+PAGE_JS = """
+// Click a header to sort. Values come from data-sort on each cell rather than
+// from the rendered text, because the display strings are not sortable: scores
+// read "63/90", tokens carry thousands separators, and the per-point column
+// mixes dollars with token counts.
+(function () {
+  function val(row, i) {
+    var c = row.children[i];
+    if (!c) return "";
+    var d = c.getAttribute("data-sort");
+    return d === null ? c.textContent.trim() : d;
+  }
+  function renumber(tb) {
+    var n = 1;
+    Array.prototype.forEach.call(tb.rows, function (r) {
+      var c = r.querySelector("td.rank");
+      if (c) c.textContent = n++;
+    });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("table"), function (t) {
+    var head = t.tHead, body = t.tBodies[0];
+    if (!head || !body) return;
+    Array.prototype.forEach.call(head.rows[0].cells, function (th, i) {
+      if (th.classList.contains("norank")) return;
+      th.classList.add("sortable");
+      th.addEventListener("click", function () {
+        var rows = Array.prototype.slice.call(body.rows);
+        // numeric when every non-empty value parses as a number
+        var numeric = rows.every(function (r) {
+          var v = val(r, i);
+          return v === "" || v === "-" || !isNaN(parseFloat(v));
+        });
+        var desc = th.getAttribute("data-dir") !== "desc";
+        rows.sort(function (a, b) {
+          var x = val(a, i), y = val(b, i);
+          if (numeric) {
+            var nx = parseFloat(x), ny = parseFloat(y);
+            if (isNaN(nx)) nx = -Infinity;
+            if (isNaN(ny)) ny = -Infinity;
+            return desc ? ny - nx : nx - ny;
+          }
+          return desc ? y.localeCompare(x) : x.localeCompare(y);
+        });
+        rows.forEach(function (r) { body.appendChild(r); });
+        Array.prototype.forEach.call(head.rows[0].cells, function (o) {
+          o.removeAttribute("data-dir");
+          o.classList.remove("sorted");
+        });
+        th.setAttribute("data-dir", desc ? "desc" : "asc");
+        th.classList.add("sorted");
+        renumber(body);
+      });
+    });
+  });
+})();
+"""
 
 PAGE_CSS = """
 :root {
@@ -338,6 +414,11 @@ tr.failed { background: var(--critical-fill); }
 .score span { position: relative; font-size: 14px; font-weight: 600; }
 .score .of { color: var(--muted); font-weight: 400; font-size: 12px; }
 .err { color: var(--critical); font-weight: 600; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--ink); }
+th.sortable::after { content: "\\2195"; opacity: 0.35; margin-left: 5px; font-size: 10px; }
+th.sorted::after { content: "\\25BC"; opacity: 1; color: var(--signal); }
+th.sorted[data-dir="asc"]::after { content: "\\25B2"; }
 .pct { font-weight: 600; }
 tfoot td { border-top: 1px solid var(--rule); border-bottom: 0; padding-top: 12px; color: var(--muted); }
 .zero { color: var(--muted); }
@@ -402,16 +483,16 @@ def write_html(ranked, all_targets, out_path):
         </td>
         <td class="left sub">{_esc(harness)}</td>
         <td class="left sub">{_esc(billing(model, harness))}</td>
-        <td class="score">
+        <td class="score" data-sort="{e['points']}">
           <div class="bar" style="width: {width:.1f}%"></div>
           <span>{e['points']}<span class="of">/{e['possible']}{incomplete}</span></span>
         </td>
-        <td>{e['tokens']:,}</td>
-        <td>{eff:.0f}</td>
-        <td>{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']))}</td>
-        <td>{e['seconds']:,}</td>
-        <td class="{'err' if e['errors'] else 'zero'}">{e['errors']}</td>
-        <td class="sub">{measured_on(e['dates'])}</td>
+        <td data-sort="{e['tokens']}">{e['tokens']:,}</td>
+        <td data-sort="{eff:.4f}">{eff:.0f}</td>
+        <td data-sort="{_cost_key(model, harness, e)}">{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']))}</td>
+        <td data-sort="{e['seconds']}">{e['seconds']:,}</td>
+        <td class="{'err' if e['errors'] else 'zero'}" data-sort="{e['errors']}">{e['errors']}</td>
+        <td class="sub" data-sort="{max(e['dates']) if e['dates'] else ''}">{measured_on(e['dates'])}</td>
       </tr>""")
 
     # By-target matrix. Omitted while only one target exists, because a
@@ -426,11 +507,12 @@ def write_html(ranked, all_targets, out_path):
             for t in all_targets:
                 got = e["by_target"].get(t)
                 if got is None:
-                    cells += '<td class="zero">&mdash;</td>'
+                    cells += '<td class="zero" data-sort="-1">&mdash;</td>'
                 else:
                     pct = got[0] / got[1] * 100
                     bad = len(got) > 2 and got[2]
-                    cells += (f'<td{" class=\"err\"" if bad else ""}>'
+                    cells += (f'<td{" class=\"err\"" if bad else ""} '
+                              f'data-sort="{pct:.4f}">'
                               f'<span class="pct">{pct:.0f}%{"!" if bad else ""}</span>'
                               f'<span class="sub"> {got[0]}/{got[1]}</span></td>')
             body.append(f'      <tr><td class="left"><div class="name">'
@@ -491,7 +573,7 @@ def write_html(ranked, all_targets, out_path):
       <caption>Ranked by score. One repeat each &mdash; single-run recall is a sample, not a verdict.</caption>
       <thead>
         <tr>
-          <th class="left" scope="col">#</th>
+          <th class="left norank" scope="col">#</th>
           <th class="left" scope="col">Candidate</th>
           <th class="left" scope="col">Route</th>
           <th class="left" scope="col">Pays</th>
@@ -531,6 +613,7 @@ def write_html(ranked, all_targets, out_path):
     model.</p>
   </div>
 </div>
+<script>{PAGE_JS}</script>
 """
     pathlib.Path(out_path).write_text(page)
     print(f"wrote {out_path}")
