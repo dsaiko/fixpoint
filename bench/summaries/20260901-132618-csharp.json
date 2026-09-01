@@ -1,0 +1,266 @@
+{
+ "run": "20260901-132618",
+ "task": "code",
+ "target": "csharp",
+ "model": "gemma4:31b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "Store.cs",
+     "line": 55,
+     "title": "Inverted expiry logic in Resolve",
+     "description": "The condition `DateTime.Now < link.ExpiresAt` checks if the link is still valid. If true, it removes the link from the store and returns null. This means all valid links are deleted on their first access, while expired links are served.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 69,
+     "title": "RequireAdmin always allows access",
+     "description": "The `RequireAdmin` method always returns `true` regardless of whether the session role is in the allowed list, effectively disabling administrative authorization.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 41,
+     "title": "KeyNotFoundException in quota increment",
+     "description": "In `Create`, `quota[owner] = quota[owner] + 1;` throws a `KeyNotFoundException` if the owner has no existing entries in the quota dictionary.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 93,
+     "title": "ArgumentException in Page range",
+     "description": "When `end > all.Count`, `end` is set to `all.Count + 1`. The subsequent `all.GetRange(offset, end - offset)` call will throw an `ArgumentException` because the requested count exceeds the number of elements in the list.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 107,
+     "title": "Collection modification during iteration in Sweep",
+     "description": "The `Sweep` method iterates over `entries.Keys` and calls `entries.Remove(code)` inside the loop, which throws an `InvalidOperationException`.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 34,
+     "title": "Collection modification during iteration in janitor",
+     "description": "The janitor timer iterates over `store.All().Keys` and calls `Remove` on the same collection, causing an `InvalidOperationException`.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 178,
+     "title": "Collection modification during iteration in Prune",
+     "description": "The `Prune` method modifies `links` while iterating over its keys, which throws an `InvalidOperationException`.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 53,
+     "title": "Thread safety violation in Peek",
+     "description": "The `Peek` method accesses the `entries` dictionary without a lock, while other methods (`Get`, `Set`, `Delete`, `Sweep`) modify it under a lock. This can lead to race conditions or crashes during dictionary resizing.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 80,
+     "title": "Async void in ExportCsvAsync",
+     "description": "The `ExportCsvAsync` method is declared as `async void`. Exceptions thrown in `async void` methods cannot be caught by the caller and will crash the entire process.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 94,
+     "title": "IndexOutOfRangeException in BearerToken",
+     "description": "The `BearerToken` method assumes the header always contains a space and attempts to access `parts[1]`. If the header is empty or malformed, it throws an `IndexOutOfRangeException`.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 48,
+     "title": "Session expiry ignored in Verify",
+     "description": "The `Verify` method finds the session by token but never checks the `ExpiresAt` field. This allows expired sessions to remain active indefinitely.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 170,
+     "title": "Divide by zero in Stats",
+     "description": "The `Stats` method calculates `store.TotalHits() / store.Count`. If no links have been created, `store.Count` is 0, causing a `DivideByZeroException`.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 20,
+     "title": "Concurrent access to non-thread-safe dictionaries",
+     "description": "The `links` and `quota` dictionaries are accessed and modified across multiple threads (HTTP request handlers and the Janitor worker) without any synchronization. This will lead to data corruption or `InvalidOperationException` crashes during concurrent read/write operations.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 18,
+     "title": "Concurrent access to non-thread-safe sessions dictionary",
+     "description": "The `sessions` dictionary is modified in `Issue` and `Revoke` and iterated in `Verify` without locks. Since these are called from concurrent HTTP request tasks, this is a critical data race.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "Store.cs",
+     "line": 178,
+     "title": "Modifying dictionary during iteration in Prune",
+     "description": "The `Prune` method iterates over `links.Keys` and calls `links.Remove(code)` inside the loop. In .NET, modifying a collection while iterating over it using `foreach` throws an `InvalidOperationException`.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 34,
+     "title": "Modifying store during iteration in StartJanitor",
+     "description": "The janitor timer callback iterates over `store.All().Keys` and calls `Remove` on the same dictionary. This will throw an `InvalidOperationException` every time the janitor runs and finds an expired link.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 107,
+     "title": "Modifying cache during iteration in Sweep",
+     "description": "The `Sweep` method iterates over `entries.Keys` and calls `entries.Remove(code)` inside the loop, which throws `InvalidOperationException`.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 80,
+     "title": "Async void in ExportCsvAsync",
+     "description": "The `ExportCsvAsync` method is declared as `async void`. Exceptions thrown in `async void` methods cannot be caught by the caller and will crash the entire process. It should return a `Task`.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 74,
+     "title": "Sync-over-async deadlock risk in CheckTargets",
+     "description": "Calling `.Result` on the `ProbeAsync` task blocks the thread. In some .NET synchronization contexts, this can lead to deadlocks if the async method attempts to resume on the captured context.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 17,
+     "title": "Non-atomic increment of metrics counter",
+     "description": "The `AddCreated` method uses `created++`, which is not an atomic operation. Concurrent calls will result in lost updates (lost counts).",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 183,
+     "title": "Path traversal in CSV export/read",
+     "description": "The `name` parameter in the `/report` endpoint is passed directly to `Export.ExportCsv` and `Export.ReadReport`, which use it in `Path.Combine` to construct a file path. An attacker can use directory traversal sequences (e.g., `../../`) or absolute paths to read or overwrite files on the filesystem. Although a `.csv` extension is appended, this still allows writing arbitrary content to unexpected locations or reading files that end in `.csv` anywhere on the system.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Program.cs",
+     "line": 159,
+     "title": "Admin access granted via X-Admin header",
+     "description": "The `/admin/quotas` endpoint implements administrative authorization by checking if the `X-Admin` HTTP header is set to `true`. This allows any user to bypass authentication and gain administrative privileges simply by adding this header to their request.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Program.cs",
+     "line": 109,
+     "title": "Missing authorization on link deletion",
+     "description": "The DELETE handler for `/links` does not verify that the authenticated user is the owner of the link being deleted. It calls `store.Delete` directly with the provided code, allowing any authenticated user to delete any link in the system.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 145,
+     "title": "Open redirect in /out endpoint",
+     "description": "The `/out` endpoint redirects the user to the URL provided in the `next` query parameter without any validation or whitelisting. This can be exploited for phishing attacks by creating trusted-looking links that redirect to malicious sites.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 88,
+     "title": "User impersonation during link creation",
+     "description": "The `/links` POST endpoint allows the caller to specify the `owner` of the link via the `owner` query parameter. The system does not verify that the authenticated user is authorized to create links on behalf of the specified owner.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 32,
+     "title": "Predictable session tokens via System.Random",
+     "description": "Session tokens are generated using `System.Random`, which is not cryptographically secure. This makes the tokens predictable, allowing an attacker to potentially guess valid session tokens for other users.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 46,
+     "title": "Session expiration not enforced",
+     "description": "The `Authenticator.Verify` method checks if a token exists in the session store but fails to verify if the session has expired by checking the `ExpiresAt` field. This results in session tokens that never expire.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 103,
+     "title": "Timing attack in secret comparison",
+     "description": "The `Authenticator.SecretEquals` method uses the `==` operator for string comparison. Because this operator returns as soon as a difference is found, it leaks timing information that can be used to deduce the secret character by character.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 88662,
+      "output_tokens": 7634
+     },
+     "duration_ms": 70732,
+     "failed": false,
+     "output_bytes": 6033
+    },
+    {
+     "usage": {
+      "input_tokens": 402680,
+      "output_tokens": 6342
+     },
+     "duration_ms": 75676,
+     "failed": false,
+     "output_bytes": 4296
+    },
+    {
+     "usage": {
+      "input_tokens": 88966,
+      "output_tokens": 7891
+     },
+     "duration_ms": 78497,
+     "failed": false,
+     "output_bytes": 5361
+    }
+   ]
+  }
+ ]
+}

@@ -78,6 +78,14 @@ glm-5.3:cloud
 # seven-language bench has no bearing on the second one.
 gemma4:31b-cloud
 
+# NOT CANDIDATES, decided 2026-09-01: the OpenRouter route variants of two models
+# already measured through ollama -- z-ai/glm-5.2 (config/agents/glm-openrouter.yaml)
+# and moonshotai/kimi-k2.7-code (kimi-openrouter.yaml). The agent files stay, since
+# the route is a real difference (ollama drops cache_control and thinking budgets
+# and caches at 0%; OpenRouter honours both at ~99%), but re-measuring the same
+# two models purely to characterise the route is not worth the sessions. Do not
+# re-raise them as a gap in the list -- this is the answer.
+
 # NOT DROPPED, retry later (operator decision 2026-09-01). mistral-large-3 and
 # nemotron-3-super are the only two models that have ever failed the contract
 # here -- 2 failures and 1 respectively -- and the decision rule disqualifies

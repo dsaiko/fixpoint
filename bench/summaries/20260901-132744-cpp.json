@@ -1,0 +1,290 @@
+{
+ "run": "20260901-132744",
+ "task": "code",
+ "target": "cpp",
+ "model": "gemma4:31b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "worker.cpp",
+     "line": 34,
+     "title": "warm_cache causes process termination",
+     "description": "The function spawns std::threads in a local vector but returns immediately without joining or detaching them. When the vector is destroyed, the std::thread destructor calls std::terminate() if the thread is still joinable.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "resolve erases valid links and keeps expired ones",
+     "description": "The condition 'Clock::now() < it->second.expires_at' is inverted. It currently erases links that are still valid and resolves links that have already expired.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 173,
+     "title": "last_code returns dangling string_view",
+     "description": "The function returns a std::string_view pointing to a local std::string 'newest', which is destroyed when the function returns.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 74,
+     "title": "bearer_token buffer overflow",
+     "description": "std::strcpy is used to copy the authorization header into a fixed-size buffer of 64 bytes without checking the length of the input header.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 76,
+     "title": "bearer_token null pointer dereference",
+     "description": "If the authorization header does not contain a space, std::strchr returns nullptr, and the function returns std::string(nullptr + 1), which is undefined behavior and typically crashes.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.cpp",
+     "line": 25,
+     "title": "configuration durations misinterpreted as seconds",
+     "description": "The environment variables LINKD_TIMEOUT_MS and LINKD_CACHE_TTL_MS are specified in milliseconds, but they are assigned directly to std::chrono::seconds, making timeouts 1000x longer than intended.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 155,
+     "title": "prune causes undefined behavior via iterator invalidation",
+     "description": "Calling links_.erase(it) inside a loop and then performing ++it on the invalidated iterator is undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 55,
+     "title": "sweep causes undefined behavior via iterator invalidation",
+     "description": "Calling entries_.erase(it) and then performing ++it on the invalidated iterator is undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.cpp",
+     "line": 74,
+     "title": "format_row returns dangling pointer",
+     "description": "The function returns a pointer to a local stack-allocated char array 'row', which is destroyed when the function returns.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 43,
+     "title": "check_targets out-of-bounds access",
+     "description": "The loop condition 'i <= links.size()' allows the index to reach links.size(), causing an out-of-bounds access to the vector.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 101,
+     "title": "stats causes division by zero crash",
+     "description": "The calculation 'g_store->total_hits() / g_store->size()' will crash the process if the store is empty (size 0).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 40,
+     "title": "unchecked query access causes crash on missing parameters",
+     "description": "The use of req.query.at() in various request handlers will throw std::out_of_range and crash the process if the required query parameters are missing.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 7,
+     "title": "Cache leaks memory on destruction",
+     "description": "The Cache destructor calls entries_.clear(), which removes the pointers to Entry objects but does not delete the objects themselves, which were allocated with 'new' in set().",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 49,
+     "title": "require_admin logic is always false",
+     "description": "The condition 'session.role != \"admin\" || session.role != \"owner\"' is a tautology; it is always true because a role cannot be both 'admin' and 'owner' simultaneously.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 91,
+     "title": "success_rate uses incorrect integer division",
+     "description": "The expression 'used / links_.size() * 100' performs integer division first, resulting in 0 for any success rate below 100%.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 26,
+     "title": "Data race on Store state",
+     "description": "Store::create and other mutating methods modify links_ and quota_ maps without synchronization. Concurrent requests to the server will result in data races and potential crashes.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 45,
+     "title": "Data race on Cache state",
+     "description": "Cache::set and Cache::get modify entries_ and hits_ without synchronization. Concurrent access from request handlers and warm_cache threads will cause memory corruption.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 30,
+     "title": "Data race on Authenticator state",
+     "description": "Authenticator::issue and Authenticator::revoke modify the sessions_ map while Authenticator::verify reads it, without any synchronization.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "linkd.h",
+     "line": 139,
+     "title": "Non-atomic Metrics counters",
+     "description": "Metrics counters (resolved_, created_) are plain longs and are incremented concurrently in main.cpp. This leads to lost updates.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 20,
+     "title": "Iterator invalidation and race in janitor",
+     "description": "The janitor thread erases elements from the store's map while iterating over it without a lock. This is a data race against other threads and causes iterator invalidation.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 37,
+     "title": "Use-after-scope in warm_cache lambda",
+     "description": "The lambda captures the loop variable 'link' by reference. Since 'link' is a local reference variable, the thread will access a destroyed local variable once the loop iteration completes.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 74,
+     "title": "Stack-based buffer overflow in bearer_token",
+     "description": "The function uses std::strcpy to copy the untrusted Authorization header into a fixed 64-byte buffer without checking the length. A long header can overflow the stack, leading to RCE.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.cpp",
+     "line": 15,
+     "title": "Arbitrary file write via path traversal",
+     "description": "The name parameter from the user is concatenated directly into a file path in export_csv. An attacker can use '../' to write files to arbitrary directories.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.cpp",
+     "line": 72,
+     "title": "Use-after-free via dangling pointer in format_row",
+     "description": "The function returns a pointer to a local stack-allocated array 'row'. The pointer is invalid once the function returns, leading to memory corruption.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.cpp",
+     "line": 63,
+     "title": "Arbitrary file read via path traversal",
+     "description": "The read_report function uses an unsanitized user-provided name to construct a file path, allowing attackers to read arbitrary files on the system (that end in .csv).",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 70,
+     "title": "Missing ownership check in link deletion",
+     "description": "The delete_link endpoint removes a link by code without verifying that the authenticated session owner matches the link owner, allowing any user to delete any link.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 92,
+     "title": "Administrative access bypass via header",
+     "description": "Administrative privileges for the /admin/quotas endpoint are verified by checking for an 'x-admin: true' header, which can be easily forged by an attacker.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 22,
+     "title": "Predictable session tokens via std::rand",
+     "description": "Session tokens are generated using std::rand(), which is not cryptographically secure. This allows attackers to predict tokens and hijack sessions.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 80,
+     "title": "Open redirect in /out endpoint",
+     "description": "The /out endpoint redirects the user to the value of the 'next' query parameter without validation, which can be used for phishing attacks.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 62,
+     "title": "Weak password hashing algorithm",
+     "description": "hash_password uses a non-cryptographic additive/multiplicative hash (DJB2 variant) which is highly susceptible to collisions and fast brute-forcing.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 86,
+     "title": "Timing attack in secret_equals",
+     "description": "The secret_equals function returns immediately upon the first character mismatch, leaking information about the secret via response timing.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 414009,
+      "output_tokens": 7202
+     },
+     "duration_ms": 94496,
+     "failed": false,
+     "output_bytes": 6729
+    },
+    {
+     "usage": {
+      "input_tokens": 409799,
+      "output_tokens": 6352
+     },
+     "duration_ms": 90861,
+     "failed": false,
+     "output_bytes": 4923
+    },
+    {
+     "usage": {
+      "input_tokens": 177053,
+      "output_tokens": 6416
+     },
+     "duration_ms": 83997,
+     "failed": false,
+     "output_bytes": 7827
+    }
+   ]
+  }
+ ]
+}
