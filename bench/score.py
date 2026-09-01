@@ -306,10 +306,27 @@ def main():
     # exactly what the disqualifier exists to prevent (review run
     # 20260813-124710).
     errors = sum(1 for s in steps if s.get("failed") or s.get("output_bytes", 0) == 0)
-    # A run that never reached its panel (a preflight refusal, a dead agent at
-    # startup) has no steps at all. That is a contract failure too -- the
-    # loudest kind -- and must not read as a clean zero.
+    # A run that never reached its panel has no steps at all, and the reason
+    # decides what it means. A dead or misconfigured agent IS the loudest kind
+    # of contract failure. A provider refusal is NOT: on 2026-09-01 the Claude
+    # session limit refused eleven runs across three models with
+    # "You've hit your session limit", and each one wrote a row reading 0/68
+    # with errors=1 -- three models libelled as broken reviewers by a quota we
+    # ran out of. fixpoint's own log says so plainly at the time: "the API
+    # refused the call, the agent did not fail".
+    #
+    # Such a run is NOT A MEASUREMENT and must not be recorded at all, so the
+    # scorer exits rather than writing a row. Re-run it when the limit resets.
     if not steps:
+        refusal = (summary.get("error") or "")
+        journal = pathlib.Path(summary_path).parent / "journal.jsonl"
+        if journal.exists():
+            refusal += journal.read_text()
+        if any(k in refusal for k in ("429", "session limit", "usage limit",
+                                      "rate limit", "quota")):
+            sys.exit(f"bench: {model} {target}: the PROVIDER refused this run "
+                     f"(rate/session limit), so it is not a measurement and no "
+                     f"row was written. Re-run it when the limit resets.")
         errors = 1
     mtok = (tok_in + tok_out) / 1e6
     eff = round(found / mtok, 2) if mtok else 0.0
