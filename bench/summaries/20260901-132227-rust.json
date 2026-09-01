@@ -1,0 +1,226 @@
+{
+ "run": "20260901-132227",
+ "task": "code",
+ "target": "rust",
+ "model": "gemma4:31b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Server hangs on all requests due to read_to_end",
+     "description": "The server calls `stream.read_to_end(&mut body)`, which blocks until the client closes the connection. Standard HTTP clients keep the connection open while waiting for a response, causing the server to hang indefinitely or until a timeout occurs.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 57,
+     "title": "Inverted link expiry logic deletes valid links",
+     "description": "The expression `SystemTime::now() < link.expires_at` is assigned to a variable named `expired`. This is true when the link is still valid. The subsequent check `if expired` then removes the link and returns `None`, meaning all valid links are deleted and treated as missing, while expired links are successfully resolved.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "Guaranteed deadlock in count_by_owner",
+     "description": "The function `count_by_owner` acquires a lock on the store at line 120 (`let guard = store.lock().unwrap()`) and then attempts to acquire the same lock again at line 122 (`let second = store.lock().unwrap()`). Since `std::sync::Mutex` is not recursive, this causes an immediate deadlock.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Panic when first link is created by a new owner",
+     "description": "In `Store::create`, the code calls `*self.quota.get_mut(owner).unwrap() += 1`. If the `owner` is not already present in the `quota` map, `get_mut` returns `None` and `unwrap()` panics.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "Admin check always fails",
+     "description": "The condition `if session.role != \"admin\" || session.role != \"owner\"` is a tautology. If the role is \"admin\", it is not \"owner\"; if it is \"owner\", it is not \"admin\". Consequently, this block always executes and returns an error, blocking all admin access.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "Out-of-bounds panic in page method",
+     "description": "When the requested page range exceeds the total number of links, `end` is set to `all.len() + 1`. The subsequent slice `all[offset..end]` panics because the end index is beyond the vector's length.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 96,
+     "title": "Panic on malformed Authorization header",
+     "description": "The `bearer_token` function accesses `parts[1]` without checking if the split resulted in at least two parts. A header lacking a space (e.g., \"Bearer\") will cause a panic.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 213,
+     "title": "High collision rate for short codes",
+     "description": "The `new_code` function generates codes based solely on `subsec_nanos()`. This provides very low entropy and will cause frequent collisions if multiple links are created in rapid succession or on systems with low timer resolution.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "Divide-by-zero panic in stats endpoint",
+     "description": "The calculation `hits / guard.len() as i64` will panic if the store is empty (`guard.len() == 0`).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 29,
+     "title": "Race condition in metrics updates",
+     "description": "The `add_resolved` method performs a non-atomic read-modify-write: `let current = self.resolved.load(...); self.resolved.store(current + 1, ...);`. Concurrent updates will result in lost counts.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "Double-lock deadlock in count_by_owner",
+     "description": "The function `count_by_owner` attempts to acquire a lock on the `store` Mutex while already holding a lock on the same Mutex from line 120. Since std::sync::Mutex is not recursive, this results in an immediate deadlock of the calling thread.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 116,
+     "title": "Lock inversion deadlock between get and flush",
+     "description": "A deadlock occurs when `get` and `flush` are called concurrently. `get` acquires the `entries` write lock first and then the `hits` mutex. `flush` acquires the `hits` mutex first and then the `entries` write lock. If both threads reach their second lock acquisition simultaneously, they will block each other indefinitely.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 111,
+     "title": "Thread leak in check_targets on failure",
+     "description": "The `check_targets` function uses a rendezvous channel (`sync_channel(0)`). If any probe returns an `Err`, the function returns early (line 111), dropping the receiver `rx`. Any remaining worker threads attempting to send their results via `tx.send(outcome)` will block forever, leaking threads.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 28,
+     "title": "Lost update in Metrics::add_resolved",
+     "description": "The `add_resolved` method performs a non-atomic read-modify-write sequence using `load` and `store`. If multiple threads call this method concurrently, they may load the same value and store the same incremented result, causing updates to be lost.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 35,
+     "title": "Predictable session token generation",
+     "description": "The session token is generated using a non-cryptographic LCG seeded with system time in seconds. An attacker can predict future tokens or brute-force tokens issued at a known time to hijack sessions.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 13,
+     "title": "Path traversal in CSV export",
+     "description": "The `export_csv` function joins the user-provided `name` to the export directory without validation. An attacker can use absolute paths or '..' sequences to write arbitrary files to the filesystem.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 67,
+     "title": "Path traversal in report read",
+     "description": "The `read_report` function joins the user-provided `name` to the export directory without validation. An attacker can read arbitrary files from the system by providing absolute paths or '..' sequences.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 186,
+     "title": "Trivial bypass of admin authorization",
+     "description": "The `/admin/quotas` endpoint checks for the presence of a client-supplied header `x-admin: true`. This allows any user to gain administrative access by simply adding the header to their request.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 166,
+     "title": "Missing ownership check on link deletion",
+     "description": "The `delete_link` handler calls `store.delete` without verifying that the authenticated user is the owner of the link. Any authenticated user can delete any link if they know its code.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 181,
+     "title": "Open redirect in /out endpoint",
+     "description": "The `/out` endpoint redirects users to the URL provided in the `next` query parameter without validation. This can be used to redirect users to malicious sites in phishing campaigns.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 209,
+     "title": "Predictable short code generation",
+     "description": "Short codes are generated using the nanoseconds component of the current system time. This is highly predictable, allowing attackers to guess valid codes or cause collisions.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Unbounded read leads to memory exhaustion",
+     "description": "The server calls `read_to_end` on the TCP stream without a size limit. An attacker can send a massive payload to exhaust server memory and cause an OOM crash.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 98,
+     "title": "Sensitive information disclosure in error messages",
+     "description": "The server echoes the provided token back to the user in the 401 Unauthorized response, and echoes system paths in export error messages. This leaks information about the internal system state.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 179962,
+      "output_tokens": 6340
+     },
+     "duration_ms": 67164,
+     "failed": false,
+     "output_bytes": 6045
+    },
+    {
+     "usage": {
+      "input_tokens": 313704,
+      "output_tokens": 5204
+     },
+     "duration_ms": 66588,
+     "failed": false,
+     "output_bytes": 2804
+    },
+    {
+     "usage": {
+      "input_tokens": 362959,
+      "output_tokens": 8239
+     },
+     "duration_ms": 82941,
+     "failed": false,
+     "output_bytes": 7044
+    }
+   ]
+  }
+ ]
+}

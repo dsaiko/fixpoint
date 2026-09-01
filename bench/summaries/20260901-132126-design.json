@@ -1,0 +1,153 @@
+{
+ "run": "20260901-132126",
+ "task": "design",
+ "target": "design",
+ "model": "gemma4:31b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Unbounded sync request size",
+     "description": "The design allows uncapped note bodies and outboxes (lines 28, 32) and requires sending the 'entire outbox in one request'. This exposes the server to OOM crashes or timeouts when handling large notes or devices that have been offline for long periods.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 89,
+     "title": "Missing server-side request timeouts",
+     "description": "Explicitly stating 'no request timeout on the server' allows a single slow client or massive sync to hold a connection indefinitely, potentially exhausting the server's connection pool and causing a denial of service for all users.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 129,
+     "title": "Unsafe assumption of non-concurrent versions",
+     "description": "The design assumes 'old and new versions never run concurrently' during rolling deploys. This is rarely true in practice; any schema migration that is not backwards compatible will cause the old version to crash or corrupt data during the transition.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Fragile clock-based conflict resolution",
+     "description": "Using client wall-clock 'modified_at' for 'last writer wins' is highly susceptible to clock skew. A device with a clock set in the future will permanently win all conflicts, while a device in the past will always lose, leading to silent data loss.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 58,
+     "title": "Lack of jitter in retry backoff",
+     "description": "Stating that 'every client uses that same schedule' for exponential backoff without introducing random jitter will lead to synchronized 'thundering herd' spikes when the service recovers from an outage.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "Contradictory transaction and partial-success logic",
+     "description": "The design claims '/sync runs in a single transaction per request' (line 78), yet also states that if row N fails, 'rows 1..N-1 stay applied' (line 80). These are mutually exclusive in standard SQL transactions.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 125,
+     "title": "Lack of proactive monitoring for sync failure",
+     "description": "Relying on support tickets for clients that stop syncing means operators cannot identify systemic failures affecting subsets of users until those users manually report them.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 120,
+     "title": "Health check ignores critical dependencies",
+     "description": "The '/healthz' probe explicitly excludes database connectivity. This can lead the load balancer to keep routing traffic to instances that are 'healthy' but actually unable to perform any work.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 134,
+     "title": "Unverified backup restore procedure",
+     "description": "Stating that 'Restore has not been rehearsed' means the only path back from a catastrophic failure is unproven and may fail in practice.",
+     "lens": "design-failure",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Note ID collisions due to insufficient ID space",
+     "description": "Note IDs are generated as random 32-bit integers. With 50k users and several hundred notes each (~15M total), the probability of collisions is nearly 100%. Since the server uses this ID for lookup (line 25), collisions will cause the server to incorrectly associate, overwrite, or merge unrelated notes, leading to widespread data corruption.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "Local data wipe on auth failure causes loss of unsynced edits",
+     "description": "The design specifies that if a refresh token fails (401), the client wipes `notes.db`. If a user has made offline edits that have not yet synced, those edits are permanently deleted. This directly violates Goal #1: 'A note edited offline is never lost'.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Fragile conflict resolution based on client wall clocks",
+     "description": "The system uses 'Last-Write-Wins' (LWW) based on the client's `modified_at` wall clock. Because client clocks are not synchronized (and NTP is not a guarantee), a device with a skewed clock (e.g., set to the future) will silently 'win' all conflicts, discarding more recent edits from other devices without any way to recover the lost data.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 54,
+     "title": "Single server-side cursor is insufficient for multi-device sync",
+     "description": "The design stores 'One cursor... per user account' on the server, but the protocol is driven by the client sending its own cursor. In a multi-device scenario, each device tracks its own progress. A single server-side cursor is either redundant (if the client's cursor is the source of truth) or incorrect (if it's used to track the user's state, as it will be overwritten by whichever device syncs last).",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves orphaned note data",
+     "description": "Account deletion removes the user row but leaves associated notes in the database, relying on an implicit 'nightly job' for cleanup. This creates orphaned data and poses a privacy/GDPR risk where user data persists after account deletion.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 66,
+     "title": "Lack of protocol versioning prevents safe evolution",
+     "description": "The design explicitly omits a protocol version number, assuming adding fields is always backwards compatible. This prevents the system from handling breaking changes to the sync logic or data format without requiring a simultaneous, coordinated update of all clients and servers.",
+     "lens": "design-data",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 80379,
+      "output_tokens": 5064
+     },
+     "duration_ms": 47679,
+     "failed": false,
+     "output_bytes": 7245
+    },
+    {
+     "usage": {
+      "input_tokens": 80201,
+      "output_tokens": 6607
+     },
+     "duration_ms": 54960,
+     "failed": false,
+     "output_bytes": 4990
+    }
+   ]
+  }
+ ]
+}

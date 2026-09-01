@@ -1,0 +1,226 @@
+{
+ "run": "20260901-132509",
+ "task": "code",
+ "target": "typescript",
+ "model": "gemma4:31b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/store.ts",
+     "line": 47,
+     "title": "Inverted link expiry logic",
+     "description": "The resolve method deletes links that have NOT yet expired and allows expired links to be resolved. This renders the shortening service non-functional as valid links are deleted on first access.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "Broken admin authorization check",
+     "description": "The requireAdmin method uses the truthiness of `indexOf()`. For the 'admin' role, `indexOf` returns 0 (falsy), denying access. For unknown roles, `indexOf` returns -1 (truthy), granting admin access.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 85,
+     "title": "Uncaught JSON parsing error",
+     "description": "JSON.parse(req.body) is called without a try-catch block. A malformed request body will cause the entire request handler to throw, potentially crashing the server or resulting in an unhandled exception.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 34,
+     "title": "Quota counter results in NaN",
+     "description": "The quota for a new owner is initialized as `undefined + 1`, resulting in `NaN`. All subsequent increments for that owner will also result in `NaN`.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 78,
+     "title": "Unsafe null dereference in bearerToken",
+     "description": "The function uses the non-null assertion operator `!` on the `header` argument, which is explicitly typed as `string | undefined`. If the Authorization header is missing, the service will crash.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 46,
+     "title": "NaN configuration for cache TTL",
+     "description": "When `LINKD_CACHE_TTL_MS` is not set, `Number(undefined)` results in `NaN`. Multiplying by 1000 keeps it `NaN`, which will cause all cache entries to be treated as immediately expired.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 90,
+     "title": "Incorrect Map iteration in keys()",
+     "description": "The function uses `for...in` to iterate over a Map. In JavaScript, `for...in` iterates over enumerable properties of an object, not Map entries, so `keys()` will always return an empty array.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 31,
+     "title": "Mutation of global default configuration",
+     "description": "loadConfig assigns `DEFAULT_CONFIG` to a local variable `cfg` and then mutates `cfg`. Because objects are passed by reference, this mutates the global `DEFAULT_CONFIG` object, affecting all subsequent calls to loadConfig.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "Async callbacks in forEach not awaited",
+     "description": "warmCache uses `forEach` with an async callback. `forEach` does not await the promises returned by the callback, so `warmCache` returns immediately before any cache warming or probes have completed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "async callbacks in forEach are not awaited",
+     "description": "The `warmCache` function uses `pairs.forEach` with an async callback. Since `forEach` does not await the promises returned by the callback, `warmCache` resolves immediately while the probes and cache updates continue in the background. Any caller awaiting `warmCache` will proceed under the false assumption that the cache is already primed.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 57,
+     "title": "timer leak leads to premature cache eviction",
+     "description": "In `Cache.set`, a new timeout is created and stored in `this.timers` every time a code is cached. However, if `set` is called again for the same code before the previous timer expires, the old timeout ID is overwritten in the map without being cleared via `clearTimeout`. This results in multiple active timers for the same key; the first timer will eventually fire and call `this.delete(code)`, evicting the entry prematurely regardless of when the most recent `set` occurred.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "unbounded parallel probes in warmCache",
+     "description": "The `warmCache` implementation initiates a `probe` for every pair in the input array simultaneously. For large datasets, this can lead to resource exhaustion (e.g., exceeding the maximum number of open network sockets or memory), potentially causing the process to crash or be flagged as a denial-of-service attack by the targets.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 71,
+     "title": "floating promise in flushAudit",
+     "description": "The `flushAudit` function calls the async `write` function but does not `await` its result. This creates a floating promise. If the application is shutting down or under extreme load, the process may terminate or the event loop may be interrupted before the audit log is actually written to disk, leading to data loss.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 60,
+     "title": "failure to abandon probes in checkTargets",
+     "description": "The `checkTargets` function claims to abandon remaining probes once a failure is seen, but it uses `Promise.all` to execute the probes. `Promise.all` waits for all promises in the array to resolve (or one to reject), meaning all probes continue to run to completion even after a failure has been identified and returned.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 159,
+     "title": "Path Traversal in Report Export",
+     "description": "The 'name' query parameter is used in 'exportCsv' and 'readReport' without validation. An attacker can use path traversal sequences (e.g., '../../tmp/evil') to read or write files anywhere on the system that the process has permissions to access. Because the CSV content is based on created links, an attacker can write controlled content to the filesystem.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "Broken Admin Authorization Logic",
+     "description": "The 'requireAdmin' method uses 'allowed.indexOf(session.role)' as a boolean check. Because 'indexOf' returns 0 for 'admin', the check fails for administrators. Conversely, it returns -1 for unknown roles, which is truthy in JavaScript, effectively granting admin privileges to anyone who is not an administrator.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 139,
+     "title": "Trivial Admin Authentication via Header",
+     "description": "The '/admin/quotas' endpoint determines administrative access solely by checking for the 'x-admin: true' header. Any authenticated user can provide this header to bypass authorization and access administrative data.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 22,
+     "title": "Predictable Session Tokens",
+     "description": "Session tokens are generated using 'Math.random()', which is not a cryptographically secure PRNG. This allows an attacker to predict future tokens and hijack user sessions.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 64,
+     "title": "Global Link Data Leakage",
+     "description": "The '/links' endpoint returns a paginated list of all links in the store, including sensitive owner information, to any authenticated user regardless of whether they own the links.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 134,
+     "title": "Open Redirect in Out Endpoint",
+     "description": "The '/out' endpoint redirects users to the URL provided in the 'next' query parameter without validation. This can be used in phishing campaigns to redirect users from a trusted domain to a malicious one.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 34,
+     "title": "Potential Prototype Pollution",
+     "description": "The 'owner' parameter in 'store.create' is used as a key in the 'quota' object without validation. If an attacker provides '__proto__' as the owner, they may be able to pollute the object prototype.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 16,
+     "title": "Hardcoded Default Secret",
+     "description": "The Authenticator uses a hardcoded default secret ('dev-secret-do-not-use') if the environment variable is not set, which could be used to forge tokens if the application is deployed with defaults.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 87,
+     "title": "Non-Constant-Time Secret Comparison",
+     "description": "The 'secretEquals' function uses the '===' operator for secret comparison. This is susceptible to timing attacks that could leak the secret character by character.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 87989,
+      "output_tokens": 6323
+     },
+     "duration_ms": 63490,
+     "failed": false,
+     "output_bytes": 4930
+    },
+    {
+     "usage": {
+      "input_tokens": 87972,
+      "output_tokens": 5970
+     },
+     "duration_ms": 52798,
+     "failed": false,
+     "output_bytes": 3840
+    },
+    {
+     "usage": {
+      "input_tokens": 88117,
+      "output_tokens": 7355
+     },
+     "duration_ms": 59219,
+     "failed": false,
+     "output_bytes": 7296
+    }
+   ]
+  }
+ ]
+}

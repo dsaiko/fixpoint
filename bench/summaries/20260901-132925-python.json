@@ -1,0 +1,226 @@
+{
+ "run": "20260901-132925",
+ "task": "code",
+ "target": "python",
+ "model": "gemma4:31b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.py",
+     "line": 57,
+     "title": "Inverted expiry logic in resolve",
+     "description": "The resolve method deletes links if the current time is less than the expiry time, which means valid links are deleted and expired links are kept.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 50,
+     "title": "require_admin always returns False",
+     "description": "The condition `session.role != \"admin\" or session.role != \"owner\"` is a tautology; it is always true regardless of the role, so the method always returns False.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 46,
+     "title": "KeyError when creating first link for owner",
+     "description": "The create method attempts to increment `self.quota[owner]` before the owner exists in the dictionary, causing a KeyError.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 143,
+     "title": "RuntimeError when pruning expired links",
+     "description": "The prune method deletes items from `self.links` while iterating over it, which raises a RuntimeError in Python.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 57,
+     "title": "ValueError in warm_cache unpacking",
+     "description": "The loop `for code, target in pairs:` assumes `pairs` is a sequence of pairs, but it is passed as a dictionary in `cache.warm`, which iterates over keys only and causes a ValueError during unpacking.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 66,
+     "title": "IndexError in bearer_token parsing",
+     "description": "The split operation `header.split(\" \")[1]` will raise an IndexError if the Authorization header does not contain a space (e.g., if it is empty or malformed).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 130,
+     "title": "ZeroDivisionError in stats endpoint",
+     "description": "The hits_per_link calculation divides by `store.size()`, which will cause a crash if no links exist in the store.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 100,
+     "title": "Validation failure ignored",
+     "description": "The validate function identifies configuration problems but always returns True, allowing the service to start with an invalid state.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 91,
+     "title": "Incorrect success_rate calculation",
+     "description": "The use of integer division `used // len(self.links)` results in a value of either 0 or 100, rather than a precise percentage.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 29,
+     "title": "Unsynchronized shared state in Store",
+     "description": "The Store class manages shared mutable dictionaries ('links' and 'quota') without any synchronization. Concurrent requests to create, resolve, delete, and rename links will lead to data races. Furthermore, any request that iterates over the store (e.g., list_links calling store.page, or stats calling store.total_hits) will crash with a RuntimeError if another thread modifies the dictionary simultaneously.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 43,
+     "title": "Concurrency crash in token verification",
+     "description": "The verify method iterates over self.sessions.values(). If the revoke method is called concurrently on another thread, it modifies the dictionary, triggering a 'RuntimeError: dictionary changed size during iteration' and crashing the request handler.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 63,
+     "title": "Janitor crash during cache sweep",
+     "description": "The sweep method iterates over self.entries and deletes expired items within the same loop. This is a guaranteed RuntimeError: dictionary changed size during iteration whenever the cache actually contains expired entries.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 40,
+     "title": "Janitor crash during store cleanup",
+     "description": "The janitor loop in start_janitor iterates over the generator returned by store.find_expired and deletes entries from store.links inside the loop. Because the generator is an iterator over the dictionary, this causes a 'RuntimeError: dictionary changed size during iteration'.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 143,
+     "title": "Store crash during pruning",
+     "description": "The prune method iterates over self.links and deletes expired links inside the loop, causing a 'RuntimeError: dictionary changed size during iteration'.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 43,
+     "title": "Snapshot race condition on temporary file",
+     "description": "write_snapshot uses a hardcoded temporary path '/tmp/linkd-snapshot.json'. If multiple threads or processes attempt to write a snapshot concurrently, they will race to write to the same file, potentially resulting in a corrupted or partial snapshot being moved into the final destination.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 16,
+     "title": "Lost updates in metrics counters",
+     "description": "The increments in the Metrics class (e.g., self.resolved += 1) are not atomic in Python. Under high concurrency, multiple threads may read the same initial value and write back the same incremented value, leading to lost updates in the dashboard statistics.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 13,
+     "title": "Path traversal in CSV export and read",
+     "description": "The `export_csv` and `read_report` functions use user-supplied `name` parameters in `os.path.join` without validation. An attacker can use absolute paths or `..` sequences to read or write arbitrary files on the system (e.g., `name='/etc/passwd'` results in `/etc/passwd.csv`).",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.py",
+     "line": 107,
+     "title": "Open redirect in /out endpoint",
+     "description": "The `/out` endpoint redirects the user to the value of the `next` query parameter without validation. An attacker can craft a link that redirects users to a malicious external site while appearing to be a trusted redirect from this service.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 121,
+     "title": "Administrative authorization bypass via header",
+     "description": "The `admin_quotas` function grants administrative access if the `x-admin` header is set to `true`. This is a trivial bypass as any client can set this header regardless of their actual session privileges.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 93,
+     "title": "Missing ownership check during link deletion",
+     "description": "The `delete` method removes a link from the store using only the link code. It does not verify that the requester is the owner of the link, allowing any authenticated user to delete any existing link.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 27,
+     "title": "Predictable session tokens",
+     "description": "Session tokens are generated using `random.getrandbits`, which uses a non-cryptographically secure PRNG (Mersenne Twister). This makes tokens predictable and susceptible to hijacking.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 59,
+     "title": "Weak password hashing",
+     "description": "Passwords are hashed using a single iteration of SHA-256 without a salt. This is vulnerable to rainbow table attacks and high-speed brute-forcing.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 30,
+     "title": "Permissive CORS configuration with credentials",
+     "description": "The application sets `Access-Control-Allow-Origin: *` and `Access-Control-Allow-Credentials: true`. This is a security risk and is typically blocked by modern browsers; it indicates an intent to allow any site to make authenticated requests to the API.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 124598,
+      "output_tokens": 6100
+     },
+     "duration_ms": 67483,
+     "failed": false,
+     "output_bytes": 4638
+    },
+    {
+     "usage": {
+      "input_tokens": 86462,
+      "output_tokens": 5173
+     },
+     "duration_ms": 62548,
+     "failed": false,
+     "output_bytes": 5649
+    },
+    {
+     "usage": {
+      "input_tokens": 390385,
+      "output_tokens": 6832
+     },
+     "duration_ms": 99142,
+     "failed": false,
+     "output_bytes": 5913
+    }
+   ]
+  }
+ ]
+}
