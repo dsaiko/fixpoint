@@ -65,13 +65,61 @@ RATES = {
     "qwen/qwen3.8-max": (2.00, 6.00, None),
 }
 
-# Who pays, checked against ollama.com on 2026-08-20. Ollama cloud models are
-# covered by the Pro/Max subscription and differ only in how fast they draw the
-# weekly quota, with ONE exception: kimi-k3, whose library page says it
-# "requires a Pro or Max subscription, and consumes extra usage credits" -- a
-# real invoice on top of the plan, which no other swept model has. Re-check when
-# a model is added; this is an external fact with no API behind it.
-OLLAMA_CREDIT_MODELS = ("kimi-k3",)
+# Ollama per-token rates, $/MTok as (input, output, cached input), from
+# ollama.com/pricing on 2026-09-01.
+#
+# THIS TABLE DID NOT EXIST BEFORE 2026-09-01. Ollama moved Pro/Max/Team onto
+# transparent per-token pricing with a monthly credit pool that refreshes and
+# then continues pay-as-you-go at the same rate -- no service fees, and the
+# 5-hour and weekly limits are gone. Every claim in this file that an ollama
+# dollar figure "would be fiction" was true until that day and is now wrong;
+# the money is real and is what these rows are priced in.
+#
+# It also retires the kimi-k3 special case that used to live here: every model
+# is per-token now, so kimi-k3 is not a different KIND of billing, it is simply
+# the most expensive model on the list at $3.00/$15.00.
+OLLAMA_RATES = {
+    "deepseek-v4-flash": (0.44, 1.32, 0.014),
+    "deepseek-v4-pro":   (1.32, 3.96, 0.044),
+    "gemma4":            (0.14, 0.40, 0.05),
+    "glm-5.1":           (1.00, 3.20, 0.20),
+    "glm-5.2":           (1.40, 4.40, 0.26),
+    "glm-5.3":           (1.40, 4.40, 0.26),
+    "glm-5.3-flash":     (0.15, 0.50, 0.03),
+    "gpt-oss:20b":       (0.07, 0.30, 0.035),
+    "gpt-oss:120b":      (0.15, 0.60, 0.014),
+    "kimi-k2.6":         (0.95, 4.00, 0.16),
+    "kimi-k2.7-code":    (0.95, 4.00, 0.19),
+    "kimi-k3":           (3.00, 15.00, 0.30),
+    "minimax-m2.7":      (0.30, 1.20, 0.06),
+    "minimax-m3":        (0.60, 2.40, 0.12),
+    "mistral-large-3":   (0.50, 1.50, 0.50),
+    "nemotron-3-nano":   (0.06, 0.24, 0.06),
+    "nemotron-3-super":  (0.015, 0.60, 0.015),
+    "nemotron-3-ultra":  (0.10, 3.00, 0.10),
+    "qwen3.5:397b":      (0.60, 3.60, 0.60),
+}
+
+
+def ollama_rate(model):
+    """Rates for an ollama tag, whose name carries a tag the price list does not.
+
+    `glm-5.3:cloud` is priced as `glm-5.3`, `deepseek-v4-flash:0731-cloud` as
+    `deepseek-v4-flash`, and `gemma4:31b-cloud` as `gemma4` -- but `gpt-oss:120b`
+    and `qwen3.5:397b` ARE priced per size, so the size tag cannot simply be
+    stripped. Try the full name, then the name with `-cloud` removed, then the
+    stem.
+    """
+    cands = [model]
+    if ":" in model:
+        stem, tag = model.split(":", 1)
+        if tag.endswith("-cloud"):
+            cands.append(f"{stem}:{tag[:-len('-cloud')]}")
+        cands.append(stem)
+    for c in cands:
+        if c in OLLAMA_RATES:
+            return OLLAMA_RATES[c]
+    return None
 
 
 def agent_model(model):
@@ -124,11 +172,39 @@ def billing(model, harness):
     if harness.startswith("openrouter"):
         return "credits"
     if harness == "ollama":
-        base = model.split(":", 1)[0]
-        return "sub+credits" if base in OLLAMA_CREDIT_MODELS else "sub (ollama)"
+        # Per-token against a monthly credit pool that then continues
+        # pay-as-you-go at the same rate. Real money either way.
+        return "credits (pool)"
     if model == "codex":
         return "sub (chatgpt)"
     return "sub (claude)"
+
+
+def run_cost(model, harness, tok_in, tok_out, cache_read):
+    """What the whole sweep cost, in money, or None where no rate is published.
+
+    Split out of cost_per_point so the total and the per-point figure cannot
+    disagree: both are this one calculation. Cached input is billed at the
+    cache rate where the route publishes one, and at the full input rate where
+    it does not (grok and qwen3.8-max on OpenRouter, qwen3.5 and the nemotrons
+    on ollama, whose cached and fresh rates are identical anyway).
+    """
+    name, _ = agent_model(model)
+    rates = RATES.get(name or model) or ollama_rate(model)
+    if rates is None:
+        return None
+    rate_in, rate_out, rate_cache = rates
+    return (tok_in * rate_in
+            + cache_read * (rate_in if rate_cache is None else rate_cache)
+            + tok_out * rate_out) / 1e6
+
+
+def money(harness, usd):
+    """Format money, marking a subscription figure as notional with a leading ~."""
+    if usd is None:
+        return "-"
+    notional = not (harness.startswith("openrouter") or harness == "ollama")
+    return f"{'~' if notional else ''}${usd:,.2f}"
 
 
 def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
@@ -136,21 +212,18 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
 
     A dollar figure wherever a published rate exists, prefixed with ~ when the
     route is a subscription and the money is therefore notional (nothing is
-    billed per token there); bare where prepaid credits are actually spent. Ollama has no
-    per-token price, so its seats are priced in thousands of tokens per point --
-    the quota drawdown, which is the thing that is actually scarce there.
+    billed per token there); bare where credits are actually spent, which since
+    2026-09-01 includes ollama -- its plans bill per token against a monthly
+    pool and then pay-as-you-go at the same rate. The thousands-of-tokens
+    fallback remains only for a model with no published rate at all.
     """
     if not points:
         return "-"
-    name, _ = agent_model(model)
-    rates = RATES.get(name or model)
-    if rates is None:
+    usd = run_cost(model, harness, tok_in, tok_out, cache_read)
+    if usd is None:
+        # No published rate anywhere: fall back to the quota-shaped figure.
         return f"{(tok_in + tok_out) / 1000 / points:.1f}k"
-    rate_in, rate_out, rate_cache = rates
-    usd = (tok_in * rate_in
-           + cache_read * (rate_in if rate_cache is None else rate_cache)
-           + tok_out * rate_out) / 1e6
-    prefix = "" if harness.startswith("openrouter") else "~"
+    prefix = "" if harness.startswith("openrouter") or harness == "ollama" else "~"
     return f"{prefix}${usd / points:.3f}"
 
 
@@ -489,6 +562,7 @@ def write_html(ranked, all_targets, out_path):
         </td>
         <td data-sort="{e['tokens']}">{e['tokens']:,}</td>
         <td data-sort="{eff:.4f}">{eff:.0f}</td>
+        <td data-sort="{run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read']) or -1:.4f}">{_esc(money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'])))}</td>
         <td data-sort="{_cost_key(model, harness, e)}">{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']))}</td>
         <td data-sort="{e['seconds']}">{e['seconds']:,}</td>
         <td class="{'err' if e['errors'] else 'zero'}" data-sort="{e['errors']}">{e['errors']}</td>
@@ -580,6 +654,7 @@ def write_html(ranked, all_targets, out_path):
           <th class="left" scope="col">Score</th>
           <th scope="col">Tokens</th>
           <th scope="col">Pts / Mtok</th>
+          <th scope="col">Total $</th>
           <th scope="col">Per point</th>
           <th scope="col">Wall (s)</th>
           <th scope="col">Err</th>
@@ -595,12 +670,13 @@ def write_html(ranked, all_targets, out_path):
   {matrix_html}
 
   <div class="notes">
-    <p><b>Per point</b> is what one found defect cost. <code>$</code> is spent from prepaid
-    credits and appears on an invoice; <code>~$</code> is notional &mdash; the subscription
-    routes bill nothing per token, so the figure is what the same run would have cost at API
-    rates, which is the only way to compare a seat paid in subscription against one paid in
-    credits. <code>k</code> is thousands of tokens: ollama sells quota, not tokens, so a dollar
-    figure there would be invented.</p>
+    <p><b>Per point</b> is what one found defect cost. <code>$</code> is money actually
+    spent from credits &mdash; which since 2026-09-01 includes ollama, whose plans moved to
+    published per-token rates against a monthly pool that then continues pay-as-you-go.
+    <code>~$</code> is notional: the Claude and ChatGPT subscription routes bill nothing per
+    token, so the figure is what the same run would have cost at API rates, which is the only
+    way to compare a seat paid by subscription against one paid in credits. Every route in this
+    table is now priced in the same unit.</p>
     <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
     returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
     Both models that failed here have failed before.</p>
@@ -805,9 +881,9 @@ def main():
         return
 
     print(f"{'candidate':30s} {'model measured':22s} {'route':11s} {'pays':13s} "
-          f"{'score':>9s} {'tok':>9s} {'pts/Mtok':>9s} {'per point':>10s} "
-          f"{'sec':>6s} {'err':>4s} {'measured on':>17s}")
-    print("-" * 159)
+          f"{'score':>9s} {'tok':>9s} {'pts/Mtok':>9s} {'total $':>9s} "
+          f"{'per point':>10s} {'sec':>6s} {'err':>4s} {'measured on':>17s}")
+    print("-" * 169)
     for model, entries in ranked:
         median = statistics.median(e["points"] for e in entries)
         for e in entries:
@@ -822,6 +898,7 @@ def main():
             print(f"{label:30s} {(measured if measured != model else '-'):22s} "
                   f"{harness:11s} {billing(model, harness):13s} "
                   f"{e['points']:>4d}/{e['possible']:<4d} {e['tokens']:>9d} {eff:>9.1f} "
+                  f"{money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'])):>9s} "
                   f"{cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']):>10s} "
                   f"{e['seconds']:>6d} {e['errors']:>4d} "
                   f"{measured_on(e['dates']):>17s}{flag}")
@@ -877,10 +954,12 @@ def main():
         extra = [t for t in all_targets if t not in LEGACY_SCALE]
         print(f"score covers {'+'.join(LEGACY_SCALE)} only, the calibrated scale; "
               f"{', '.join(extra)} are reported per target above")
-    print("per point: cost of one seeded defect found. $ = spent from prepaid "
-          "credits, ~$ = notional (subscription,")
-    print("           nothing billed per token), k = thousands of tokens "
-          "(ollama sells quota, not tokens)")
+    print("per point: cost of one seeded defect found. $ = money actually spent "
+          "from credits (ollama included since")
+    print("           2026-09-01, when its plans moved to published per-token "
+          "rates), ~$ = notional (subscription,")
+    print("           nothing billed per token). k = tokens, only for a model "
+          "with no published rate at all.")
 
 
 if __name__ == "__main__":
