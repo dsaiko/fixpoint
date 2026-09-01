@@ -1,0 +1,350 @@
+{
+ "run": "20260901-141732",
+ "task": "code",
+ "target": "rust",
+ "model": "claude-fable-5",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "create() panics on quota unwrap for every new owner",
+     "description": "self.quota.get_mut(owner).unwrap() is called but nothing ever inserts an entry into the quota map, so get_mut returns None and unwrap panics on the very first POST /links for any owner. The panic occurs while the store Mutex is held, poisoning it, so every later store.lock().unwrap() in every handler and the janitor also panics: one create request permanently breaks the whole server.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 57,
+     "title": "resolve() expiry check is inverted: live links deleted, expired links served",
+     "description": "The expiry test is `SystemTime::now() < link.expires_at`, which is true for a link that has NOT yet expired. resolve() then removes that live link from the map and returns None, so the first GET /l for any valid link destroys it (permanent data loss in normal use). Conversely, an actually-expired link fails the test, falls through to the hit-count branch, and is served.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "page() clamps end to all.len() + 1, causing slice out-of-bounds panic",
+     "description": "When offset + size exceeds the number of links, end is set to all.len() + 1 instead of all.len(), and all[offset..end] panics with an out-of-range slice. With the default size of 20, any GET /links while fewer than offset+20 links exist (i.e. almost always) panics the handler thread while holding the store lock, poisoning the mutex for the whole process. The report endpoint's page(0, 1000) hits the same panic.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 96,
+     "title": "bearer_token indexes parts[1] and panics when the header has no space",
+     "description": "For a request without an Authorization header, main.rs passes the empty string; split(' ') on \"\" yields [\"\"], and parts[1] panics with index out of bounds. The same happens for any header value without a space (e.g. just \"Bearer\"). Every unauthenticated request therefore panics its handler thread and the client gets a dropped connection instead of a 401.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "handle() uses read_to_end, blocking until the client closes the connection",
+     "description": "read_to_end only returns at EOF, but a normal HTTP client keeps the socket open while waiting for the response. The server therefore never parses the request and never responds until the client times out and closes its write side \u2014 standard clients (browsers, curl without --http0.9-style shutdown) hang on every request.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "GET /stats divides by store.len() without a zero check",
+     "description": "per_link = hits / guard.len() as i64 performs integer division by zero when the store is empty, panicking the handler thread while holding the store lock (poisoning the mutex). A freshly started server crashes on its first /stats request.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 93,
+     "title": "No code path ever issues a session, so every request is rejected with 401",
+     "description": "Authenticator::verify only accepts tokens present in its sessions map, but Authenticator::issue is never called anywhere in the binary and there is no endpoint to obtain a token. Every request that survives bearer_token parsing gets 401, making every endpoint unreachable in the running service.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 56,
+     "title": "verify() never checks expires_at, so expired sessions remain valid forever",
+     "description": "The doc comment promises an error when a token's \"lifetime has run out\", and Session carries expires_at, but verify() only compares token strings. A session issued with a 12-hour lifetime keeps working indefinitely, so token expiry \u2014 the only credential-invalidation mechanism besides manual revoke \u2014 silently does nothing.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 113,
+     "title": "Config::validate() always returns Ok, so invalid configs pass",
+     "description": "validate() collects problems (port 0, zero timeout) but only prints them and unconditionally returns Ok(()). main() calls cfg.validate().unwrap() expecting a bad deploy to fail at startup, but e.g. LINKD_PORT=abc yields port 0 (parse().unwrap_or(0)) and the server silently binds an arbitrary ephemeral port instead of refusing to start.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 52,
+     "title": "LINKD_CACHE_TTL_MS is interpreted as seconds, not milliseconds",
+     "description": "The variable is documented (and named) as milliseconds, but the value is passed to Duration::from_secs(n), making the cache TTL 1000 times longer than configured. A 500ms TTL becomes over 8 minutes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 63,
+     "title": "LINKD_FETCH_LIMIT is parsed but never assigned to cfg.fetch_limit",
+     "description": "The parsed value is bound to a throwaway (`let _ = limit;`), so the environment variable is silently ignored and fetch_limit always stays at the default 32.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 45,
+     "title": "Bad LINKD_TIMEOUT_MS sets timeout to 0 while logging 'keeping default'",
+     "description": "On a parse error the code prints that it is keeping the default but then overwrites cfg.timeout with Duration::from_millis(0), which is exactly the value validate() calls out as invalid \u2014 and validate never fails, so the zero timeout stands.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "require_admin condition is always true, rejecting every session including admins",
+     "description": "session.role != \"admin\" || session.role != \"owner\" is true for every possible role (a string cannot equal both), so require_admin unconditionally returns Err \u2014 admins and owners are locked out of whatever this gates.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 102,
+     "title": "success_rate uses integer division before multiplying, yielding only 0 or 100",
+     "description": "used / self.links.len() is usize division and is 0 unless every link was used, so the percentage reported by /stats is 0 for any real mix of used/unused links and 100 only when all links have hits.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "utilization() integer division reports 0 until the cache is completely full, and panics if limit is 0",
+     "description": "guard.len() / self.limit is 0 for any len < limit, so the dashboard always shows 0% until the cache is full. Additionally, LINKD_CACHE_SIZE=0 is accepted by load_config, making self.limit 0 and this expression a divide-by-zero panic on every /stats request.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 71,
+     "title": "rename() validates `from` twice and never validates `to`",
+     "description": "Both validate_code calls pass `from`, so the destination code is stored unvalidated \u2014 a rename can install a code that is too long, too short, or contains invalid characters, which validate_code exists to prevent.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 121,
+     "title": "top() sorts ascending, returning the least-followed links",
+     "description": "sort_by(|a, b| a.hits.cmp(&b.hits)) sorts hits ascending and truncate(n) then keeps the n links with the FEWEST hits \u2014 the leaderboard shows the opposite of what the doc promises.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 130,
+     "title": "by_owner matches substrings instead of exact owner",
+     "description": "l.owner.contains(owner) returns links of every owner whose name contains the query \u2014 by_owner(\"bob\") includes \"bobby\"'s links, and by_owner(\"\") returns every link in the store, contradicting the 'exactly this owner' contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 151,
+     "title": "import() is documented atomic but leaves partial batches on failure",
+     "description": "Links are inserted one by one while validating; when a later link fails validate_code, the earlier links of the batch have already been inserted (and may have overwritten existing codes), so the store is left in exactly the half-imported state the doc rules out.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 213,
+     "title": "new_code() uses only subsecond nanos, so codes collide and silently overwrite links",
+     "description": "The code is just the nanosecond fraction of the current time in hex. Two creates in the same nanosecond window (or in the same nanos value across different seconds, which recurs every second) produce the same code, and create() then HashMap::insert-overwrites the earlier link \u2014 an existing user's link is destroyed without any error.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 49,
+     "title": "write_snapshot ignores the rename result and renames across filesystems",
+     "description": "The temp file is created in /tmp while the destination is in `dir` (e.g. /var/lib/linkd); fs::rename fails with EXDEV when they are on different filesystems, and the `let _ =` swallows that error, so write_snapshot returns Ok(()) with no snapshot written \u2014 the documented durability guarantee silently fails.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 121,
+     "title": "TTL parsing: bad input becomes 0 (instant expiry) and large input overflows",
+     "description": "v.parse::<u64>().unwrap_or(0) * 3600 turns any unparseable ttl field into a zero-duration link that expires immediately instead of rejecting the request or using the default, and a large valid value (> u64::MAX/3600) makes the multiplication overflow \u2014 a panic in debug builds, silent wraparound to a tiny TTL in release.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "warm_cache never joins its threads despite promising to return after every probe finishes",
+     "description": "The spawned handles are collected and then discarded with `let _ = handles;` \u2014 the function returns immediately while the set() calls are still running, so a caller relying on the documented 'returns after every probe has finished' contract observes a cold cache.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 139,
+     "title": "extend() revives expired links, contradicting its documented contract",
+     "description": "The doc states an already-expired link stays expired, but the code unconditionally sets expires_at = now + ttl, so a dead code comes back to life when extended.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 165,
+     "title": "prune() returns the remaining count, not the number removed",
+     "description": "The doc says it reports how many links it removed; `before` is computed and discarded, and the function returns self.links.len() \u2014 the count of survivors. Any caller acting on the return value gets the wrong number.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 107,
+     "title": "delete() never returns the owner's quota slot despite the documented guarantee",
+     "description": "The doc promises the owner gets their quota slot back, but the owner is read into `let _ = link.owner;` and the quota map is never decremented \u2014 once quota accounting works (see the create() bug), deletes would leak quota permanently.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 145,
+     "title": "quotas() hands out &mut to internal state despite documenting a snapshot",
+     "description": "The doc says mutating the returned counts must not affect the store, but the method returns &mut self.quota \u2014 the live internal map \u2014 so any caller mutation corrupts the store's quota accounting.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 141,
+     "title": "redirect() lowercases the code but delete() and the store do not",
+     "description": "GET /l resolves code.to_lowercase() while DELETE /links and validate_code accept mixed-case codes, so any link stored with an uppercase character (e.g. via import or rename) can be deleted but never resolved \u2014 an inconsistency between endpoints operating on the same keys.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 28,
+     "title": "Metrics::add_resolved is a non-atomic read-modify-write, losing increments under concurrency",
+     "description": "add_resolved performs a separate load and store (`let current = self.resolved.load(...); self.resolved.store(current + 1, ...)`) instead of an atomic increment. Interleaving: handler thread A loads current=5, handler thread B loads current=5, A stores 6, B stores 6 \u2014 one resolution is lost. This runs on the hottest path (every /l redirect and /out click calls it from concurrently spawned connection threads), so under any real load the resolved counter silently undercounts. The struct's doc comment claims 'All methods are safe for concurrent use', and the sibling counters use fetch_add correctly, so this one is simply wrong.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Connection threads block forever in read_to_end with no timeout; cfg.timeout is never applied",
+     "description": "handle() calls `stream.read_to_end(&mut body)` on a TcpStream with no read timeout set (`set_read_timeout` is never called; `cfg.timeout` is loaded and validated in config.rs but never used anywhere). read_to_end only returns when the peer shuts down its write side, so a client that connects and sends nothing \u2014 or sends a request and keeps the socket open \u2014 parks the spawned thread forever. Combined with the unbounded thread-per-connection spawn at main.rs:55, a handful of idle connections leaks threads without bound and a slowloris-style client trivially exhausts the process (each OS thread costs a stack). This is reachable by any misbehaving or slow client in normal operation.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 116,
+     "title": "Lock-ordering inversion between Cache::flush and Cache::get can deadlock the process",
+     "description": "get() acquires the `entries` write lock (line 33) and, while still holding it, acquires the `hits` mutex (line 45). flush() acquires them in the opposite order: `hits` first (line 116), then the `entries` write lock (line 117). Interleaving: thread A in get() holds the entries write guard and blocks on hits.lock(); thread B in flush() holds the hits guard and blocks on entries.write(). Both wait forever, and since every other Cache method also needs the entries lock, the whole cache \u2014 and any handler thread that touches it \u2014 wedges. flush() is documented as the admin flush endpoint's implementation, so once that endpoint is wired up this is a standing deadlock under concurrent traffic.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "count_by_owner locks the same non-reentrant Mutex twice and deadlocks itself",
+     "description": "count_by_owner takes `store.lock()` into `guard` (line 120) and then, while `guard` is still alive, calls `store.lock()` again (line 122). std::sync::Mutex is not reentrant: the second lock() blocks waiting for the first guard to be released, which never happens because the same thread holds it \u2014 a guaranteed self-deadlock (or a poisoned-lock panic, but in practice a permanent hang) on every single call. The thread also dies holding the store mutex's wait slot, and any later caller of store.lock() queues behind it. No caller exists in the current binary, which is the only reason the server runs; the first code that uses this public helper hangs.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "warm_cache never joins its threads despite documenting that it returns after every probe finishes",
+     "description": "The doc comment says 'Returns after every probe has finished', but the collected JoinHandles are discarded with `let _ = handles;` \u2014 no handle is joined. warm_cache returns immediately while the spawned threads are still (or not yet) running. A caller that primes the cache and then measures hit rate, drops the pairs' source, or shuts down sees an arbitrarily cold cache; the threads race with whatever the caller does next. The spawned work is also unbounded: one OS thread per pair, so warming 10k links spawns 10k simultaneous threads.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 103,
+     "title": "Cache::sweep releases the lock between collecting expired keys and deleting them, so it can delete freshly refreshed entries",
+     "description": "sweep() snapshots expired keys under a read lock, drops the guard (line 103), then calls delete() per key, each taking a fresh write lock. Interleaving: sweep observes code X as expired; a handler thread calls set(X, target) which replaces the entry with a new one whose `expires` is a full TTL in the future; sweep then deletes X anyway, throwing away a live, just-written entry. The doc comment explicitly says sweep runs on the janitor thread 'while handlers are serving', so this window is by design concurrent. Consequence is an unwarranted cache miss (extra store hit), not corruption, hence medium.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 54,
+     "title": "Dropping JanitorStop does not stop the janitor, contrary to its documentation, and stop takes up to a full interval",
+     "description": "start_janitor's doc says the returned handle 'stops the sweep when it is dropped', but JanitorStop has no Drop impl; dropping it merely disconnects the channel, and the loop's `rx.try_recv().is_ok()` treats Err(Disconnected) the same as Err(Empty), so the thread runs forever after the handle is gone \u2014 a permanent thread leak for any embedder (main.rs:60's `janitor.stop()` sits after the infinite accept loop and is unreachable anyway). Additionally the loop sleeps the full interval before re-checking, so even an explicit stop() takes up to 60s to be honored, and a stop() sent while the thread is mid-sleep is only seen on the next iteration.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 46,
+     "title": "write_snapshot uses one fixed /tmp path, so concurrent snapshots corrupt each other",
+     "description": "Every call writes to the same hardcoded `/tmp/linkd-snapshot.json` before renaming it into `dir`. If two threads (or two processes, since /tmp is global) snapshot concurrently, interleaving is: A creates/truncates the tmp file and starts writing; B truncates it again and writes; A renames \u2014 the destination receives B's bytes attributed to A's call, or a torn mix if a rename lands mid-write. The function's whole documented purpose is that 'a crash can never leave a half-written snapshot behind', and the shared fixed name defeats exactly that guarantee under concurrency. The rename result is also discarded, and /tmp is typically a different filesystem from `dir`, where rename fails with EXDEV and the snapshot is silently never written.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 215,
+     "title": "report() holds the global store mutex across file write and read-back, stalling every other request",
+     "description": "The store guard taken at line 215 lives until the end of report(), so the CSV export (fs::write of up to 1000 rows) and the read_to_string of the produced file both execute while the one global store Mutex is held. Every concurrent handler \u2014 create, resolve/redirect, delete, list, stats \u2014 blocks behind disk I/O for the duration; a slow or contended export directory (the default is /var/lib/linkd/exports) turns one /report request into a stall of the whole service. The lock is only needed to take the page snapshot.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 1937,
+      "output_tokens": 13227,
+      "cache_read_tokens": 66218,
+      "cache_write_tokens": 26314,
+      "cost_usd": 1.255254,
+      "cost_known": true
+     },
+     "duration_ms": 171691,
+     "failed": false,
+     "output_bytes": 18192
+    },
+    {
+     "usage": {
+      "input_tokens": 1959,
+      "output_tokens": 9538,
+      "cache_read_tokens": 64768,
+      "cache_write_tokens": 26161,
+      "cost_usd": 1.0661809999999998,
+      "cost_known": true
+     },
+     "duration_ms": 135350,
+     "failed": false,
+     "output_bytes": 10503
+    },
+    {
+     "usage": {
+      "input_tokens": 4966,
+      "output_tokens": 9533,
+      "cache_read_tokens": 118639,
+      "cache_write_tokens": 30325,
+      "cost_usd": 1.099819,
+      "cost_known": true
+     },
+     "duration_ms": 182167,
+     "failed": false,
+     "output_bytes": 152
+    }
+   ]
+  }
+ ]
+}

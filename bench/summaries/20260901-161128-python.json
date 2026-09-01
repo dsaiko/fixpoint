@@ -1,0 +1,614 @@
+{
+ "run": "20260901-161128",
+ "task": "code",
+ "target": "python",
+ "model": "claude-opus-5",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.py",
+     "line": 46,
+     "title": "create() raises KeyError on an owner's first link",
+     "description": "self.quota[owner] = self.quota[owner] + 1 reads a key that is only ever written here. self.quota starts empty and no code path seeds it, so the very first create() for any owner raises KeyError after the link has already been inserted into self.links. The store is left with a link whose quota was never counted and the request fails with an unhandled exception (main.create_link only catches ValueError).",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.py",
+     "line": 57,
+     "title": "resolve() has the expiry comparison inverted, deleting live links",
+     "description": "The check is `if time.time() < link.expires_at: del self.links[code]; return None`. That condition is true precisely when the link is still valid, so every healthy link is deleted on its first resolution and returns 404, while an expired link (now < expires_at is false) falls through, gets its hit counted and returns the target. This both destroys data and keeps dead codes alive \u2014 the exact opposite of the documented contract.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 50,
+     "title": "require_admin() always returns False",
+     "description": "`if session.role != \"admin\" or session.role != \"owner\"` is a tautology: any role differs from at least one of the two literals, so the condition is always true and the function always returns False. Every admin-gated path guarded by this helper is closed to everybody, including real admins.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 66,
+     "title": "bearer_token() raises IndexError on a missing or malformed header",
+     "description": "header.split(\" \")[1] assumes two space-separated parts. main.handle passes request[\"headers\"].get(\"authorization\", \"\"), and \"\".split(\" \") == [\"\"], so index 1 raises IndexError. Every request that arrives without an Authorization header \u2014 which is the common unauthenticated case the 401 branch below is written for \u2014 crashes instead of returning 401.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 43,
+     "title": "verify() never checks session expiry",
+     "description": "The docstring promises None for a token whose lifetime has run out, but the loop only compares tokens and returns the session regardless of session.expires_at. Sessions issued with a 12-hour lifetime remain valid forever, so revocation-by-expiry never happens and a leaked token is permanently usable.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 130,
+     "title": "/stats divides by zero on an empty store",
+     "description": "store.total_hits() / store.size() has no guard. store.size() is len(self.links), which is 0 on a freshly started service or after the janitor prunes everything, so the /stats endpoint raises ZeroDivisionError and returns a 500 instead of a dashboard payload.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 143,
+     "title": "prune() mutates self.links while iterating it, and returns the wrong count",
+     "description": "`for code in self.links: ... del self.links[code]` raises RuntimeError: dictionary changed size during iteration as soon as one link matches the cutoff, so prune aborts partway with an exception. Even if it completed, it returns len(self.links) \u2014 the number of survivors \u2014 while the docstring and the local `removed` counter say it reports how many went.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 40,
+     "title": "Janitor deletes from store.links while iterating find_expired's generator",
+     "description": "find_expired returns a lazy generator over self.links.items(); the loop body then does `del store.links[code]`. The next advance of the generator raises RuntimeError: dictionary changed size during iteration. The exception escapes loop(), the janitor thread dies silently on its first tick that finds an expired link, and expired links and cache entries are never swept again for the life of the process.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 63,
+     "title": "sweep() mutates self.entries while iterating it",
+     "description": "`for code in self.entries: ... del self.entries[code]` raises RuntimeError: dictionary changed size during iteration the moment one entry is expired. Since sweep is called from the janitor tick, the exception propagates into the janitor thread and kills it; expired cache entries then accumulate until the limit forces eviction.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 80,
+     "title": "flush() deadlocks by calling delete() while holding the lock",
+     "description": "flush acquires self.lock and then calls self.delete(\"__sentinel__\"), which does `with self.lock:` again. threading.Lock is not reentrant, so the second acquire blocks forever on the same thread. The admin flush endpoint hangs permanently and every other cache operation blocks behind the held lock, taking the whole service down.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 110,
+     "title": "by_owner() substring-matches owners and returns other users' links",
+     "description": "`owner in l.owner` is a substring test, not equality, despite the docstring saying 'exactly this owner'. Querying for \"bob\" returns links owned by \"bobby\" and \"bob.smith\"; querying \"a\" returns nearly everything. Wherever this feeds a per-owner view or export, one user sees another's links.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 101,
+     "title": "delete_link ignores the session owner, letting anyone delete any link",
+     "description": "The docstring states a link may only be deleted by the user who created it, with the owner taken from the authenticated session. The body passes only request[\"query\"][\"code\"] to store.delete, and store.delete does no ownership check either. Any authenticated caller can delete any other user's link by guessing or observing a code. The code is also read without a guard, so a request to DELETE /links with no ?code= raises KeyError.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 61,
+     "title": "parse_report's mutable default argument accumulates rows across calls",
+     "description": "`def parse_report(body, rows=[])` binds the list once at function definition. Callers that omit rows share that single list, so the second call returns its own rows plus every row from the first call, and the list grows without bound for the life of the process \u2014 a memory leak plus corrupted results for the download/parse path.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 44,
+     "title": "write_snapshot renames an unclosed, unflushed file and can fail across filesystems",
+     "description": "The handle opened on line 44 is never closed or flushed before os.rename on line 46, so buffered bytes may still be in userspace when the rename publishes the file \u2014 exactly the half-written snapshot the docstring promises is impossible \u2014 and the handle leaks. Worse, tmp is hardcoded to /tmp while the destination is directory (default /var/lib/linkd/exports); when those are different mounts os.rename raises OSError EXDEV and the snapshot is never written at all.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.py",
+     "line": 100,
+     "title": "validate() always returns True, so a bad config never fails startup",
+     "description": "The function collects problems and prints them, then unconditionally returns True. main.py calls config.validate(cfg) at line 15 and ignores the result anyway, so a port of 0, a negative cache size or a non-positive timeout all start the server \u2014 the failure surfaces at the first request rather than at startup, which is precisely what the docstring says must not happen.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.py",
+     "line": 45,
+     "title": "LINKD_CACHE_TTL_MS is stored as seconds without converting from milliseconds",
+     "description": "cfg.cache_ttl defaults to 300 and is consumed by Cache as a seconds offset (`time.time() + self.ttl` in cache.py:45). The env var is documented and named as milliseconds, but the raw millisecond value is assigned straight to the field. Setting LINKD_CACHE_TTL_MS=300000 for a five-minute TTL yields a 300000-second (3.5-day) TTL, so the cache serves stale targets long after links change or expire. The int() is also unguarded, so a non-numeric value crashes the process at import time.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 69,
+     "title": "check_targets raises IndexError when every target is healthy",
+     "description": "`return problems[0]` runs unconditionally, but problems is empty whenever all links use https. The healthy path \u2014 the common one \u2014 raises IndexError instead of reporting 'no failures'. The function also cannot express 'no problem' at all with this return type.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 32,
+     "title": "create()'s mutable default tags list is shared by every link",
+     "description": "`def create(self, target, owner, ttl, tags=[])` evaluates the list once at definition time. Every link created without explicit tags stores a reference to that same list, so appending a tag to one link's tags mutates the tags of every other link created with the default.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 105,
+     "title": "top() returns the least-followed links instead of the most-followed",
+     "description": "sorted(..., key=lambda l: l.hits) sorts ascending, then [:n] takes the front. The docstring promises 'most hits first', so the leaderboard shows the n links with the fewest hits \u2014 typically the ones with zero.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 91,
+     "title": "success_rate() floor-divides before scaling, so it is always 0 or 100",
+     "description": "`used // len(self.links) * 100` performs integer division first. For any used < total the quotient is 0 and the result is 0%; only when every single link has been followed does it return 100. The dashboard's success rate is therefore meaningless for all realistic data.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.py",
+     "line": 73,
+     "title": "utilization() floor-divides and always reports 0%",
+     "description": "`len(self.entries) // self.limit * 100` truncates to 0 for any partially-filled cache and only reaches 100 when the cache is exactly at or above its limit. /stats reports cache utilization as 0 no matter how full the cache is. If limit is 0 this also raises ZeroDivisionError.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.py",
+     "line": 41,
+     "title": "Eviction picks the oldest inserted entry, not the least recently used",
+     "description": "`victim = list(self.entries.keys())[0]` takes the first key in insertion order. The 'used' timestamp maintained by get() (line 29) and set() is never read, so a hot entry inserted early is evicted while a cold entry inserted later survives \u2014 contradicting the documented LRU policy and causing repeated misses on the most popular codes. Building the full key list on every insert is also O(n).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.py",
+     "line": 40,
+     "title": "set() raises IndexError when limit is 0",
+     "description": "With limit == 0 the guard `len(self.entries) >= self.limit` is true even for an empty dict, and `list(self.entries.keys())[0]` then indexes an empty list. config.validate only rejects a negative cache_size, so LINKD_CACHE_SIZE=0 is accepted at startup and every subsequent cache write raises IndexError.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 55,
+     "title": "LINKD_FETCH_LIMIT is parsed and then discarded",
+     "description": "`parsed = parsed` is a no-op; cfg.fetch_limit is never assigned, so the environment variable is silently ignored and the service always runs with the default of 32. Operators setting the variable get no error and no effect. The bare int(limit) also raises ValueError on non-numeric input, crashing startup.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 41,
+     "title": "Timeout is assigned in milliseconds and forced to 0 on a parse error",
+     "description": "cfg.timeout defaults to 10 (seconds) but LINKD_TIMEOUT_MS is assigned raw, so 5000 ms becomes a 5000-second timeout. Separately, the except branch prints 'keeping default' and then sets ms = 0, and line 41 assigns it outside the try \u2014 so a malformed value produces a zero timeout, not the default, directly contradicting the message the operator just read.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 100,
+     "title": "delete() never returns the owner's quota slot",
+     "description": "The docstring says deleting a link gives the owner their quota slot back so they can always create another. The body only removes the link from self.links; self.quota[owner] is left at its incremented value. Over a create/delete cycle an owner's recorded count drifts upward without bound, eventually locking them out of creating links and reporting wrong numbers on the admin quota dashboard.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 66,
+     "title": "rename() validates the source code twice and never validates the destination",
+     "description": "validate_code(frm) is called on both line 65 and line 66; validate_code(to) is never called. An arbitrary destination code \u2014 empty, 500 characters, or containing '/', spaces or control characters \u2014 is accepted and installed as a key in self.links, bypassing the 4-32 alphanumeric constraint every other path enforces.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 138,
+     "title": "import_all is not atomic despite promising all-or-nothing",
+     "description": "The loop validates and inserts each link in turn. If validate_code raises on the fifth link of a batch, the first four are already in self.links and the exception propagates, leaving the store in the partially-imported state the docstring explicitly rules out. There is no rollback.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 128,
+     "title": "quotas() returns the live internal dict, not a snapshot",
+     "description": "The docstring states the returned dict is a snapshot and that mutating it must not affect the store. `return self.quota` hands out the store's own object: any caller that writes to it silently corrupts the quota accounting. main.admin_quotas serializes it directly while the janitor thread may be running, and worker.count_for_owner reads through the same reference.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 121,
+     "title": "extend() resurrects already-expired links",
+     "description": "The docstring says expiry is final and a dead code must never come back to life, but the body unconditionally sets link.expires_at = time.time() + ttl with no comparison against the current expiry or the clock. Calling extend on a link that expired an hour ago makes it live again \u2014 the invariant the comment calls out is not enforced anywhere.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 58,
+     "title": "warm_cache never joins the threads it starts",
+     "description": "The docstring promises the function returns once every probe is done. Threads are appended to `threads` but the list is never iterated to join them, so warm_cache returns while the workers are still running. A caller that warms the cache and then immediately reads it sees misses, and on interpreter shutdown these non-daemon threads keep the process alive.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 56,
+     "title": "revoke() raises KeyError for an unknown or already-revoked token",
+     "description": "`del self.sessions[token]` has no guard. Revoking a token twice, or revoking one that already expired and was cleaned up, raises KeyError instead of being a no-op \u2014 turning an idempotent logout into a 500.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 141,
+     "title": "/report writes one filename and reads back a different one",
+     "description": "export_csv substitutes 'links' for an empty name (export.py:12) and writes links.csv, but read_report is called with the original, still-empty name and opens '.csv'. Since request[\"query\"].get(\"name\", \"\") defaults to empty, the default /report call always fails to find the file and returns 500. The `path` returned by export_csv on line 140 is assigned and never used, which is what would have made this correct.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 67,
+     "title": "create_link crashes on malformed or incomplete JSON bodies",
+     "description": "json.loads on line 67 raises ValueError on invalid JSON \u2014 caught by the except on line 71 and reported as 400, which is fine \u2014 but payload[\"target\"] and payload[\"owner\"] on line 70 raise KeyError when the field is absent, and int(payload[\"ttl\"]) on line 68 raises ValueError outside the try. A body of {} therefore produces an unhandled KeyError rather than a 400. If the body is a JSON scalar or list, payload.get on line 68 raises AttributeError.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 58,
+     "title": "read_report leaks the file handle on every download",
+     "description": "open(...).read() drops the file object without closing it; the descriptor stays open until CPython's refcount happens to collect it (and never deterministically on other implementations). /report calls this on every request, so a busy service accumulates open descriptors until it hits the process limit and open() starts raising OSError.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "worker.py",
+     "line": 74,
+     "title": "count_for_owner raises KeyError for an owner with no links",
+     "description": "store.quotas()[owner] indexes the quota dict directly. An owner who has never created a link (or whose entry was never seeded \u2014 see store.py:46) has no key, so the quota dashboard raises KeyError instead of reporting 0.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "worker.py",
+     "line": 37,
+     "title": "Janitor sleeps before checking the stop flag and blocks interpreter exit",
+     "description": "loop() calls time.sleep(interval) at the top of each iteration and only re-tests _running afterwards, so stop_janitor() takes up to `interval` seconds (60 in main.py) to take effect. The thread is created without daemon=True, so the interpreter will not exit until that sleep finishes \u2014 a shutdown stalls for up to a minute.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "cache.py",
+     "line": 80,
+     "title": "Cache.flush self-deadlocks by re-acquiring a non-reentrant lock",
+     "description": "flush() acquires self.lock via `with self.lock:` and then, still inside that block, calls self.delete(\"__sentinel__\"), which does `with self.lock:` on the same threading.Lock. threading.Lock is not reentrant, so the calling thread blocks forever on line 52 while it is itself holding the lock. Because the lock is never released, every other cache operation (get, set, delete, sweep) in every request thread blocks permanently behind it. A single call to the admin flush endpoint therefore wedges the entire resolver path, not just the caller.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.py",
+     "line": 40,
+     "title": "Janitor thread dies on its first tick with an expired link, silently stopping all expiry",
+     "description": "store.find_expired (store.py:157) returns a generator over self.links.items(). The janitor loop iterates that live generator while executing `del store.links[code]` inside the loop body, which raises RuntimeError: dictionary changed size during iteration as soon as one link is expired. The loop() function has no try/except, so the exception propagates out of the thread's target and the thread terminates. Nothing observes the failure: _running stays True, _janitor still references a dead Thread, and no counter records it. From that moment on, expired links are never swept from the store and cache.sweep() (line 42) never runs again for the lifetime of the process, so the store grows without bound. main.py:22 starts this thread unconditionally at import, so this is on the normal running path.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 63,
+     "title": "Cache.sweep mutates self.entries while iterating it, killing the janitor thread",
+     "description": "sweep() iterates `for code in self.entries:` and deletes from self.entries inside the loop, which raises RuntimeError: dictionary changed size during iteration the first time any entry is past its expiry. sweep() is called only from the janitor thread (worker.py:42), whose loop has no exception handling, so this exception terminates the background thread permanently \u2014 the same failure mode as the store sweep above, reached whenever the cache holds at least one expired entry (i.e. routinely, given cache_ttl of 300s and a 60s tick). After it fires, expired cache entries are never reclaimed and the cache keeps serving until eviction pressure removes them.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 29,
+     "title": "Store.links is shared between the janitor thread and request handlers with no synchronization",
+     "description": "Store carries no lock, yet its links dict is mutated concurrently from at least two directions: the janitor thread deletes entries (worker.py:41) every interval, while request threads call create/resolve/delete/page/top/stats. Concrete interleavings: (1) a request in page() (line 78) or top() (line 105) or success_rate() (line 90) or total_hits() (line 150) is building a list from self.links.values() when the janitor deletes a code \u2014 the iteration raises RuntimeError: dictionary changed size during iteration and the request fails with a 500; (2) resolve() (lines 54-58) and delete() (lines 98-101) both do a get, then a `del` on the result \u2014 if the janitor (or a second request) removes the same code between the get and the del, the `del` raises KeyError; (3) create() at line 45-46 does a non-atomic read-modify-write on self.quota, so two concurrent creates by the same owner can both read the old count and lose one increment. The class docstring asserts it is the only owner of the dict and that the dict never escapes, but worker.py:41 mutates store.links directly, so that invariant is already broken by the shipped caller.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 58,
+     "title": "warm_cache never joins the threads it starts, so it returns before the work is done",
+     "description": "The docstring promises 'Returns once every probe is done', and the function carefully appends every thread to `threads` (line 60) \u2014 but never joins them, and `threads` is then discarded. The function returns while the cache.set calls are still in flight, so a caller that warms the cache and then reads it sees misses for entries it was told are present. The started threads are also non-daemon and unreferenced after return: nothing can wait for them, nothing can cancel them, and any exception they raise is lost. If the pairs list is large this spawns one unbounded thread per pair, and at interpreter shutdown the process blocks on whichever of them are still running.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 16,
+     "title": "Metrics counters are incremented without synchronization and lose updates",
+     "description": "add_resolved and add_created perform `self.resolved += 1`, which compiles to a separate load, add and store. The GIL can be released between those bytecodes, so two request threads calling redirect() (main.py:82) or create_link() (main.py:73) concurrently can both load the same value and both store value+1, losing one increment. snapshot() (line 21) reads the three fields with no synchronization either, so the dashboard can also report a set of counters that never existed together at any instant. The result is a dashboard that silently undercounts under load \u2014 the exact condition where the numbers matter.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 49,
+     "title": "stop_janitor does not join the thread and makes the janitor unrestartable",
+     "description": "stop_janitor sets _running = False and returns immediately. Two consequences. First, the loop (lines 37-42) checks _running only at the top and then sleeps for the whole interval, so after stop_janitor returns the thread can still wake up and run a complete sweep \u2014 deleting from store.links and cache.entries \u2014 for up to `interval` seconds. A caller that stops the janitor in order to snapshot or tear down the store races with a sweep it believes has ended. Second, _running is never restored to True, so a subsequent start_janitor() creates a thread whose while loop is false on entry and exits at once, leaving _janitor pointing at a dead thread and expiry permanently off with no error. The module-level _janitor global is also overwritten by a second start_janitor call, orphaning the first thread with no handle to stop or join it.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.py",
+     "line": 35,
+     "title": "peek bypasses the cache lock and warm() builds a check-then-act race on it",
+     "description": "The class docstring states every method is safe to call from any number of threads at once, but peek() reads self.entries with no lock held. warm() (lines 56-58) then composes it into an unsynchronized check-then-act: two threads warming overlapping pair sets can both see peek() false for the same code and both call set(), and each set() may evict a different victim (line 41), so the cache can lose two useful entries to satisfy one insertion. peek() also ignores the expires field that get() checks on line 26, so it reports an expired entry as cached and warm() then declines to refresh it, leaving a stale entry to be served until the next sweep. Callers driving warm() from multiple threads (worker.warm_cache does exactly this via set) get non-deterministic cache contents.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 123,
+     "title": "Admin endpoint authorizes on a client-supplied X-Admin header",
+     "description": "/admin/quotas gates access with `request[\"headers\"].get(\"x-admin\") != \"true\"`. The header is fully controlled by the caller, so any client that holds any valid session token (or forges one, see the token-generation finding) reads every owner's link counts by adding `X-Admin: true`. The authenticated session's `role` field is never inspected and `Authenticator.require_admin` is never invoked anywhere in the codebase, so there is no server-side privilege check at all on this path.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.py",
+     "line": 13,
+     "title": "Path traversal in export_csv/read_report via user-supplied report name",
+     "description": "`export_csv` builds `os.path.join(directory, name + \".csv\")` where `name` arrives unvalidated from the query string at main.py:138. A request to /report?name=../../../etc/cron.d/pwn writes attacker-influenced CSV content outside export_dir, and because `os.path.join` discards the base when the second component is absolute, name=/etc/cron.d/pwn writes to an arbitrary absolute path with service-user privileges. `read_report` (export.py:58) has the mirror problem: the same name is joined and read back, so name=../../../home/svc/.ssh/id_rsa (any file whose real name ends in .csv, e.g. ../../../etc/passwd is blocked by the suffix but data exports, backups and DB dumps commonly are .csv) is returned in the 200 body. The docstring's claim that the name \"is confined to directory\" is not implemented by any code.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.py",
+     "line": 31,
+     "title": "archive_all writes to a path built from an attacker-controlled owner string",
+     "description": "`archive_all` does `open(os.path.join(directory, owner + \".csv\"), \"w\")`. Owner strings are never validated on the way in: `create_link` (main.py:70) takes `payload[\"owner\"]` straight from the request body and `Store.create` stores it as-is. An attacker creates a link with owner \"../../../../etc/cron.d/pwn\" (or an absolute path, which makes os.path.join drop `directory`), and the next archive run writes CSV lines to that location as the service user. The file body is also attacker-controlled, since link codes and targets come from the same request.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 27,
+     "title": "Session tokens generated from the predictable `random` module",
+     "description": "`issue` mints tokens as two `random.getrandbits(32)` draws. `random` is a Mersenne Twister seeded from a shared global state, not a CSPRNG. An attacker who observes a modest number of consecutive outputs \u2014 trivially available here, since every issued token is printed at auth.py:35 and echoed back in 401 bodies at main.py:43 \u2014 can recover the MT19937 state and predict all subsequent tokens, then impersonate any user including an admin. The docstring's \"unguessable\" is false.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 43,
+     "title": "verify() never checks session expiry, so tokens are valid forever",
+     "description": "`verify` iterates `self.sessions.values()` and returns the first session whose token matches, without ever comparing `session.expires_at` against the clock, despite the docstring promising 'Returns None if ... its lifetime has run out'. The 12-hour lifetime set at auth.py:32 is therefore never enforced: a token captured from a log line, a proxy access log, or a 401 body grants access indefinitely. Sessions also accumulate in the dict without bound, since nothing ever removes expired ones.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 22,
+     "title": "Hardcoded fallback secret silently used when LINKD_SECRET is unset",
+     "description": "`self.secret = [REDACTED]\"LINKD_SECRET\") or \"dev-secret-do-not-use\"`. A deployment that forgets the environment variable \u2014 or where it is set to the empty string \u2014 starts successfully and runs with a secret that is published in this repository, so anyone can forge whatever the secret protects. `config.validate` does not check it either, so nothing fails at startup and there is no log line indicating the fallback was taken.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 61,
+     "title": "Passwords hashed with a single unsalted SHA-256",
+     "description": "`hash_password` returns `hashlib.sha256(password.encode()).hexdigest()` as 'the value stored in the user table'. SHA-256 is a fast general-purpose hash: a leaked table is crackable at billions of guesses per second on commodity GPUs, and the absence of a per-user salt means identical passwords produce identical digests and precomputed rainbow tables apply directly.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 112,
+     "title": "Open redirect on /out?next=",
+     "description": "`out` copies the `next` query parameter straight into a `Location` header on a 301 with no scheme or host validation. Because the docstring says this endpoint is used in email templates, links of the form https://linkd.example/out?next=https://evil.example/login are exactly the shape a phishing campaign wants: they carry the service's trusted domain and reputation. A `javascript:` or `data:` value in `next` additionally gives script execution in the service's origin on user agents that honour those schemes in Location.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 101,
+     "title": "delete_link performs no ownership check",
+     "description": "The docstring states 'A link may only be deleted by the user who created it; the owner is taken from the authenticated session', but the body calls `store.delete(request[\"query\"][\"code\"])` and `Store.delete` (store.py:93) does not take or compare an owner. Any caller with any valid session deletes any link in the service by supplying its code \u2014 and codes are enumerable (see the new_code finding), so the whole link table can be destroyed by an ordinary user.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 70,
+     "title": "create_link takes the owner from the request body instead of the session",
+     "description": "`store.create(payload[\"target\"], payload[\"owner\"], ttl)` trusts the client to name the owner, while an authenticated `session` with a real `owner` field is sitting in scope in `handle`. A caller therefore creates links attributed to any other account: they consume that account's quota (store.py:46), appear in that account's `by_owner` listing and per-owner archive, and are deletable/exportable under that identity. This is also the source of the attacker-controlled path component in `archive_all`.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 140,
+     "title": "/report returns every owner's links to any authenticated caller",
+     "description": "`report` calls `export.export_csv(cfg.export_dir, name, store.page(0, 1000))` \u2014 an unfiltered page of the whole store \u2014 and returns the file contents in the response body. The CSV includes code, target, owner and hits for every link in the service, as export.py's own comment acknowledges ('The report carries every owner's links'). There is no role check and no per-owner filter, so any ordinary session exfiltrates the full link table, including other tenants' private target URLs.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 43,
+     "title": "Snapshot written through a fixed predictable /tmp path (symlink attack)",
+     "description": "`write_snapshot` always opens the hardcoded `/tmp/linkd-snapshot.json` for writing. /tmp is world-writable and shared: any local user pre-creates that path as a symlink to a file the service user can write (a config file, an authorized_keys, the audit log) and the next snapshot follows the link and overwrites the target with attacker-influenceable content. Because the name is constant, this is a reliable pre-placement, not a race that has to be won. Separately, the handle is never closed or flushed before `os.rename`, and a rename from /tmp to /var/lib crosses filesystems and raises OSError, so the docstring's guarantee that a crash 'can never leave a half-written snapshot' does not hold either.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 21,
+     "title": "Reports containing every owner's data are created world-readable",
+     "description": "The comment directly above states the report 'is written for the service user only -- nobody else on the box may read it', but `open(path, \"w\")` creates the file with mode 0666 masked by the process umask, i.e. 0644 in a normal deployment. Every local user and every process on the host can read a CSV containing all owners' codes, target URLs and hit counts. `archive_all` (line 31) and `append_audit` (line 51) have the same exposure.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 80,
+     "title": "Cache.flush self-deadlocks on a non-reentrant lock, hanging the service",
+     "description": "`flush` acquires `self.lock` via the `with` statement and then calls `self.delete(\"__sentinel__\")`, which tries to acquire the same `threading.Lock` at line 51. `threading.Lock` is not reentrant, so the call blocks forever while still holding the lock. Every other cache operation \u2014 `get`, `set`, `delete`, `sweep` \u2014 then blocks permanently, which means every /l redirect and the janitor thread wedge too. Reaching this is a single request to the admin flush endpoint the docstring describes, so it is a one-request denial of service.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 66,
+     "title": "bearer_token raises IndexError on any request without a well-formed Authorization header",
+     "description": "`header.split(\" \")[1]` indexes blindly. main.py:40 calls it with `request[\"headers\"].get(\"authorization\", \"\")`, so a request that simply omits the header yields `\"\".split(\" \") == [\"\"]` and an unhandled IndexError before any routing or auth decision is made. Every unauthenticated request \u2014 including scanners and health checks \u2014 crashes the handler rather than receiving 401. The function also never checks the scheme, so `Basic <stolen>` or any junk prefix is accepted as a bearer token.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 57,
+     "title": "Inverted expiry comparison in resolve(): expired links resolve, live links are deleted",
+     "description": "`if time.time() < link.expires_at: del self.links[code]; return None` deletes the link precisely when it is still valid, and falls through to `link.hits += 1; return link.target` once it has expired. The security consequence is that expiry \u2014 the only mechanism for taking a link out of service \u2014 is inverted: a link whose TTL has run out keeps redirecting forever, while every valid link is destroyed on its first use. Combined with the janitor being dead (see the mutate-during-iteration finding), nothing else removes expired entries.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 40,
+     "title": "Janitor thread dies on the first expired entry, so expiry is never enforced",
+     "description": "The janitor loop iterates `store.find_expired(cutoff)` \u2014 a generator over `self.links.items()` \u2014 while executing `del store.links[code]` inside the loop, which raises `RuntimeError: dictionary changed size during iteration` on the first expired link. `store.prune` (store.py:143) and `cache.sweep` (cache.py:63) contain the identical bug. There is no try/except and no thread supervision, so the thread dies silently at the first tick that finds anything to clean and neither the store nor the cache is ever swept again for the life of the process: expired links and stale cached targets keep being served, and deleted links can still resolve from cache.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 35,
+     "title": "Session tokens written to stdout and echoed in 401 responses",
+     "description": "`issue` prints the full session token next to the owner name, so every credential the service mints lands in stdout and from there in container logs, log aggregators and anyone's screen-share. main.py:43 compounds it by reflecting the presented token back to the client in the 401 body ('unauthorized: unknown token (token %s)'), where it is captured by proxy access logs and browser history. Both give an attacker with log read access, or a mis-sent token, direct account takeover \u2014 and because verify() ignores expiry, a token found in a year-old log still works.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 30,
+     "title": "Wildcard CORS origin combined with Allow-Credentials on every response",
+     "description": "`respond` attaches `Access-Control-Allow-Origin: *` together with `Access-Control-Allow-Credentials: true` to every response, including /admin/quotas and /report. The combination is invalid per the Fetch spec and browsers reject credentialed requests against a wildcard, so the intended behaviour is broken; what remains is that any origin's script can read non-credentialed responses from this service, and the configuration is one 'reflect the Origin header' edit away from letting any site read authenticated admin and export data with the user's ambient credentials.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 71,
+     "title": "secret_equals uses a non-constant-time comparison despite promising otherwise",
+     "description": "The docstring says 'Compare secrets without leaking how much of the value matched', but the body is `presented == expected`. CPython's string comparison short-circuits at the first differing byte, so the runtime is proportional to the matching prefix length. Against a local or co-located attacker, or with enough averaged samples over the network, this leaks the expected value byte by byte and lets a shared secret or token be recovered incrementally rather than brute-forced.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 50,
+     "title": "require_admin is a tautology and denies every session",
+     "description": "`if session.role != \"admin\" or session.role != \"owner\": return False` \u2014 no single value can be unequal to both operands, so the condition is true for every possible role and the function always returns False, including for genuine admins. The intended predicate is clearly 'role is admin or owner'. The control fails closed, so it is not directly exploitable, but the only admin authorization helper in the codebase is non-functional and untested, which is very likely why main.py:123 grew its own header-based check instead. Any future caller that relies on it gets a control that cannot succeed, and if someone 'fixes' it by flipping the operator to `and` in a hurry the result admits everyone.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 61,
+     "title": "Mutable default argument leaks parsed report rows between callers",
+     "description": "`def parse_report(body, rows=[])` binds the list once at function definition, so every call that omits `rows` appends into the same shared list. The second caller receives its own rows plus every row from all previous calls. Since reports contain code, target and owner for all owners, one user's parse result is handed another user's data, and the returned list grows without bound for the process lifetime.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 110,
+     "title": "by_owner matches owners by substring, returning other owners' links",
+     "description": "`[l for l in self.links.values() if owner in l.owner]` is a substring containment test, not equality, contradicting the docstring 'Every link belonging to exactly this owner'. A query for 'bob' returns links owned by 'bobby' and 'bob.evil@example.com'; a query for the empty string returns everything. Any endpoint that uses this to scope data to a caller \u2014 the natural fix for the /report cross-tenant leak \u2014 silently discloses other accounts' links.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 170,
+     "title": "Short codes are predictable and enumerable (32-bit, non-cryptographic RNG)",
+     "description": "`new_code` returns `\"%08x\" % random.getrandbits(32)` from the Mersenne Twister. Two problems compound: the value is drawn from the same predictable global RNG as session tokens, so an attacker who has recovered the MT state predicts the code of every link created afterwards; and even without that, an 8-hex-character space is small enough to sweep, with collisions expected after a few tens of thousands of links (nothing in `create` checks whether the generated code is already present, so a collision silently overwrites another owner's link at line 45). Since the docstring advertises codes as 'unguessable', callers will use them for links they consider private.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 100,
+     "title": "validate() reports problems and then accepts the configuration anyway",
+     "description": "The docstring says 'Refuse a configuration the service cannot run with. A bad deploy should fail at startup instead of at the first request', but the function prints the problem list and returns `True` unconditionally. main.py:15 calls it and ignores the result regardless. A port outside 1-65535, a negative cache size, or the `timeout = 0` that load_config assigns on an unparseable LINKD_TIMEOUT_MS (line 41) all start a running server in a broken state \u2014 with cfg.cache_size <= 0, `Cache.set` evicts on every insert and `Cache.utilization` divides by zero.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 1920,
+      "output_tokens": 13847,
+      "cache_read_tokens": 66129,
+      "cache_write_tokens": 21182,
+      "cost_usd": 0.5927435,
+      "cost_known": true
+     },
+     "duration_ms": 170198,
+     "failed": false,
+     "output_bytes": 26594
+    },
+    {
+     "usage": {
+      "input_tokens": 1944,
+      "output_tokens": 7951,
+      "cache_read_tokens": 96308,
+      "cache_write_tokens": 21233,
+      "cost_usd": 0.460915,
+      "cost_known": true
+     },
+     "duration_ms": 114439,
+     "failed": false,
+     "output_bytes": 13288
+    },
+    {
+     "usage": {
+      "input_tokens": 1919,
+      "output_tokens": 15711,
+      "cache_read_tokens": 66704,
+      "cache_write_tokens": 21175,
+      "cost_usd": 0.63954,
+      "cost_known": true
+     },
+     "duration_ms": 205390,
+     "failed": false,
+     "output_bytes": 28133
+    }
+   ]
+  }
+ ]
+}

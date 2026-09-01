@@ -1,0 +1,366 @@
+{
+ "run": "20260901-161740",
+ "task": "code",
+ "target": "cpp",
+ "model": "claude-fable-5",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "resolve() expiry check inverted: live links are erased, expired links resolve",
+     "description": "The condition `if (Clock::now() < it->second.expires_at)` is true for a NOT-yet-expired link, and that branch erases the link and returns false. So the first resolve of any live link deletes it permanently and returns 404, while an expired link falls through, gets its hit counted, and resolves successfully. Core functionality is inverted and causes data loss on every normal redirect.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 74,
+     "title": "bearer_token(): strcpy overflow and null-pointer dereference on headers without a space",
+     "description": "`std::strcpy(copy, header.c_str())` copies an attacker-controlled header into a fixed 64-byte stack buffer, overflowing on any longer header. Then `std::strchr(copy, ' ')` returns nullptr when the header contains no space \u2014 which is the guaranteed case in handle() (main.cpp:120), where a missing Authorization header passes \"\" \u2014 and `std::string(space + 1)` dereferences nullptr+1: undefined behavior, in practice a crash on every request lacking a well-formed header.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 49,
+     "title": "require_admin() condition always true, so every session is rejected",
+     "description": "`session.role != \"admin\" || session.role != \"owner\"` is true for every possible role (a role can't equal both strings at once), so the function returns false for everyone, including admins. Also the doc comment says admin-only, yet the expression names \"owner\" as well \u2014 even with && the accepted set would disagree with the contract.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 37,
+     "title": "verify() never checks expires_at, so expired sessions stay valid forever",
+     "description": "The doc comment promises nullptr when the token's \"lifetime has run out\", but the loop only matches the token string and never compares expires_at against Clock::now(). Sessions issued with a 12-hour expiry remain usable indefinitely, and the sessions_ map grows without bound since nothing culls expired entries.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 59,
+     "title": "rename() uses a reference into an erased map node (use-after-free)",
+     "description": "`Link& link = it->second;` takes a reference into the map node, then `links_.erase(it)` destroys that node, and the following `link.code = to; links_[to] = link;` write and read freed memory. This is undefined behavior on every rename \u2014 heap corruption or a copied garbage Link.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 157,
+     "title": "prune() erases through an invalidated iterator and returns the wrong count",
+     "description": "`links_.erase(it)` invalidates `it`, and the loop's `++it` then increments an invalid iterator \u2014 undefined behavior, typically a crash, whenever at least one link is pruned. Additionally the function returns `links_.size()` (remaining count) instead of `removed`, so even if it survived, the documented \"how many it removed\" value is wrong.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 20,
+     "title": "Janitor loop erases from store map through an invalidated iterator",
+     "description": "Inside `for (auto it = store.all().begin(); ...; ++it)`, `store.all().erase(it)` invalidates `it`, and the subsequent `++it` is undefined behavior. The first tick that finds an expired link corrupts iteration or crashes the janitor thread (and with it, the process).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 57,
+     "title": "Cache::sweep() erases while iterating and keeps using the invalidated iterator",
+     "description": "`entries_.erase(it)` invalidates `it`; the loop then executes `++it` on the invalid iterator \u2014 undefined behavior on every sweep that finds at least one expired entry. Since sweep() runs on every janitor tick, this fires in normal operation.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 41,
+     "title": "Cache entries are new'd but never deleted: leak on every erase, eviction, expiry, and overwrite",
+     "description": "Entry objects are heap-allocated in set(), but get() (expired path), set() (eviction at line 38\u201339 and overwrite of an existing key at line 45), erase(), sweep(), and the destructor (entries_.clear()) all drop the raw pointer without delete. Every evicted/expired/overwritten entry leaks, so a busy resolver leaks memory continuously.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 74,
+     "title": "page() clamps end to size()+1, reading one past the end of the vector",
+     "description": "When `offset + size` exceeds the element count, `end` is set to `all.size() + 1`, and `std::vector<Link>(all.begin() + offset, all.begin() + end)` constructs from an iterator one past `end()` \u2014 undefined behavior. Any request for the last partial page (e.g. the /report handler paging 1000 over a smaller store) hits this.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 43,
+     "title": "check_targets() loop bound `i <= links.size()` reads out of bounds",
+     "description": "The loop condition uses `<=`, so the final iteration indexes `links[links.size()]` \u2014 one past the end. `operator[]` on a vector out of range is undefined behavior; in practice it reads garbage or crashes on every call, including for an empty vector (links[0]).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 38,
+     "title": "warm_cache() never joins its threads, so the vector destructor calls std::terminate",
+     "description": "The doc says it \"returns after every probe has finished\", but the workers vector goes out of scope with every thread still joinable. Destroying a joinable std::thread calls std::terminate \u2014 the process aborts the first time warm_cache runs with a non-empty list.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 101,
+     "title": "stats() divides by store size without checking for zero",
+     "description": "`g_store->total_hits() / g_store->size()` divides by zero whenever the store is empty \u2014 i.e. on any /stats call before the first link is created or after pruning empties the store. Integer division by zero is undefined behavior (SIGFPE crash on typical platforms).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.cpp",
+     "line": 25,
+     "title": "LINKD_TIMEOUT_MS stored as seconds (1000x too long) and a bad value overwrites the default it claims to keep",
+     "description": "The env var is documented as milliseconds, but the parsed value is wrapped in `Seconds{ms}` \u2014 LINKD_TIMEOUT_MS=500 yields a 500-second timeout instead of 0.5s. Worse, when atoi returns 0 (unparseable or zero), the code logs \"keeping default\" but then unconditionally executes `cfg.timeout = Seconds{ms}`, replacing the 10s default with 0 \u2014 which validate() flags but never rejects.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.cpp",
+     "line": 29,
+     "title": "LINKD_CACHE_TTL_MS milliseconds interpreted as seconds",
+     "description": "Same unit bug as the timeout: the header documents LINKD_CACHE_TTL_MS as milliseconds, but the value goes straight into `Seconds{std::atoi(ttl)}`. A configured 30000ms (30s) TTL becomes 30000 seconds (~8.3 hours), so cached redirects keep serving stale targets long after the operator's intended TTL.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.cpp",
+     "line": 91,
+     "title": "validate() always returns true, so invalid configs are logged but accepted",
+     "description": "The function collects problems (bad port, negative cache size, non-positive timeout), prints them, and then returns true unconditionally. The documented purpose \u2014 \"a bad deploy fails at startup instead of at the first request\" \u2014 never happens: a port of 0 or a zero timeout sails through. (main.cpp also ignores the return value, so even a correct return would need a caller-side check.)",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.cpp",
+     "line": 51,
+     "title": "write_snapshot() renames the temp file while it is still open and ignores rename failure",
+     "description": "std::rename runs before `out` is flushed/closed, so the destination can receive a partially written or empty file \u2014 the exact half-written snapshot the comment promises can never happen. Additionally /tmp is commonly a different filesystem from the export dir; rename(2) then fails with EXDEV, and the unchecked return value means the snapshot silently never lands at dir/snapshot.json.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.cpp",
+     "line": 74,
+     "title": "format_row() returns a pointer to a local stack buffer",
+     "description": "`row` is a function-local array; returning it leaves the caller with a dangling pointer whose contents are indeterminate the moment the function returns. Any use of the result is undefined behavior. (No caller exists in the files in scope, which is why this isn't rated higher, but the function is broken as written.)",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 178,
+     "title": "last_code() returns a string_view into a local std::string",
+     "description": "`newest` is a local; the returned std::string_view points at its buffer, which is destroyed when the function returns \u2014 any caller reads freed memory. Separately, iterating a std::map ordered by code and taking the last key yields the alphabetically greatest code, not the most recently created link the doc promises.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 111,
+     "title": "top() sorts ascending and resize(n) pads with empty links",
+     "description": "The comparator `a.hits < b.hits` sorts least-followed first, so the \"n most followed, most hits first\" leaderboard returns the n LEAST followed links. Also `all.resize(n)` when n exceeds the link count grows the vector with value-initialized Link objects \u2014 empty rows with garbage-free but meaningless fields appear on the board.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 91,
+     "title": "success_rate() integer division truncates to 0 for any rate below 100%",
+     "description": "`used / links_.size() * 100` performs integer division first, so the result is 0 unless every single link has hits (and exactly 100 then). The dashboard reports 0% success for a store where 99% of links were followed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 64,
+     "title": "utilization() integer division always yields 0 below 100%, and divides by zero when limit_ is 0",
+     "description": "`entries_.size() / limit_ * 100` truncates to 0 for any cache that isn't full, so the /stats dashboard reports 0% until the instant the cache fills. And if the cache was constructed with limit 0 (LINKD_CACHE_SIZE=0 passes validate(), which only rejects negatives), this is a division by zero \u2014 undefined behavior on the /stats path.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 38,
+     "title": "Eviction removes the alphabetically first key, not the least recently used entry",
+     "description": "The class comment and get()'s doc say eviction is LRU (get() even maintains a `used` timestamp for it), but set() evicts `entries_.begin()` \u2014 the smallest key in the std::map, unrelated to recency. Hot entries with low-sorting codes get evicted while stale ones persist, defeating the cache's stated policy. It also evicts even when the incoming code already exists in the map (an overwrite that needs no capacity).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 101,
+     "title": "remove() never returns the owner's quota slot despite the documented contract",
+     "description": "The doc comment says removal \"gives the owner their quota slot back, so a user who deletes a link can always create another one\", but quota_ is never decremented. Owner counts only ever grow, so any quota consumer (count_for_owner, the admin dashboard) over-reports forever and a future quota enforcement would lock users out permanently.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 120,
+     "title": "by_owner() uses substring match instead of equality",
+     "description": "`pair.second.owner.find(owner) != std::string::npos` matches any owner whose name merely contains the query: asking for \"bob\" returns \"bobby\"'s links too, and an empty owner string returns every link in the store. The doc promises \"exactly this owner\", and archive_all-style per-owner exports built on it would leak other users' links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 134,
+     "title": "extend() revives already-expired links, contradicting its stated invariant",
+     "description": "The doc states \"An already-expired link stays expired: expiry is final, and a dead code must never come back to life\", but the code sets `expires_at = Clock::now() + ttl` unconditionally, resurrecting any expired link that the janitor hasn't pruned yet. Whether a dead code works again becomes a race with the janitor tick.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 148,
+     "title": "import_all() is not atomic: a validation failure mid-batch leaves a partial import",
+     "description": "The doc promises \"either every link in the batch is stored, or none of them\", but validation and insertion are interleaved \u2014 if the Nth code fails validate_code, the first N-1 links are already in links_ and stay there. It also silently overwrites existing links on code collision and never updates quota_ for imported links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 50,
+     "title": "rename() validates 'from' twice and never validates 'to'",
+     "description": "The duplicated `validate_code(from);` on consecutive lines means the new code `to` is inserted into the store without any validation \u2014 renames can introduce codes with invalid characters or lengths that create() and import_all() would reject, breaking the store's invariant.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 38,
+     "title": "LINKD_FETCH_LIMIT is parsed but never assigned to cfg.fetch_limit",
+     "description": "The branch parses the env var and then discards it with `(void)parsed;` \u2014 cfg.fetch_limit always stays at the default 32 no matter what the operator sets. The configuration knob silently does nothing.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 116,
+     "title": "report() reads back the wrong file when no name is given",
+     "description": "export_csv substitutes \"links\" for an empty name and writes dir/links.csv, but the handler then calls `read_report(g_cfg.export_dir, name)` with the still-empty `name`, opening dir/.csv \u2014 which doesn't exist \u2014 and returns an empty 200 body. The default /report request always yields an empty response even though the export was written.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "linkd.h",
+     "line": 141,
+     "title": "Metrics::errors_ is never initialized",
+     "description": "resolved_ and created_ have in-class initializers but errors_ does not, and Metrics is created with `new Metrics()`... actually value-initialization would zero it with (), but the class has no way to ever set errors_ \u2014 no add_error() exists \u2014 while errors() is reported on /stats. If constructed without (), errors_ is indeterminate and /stats prints garbage; either way the counter can never reflect an actual error.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 139,
+     "title": "quotas() hands out a mutable reference despite the 'snapshot' contract, and lookups insert entries",
+     "description": "The doc says \"The map is a snapshot: mutating it must not affect the store\", but the method returns `std::map<std::string, int>&` to the live quota_ map. worker.cpp:53's `store.quotas()[owner]` consequently inserts a zero entry into the real store map for every owner ever queried, and any caller can corrupt quota accounting.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 18,
+     "title": "Janitor thread mutates the Store concurrently with request handlers, with no locking anywhere",
+     "description": "start_janitor spawns a thread that every 60s iterates store.all() and erases expired links, while request handlers on other threads concurrently call Store::create, Store::resolve (which itself erases and mutates hits), and Store::remove on the same std::map. Store has no mutex and std::map is not thread-safe, so this is a data race on the map's tree structure: a janitor erase interleaved with a handler insert corrupts the map or crashes. The window is hit in normal operation \u2014 any request arriving during a janitor sweep races it. Additionally the janitor loop itself is UB even in isolation: it calls store.all().erase(it) and then ++it on the now-invalidated iterator, so the first expired link it removes derails the iteration. Handler pointers also dangle: create_link dereferences the Link* returned by Store::create, and the janitor can erase that map node concurrently.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 54,
+     "title": "Cache is swept by the janitor thread while handlers call get/set, with no mutex; sweep also erases through an invalidated iterator",
+     "description": "Cache::sweep runs on the janitor thread (worker.cpp:23) and erases expired entries from entries_, while handler threads concurrently call Cache::get (which mutates entry->used, hits_, and erases expired entries) and Cache::set (which inserts and evicts). std::map is not thread-safe, so a sweep concurrent with a set corrupts the map; and a sweep erasing an Entry a concurrent get() is dereferencing is a use-after-free of the heap Entry once anyone adds the missing delete. The sweep loop is also UB on its own: entries_.erase(it) followed by ++it increments an invalidated iterator, so the first expired entry it removes breaks the traversal even with a single thread. hits_ is a plain long incremented in get(), another data race across handler threads.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 37,
+     "title": "Authenticator::sessions_ read on every request without synchronization against issue/revoke",
+     "description": "handle() calls g_auth->verify(token) on every request, which iterates sessions_, while issue() inserts into and revoke() erases from the same std::map with no mutex. Two handler threads where one is mid-verify iteration while another issues or revokes a token is a data race that can corrupt the map or crash the iteration. verify also returns a raw Session* into the map: a concurrent revoke() of that token frees the node while the caller still holds the pointer, a use-after-free on the hot auth path. Every authenticated write endpoint goes through this, so the racy window is exercised continuously in normal multi-user operation.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 39,
+     "title": "warm_cache never joins its worker threads: std::terminate when the vector destructs",
+     "description": "warm_cache spawns one std::thread per link into a local vector and returns immediately \u2014 the doc comment says it \"returns after every probe has finished\", but there is no join. Destroying a joinable std::thread calls std::terminate, so the workers vector going out of scope at the end of the function kills the entire process on the first call with a non-empty links vector. Even if the threads were detached instead, they capture &cache and &link (references into the caller's vector) and would race each other in cache.set on the unsynchronized map, and could outlive the caller's vector. As written this function cannot complete successfully.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "linkd.h",
+     "line": 132,
+     "title": "Metrics counters are plain longs incremented from concurrent handler threads",
+     "description": "Metrics::add_resolved and add_created do resolved_++ / created_++ on non-atomic long members, and are called from request handlers (create_link, redirect, out) that run on multiple threads, while stats() reads the same fields. Concurrent increments are a data race (UB in C++) and in practice lose updates, so the dashboard counters drift low under load; the concurrent unsynchronized reads in stats() can also observe torn or stale values. Impact is confined to metrics reporting, but the race fires on every overlapping pair of requests.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 28,
+     "title": "stop_janitor never joins the janitor thread, so shutdown proceeds while it may still be sweeping",
+     "description": "stop_janitor only flips the g_running atomic; the thread pointed to by g_janitor is never joined or deleted. The janitor sleeps for the full interval (60s in main) before re-checking the flag, so after stop_janitor returns the thread can still wake up and run one more full sweep over the Store and Cache it holds by reference. Any teardown that destroys or frees those objects after calling stop_janitor (the natural reading of the API) hands the still-running sweep dangling references \u2014 a use-after-free on shutdown. The thread and its std::thread object also leak outright.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 15,
+     "title": "std::rand() called from concurrent request threads shares unsynchronized hidden state",
+     "description": "Store::create (store.cpp:15) and Authenticator::issue (auth.cpp:22) both call std::rand(), whose internal state is shared process-wide and not required to be thread-safe. Two handlers creating links or sessions concurrently race on that hidden state: undefined behavior on implementations with non-reentrant rand, and in the benign case correlated or duplicate outputs \u2014 meaning two concurrent creates can mint the same 8-hex code and silently overwrite each other's link in links_[code], and two concurrent issues can mint colliding session tokens, handing one user another user's session.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 1923,
+      "output_tokens": 15083,
+      "cache_read_tokens": 36660,
+      "cache_write_tokens": 25014,
+      "cost_usd": 1.292329,
+      "cost_known": true
+     },
+     "duration_ms": 194723,
+     "failed": false,
+     "output_bytes": 22910
+    },
+    {
+     "usage": {
+      "input_tokens": 1947,
+      "output_tokens": 7066,
+      "cache_read_tokens": 69656,
+      "cache_write_tokens": 25085,
+      "cost_usd": 0.925937,
+      "cost_known": true
+     },
+     "duration_ms": 110095,
+     "failed": false,
+     "output_bytes": 9466
+    },
+    {
+     "usage": {
+      "input_tokens": 4984,
+      "output_tokens": 4402,
+      "cache_read_tokens": 90840,
+      "cache_write_tokens": 24857,
+      "cost_usd": 0.7136064999999999,
+      "cost_known": true
+     },
+     "duration_ms": 154507,
+     "failed": false,
+     "output_bytes": 158
+    }
+   ]
+  }
+ ]
+}
