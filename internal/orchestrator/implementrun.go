@@ -291,7 +291,7 @@ func (o *Orchestrator) guardResumedRepository(ctx context.Context, col *target.C
 // taken before any of it is read.
 func (o *Orchestrator) resumePhase(ctx context.Context, sum *model.RunSummary) (p *implementPrep, pl implement.Plan, resume implement.Resume, retErr error) {
 	dir := o.cfg.Implement.Continue
-	o.phase("RESUME  %s", dir)
+	o.phasef("RESUME  %s", dir)
 
 	p = &implementPrep{out: dir, outcomes: map[string]string{}}
 	p.gitEnv = gitenv.NoOperatorConfig(o.verifyEnv)
@@ -391,9 +391,9 @@ func (o *Orchestrator) resumePhase(ctx context.Context, sum *model.RunSummary) (
 		"carried": resume.Index, "planned": len(pl.Tasks),
 	})
 	if resume.Index >= len(pl.Tasks) {
-		o.endPhase("RESUME  every task in the plan is already recorded; nothing to do")
+		o.endPhasef("RESUME  every task in the plan is already recorded; nothing to do")
 	} else {
-		o.endPhase("RESUME  %d of %d task(s) carried; re-entering at %s",
+		o.endPhasef("RESUME  %d of %d task(s) carried; re-entering at %s",
 			resume.Index, len(pl.Tasks), pl.Tasks[resume.Index].ID)
 	}
 	return p, pl, resume, nil
@@ -524,7 +524,7 @@ func (o *Orchestrator) planRules(p *implementPrep, planOverhead time.Duration) i
 // planPhase runs the one read-only planner session and validates its product.
 // A plan that fails costs exactly one planner session and zero coder sessions.
 func (o *Orchestrator) planPhase(ctx context.Context, rec *model.RoundRecord, p *implementPrep) (implement.Plan, error) {
-	o.phase("PLAN  one %s session over the design snapshot", o.cfg.Roles.Planner.Agent)
+	o.phasef("PLAN  one %s session over the design snapshot", o.cfg.Roles.Planner.Agent)
 	var pl implement.Plan
 
 	rules := o.planRules(p, o.cfg.Agents[o.cfg.Roles.Planner.Agent].Timeout.Std()+planOverheadSlack)
@@ -617,7 +617,7 @@ func (o *Orchestrator) stampPlan(pl implement.Plan, p *implementPrep) (implement
 		"tasks":    len(pl.Tasks),
 		"coverage": p.coverageLine(),
 	})
-	o.endPhase("PLAN  %d task(s), coverage %s", len(pl.Tasks), p.coverageLine())
+	o.endPhasef("PLAN  %d task(s), coverage %s", len(pl.Tasks), p.coverageLine())
 	return pl, nil
 }
 
@@ -742,7 +742,7 @@ func planMarkdown(pl implement.Plan, coverage string, err error) string {
 
 // scaffoldPhase claims the write-target and makes the bootstrap commit (§5.1).
 func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary, p *implementPrep, pl implement.Plan) error {
-	o.phase("SCAFFOLD  %s", p.out)
+	o.phasef("SCAFFOLD  %s", p.out)
 	coverage := p.coverageLine()
 	planJSON, err := json.MarshalIndent(pl, "", "  ")
 	if err != nil {
@@ -803,7 +803,7 @@ func (o *Orchestrator) scaffoldPhase(ctx context.Context, sum *model.RunSummary,
 	if p.baseline, err = p.git.SnapshotRepoState(ctx, p.out, "main"); err != nil {
 		return err
 	}
-	o.endPhase("SCAFFOLD  bootstrap %.12s (not gated, no sources) · repository locked", sha)
+	o.endPhasef("SCAFFOLD  bootstrap %.12s (not gated, no sources) · repository locked", sha)
 	return nil
 }
 
@@ -837,9 +837,9 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 		})
 	}
 	if resume.Index > 0 {
-		o.phase("BUILD  %d task(s) carried from the history, %d to go", resume.Index, len(pl.Tasks)-resume.Index)
+		o.phasef("BUILD  %d task(s) carried from the history, %d to go", resume.Index, len(pl.Tasks)-resume.Index)
 	} else {
-		o.phase("BUILD  %d task(s), serially", len(pl.Tasks))
+		o.phasef("BUILD  %d task(s), serially", len(pl.Tasks))
 	}
 	p.deadline = started.Add(o.cfg.Implement.MaxRunDuration.Std())
 	stoppedBefore := ""
@@ -900,7 +900,7 @@ func (o *Orchestrator) buildPhase(ctx context.Context, sum *model.RunSummary, re
 	// anywhere said what the other 15 were (review run 20260813-180828, i22).
 	o.recordUnreached(sum, pl, stoppedBefore)
 	o.writeRunState(sum, pl, "")
-	o.endPhase("BUILD  %d of %d task(s) processed", len(sum.Tasks), len(pl.Tasks))
+	o.endPhasef("BUILD  %d of %d task(s) processed", len(sum.Tasks), len(pl.Tasks))
 
 	// Verify.Enabled(), not a non-empty command list: gatePhase decides the same
 	// question that way, and `policy: off` with a command list still configured

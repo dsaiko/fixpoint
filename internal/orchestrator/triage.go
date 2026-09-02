@@ -46,7 +46,7 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 	if t.Agent == "" || len(o.threads) == 0 || ctx.Err() != nil {
 		return
 	}
-	o.phase("TRIAGE  %s deciding %d open conversation(s)", t.Agent, len(o.threads))
+	o.phasef("TRIAGE  %s deciding %d open conversation(s)", t.Agent, len(o.threads))
 
 	// The change under review, collected here rather than read off o.material: that
 	// field is assigned by the review-only path, which never reaches triage (a
@@ -60,14 +60,14 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 		// this is a real collection failure. Deciding what a comment commissions
 		// without the diff in front of the agent is the thing worth refusing.
 		o.logf("WARNING: triage: could not collect the change under review (%v); the conversations stay context and are not answered", err)
-		o.endPhase("TRIAGE  did not finish; the conversations stay context and are not answered")
+		o.endPhasef("TRIAGE  did not finish; the conversations stay context and are not answered")
 		return
 	}
 
 	me := o.forgeLogin(ctx)
 	decisions, ok := o.askTriage(ctx, t, material)
 	if !ok {
-		o.endPhase("TRIAGE  did not finish; the conversations stay context and are not answered")
+		o.endPhasef("TRIAGE  did not finish; the conversations stay context and are not answered")
 		return
 	}
 
@@ -119,7 +119,7 @@ func (o *Orchestrator) triageConversations(ctx context.Context) {
 		o.declineConversation(ctx, th, d.Reason)
 	}
 	o.threads = remaining
-	o.endPhase("TRIAGE  %d accepted, %d declined, %d left undecided", accepted, rejected, undecided)
+	o.endPhasef("TRIAGE  %d accepted, %d declined, %d left undecided", accepted, rejected, undecided)
 }
 
 // mergeCommissioned adds what the pull request's comments commissioned to one

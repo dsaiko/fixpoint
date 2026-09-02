@@ -85,11 +85,11 @@ func (l *Log) Printf(format string, args ...any) {
 	l.write("", detailIndent, fmt.Sprintf(format, args...))
 }
 
-// Rule opens the outermost block -- a round -- with a full-width separator.
+// Rulef opens the outermost block -- a round -- with a full-width separator.
 //
 // It closes any phase still open, because a round starting is proof the previous
-// one ended: an unbalanced EndPhase somewhere must not indent the rest of the run.
-func (l *Log) Rule(format string, args ...any) {
+// one ended: an unbalanced EndPhasef somewhere must not indent the rest of the run.
+func (l *Log) Rulef(format string, args ...any) {
 	title := fmt.Sprintf(format, args...)
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -99,8 +99,8 @@ func (l *Log) Rule(format string, args ...any) {
 	l.emit(ansiBold, "", "━━━━ "+title+" "+bar)
 }
 
-// Phase opens a block. Everything logged until EndPhase is indented under it.
-func (l *Log) Phase(format string, args ...any) {
+// Phasef opens a block. Everything logged until EndPhasef is indented under it.
+func (l *Log) Phasef(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.blank()
@@ -108,17 +108,17 @@ func (l *Log) Phase(format string, args ...any) {
 	l.emit(ansiBold, "", "▸ "+fmt.Sprintf(format, args...))
 }
 
-// EndPhase closes the block with its summary, at the margin again.
-func (l *Log) EndPhase(format string, args ...any) {
+// EndPhasef closes the block with its summary, at the margin again.
+func (l *Log) EndPhasef(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.inBlock = false
 	l.emit(ansiBold, "", "◂ "+fmt.Sprintf(format, args...))
 }
 
-// Progress writes a line that reports nothing new -- an agent still running. Dim
+// Progressf writes a line that reports nothing new -- an agent still running. Dim
 // and prefixed, so it recedes behind the lines that carry events.
-func (l *Log) Progress(format string, args ...any) {
+func (l *Log) Progressf(format string, args ...any) {
 	l.write(ansiDim, detailIndent, "… "+fmt.Sprintf(format, args...))
 }
 

@@ -7,10 +7,10 @@ CONFIG  := fix-code
 
 # Analysis tools are run via `go run` with pinned versions, so no global
 # installs are required and CI and local runs use identical tool versions.
-GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
-STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
-GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
-GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.12.5
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@v0.8.1
+GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.7.0
+GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.18.0
 
 .PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds bench-readme implement-go implement-node implement-web \
         fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help \

@@ -601,13 +601,14 @@ func taskOutcomeLine(tasks []model.TaskOutcome) string {
 	for _, t := range tasks {
 		counts[t.Outcome]++
 	}
-	line := fmt.Sprintf("%d of %d task(s) implemented", counts["implemented"], len(tasks))
+	var line strings.Builder
+	fmt.Fprintf(&line, "%d of %d task(s) implemented", counts["implemented"], len(tasks))
 	for _, k := range []string{"already_satisfied", "blocked", "failed", "skipped", "unreached", "carried"} {
 		if counts[k] > 0 {
-			line += fmt.Sprintf(" · %d %s", counts[k], k)
+			fmt.Fprintf(&line, " · %d %s", counts[k], k)
 		}
 	}
-	return line
+	return line.String()
 }
 
 // runOutcome is the "what happened" block that closes the table.

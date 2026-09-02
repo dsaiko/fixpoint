@@ -1506,7 +1506,7 @@ func TestRunImplementDropsAnUnattributedCommitWhenInterrupted(t *testing.T) {
 			sb.WriteString("n=$(cat " + state + "/n 2>/dev/null || echo 0)\nn=$((n+1))\nprintf '%s' \"$n\" > " + state + "/n\ncase \"$n\" in\n")
 			for i, body := range tc.sessions {
 				last := i == len(tc.sessions)-1
-				sb.WriteString(fmt.Sprintf("%d)\n%s\n", i+1, body))
+				fmt.Fprintf(&sb, "%d)\n%s\n", i+1, body)
 				if last {
 					sb.WriteString("touch " + committed + "\nsleep 60\n")
 				}
