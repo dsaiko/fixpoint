@@ -86,16 +86,27 @@ RATES = {
 # Ollama per-token rates, $/MTok as (input, output, cached input), from
 # ollama.com/pricing on 2026-09-01.
 #
-# THIS TABLE DID NOT EXIST BEFORE 2026-09-01. Ollama moved Pro/Max/Team onto
-# transparent per-token pricing with a monthly credit pool that refreshes and
-# then continues pay-as-you-go at the same rate -- no service fees, and the
-# 5-hour and weekly limits are gone. Every claim in this file that an ollama
-# dollar figure "would be fiction" was true until that day and is now wrong;
-# the money is real and is what these rows are priced in.
+# THIS TABLE DID NOT EXIST BEFORE 2026-09-01, when ollama published per-token
+# rates for Pro/Max/Team.
 #
-# It also retires the kimi-k3 special case that used to live here: every model
-# is per-token now, so kimi-k3 is not a different KIND of billing, it is simply
-# the most expensive model on the list at $3.00/$15.00.
+# CORRECTED 2026-09-02, from the operator's usage page rather than the pricing
+# page. The rates are real, but they did NOT replace the plan's quotas the way
+# the announcement read: the account still meters a SESSION limit (3h reset)
+# and a WEEKLY limit (4d reset), and paid "Extra usage" is a separate prepaid
+# balance that starts at $0. So until someone tops that balance up, a sweep on
+# this route spends quota and bills nothing -- which makes these figures
+# NOTIONAL, exactly like the claude and codex ones, not an invoice.
+#
+# Keep the table anyway: notional or not, it is the only way to compare what a
+# sweep costs across routes, and it is what caught the 9.4x money spread
+# between glm-5.3-flash and glm-5.3 that identical token counts had hidden.
+#
+# And the kimi-k3 special case was NOT retired after all. Its library page
+# warns it "requires a Pro or Max subscription, and consumes extra usage
+# credits", and the usage page bears that out: 104 kimi-k3 requests consumed
+# the whole session quota, while 579 minimax-m3 requests over the same week
+# were a thin slice of it. Per REQUEST it is in a different class from
+# everything else here, and the dollar column does not show that.
 OLLAMA_RATES = {
     "deepseek-v4-flash": (0.44, 1.32, 0.014),
     "deepseek-v4-pro":   (1.32, 3.96, 0.044),
@@ -190,9 +201,18 @@ def billing(model, harness):
     if harness.startswith("openrouter"):
         return "credits"
     if harness == "ollama":
-        # Per-token against a monthly credit pool that then continues
-        # pay-as-you-go at the same rate. Real money either way.
-        return "credits (pool)"
+        # CORRECTED 2026-09-02 from the operator's own usage page. The
+        # 2026-09-01 move to published per-token rates did NOT remove the
+        # plan's quotas: the page still shows a SESSION limit (3h reset) and a
+        # WEEKLY limit (4d reset), and "Extra usage" is a separate prepaid
+        # balance that starts at $0. So a sweep spends quota, not money, until
+        # someone tops that balance up and the quotas are exhausted.
+        #
+        # This route is therefore a subscription like claude and codex, and its
+        # dollar figure is notional for the same reason. The per-token rates
+        # stay useful -- they are the only way to compare what a sweep COST
+        # across routes -- but reporting them as money spent was wrong.
+        return "sub (ollama)"
     if model == "codex":
         return "sub (chatgpt)"
     return "sub (claude)"
@@ -221,7 +241,8 @@ def money(harness, usd):
     """Format money, marking a subscription figure as notional with a leading ~."""
     if usd is None:
         return "-"
-    notional = not (harness.startswith("openrouter") or harness == "ollama")
+    # openrouter bills a card per token; every other route here is a plan.
+    notional = not harness.startswith("openrouter")
     return f"{'~' if notional else ''}${usd:,.2f}"
 
 
@@ -229,11 +250,13 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
     """What one seeded defect cost, in the currency that route actually spends.
 
     A dollar figure wherever a published rate exists, prefixed with ~ when the
-    route is a subscription and the money is therefore notional (nothing is
-    billed per token there); bare where credits are actually spent, which since
-    2026-09-01 includes ollama -- its plans bill per token against a monthly
-    pool and then pay-as-you-go at the same rate. The thousands-of-tokens
-    fallback remains only for a model with no published rate at all.
+    route is a plan and the money is therefore notional (nothing is billed per
+    token there); bare only for OpenRouter, which actually charges a card.
+    ollama is a plan too -- it has published per-token rates since 2026-09-01
+    but still meters a session and a weekly quota, with paid "Extra usage" as a
+    separate opt-in balance -- so its figure is notional as well. The
+    thousands-of-tokens fallback remains only for a model with no published
+    rate at all.
     """
     if not points:
         return "-"
@@ -241,7 +264,8 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
     if usd is None:
         # No published rate anywhere: fall back to the quota-shaped figure.
         return f"{(tok_in + tok_out) / 1000 / points:.1f}k"
-    prefix = "" if harness.startswith("openrouter") or harness == "ollama" else "~"
+    # Same rule as money(): bare only where a card is charged per token.
+    prefix = "" if harness.startswith("openrouter") else "~"
     return f"{prefix}${usd / points:.3f}"
 
 
@@ -692,12 +716,14 @@ def write_html(ranked, all_targets, out_path):
 
   <div class="notes">
     <p><b>Per point</b> is what one found defect cost. <code>$</code> is money actually
-    spent from credits &mdash; which since 2026-09-01 includes ollama, whose plans moved to
-    published per-token rates against a monthly pool that then continues pay-as-you-go.
-    <code>~$</code> is notional: the Claude and ChatGPT subscription routes bill nothing per
-    token, so the figure is what the same run would have cost at API rates, which is the only
-    way to compare a seat paid by subscription against one paid in credits. Every route in this
-    table is now priced in the same unit.</p>
+    billed to a card, which is OpenRouter and only OpenRouter. <code>~$</code> is notional:
+    the route bills a plan rather than the tokens, so the figure is what the same run would
+    have cost at published rates &mdash; the only way to compare a seat paid by plan against
+    one paid in credits. That covers Claude, ChatGPT <em>and</em> ollama: ollama published
+    per-token rates on 2026-09-01, but it still meters a session quota and a weekly quota,
+    and its paid &ldquo;Extra usage&rdquo; is a separate balance that starts empty. A sweep
+    there spends quota, not money. Every route in this table is priced in the same unit;
+    only one of them is an invoice.</p>
     <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
     returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
     Both models that failed here have failed before.</p>
@@ -976,12 +1002,14 @@ def main():
     print("total is not comparable with a full row. The go+design pair the "
           "older /90 headline used is still")
     print("readable as the first two columns of the matrix above.")
-    print("per point: cost of one seeded defect found. $ = money actually spent "
-          "from credits (ollama included since")
-    print("           2026-09-01, when its plans moved to published per-token "
-          "rates), ~$ = notional (subscription,")
-    print("           nothing billed per token). k = tokens, only for a model "
-          "with no published rate at all.")
+    print("per point: cost of one seeded defect found. $ = money actually "
+          "billed to a card (OpenRouter only).")
+    print("           ~$ = notional: what the run would cost at published "
+          "rates, on a route that bills a plan")
+    print("           rather than the tokens -- claude, codex AND ollama, "
+          "which still meters a session and a")
+    print("           weekly quota on top of its per-token rates. k = tokens, "
+          "for a model with no published rate.")
 
 
 if __name__ == "__main__":
