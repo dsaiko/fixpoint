@@ -1,0 +1,265 @@
+{
+ "run": "20260902-084724",
+ "task": "design",
+ "target": "design",
+ "model": "nemotron-3-ultra:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Clock skew in conflict resolution causes silent data loss",
+     "description": "Conflict resolution uses client wall-clock `modified_at` (line 61-63): 'the copy with the newer modified_at wins; the other copy is discarded.' Devices with skewed clocks are dismissed as 'rare' with 'NTP handles the common case.' In reality, clock skew is common on laptops (sleep/wake), phones (airplane mode, time zone changes), and VMs. A device with a clock 5 minutes fast will silently win all conflicts for 5 minutes, discarding legitimate edits from other devices. No vector clocks, no server-authoritative timestamp, no user-visible conflict UI \u2014 the losing edit vanishes.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 89,
+     "title": "No server request timeout with unbounded outbox enables connection exhaustion",
+     "description": "Line 89-91: 'There is no request timeout on the server: a sync is allowed to take as long as it takes.' Combined with line 32-33 (no cap on outbox, full note bodies in each outbox row), a single client with thousands of large offline edits can hold a database connection and worker thread indefinitely. Under load (section 8: 50k users, regional outage recovery), this exhausts the connection pool and thread pool, taking down sync for everyone. No per-request timeout, no max request body size, no streaming/chunked processing.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 80,
+     "title": "Partial batch application with client retry duplicates edits",
+     "description": "Line 80-81: 'if row N fails validation, rows 1..N-1 stay applied and the response reports the failing row, so a client never has to resend work the server already has.' But line 56-59: on any failure (timeout, 5xx, connection drop), the client retries the ENTIRE same POST. The server has no idempotency key \u2014 it will re-apply rows 1..N-1, creating duplicate edits. The design claims 'no acknowledged edit is ever lost' (line 98) but duplicates are a form of corruption.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "32-bit random note IDs will collide at scale",
+     "description": "Line 24-26: 'Note id is generated on the device that creates the note, as a random 32-bit integer.' With 50k users and 'a few hundred notes each' (line 138), that's ~10-25M notes. Birthday paradox: 50% collision probability at ~77k notes (sqrt(2^32)). Collisions cause silent data corruption \u2014 two different notes map to the same client ID, server's secondary column lookup returns the wrong note. No collision detection or resolution described.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 28,
+     "title": "Unbounded note body length enables memory exhaustion and DoS",
+     "description": "Line 28-29: 'We do not cap its length on the client: a note is whatever the user typed.' The outbox stores a FULL COPY of the body per edit (line 34). A 100MB note edited 10 times = 1GB outbox. Sync POST sends entire outbox (line 46). Server applies in single transaction (line 79). This is an unbounded memory/DoS vector: one malicious or buggy client can OOM the server process, fill the database, or saturate network. No max body size, no chunking, no streaming.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 117,
+     "title": "Health check does not verify database connectivity",
+     "description": "Line 117-121: '/healthz returns 200 while the process is running. Database connectivity, replication lag and disk headroom are dashboard metrics; they do not gate /healthz.' Load balancer removes instances after 3 failed probes (line 118-119). An instance with a severed DB connection but healthy process will pass health checks, receive traffic, and fail every /sync request with 500. Clients retry (line 56-59), amplifying load on remaining healthy instances \u2014 cascade failure.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 71,
+     "title": "Auth failure wipes local data including un-synced edits",
+     "description": "Line 71-74: 'When a refresh fails with 401 \u2014 revocation, password change, or token corruption \u2014 the client signs the user out and wipes local state, including notes.db.' This destroys un-synced outbox edits. A transient network error causing a 401 (e.g., clock skew making token appear expired, load balancer error) causes catastrophic data loss. The design says 'an edit is acknowledged when the client receives the server's response' (line 99) but un-acknowledged edits are discarded on auth failure.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "No pagination on changes query returns unbounded result sets",
+     "description": "Line 83-86: 'The changes query is SELECT * FROM notes WHERE user_id = $1 AND modified_at > $2 ORDER BY modified_at, returning every matching row. Postgres is fast and the working set per user is small, so no pagination is needed.' A first sync after prolonged offline (or a new device) fetches ALL notes. With 50k users * hundreds of notes, a power user with 10k notes and large bodies could return 100MB+ JSON. No pagination, no cursor-based iteration, no streaming \u2014 client must hold entire response in memory.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 58,
+     "title": "Fixed backoff schedule creates thundering herd after outage",
+     "description": "Line 58: 'The backoff doubles from one second up to a minute, and every client uses that same schedule.' Section 8 line 143-145: 'When all clients come back after a regional outage, they sync at once.' All clients hit the same backoff schedule simultaneously \u2014 synchronized retry storm. No jitter, no randomization. This defeats the purpose of backoff and amplifies the spike the design expects horizontal scaling to absorb.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 147,
+     "title": "No per-user rate limit enables abuse and noisy neighbors",
+     "description": "Line 147-148: 'There is no per-user rate limit. A misbehaving client that syncs in a tight loop is a support conversation, not a mechanism.' A buggy client (or malicious one) can spin sync in a tight loop, consuming disproportionate server resources. With no request timeout (line 89), each request holds a connection. 50k users \u2014 one bad actor can degrade service for thousands. No token bucket, no leaky bucket, no adaptive limits.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 134,
+     "title": "Database restore procedure has never been rehearsed",
+     "description": "Line 133-134: 'Backups are nightly pg_dump to object storage, retained for 14 days. Restore has not been rehearsed; the procedure is \"load the dump into a fresh instance\".' An untested restore is not a backup. pg_dump of a live database without --single-transaction captures inconsistent state. 14-day retention with no point-in-time recovery (WAL archiving) means any corruption discovered after 14 days is unrecoverable. No RTO/RPO targets stated.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "No audit trail of sync activity hinders debugging and security",
+     "description": "Line 159-160: 'There is no audit trail of syncs. The server writes no record of which device sent which batch, because the note rows carry everything a user can ask about.' When a user reports 'my note disappeared', support cannot see: which device sent what, when, conflict resolutions, or whether a sync succeeded/failed. Only note state remains \u2014 the causal history is gone. Also no security audit log for compromised tokens or suspicious sync patterns.",
+     "lens": "design-failure",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 37,
+     "title": "SQLite file shared by multiple processes without locking protocol",
+     "description": "Line 20-21: 'The desktop client and the CLI tool both open this file directly; whichever process starts first creates it.' SQLite supports multiple readers but only one writer. Two processes writing concurrently (e.g., CLI sync while desktop app edits) corrupts the database unless WAL mode + proper locking is used. No mention of WAL mode, busy_timeout, or cross-process coordination.",
+     "lens": "design-failure",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "No in-flight request draining on deploy causes avoidable 5xx",
+     "description": "Line 129-131: 'In-flight requests are not drained on shutdown: the client retry loop covers them.' Rolling deploys terminate instances with active /sync requests. Those requests fail with 5xx (connection reset), clients retry on backoff (line 56-59). This is avoidable latency and error rate. Standard practice: SIGTERM -> stop accepting new connections -> wait for in-flight (with timeout) -> SIGKILL.",
+     "lens": "design-failure",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Clock skew causes silent data loss in conflict resolution",
+     "description": "Conflict resolution uses client wall-clock modified_at; clock skew causes legitimate edits to be silently discarded.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 53,
+     "title": "Single cursor per user breaks multi-device sync",
+     "description": "Single cursor per user account breaks multi-device sync; edits from slower devices are permanently lost.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 71,
+     "title": "Auth failure wipes unsynced local data",
+     "description": "Auth failure wipes notes.db including unsynced offline edits, violating the 'never lost' guarantee.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "32-bit random client note IDs will collide",
+     "description": "32-bit random client note IDs have ~99% collision probability at 77k notes; 50k users \u00d7 200 notes = 10M notes guarantees collisions.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "No audit trail contradicts operational goal",
+     "description": "No sync audit trail contradicts stated goal that support can answer 'why does this device not have my note' from dashboards.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "Unpaginated changes query risks OOM on first sync",
+     "description": "Unpaginated changes query returns all rows in one response; first sync for users with many notes causes OOM or timeout.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 89,
+     "title": "No server timeout enables connection pool exhaustion",
+     "description": "No server request timeout allows slow/large syncs to hold connections indefinitely, exhausting pool under load.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 31,
+     "title": "Unbounded outbox growth can fill device storage",
+     "description": "Unbounded outbox growth can fill device storage with no cap or compaction mechanism.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 152,
+     "title": "Deleted notes retained forever with no cleanup",
+     "description": "Deleted notes retained forever with no cleanup; unbounded note bodies mean deleted rows grow without bound.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves orphaned rows with vague cleanup",
+     "description": "Account deletion leaves orphaned note rows; 'nightly job could clean up later' is not a plan and may violate GDPR.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 66,
+     "title": "Protocol has no version field",
+     "description": "Protocol has no version field; breaking changes during rolling deploy cause undefined behavior between old/new clients and servers.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 134,
+     "title": "Backup restore procedure untested",
+     "description": "Backup restore procedure untested; 'load dump into fresh instance' has unknown RTO/RPO and no verification.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 147,
+     "title": "No per-user rate limit allows DoS",
+     "description": "No per-user rate limit allows buggy or malicious clients to consume disproportionate resources.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 33,
+     "title": "Outbox duplicates note bodies with no consistency check",
+     "description": "Outbox duplicates full note bodies with no consistency mechanism or compaction, doubling storage for offline edits.",
+     "lens": "design-data",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 93,
+     "title": "Server overwrites note bodies, losing all history",
+     "description": "Server overwrites note bodies in place and discards conflict losers; no history enables undo, audit, or bug recovery.",
+     "lens": "design-data",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 151905,
+      "output_tokens": 14268
+     },
+     "duration_ms": 628318,
+     "failed": false,
+     "output_bytes": 12765
+    },
+    {
+     "usage": {
+      "input_tokens": 114692,
+      "output_tokens": 8927
+     },
+     "duration_ms": 481344,
+     "failed": false,
+     "output_bytes": 8780
+    }
+   ]
+  }
+ ]
+}

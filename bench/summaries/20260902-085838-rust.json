@@ -1,0 +1,482 @@
+{
+ "run": "20260902-085838",
+ "task": "code",
+ "target": "rust",
+ "model": "nemotron-3-ultra:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/store.rs",
+     "line": 54,
+     "title": "resolve() logic inverted: removes valid links, keeps expired ones",
+     "description": "The condition `SystemTime::now() < link.expires_at` evaluates to true when the link is NOT expired (current time is before expiry). The variable is named `expired` but holds the opposite meaning. The code then removes the link and returns None for non-expired links, while expired links fall through and get their hit count incremented. This completely inverts the intended behavior.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "create() panics on first link for a new owner",
+     "description": "`self.quota.get_mut(owner).unwrap()` assumes the owner already exists in the quota map. For a new owner, `get_mut` returns None and unwrap() panics.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "require_admin() always rejects due to logic error",
+     "description": "Condition `session.role != \"admin\" || session.role != \"owner\"` is always true because a role cannot be both 'admin' AND 'owner' simultaneously. Should be `&&` (neither admin nor owner) or better: `session.role != \"admin\" && session.role != \"owner\"`.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 56,
+     "title": "verify() ignores token expiration",
+     "description": "The verify method checks if the token exists in the sessions map but never checks the `expires_at` field. Tokens never expire once issued.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 102,
+     "title": "validate() always returns Ok(()) even with errors",
+     "description": "The validate method collects problems into a vector, prints them, but unconditionally returns `Ok(())`. Invalid configurations (port 0, timeout 0) are accepted.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 163,
+     "title": "delete_link() doesn't verify ownership",
+     "description": "The comment states 'A link may only be deleted by the user who created it; the owner is taken from the authenticated session.' But the code only checks if the code exists, not whether the authenticated session's owner matches the link's owner.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 11,
+     "title": "export_csv() path traversal via user-controlled name",
+     "description": "The `name` parameter comes from user query string and is used directly in `Path::new(dir).join(format!(\"{}.csv\", name))` without sanitization. An attacker can use `../../../etc/passwd` to write outside the export directory.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 31,
+     "title": "archive_all() path traversal via owner name",
+     "description": "Owner name from the store is used directly in filename: `Path::new(dir).join(format!(\"{}.csv\", owner))`. If an owner name contains path traversal sequences, files can be written outside the export directory.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 83,
+     "title": "page() off-by-one causes panic on last page",
+     "description": "When `end > all.len()`, it sets `end = all.len() + 1`. Slice end index is exclusive and maximum valid value is `all.len()`. Accessing `all[offset..all.len()+1]` panics.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 127,
+     "title": "by_owner() uses substring match instead of exact match",
+     "description": "`l.owner.contains(owner)` matches substrings. Owner 'alice' matches links owned by 'alice', 'alice2', 'malice', 'palice', etc.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 137,
+     "title": "extend() doesn't enforce 'expiry is final' rule",
+     "description": "Comment states 'An already-expired link stays expired: expiry is final, and a dead code must never come back to life.' But the code unconditionally extends the expiry without checking if already expired.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 159,
+     "title": "prune() returns remaining count instead of removed count",
+     "description": "Method comment says 'reports how many it removed' but returns `self.links.len()` (count after pruning). The `before` variable is captured but only used in `let _ = before;`.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 138,
+     "title": "redirect() lowercases code but store keys are case-sensitive",
+     "description": "Code does `code.to_lowercase()` before lookup, but `new_code()` generates hex from nanoseconds (lowercase only). However, if codes are ever created with uppercase (e.g., via import), they become unfindable. Also, the store's HashMap is case-sensitive.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 195,
+     "title": "stats() division by zero when store is empty",
+     "description": "`per_link = hits / guard.len() as i64` divides by zero when store has no links. Also `guard.success_rate()` has same issue (handled but returns 0).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 94,
+     "title": "bearer_token() panics on malformed/missing Authorization header",
+     "description": "`parts[1].to_string()` assumes split produces at least 2 elements. Empty header, missing header, or 'Bearer' without token causes index out of bounds panic.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 27,
+     "title": "add_resolved() has race condition (load/store instead of fetch_add)",
+     "description": "Uses `load` then `store` instead of atomic `fetch_add`. Two concurrent calls can read the same value, both increment, and store back the same incremented value, losing one count.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 80,
+     "title": "warm_cache() doesn't wait for spawned threads",
+     "description": "Spawns threads and stores handles in a vector, but then does `let _ = handles;` which drops the handles immediately without joining. Function returns before threads complete. Comment says 'Returns after every probe has finished.'",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 50,
+     "title": "LINKD_CACHE_TTL_MS parsed as seconds, not milliseconds",
+     "description": "Env var name says `_MS` (milliseconds) but code uses `Duration::from_secs(n)`. A value of '300000' (5 minutes in ms) becomes 300000 seconds (~3.5 days).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 62,
+     "title": "LINKD_FETCH_LIMIT parsed but ignored",
+     "description": "Parsed value assigned to `let _ = limit;` which discards it. The config field `fetch_limit` is never updated from environment.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 58,
+     "title": "set() eviction is arbitrary, not LRU",
+     "description": "Evicts `guard.keys().next().cloned()` which is the first entry in HashMap iteration order (arbitrary). The `used` timestamp is updated on get() but never consulted for eviction. Comment claims 'evicting the least recently used entry'.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 93,
+     "title": "sweep() has race condition between read lock drop and delete()",
+     "description": "Takes read lock, collects expired keys, drops read lock, then calls delete() (which takes write lock) for each. Between dropping read lock and acquiring write lock in delete(), another thread could modify the cache.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 123,
+     "title": "utilization() integer division returns 0 for partially filled cache",
+     "description": "`guard.len() / self.limit * 100` performs integer division first. If cache has 500 entries and limit is 1024, `500 / 1024 = 0`, then `0 * 100 = 0%`.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 50,
+     "title": "peek() returns true for expired entries",
+     "description": "peek() only checks `contains_key()` without verifying expiration. Expired entries remain in map until sweep() runs.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 119,
+     "title": "top() sorts ascending (least hits first) but comment says 'most hits first'",
+     "description": "`all.sort_by(|a, b| a.hits.cmp(&b.hits))` sorts ascending. The comment says 'most followed links, most hits first'.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 145,
+     "title": "quotas() returns mutable reference to internal state",
+     "description": "Returns `&mut HashMap<String, u32>` allowing external code to mutate the quota map without synchronization, breaking encapsulation and potentially causing data races.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 120,
+     "title": "TTL parsing: invalid input becomes 0 (immediate expiry)",
+     "description": "`v.parse::<u64>().unwrap_or(0) * 3600` - non-numeric ttl parameter becomes 0 hours = 0 seconds, creating immediately-expired links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 185,
+     "title": "admin_quotas() bypasses auth system's role check",
+     "description": "Checks for `x-admin: true` header instead of using the authenticated session's role. The auth system has admin/owner roles but this endpoint uses a separate header check.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 212,
+     "title": "report() path traversal via user-controlled name",
+     "description": "User-controlled `name` parameter used directly in `Path::new(dir).join(format!(\"{}.csv\", name))` without sanitization. Also only exports first 1000 links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 51,
+     "title": "start_janitor() stop signal delayed up to interval; holds lock during full sweep",
+     "description": "Thread sleeps first, then checks stop channel. `stop()` takes up to `interval` (60s) to take effect. Also holds store lock while iterating all codes and checking expiry, blocking all handlers.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 93,
+     "title": "check_targets() can hang forever if a thread panics",
+     "description": "Uses sync_channel(0) (rendezvous). If any spawned thread panics before sending, the main thread blocks forever on `rx.recv()` waiting for a message that never comes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 27,
+     "title": "Lost update race in Metrics.add_resolved()",
+     "description": "Metrics.add_resolved() uses a non-atomic load-then-store sequence (lines 28-29) instead of fetch_add. Two concurrent calls can read the same value, both increment, and store back, losing one increment. Meanwhile add_created() and add_error() correctly use fetch_add.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 93,
+     "title": "TOCTOU race in Cache.sweep()",
+     "description": "sweep() collects expired keys under a read lock (lines 94-102), drops the lock, then deletes each key with a separate write lock (line 105). Between collection and deletion, another thread can re-insert or renew the same key (via set()), causing a valid entry to be incorrectly evicted.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 84,
+     "title": "Check-then-act race in Cache.warm()",
+     "description": "warm() calls peek() (read lock) then set() (write lock) for each entry. Another thread can insert the same key between the peek and set, causing redundant work or overwriting a fresher value.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 82,
+     "title": "Thread leak in warm_cache()",
+     "description": "warm_cache() spawns a thread per entry (lines 84-88) but drops the handles vector without joining (line 90: let _ = handles;). Spawned threads run detached and are never awaited, leaking OS threads and any resources they hold.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 49,
+     "title": "Unbounded thread spawning per connection",
+     "description": "The main loop spawns a new thread for every incoming TCP connection (lines 49-58) with no limit. Under load this exhausts OS thread limits, memory, or file descriptors, causing denial of service.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 95,
+     "title": "Fragile rendezvous channel in check_targets()",
+     "description": "check_targets() uses sync_channel(0) (rendezvous channel). Spawned threads block on send until the main thread calls recv(). If any thread panics before sending, the sender is dropped and the main thread receives a channel error instead of the probe result. The pattern is fragile and provides no timeout.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 60,
+     "title": "Janitor stop() unreachable after infinite loop",
+     "description": "janitor.stop() at line 60 is placed after the infinite for incoming in listener.incoming() loop (line 49). The stop() call is never reached, so the janitor thread cannot be shut down gracefully. The channel sender is dropped when main exits, but the janitor only checks try_recv() after each sleep interval.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 119,
+     "title": "Useless double lock in count_by_owner()",
+     "description": "count_by_owner() locks the store mutex twice sequentially (lines 120 and 122) for no reason. The second lock acquisition is wasted work and increases contention.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "Admin authorization check logic is inverted - always rejects admin users",
+     "description": "The `require_admin` function at line 68 uses `||` instead of `&&`, making the condition always true. Any session (including admin) will be rejected with \"admin role required\". This means the admin endpoint at `/admin/quotas` in main.rs:186 cannot be accessed by legitimate admins.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 181,
+     "title": "Open redirect vulnerability in /out endpoint",
+     "description": "The `/out` endpoint at line 174-182 takes a user-controlled `next` query parameter and redirects to it without any validation. This allows attackers to craft links on the trusted domain that redirect to arbitrary external sites, enabling phishing and credential harvesting.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 243,
+     "title": "CORS misconfiguration: wildcard origin with credentials allowed",
+     "description": "Line 243 sets `Access-Control-Allow-Origin: *` and `Access-Control-Allow-Credentials: true` together. This is invalid per CORS spec - browsers will reject the response. It indicates the developers don't understand CORS and may have other origin reflection bugs.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 13,
+     "title": "Path traversal in export_csv via user-controlled filename",
+     "description": "Line 13 uses `Path::new(dir).join(format!(\"{}.csv\", name))` where `name` comes from the user-controlled query parameter (main.rs:214). An attacker can use `../` sequences to escape the export directory and read/write arbitrary files on the server.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 67,
+     "title": "Path traversal in read_report via user-controlled filename",
+     "description": "Line 67 constructs a path using user-controlled `name` parameter without validation, allowing directory traversal to read arbitrary files from the export directory or beyond.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 35,
+     "title": "Token generation uses predictable LCG seeded only with timestamp",
+     "description": "Lines 35-42 generate session tokens using a Linear Congruential Generator seeded only with `SystemTime::now().as_secs()`. The LCG constants are known (6364136223846793005, 1442695040888963407). An attacker who knows the approximate token creation time can brute-force the seed and predict tokens.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 85,
+     "title": "Password hashing uses insecure custom hash (djb2 variant)",
+     "description": "The `hash_password` function at lines 85-91 implements a custom non-cryptographic hash (similar to djb2) with 64-bit output, no salt, no key stretching. This is completely unsuitable for password storage - passwords can be cracked instantly with rainbow tables or brute force.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 186,
+     "title": "Admin endpoint protected only by trivial header check",
+     "description": "Line 186 checks `headers.get(\"x-admin\") == Some(\"true\")` with no cryptographic verification. Anyone who knows this header name (or guesses it) gets full admin access to view all user quotas.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 96,
+     "title": "bearer_token panics on malformed Authorization header",
+     "description": "Line 96 assumes the header always contains a space and at least two parts. A malformed header like `Authorization: Bearer` (no token) or `Authorization: Basic ...` will cause `parts[1]` to panic, crashing the request handler thread.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 98,
+     "title": "Token leaked in error response and logs",
+     "description": "Line 98 includes the raw token in the 401 response body and presumably in logs. This exposes tokens to anyone who can see the response (including in browser dev tools, proxy logs, etc.) and makes token enumeration easier.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 130,
+     "title": "by_owner uses substring match instead of exact match",
+     "description": "Line 130 uses `l.owner.contains(owner)` which matches substrings. An owner named \"alice\" would see links owned by \"alice_admin\", \"malice\", etc. This leaks other users' links.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "page() has off-by-one bug causing panic on large size parameter",
+     "description": "Line 90 sets `end = all.len() + 1` when `offset + size > all.len()`. This creates a slice `all[offset..end]` where `end` can exceed `all.len()`, causing a panic. An attacker can DoS the server by requesting large page sizes.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 208,
+     "title": "Short code generation uses only nanoseconds - collision prone",
+     "description": "The `new_code()` function formats only the nanoseconds component of the current time as hex. This provides at most ~30 bits of entropy (nanoseconds in a second), and under concurrent load or rapid sequential calls, collisions are very likely. No collision detection/retry logic exists.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 71,
+     "title": "LINKD_EXPORT_DIR used without path validation",
+     "description": "Line 71 accepts any value for LINKD_EXPORT_DIR from the environment. Combined with the path traversal in export.rs, this allows writing arbitrary files anywhere the process has permission.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "quota.get_mut(owner).unwrap() panics for new owners",
+     "description": "Line 48 assumes the owner already exists in the quota HashMap. For a new owner, `get_mut` returns None and `unwrap()` panics, crashing the request handler. This is a DoS vulnerability for any new user.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 57,
+     "title": "Token verification uses linear search instead of HashMap lookup",
+     "description": "Line 57-61 iterates through all sessions linearly instead of using the HashMap's O(1) lookup. This is a performance issue that could become a DoS vector if many sessions exist (timing attack surface, CPU exhaustion).",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "Cache utilization calculation broken by integer division",
+     "description": "Line 125: `guard.len() / self.limit * 100` performs integer division first, so any utilization < 100% returns 0. This is a correctness bug that could hide cache pressure from operators.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 197095,
+      "output_tokens": 51358
+     },
+     "duration_ms": 973027,
+     "failed": false,
+     "output_bytes": 15138
+    },
+    {
+     "usage": {
+      "input_tokens": 198100,
+      "output_tokens": 7372
+     },
+     "duration_ms": 1197957,
+     "failed": false,
+     "output_bytes": 5025
+    },
+    {
+     "usage": {
+      "input_tokens": 200398,
+      "output_tokens": 11187
+     },
+     "duration_ms": 988079,
+     "failed": false,
+     "output_bytes": 10338
+    }
+   ]
+  }
+ ]
+}

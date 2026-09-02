@@ -1,0 +1,682 @@
+{
+ "run": "20260902-091948",
+ "task": "code",
+ "target": "java",
+ "model": "nemotron-3-ultra:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 50,
+     "title": "String comparison uses reference equality (==) instead of .equals()",
+     "description": "The verify() method compares session.token == token using reference equality. This will fail to match tokens that are equal but not the same object instance, causing valid sessions to be rejected.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 62,
+     "title": "requireAdmin logic inverted - always returns false",
+     "description": "The condition `!session.role.equals(\"admin\") || !session.role.equals(\"owner\")` is always true because a role cannot be both \"admin\" AND \"owner\" simultaneously. This means requireAdmin() always returns false, blocking all admin access.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 41,
+     "title": "resolve() expiry check inverted - removes valid links",
+     "description": "The condition `Instant.now().isBefore(link.expiresAt)` is true when the link is NOT expired (still valid). The code then removes the link and returns null, effectively deleting valid links on access. It should be `isAfter` to check if expired.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 72,
+     "title": "page() off-by-one error in end calculation",
+     "description": "When end > all.size(), it sets `end = all.size() + 1` which will cause IndexOutOfBoundsException in subList(offset, end) since end exceeds the list size.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 91,
+     "title": "successRate() integer division produces 0 for any non-100% rate",
+     "description": "The expression `used / links.size() * 100` performs integer division first. For any used < links.size(), the division yields 0, so the result is always 0 unless every single link has hits.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 119,
+     "title": "byOwner() uses contains() instead of equals()",
+     "description": "The check `link.owner.contains(owner)` matches substrings. Owner \"alice\" would match \"alice2\", \"malice\", etc., leaking links across owners.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 129,
+     "title": "findByCode() uses reference equality (==) instead of .equals()",
+     "description": "Compares `link.code == code` which only matches the exact same String object, not equal strings.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 170,
+     "title": "prune() ConcurrentModificationException when removing during iteration",
+     "description": "Iterates over `links.keySet()` while calling `links.remove(code)` inside the loop, which throws ConcurrentModificationException.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 112,
+     "title": "utilization() integer division always returns 0",
+     "description": "The expression `entries.size() / limit * 100` does integer division first. For any cache not completely full, entries.size() / limit is 0, so utilization always reports 0%.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 98,
+     "title": "sweep() ConcurrentModificationException when removing during iteration",
+     "description": "Iterates over `entries.keySet()` while calling `entries.remove(code)` inside the loop, which throws ConcurrentModificationException.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Config.java",
+     "line": 117,
+     "title": "validate() always returns true even when validation fails",
+     "description": "The method collects problems in a list but always returns `true` at the end. Validation failures are logged but don't prevent startup with invalid config.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Config.java",
+     "line": 60,
+     "title": "LINKD_FETCH_LIMIT parsed but never assigned to cfg.fetchLimit",
+     "description": "The parsed value is stored in a local variable `parsed` but never assigned to the config field. The fetchLimit remains at its default value regardless of the environment variable.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 91,
+     "title": "bearerToken() throws ArrayIndexOutOfBoundsException on malformed header",
+     "description": "Assumes header splits into at least 2 parts. If Authorization header is missing or malformed (e.g., just \"Bearer\"), parts[1] throws an exception.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 84,
+     "title": "hashPassword() returns empty string on NoSuchAlgorithmException",
+     "description": "SHA-256 is guaranteed to exist in Java, but if it somehow fails, all passwords would hash to the same empty string, completely breaking authentication.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 35,
+     "title": "nextLong() can produce negative values, toHexString includes minus sign",
+     "description": "Random.nextLong() returns negative values ~50% of the time. Long.toHexString(-1) produces \"ffffffffffffffff\" (16 chars), but positive values produce shorter strings. The token format becomes inconsistent and may include '-'.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 52,
+     "title": "rename() validates 'from' code twice instead of 'to'",
+     "description": "Line 51 and 52 both call `validateCode(from)`. The second should validate the destination code `to`.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 160,
+     "title": "importAll() not atomic - partial imports on failure",
+     "description": "The method claims atomicity in its javadoc but adds links one by one. If a later link fails validation, earlier links are already in the map and not rolled back.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 23,
+     "title": "Metrics.addCreated() not synchronized - race condition",
+     "description": "addCreated() is not synchronized while addResolved() and snapshot() are. Concurrent calls can lose increments or read torn values.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 64,
+     "title": "warmCache() leaks ExecutorService - never shuts down",
+     "description": "Creates a fixed thread pool but never calls shutdown(). Each call leaks 8 threads that never terminate.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 66,
+     "title": "warmCache() returns before tasks complete",
+     "description": "The method submits tasks but returns immediately without waiting. The javadoc claims it \"Returns after every probe has finished\" but it doesn't wait for the futures.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 89,
+     "title": "countForOwner() throws NPE when owner not in quotas",
+     "description": "store.quotas().get(owner) returns null for unknown owners. Unboxing null to int throws NullPointerException.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 65,
+     "title": "authenticate() NPE when Authorization header missing",
+     "description": "Authenticator.bearerToken(header) is called with null header when no Authorization header is present, causing NPE in split().",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 118,
+     "title": "redirect() NPE when code parameter missing",
+     "description": "query(exchange).get(\"code\") returns null if parameter missing. Calling .toLowerCase() on null throws NPE.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 165,
+     "title": "stats() division by zero when store empty",
+     "description": "`hits / store.size()` divides by zero when store has no links, throwing ArithmeticException.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Export.java",
+     "line": 17,
+     "title": "SimpleDateFormat is not thread-safe",
+     "description": "STAMP is a static field accessed from multiple threads (exportCsv). SimpleDateFormat is not thread-safe and will produce corrupted output or throw exceptions under concurrent use.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Export.java",
+     "line": 69,
+     "title": "writeSnapshot() renameTo() return value ignored",
+     "description": "File.renameTo() returns boolean indicating success. On cross-filesystem moves it returns false silently, leaving the snapshot in /tmp and not at the destination.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Export.java",
+     "line": 27,
+     "title": "exportCsv() path traversal vulnerability via name parameter",
+     "description": "The name parameter is used directly in `new File(dir, name + \".csv\")`. If name contains `../`, files can be written outside the intended directory.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Export.java",
+     "line": 41,
+     "title": "FileWriter not closed on exception - resource leak",
+     "description": "If writer.write() throws, writer.close() is never called. Same issue in archiveAll() and appendAudit().",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Link.java",
+     "line": 32,
+     "title": "equals() can throw NPE if other.code is null",
+     "description": "The equals() method calls `this.code.equals(((Link) other).code)` without checking if other.code is null.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/linkd/Link.java",
+     "line": 27,
+     "title": "equals() overridden but hashCode() not overridden",
+     "description": "Violates the equals/hashCode contract. Links used as HashMap keys or in HashSets will not work correctly.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 16,
+     "title": "HashMap 'links' accessed concurrently without synchronization",
+     "description": "The 'links' HashMap (line 16) and 'quota' HashMap (line 17) are accessed from multiple threads (HTTP handlers in Main.java, janitor thread in Worker.java) with no synchronization. Methods create(), resolve(), delete(), rename(), page(), top(), byOwner(), extend(), importAll(), prune(), totalHits(), successRate() all read/write these maps unsynchronized. This causes data corruption, lost updates, ConcurrentModificationException, and use-after-free (e.g., resolve() may remove a link while another thread is reading it).",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 14,
+     "title": "HashMap 'sessions' accessed concurrently without synchronization",
+     "description": "The 'sessions' HashMap (line 14) is accessed from multiple HTTP handler threads via issue(), verify(), revoke(), and sessionCount() with no synchronization. verify() iterates sessions.values() (line 49) while other threads may modify the map, causing ConcurrentModificationException or corrupted iteration. revoke() removes entries unsynchronized (line 70).",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 31,
+     "title": "Broken double-checked locking in getInstance() - instance not volatile",
+     "description": "The singleton pattern at lines 31-36 uses double-checked locking but 'instance' field (line 23) is not volatile. This allows multiple threads to see a partially constructed Cache instance or create multiple instances, breaking the singleton guarantee and causing cache inconsistency.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 97,
+     "title": "sweep() causes ConcurrentModificationException by modifying map during keySet iteration",
+     "description": "sweep() (lines 97-103) iterates 'entries.keySet()' and calls 'entries.remove(code)' inside the loop. In Java, modifying a map while iterating its keySet directly throws ConcurrentModificationException. This crashes the janitor thread (Worker.java line 49 calls cache.sweep()).",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 63,
+     "title": "warmCache() creates ExecutorService but never shuts it down - thread leak",
+     "description": "warmCache() (lines 63-68) creates a fixed thread pool with Executors.newFixedThreadPool(8), submits tasks, but never calls shutdown() or awaitTermination(). Each call leaks 8 threads. Under load this exhausts system resources.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 44,
+     "title": "Janitor thread iterates and mutates Store's internal map directly via all()",
+     "description": "The janitor thread (lines 36-51) calls store.all().keySet() (line 44) which returns the internal HashMap directly (Store.java line 191-193). It then iterates this keyset and calls store.all().remove(code) (line 46) while HTTP handlers concurrently access the same map. This causes ConcurrentModificationException and data races with zero synchronization.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 168,
+     "title": "prune() causes ConcurrentModificationException by modifying map during keySet iteration",
+     "description": "prune() (lines 168-177) iterates 'links.keySet()' and calls 'links.remove(code)' inside the loop, which throws ConcurrentModificationException in Java. This method is callable from application code.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Export.java",
+     "line": 17,
+     "title": "Static SimpleDateFormat STAMP is not thread-safe",
+     "description": "SimpleDateFormat is explicitly not thread-safe (JavaDoc). Multiple concurrent calls to exportCsv() (line 30 uses STAMP.format()) will corrupt the formatter's internal state, producing wrong timestamps or throwing exceptions. This is a well-known Java concurrency bug.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 57,
+     "title": "peek() reads HashMap unsynchronized while other methods write synchronized",
+     "description": "peek() (line 57-59) calls entries.containsKey(code) without synchronization, while set(), delete(), get(), sweep() are synchronized. This is a data race: peek can see stale state, miss entries, or see corrupted map structure.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 88,
+     "title": "warm() has TOCTOU race between peek() and set()",
+     "description": "warm() (lines 88-94) calls peek() (unsynchronized) then set() (synchronized). Another thread can insert the same key between the check and the set, causing unnecessary cache overwrite or lost update.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 106,
+     "title": "stats() reads 'hits' counter unsynchronized while get() increments it",
+     "description": "stats() (line 106-108) returns 'hits' without synchronization, while get() (line 52) does 'hits++' inside a synchronized block. The increment is not atomic (read-modify-write), and the read in stats() has no happens-before relationship with the writes. Lost updates and stale reads occur.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 111,
+     "title": "utilization() reads entries.size() and limit unsynchronized",
+     "description": "utilization() (lines 111-113) reads entries.size() and limit without synchronization while other threads modify entries. Stale or inconsistent size readings; division by zero if limit is 0 (though constructor sets it).",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 22,
+     "title": "Metrics.addCreated() not synchronized while addResolved() and snapshot() are",
+     "description": "addCreated() (line 22-24) increments 'created' without synchronization, but addResolved() (line 18-20) and snapshot() (line 26-28) are synchronized. This creates a data race on 'created' counter: lost increments and stale reads in snapshot().",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 55,
+     "title": "stopJanitor() sets running=false but doesn't interrupt the thread - up to 60s shutdown delay",
+     "description": "stopJanitor() (line 55-57) only sets the volatile 'running' flag to false. The janitor thread sleeps for intervalMillis (60000ms = 60s, line 39) before checking the flag. Application shutdown hangs for up to 60 seconds.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 152,
+     "title": "quotas() and all() return internal mutable maps - encapsulation violation",
+     "description": "quotas() (line 152-154) returns the internal 'quota' HashMap directly, and all() (line 191-193) returns the internal 'links' HashMap directly. Callers (including the janitor thread) can mutate these maps without Store's knowledge, bypassing all invariants and causing data races.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 50,
+     "title": "verify() uses '==' for String comparison instead of .equals()",
+     "description": "Line 50: 'if (session.token == token)' compares object identity, not string equality. Token validation fails for valid tokens unless they are the exact same String object (e.g., from string interning). This is a correctness bug that breaks authentication.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 62,
+     "title": "requireAdmin() logic always returns false - admin/owner check uses || instead of &&",
+     "description": "Line 62: 'if (!session.role.equals(\"admin\") || !session.role.equals(\"owner\"))' - a role cannot be both 'admin' AND 'owner' simultaneously, so this condition is always true, always returning false. Admin endpoints are permanently inaccessible.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 98,
+     "title": "delete() removes link but doesn't decrement quota - quota leak",
+     "description": "delete() (lines 98-103) removes the link from 'links' map but never decrements the owner's count in 'quota' map. Quota counts only increase, never decrease, eventually blocking users from creating new links.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 129,
+     "title": "findByCode() uses '==' for String comparison",
+     "description": "Line 129: 'if (link.code == code)' uses object identity instead of .equals(). Fails to find links unless same String object.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 15,
+     "title": "Random instance shared across threads - contention under high load",
+     "description": "Random (line 15) is thread-safe but uses a single shared seed with CAS, causing contention when many threads call issue() simultaneously. Not a correctness issue but a scalability bottleneck.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 18,
+     "title": "Random instance shared across threads - contention under high load",
+     "description": "Random (line 18) used in newCode() (line 209) shared across all threads creating links. Contention under high link creation rate.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 15,
+     "title": "Weak session token generation using java.util.Random",
+     "description": "Session tokens are generated using `java.util.Random` (line 35: `Long.toHexString(random.nextLong())`), which is a predictable PRNG not suitable for security-sensitive tokens. An attacker who observes one token can predict future tokens, leading to session hijacking.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 50,
+     "title": "String comparison using == instead of .equals() in verify()",
+     "description": "Line 50 uses `session.token == token` for string comparison. This compares object identity, not string content. The verify() method will almost always return null even for valid tokens, breaking authentication entirely.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 62,
+     "title": "requireAdmin() logic error rejects all users including admins",
+     "description": "Line 62: `!session.role.equals(\"admin\") || !session.role.equals(\"owner\")` is always true because a role cannot be both \"admin\" AND \"owner\" simultaneously. The condition should use &&, not ||. This means no one can access admin endpoints.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 22,
+     "title": "SSRF via insufficient target URL validation",
+     "description": "create() only checks that target starts with http:// or https:// (line 22-24). It allows internal URLs like http://localhost:8080, http://169.254.169.254 (AWS metadata), http://127.0.0.1, or private RFC1918 ranges.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 41,
+     "title": "Logic error in resolve() removes valid links",
+     "description": "Line 41-44: `if (Instant.now().isBefore(link.expiresAt)) { links.remove(code); return null; }` - this removes links that HAVE NOT expired yet (isBefore means current time is before expiry). Valid links are deleted on first access.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 74,
+     "title": "Password hashing uses unsalted SHA-256",
+     "description": "hashPassword() uses bare SHA-256 with no salt and no key stretching. This is vulnerable to rainbow table attacks and GPU brute-forcing. Identical passwords produce identical hashes.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 98,
+     "title": "secretEquals() uses non-constant-time comparison",
+     "description": "secretEquals() uses `String.equals()` which short-circuits on first mismatch, leaking timing information about the secret. This enables timing attacks to extract the secret character by character.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 27,
+     "title": "Hardcoded default secret in production",
+     "description": "If LINKD_SECRET environment variable is not set, the code falls back to \"dev-secret-do-not-use\" (line 27). This secret is used for token validation and potentially other crypto operations.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 136,
+     "title": "Open redirect in /out endpoint",
+     "description": "The /out endpoint (lines 132-144) takes a user-controlled `next` parameter and redirects to it without any validation. This is an open redirect vulnerability.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 179,
+     "title": "Path traversal in exportCsv via user-controlled name parameter",
+     "description": "Line 179 passes user-controlled `name` directly to Export.exportCsv(), which constructs a file path using `new File(dir, name + \".csv\")` (Export.java:27). No validation prevents directory traversal with `../../etc/passwd`.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 180,
+     "title": "Path traversal in readReport via user-controlled name parameter",
+     "description": "Line 180 passes user-controlled `name` to Export.readReport(), which constructs `new File(dir, name + \".csv\")` (Export.java:84-85) without validation, allowing directory traversal to read arbitrary files.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 188,
+     "title": "CORS misconfiguration: Allow-Origin * with Allow-Credentials true",
+     "description": "Line 189-190 sets `Access-Control-Allow-Origin: *` and `Access-Control-Allow-Credentials: true` together. This combination is invalid per CORS spec - browsers will reject it. It also indicates confused security posture.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 151,
+     "title": "Admin bypass via X-Admin header",
+     "description": "The /admin/quotas endpoint (lines 147-157) checks for `X-Admin: true` header as the sole authorization mechanism. This header can be set by any client - no cryptographic verification or session binding.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 119,
+     "title": "byOwner() uses contains() allowing cross-owner data leakage",
+     "description": "Line 119: `link.owner.contains(owner)` matches substrings. An owner named \"alice\" would see links owned by \"alice_admin\", \"malice\", etc. This leaks other users' links.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 129,
+     "title": "String comparison using == in findByCode()",
+     "description": "Line 129: `link.code == code` uses object identity comparison instead of .equals(). Will fail to find links unless the exact same string object is used.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 160,
+     "title": "importAll() bypasses code validation and lacks atomicity",
+     "description": "importAll() (lines 160-165) calls validateCode() but continues on exception (no try-catch shown, but validateCode throws). More critically, it inserts links directly without checking for duplicates or validating targets, and partial failure leaves the store in inconsistent state.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 170,
+     "title": "ConcurrentModificationException in prune() and janitor thread",
+     "description": "prune() (line 170) iterates `links.keySet()` while calling `links.remove(code)` - this throws ConcurrentModificationException. The janitor thread (Worker.java:44-47) does the same via `store.all().keySet()` and `store.all().remove(code)`.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/linkd/Store.java",
+     "line": 18,
+     "title": "Predictable short codes using java.util.Random",
+     "description": "newCode() (line 209) uses `random.nextLong()` from java.util.Random. Short codes are predictable, allowing enumeration of all short links.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Export.java",
+     "line": 17,
+     "title": "Thread-unsafe SimpleDateFormat shared across threads",
+     "description": "STAMPS is a static SimpleDateFormat (line 17). SimpleDateFormat is not thread-safe. Concurrent exports will produce corrupted timestamps or throw exceptions.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Export.java",
+     "line": 67,
+     "title": "Predictable temporary file path in writeSnapshot()",
+     "description": "Line 67: `new File(\"/tmp\", \"linkd-snapshot.json\")` uses a fixed, predictable path in /tmp. Another user on the system could read or overwrite this file.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Export.java",
+     "line": 69,
+     "title": "Non-atomic rename in writeSnapshot()",
+     "description": "Line 69: `tmp.renameTo(new File(dir, \"snapshot.json\"))` is not atomic across filesystems and can fail silently (returns boolean, not checked). A crash during rename leaves no snapshot or a partial one.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Config.java",
+     "line": 117,
+     "title": "validate() always returns true even with errors",
+     "description": "Line 117: validate() collects problems but always returns true. A misconfigured service (e.g., port=0, negative cache size) will start anyway and fail at runtime.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Config.java",
+     "line": 49,
+     "title": "Unit confusion: LINKD_CACHE_TTL_MS parsed as seconds",
+     "description": "Line 49: `cfg.cacheTtlSeconds = Long.parseLong(ttl)` but the env var is named LINKD_CACHE_TTL_MS (milliseconds). The value is treated as seconds, making TTL 1000x longer than intended.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Config.java",
+     "line": 58,
+     "title": "LINKD_FETCH_LIMIT parsed but never assigned",
+     "description": "Lines 58-63 parse LINKD_FETCH_LIMIT but don't assign it to cfg.fetchLimit. The parsed value is discarded.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Worker.java",
+     "line": 64,
+     "title": "Thread pool leak in warmCache()",
+     "description": "Line 64: `Executors.newFixedThreadPool(8)` creates a thread pool that is never shut down. Each call to warmCache() leaks 8 threads.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Cache.java",
+     "line": 88,
+     "title": "TOCTOU race in warm()",
+     "description": "warm() (lines 88-94) calls peek() then set() without synchronization. Another thread can insert the same key between peek and set, causing redundant work or overwriting fresher data.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/linkd/Authenticator.java",
+     "line": 89,
+     "title": "bearerToken() throws ArrayIndexOutOfBoundsException on malformed header",
+     "description": "Line 91: `parts[1]` assumes header contains a space. If Authorization header is just \"Bearer\" (no token) or empty, this throws uncaught exception.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 65,
+     "title": "NullPointerException in authenticate() on missing Authorization header",
+     "description": "Line 65: `Authenticator.bearerToken(header)` is called with header=null if no Authorization header present. bearerToken() then calls split() on null, throwing NPE.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/linkd/Main.java",
+     "line": 106,
+     "title": "NumberFormatException on invalid offset/size parameters",
+     "description": "Lines 106-107: Integer.parseInt() on user-controlled query params throws NumberFormatException if non-numeric, causing 500 error.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 170207,
+      "output_tokens": 14824
+     },
+     "duration_ms": 651798,
+     "failed": false,
+     "output_bytes": 14127
+    },
+    {
+     "usage": {
+      "input_tokens": 134812,
+      "output_tokens": 12335
+     },
+     "duration_ms": 489397,
+     "failed": false,
+     "output_bytes": 13650
+    },
+    {
+     "usage": {
+      "input_tokens": 214632,
+      "output_tokens": 16266
+     },
+     "duration_ms": 768714,
+     "failed": false,
+     "output_bytes": 15568
+    }
+   ]
+  }
+ ]
+}

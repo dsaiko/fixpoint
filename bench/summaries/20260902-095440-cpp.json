@@ -1,0 +1,618 @@
+{
+ "run": "20260902-095440",
+ "task": "code",
+ "target": "cpp",
+ "model": "nemotron-3-ultra:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "auth.cpp",
+     "line": 49,
+     "title": "require_admin logic always returns false",
+     "description": "The condition `session.role != \"admin\" || session.role != \"owner\"` is always true because a role cannot be both admin and owner simultaneously. This means require_admin() returns false for everyone, including actual admins, blocking all admin endpoints.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 37,
+     "title": "verify() does not check session expiration",
+     "description": "The verify() method iterates through sessions and returns a match without checking expires_at. Expired sessions remain valid indefinitely. The comment claims it returns nullptr for expired tokens but the code doesn't implement this.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 73,
+     "title": "bearer_token() crashes on malformed/missing Authorization header",
+     "description": "If header lacks a space (e.g., empty string, \"Bearer\" without token, or missing header), strchr returns nullptr. Dereferencing `space + 1` causes a null pointer dereference crash.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 37,
+     "title": "set() leaks memory on eviction",
+     "description": "When cache is full, the victim Entry* is erased from the map but never deleted. Every eviction leaks the Entry object.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 54,
+     "title": "sweep() has iterator invalidation",
+     "description": "Erasing from map while iterating with `++it` invalidates the iterator. The next iteration uses an invalid iterator, causing undefined behavior/crash.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 63,
+     "title": "utilization() returns 0 due to integer division order",
+     "description": "`entries_.size() / limit_ * 100` performs integer division first. For any cache less than 100% full, size/limit is 0, so result is always 0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 8,
+     "title": "Destructor leaks all Entry objects",
+     "description": "~Cache() calls entries_.clear() which only destroys the map nodes, not the Entry* objects they point to. All cached entries leak on destruction.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 36,
+     "title": "LINKD_FETCH_LIMIT parsed but never stored",
+     "description": "The environment variable is parsed into `parsed` but only cast to void. The value is never assigned to `cfg.fetch_limit`, so the config setting is ignored.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 91,
+     "title": "validate() always returns true even when validation fails",
+     "description": "The function collects problems into a vector and prints them, but unconditionally returns true at the end. Invalid configurations (bad port, negative cache size, zero timeout) are accepted.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.cpp",
+     "line": 71,
+     "title": "format_row() returns dangling pointer to stack array",
+     "description": "The function returns `row`, a pointer to a local char array. The array goes out of scope when the function returns; any use of the returned pointer is undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "linkd.h",
+     "line": 141,
+     "title": "Metrics::errors_ is uninitialized",
+     "description": "The errors_ member has no default initializer. Reading errors() returns garbage value.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 101,
+     "title": "Division by zero in stats() when store is empty",
+     "description": "`g_store->total_hits() / g_store->size()` divides by zero if no links exist, causing a crash on the /stats endpoint.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 120,
+     "title": "Missing Authorization header crashes bearer_token()",
+     "description": "When Authorization header is absent, empty string is passed to bearer_token(), which then crashes on null pointer dereference (see auth.cpp:73).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 68,
+     "title": "delete_link() does not verify ownership",
+     "description": "The comment states only the creator may delete a link, but the code calls g_store->remove() with no ownership check. Any authenticated user can delete any link.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "resolve() deletes valid links and returns expired ones",
+     "description": "The condition `if (Clock::now() < it->second.expires_at)` is inverted. It erases the link and returns false when the link is STILL VALID (not expired). Expired links pass through and are returned as valid.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 75,
+     "title": "page() off-by-one in end calculation",
+     "description": "`end = all.size() + 1` creates an iterator past the end of the vector. The returned vector constructor uses this invalid iterator.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 91,
+     "title": "success_rate() returns 0 due to integer division",
+     "description": "`used / links_.size() * 100` does integer division first. For any used < total, result is 0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 96,
+     "title": "remove() does not decrement owner quota",
+     "description": "The comment says \"gives the owner their quota slot back\" but quota_[owner] is never decremented. Quota leaks on deletion.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 110,
+     "title": "top() sorts ascending but should be descending",
+     "description": "Sort uses `a.hits < b.hits` (ascending). Comment says \"most hits first\" but the result is least hits first.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 120,
+     "title": "by_owner() uses substring match instead of exact match",
+     "description": "`owner.find(owner) != npos` matches substrings. Owner \"alice\" matches \"alice2\", \"malice\", etc., leaking other users' links.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 134,
+     "title": "extend() revives expired links contrary to comment",
+     "description": "Comment states \"expiry is final, and a dead code must never come back to life\" but the code unconditionally sets a new expiry without checking if already expired.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 155,
+     "title": "prune() has iterator invalidation and returns wrong count",
+     "description": "Erasing in loop with `++it` invalidates iterator (UB). Also returns `links_.size()` (remaining count) instead of `removed` (removed count).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 173,
+     "title": "last_code() returns dangling string_view to local variable",
+     "description": "Returns `std::string_view` referencing local `newest` string. The string is destroyed on return; the view dangles.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 18,
+     "title": "Janitor thread has iterator invalidation and data race",
+     "description": "The janitor iterates store.all() and erases while iterating with `++it` (UB). Also accesses store concurrently with main thread without synchronization (data race).",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 34,
+     "title": "warm_cache() destroys joinable threads causing std::terminate",
+     "description": "Threads are created in a local vector. When the function returns, the vector is destroyed, calling ~thread() on joinable threads, which calls std::terminate.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 43,
+     "title": "check_targets() off-by-one reads out of bounds",
+     "description": "Loop condition `i <= links.size()` accesses `links[links.size()]` which is past the end of the vector.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 49,
+     "title": "Store class has no synchronization for concurrent access to links_ and quota_ maps",
+     "description": "The Store class uses std::map for links_ and quota_ with no mutex protection. Multiple threads access these concurrently: request handlers (create, resolve, remove, page, top, by_owner, extend, quotas, import_all, prune, total_hits, size, last_code) and the janitor thread (via store.all().erase()). This causes data races on map insertion, erasure, iteration, and reallocation, leading to memory corruption, crashes, or lost updates.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 5,
+     "title": "Cache class has no synchronization for concurrent access to entries_ map",
+     "description": "The Cache class uses std::map<std::string, Entry*> with no mutex. Concurrent calls to get(), set(), erase(), sweep(), peek(), utilization() from request handlers and the janitor thread cause data races on map operations and Entry pointer access. The warm_cache() function explicitly spawns multiple threads calling cache.set() concurrently.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 75,
+     "title": "Authenticator class has no synchronization for concurrent access to sessions_ map",
+     "description": "The Authenticator's sessions_ map is accessed by issue() (insert), verify() (read/iterate), revoke() (erase), and session_count() (read) concurrently from request handlers. No mutex protects these operations, causing data races on map insertion, erasure, and iteration.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "linkd.h",
+     "line": 139,
+     "title": "Metrics class counters are not atomic and have no synchronization",
+     "description": "Metrics::add_resolved(), add_created() increment plain long members, while resolved(), created(), errors() read them. These are called concurrently from multiple request handlers (create_link, redirect, out, stats) with no synchronization, causing lost increments and torn reads.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 14,
+     "title": "Janitor thread has iterator invalidation and data race on store.all()",
+     "description": "start_janitor() captures store and cache by reference and runs a loop that calls store.all().erase(it) while iterating. Erasing from a map invalidates only the erased iterator, but the for-loop increments it afterwards (++it), causing UB. Additionally, store.all() returns a non-const reference to the internal links_ map, so the janitor erases entries while request handlers may be reading/writing the same map concurrently \u2014 a data race.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 9,
+     "title": "Janitor thread is never joined \u2014 thread leak on shutdown",
+     "description": "start_janitor() allocates a std::thread on the heap (g_janitor = new std::thread(...)) but stop_janitor() only sets g_running = false. The thread is never joined or detached, causing a resource leak and potential UB on program exit (std::terminate if joinable thread destroyed).",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 34,
+     "title": "warm_cache() spawns threads but never joins them \u2014 thread leak",
+     "description": "warm_cache() creates a std::vector<std::thread> workers, emplaces threads capturing cache and link by reference, but returns immediately without joining. The vector goes out of scope, destroying joinable threads \u2192 std::terminate.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 153,
+     "title": "Store::prune() has iterator invalidation when erasing during iteration",
+     "description": "prune() iterates with for (auto it = links_.begin(); it != links_.end(); ++it) and calls links_.erase(it). This increments the invalidated iterator after erase, causing UB. Same pattern as the janitor bug.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 173,
+     "title": "Store::last_code() returns dangling string_view to local variable",
+     "description": "last_code() returns std::string_view referencing the local variable 'newest'. The string_view dangles immediately on return. While not a concurrency bug per se, concurrent callers would read garbage.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 72,
+     "title": "Buffer overflow in bearer_token",
+     "description": "The bearer_token function uses a fixed 64-byte stack buffer and strcpy without length checking. An Authorization header longer than 63 characters overflows the buffer. Additionally, if no space character exists in the header, strchr returns nullptr and space+1 causes undefined behavior.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 61,
+     "title": "Password hashing uses insecure djb2 algorithm",
+     "description": "hash_password implements djb2, a non-cryptographic hash function. It is fast, unsalted, and has no key stretching. Passwords can be reversed via rainbow tables or brute-forced rapidly.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 21,
+     "title": "Session tokens generated with std::rand (predictable)",
+     "description": "Session tokens use std::rand() which is not cryptographically secure. The output is predictable if the seed is known or can be brute-forced. Only 32 bits of entropy (two 32-bit rand calls formatted as hex).",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 79,
+     "title": "secret_equals is not constant-time (timing side-channel)",
+     "description": "Despite the comment claiming constant-time comparison, the function returns early on length mismatch (line 82-83) and on first byte mismatch (line 86-87). This leaks information via timing attacks.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.cpp",
+     "line": 14,
+     "title": "Path traversal in export_csv via user-controlled name",
+     "description": "The name parameter comes from user input and is concatenated directly into the file path without sanitization. Directory traversal sequences (../) allow writing outside the export directory.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.cpp",
+     "line": 37,
+     "title": "Path traversal in archive_all via owner name",
+     "description": "Owner name from the database is used directly in filename construction without validation. If an attacker can create an account with owner name containing ../, they can write files outside the export directory.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.cpp",
+     "line": 63,
+     "title": "Path traversal in read_report via user-controlled name",
+     "description": "The name parameter from user input is used directly in path construction for reading files, allowing directory traversal to read arbitrary files.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.cpp",
+     "line": 79,
+     "title": "Open redirect in /out endpoint",
+     "description": "The /out endpoint takes a 'next' query parameter and redirects to it without any validation. This is a classic open redirect vulnerability.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.cpp",
+     "line": 68,
+     "title": "Missing authorization check in delete_link",
+     "description": "The delete_link handler removes a link by code but does not verify that the authenticated session owns the link. The comment claims ownership is checked but the code doesn't do it.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.cpp",
+     "line": 91,
+     "title": "Trivial admin bypass via x-admin header",
+     "description": "admin_quotas only checks for the presence of an 'x-admin: true' header. Any authenticated user can add this header and access admin functionality.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 14,
+     "title": "Link codes generated with std::rand (predictable)",
+     "description": "Short link codes use std::rand() with only 32 bits of entropy. Codes are predictable, allowing enumeration of all short links.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 117,
+     "title": "Authorization bypass in by_owner via substring match",
+     "description": "by_owner uses find() for substring matching instead of exact equality. Owner 'alice' matches 'alice2', 'malice', 'alice_admin', etc.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 33,
+     "title": "Logic bug in resolve deletes valid links, keeps expired ones",
+     "description": "Line 38 checks if current time is BEFORE expiry (Clock::now() < expires_at), but then erases the link and returns false. Valid links are deleted; expired links are kept and returned.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 13,
+     "title": "Data race and iterator invalidation in janitor thread",
+     "description": "The janitor thread captures store and cache by reference and iterates store.all() (which returns non-const reference to internal map) while erasing elements. Concurrent with main thread operations \u2192 data races, iterator invalidation, memory corruption.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 11,
+     "title": "Hardcoded default secret 'dev-secret-do-not-use'",
+     "description": "If LINKD_SECRET environment variable is not set, the authenticator falls back to a known constant. This secret is used for token signing/verification.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 48,
+     "title": "require_admin logic bug always denies admin access",
+     "description": "Condition 'session.role != \"admin\" || session.role != \"owner\"' is always true (a role cannot be both simultaneously). Admin access is never granted.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 125,
+     "title": "Token leaked in error response",
+     "description": "When verification fails, the error message includes the token value: 'unauthorized: unknown token (token ' + token + ')' . This leaks tokens in logs and responses.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 173,
+     "title": "Dangling string_view in last_code",
+     "description": "last_code() returns std::string_view referencing a local std::string variable 'newest' that is destroyed on function return. Any use of the returned view is UB.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 32,
+     "title": "Thread lifetime bug in warm_cache causes std::terminate",
+     "description": "warm_cache creates a vector of threads that capture cache by reference, but the vector is destroyed at function exit while threads are still running. Thread destructors call std::terminate.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 42,
+     "title": "Out-of-bounds access in check_targets",
+     "description": "Loop condition 'i <= links.size()' accesses links[links.size()] which is one past the end. Undefined behavior.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "config.cpp",
+     "line": 73,
+     "title": "validate() returns true even when config is invalid",
+     "description": "validate() collects problems but always returns true. Invalid configuration (bad port, negative cache size, zero timeout) is accepted.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 54,
+     "title": "Iterator invalidation in Cache::sweep",
+     "description": "sweep() erases elements while iterating with a for loop that increments the iterator after erase. Erasing invalidates the iterator; subsequent ++it is UB.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 153,
+     "title": "Iterator invalidation and wrong return value in Store::prune",
+     "description": "Same iterator invalidation bug as Cache::sweep. Also returns links_.size() instead of removed count.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 48,
+     "title": "validate_code called twice on 'from', not called on 'to'",
+     "description": "Line 49-50 both call validate_code(from). The 'to' code is never validated, allowing invalid characters in the new code.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 129,
+     "title": "extend() allows reviving expired links",
+     "description": "Comment says 'An already-expired link stays expired' but code unconditionally sets new expiry. Expired links can be resurrected.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 139,
+     "title": "quotas() returns non-const reference to internal map",
+     "description": "quotas() returns std::map<std::string, int>& allowing external code to mutate the internal quota map without synchronization or validation.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 145,
+     "title": "import_all lacks validation and duplicate checking",
+     "description": "import_all blindly inserts all links from batch without validating codes, targets, owners, or checking for duplicates/conflicts with existing links.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 29,
+     "title": "Invalid CORS configuration allows credentials with wildcard origin",
+     "description": "Access-Control-Allow-Origin: * combined with Access-Control-Allow-Credentials: true violates CORS spec. Browsers will reject this, but it indicates confused security posture.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 100,
+     "title": "Division by zero in stats endpoint",
+     "description": "stats() computes g_store->total_hits() / g_store->size() without checking if size() is zero.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "linkd.h",
+     "line": 43,
+     "title": "Store::all() returns non-const reference to internal map",
+     "description": "all() exposes the private links_ map as mutable reference, breaking encapsulation and allowing unsynchronized external modification.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 37,
+     "title": "Linear search in Authenticator::verify enables DoS",
+     "description": "verify() iterates all sessions linearly instead of using map lookup (O(n) vs O(1)). With many sessions, this becomes a CPU DoS vector.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 20,
+     "title": "atoi error handling ambiguity for timeout/ttl/size",
+     "description": "std::atoi returns 0 on both error and valid input '0'. Code treats ms==0 as error but 0 might be intentional (though unlikely for timeout).",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "config.cpp",
+     "line": 36,
+     "title": "LINKD_FETCH_LIMIT parsed but ignored",
+     "description": "The parsed value is cast to void and never used. Config value has no effect.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 64,
+     "title": "Integer division bug in Cache::utilization",
+     "description": "entries_.size() / limit_ * 100 performs integer division first. For any cache less than 100% full, result is 0.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "export.cpp",
+     "line": 48,
+     "title": "Predictable temp file path in write_snapshot (TOCTOU risk)",
+     "description": "Hardcoded /tmp/linkd-snapshot.json is predictable. Another process could create/overwrite it between write and rename.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "main.cpp",
+     "line": 51,
+     "title": "Case-insensitive code lookup mismatch in redirect",
+     "description": "redirect() lowercases the code before lookup, but Store uses case-sensitive keys. Links with uppercase codes become unreachable via /l.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 52,
+     "title": "count_for_owner modifies quotas map via operator[]",
+     "description": "store.quotas()[owner] default-constructs an entry (value 0) if owner doesn't exist, modifying the internal map.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 734854,
+      "output_tokens": 15050
+     },
+     "duration_ms": 1365923,
+     "failed": false,
+     "output_bytes": 11784
+    },
+    {
+     "usage": {
+      "input_tokens": 121867,
+      "output_tokens": 5010
+     },
+     "duration_ms": 340416,
+     "failed": false,
+     "output_bytes": 6757
+    },
+    {
+     "usage": {
+      "input_tokens": 138717,
+      "output_tokens": 16992
+     },
+     "duration_ms": 653735,
+     "failed": false,
+     "output_bytes": 23508
+    }
+   ]
+  }
+ ]
+}
