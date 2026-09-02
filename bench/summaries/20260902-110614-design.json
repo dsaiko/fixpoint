@@ -1,0 +1,169 @@
+{
+ "run": "20260902-110614",
+ "task": "design",
+ "target": "design",
+ "model": "qwen3.5:397b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Note ID collision at scale due to 32-bit random integers",
+     "description": "32-bit random integers provide ~4B possible IDs, but the birthday paradox means 50% collision probability at ~65k notes. The design targets 50k users with hundreds of notes each (millions of notes total). ID collisions cause silent data corruption where notes overwrite each other.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Clock skew causes silent data loss in conflict resolution",
+     "description": "Last-write-wins using client wall-clock timestamps silently discards user data when device clocks are skewed. Mobile devices commonly have clock drift after extended offline periods. NTP is not available offline, and the design provides no conflict resolution beyond timestamp comparison.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "Transient auth failure wipes all local offline work",
+     "description": "Authentication failures (401) trigger immediate local database wipe. A transient auth server outage, token rotation bug, or network glitch during token refresh causes complete loss of all offline work. No grace period, no local encryption of cached data.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Uncapped outbox batch creates unbounded request/transaction size",
+     "description": "The entire outbox is sent in one POST request with no cap on outbox size. After extended offline periods, the outbox could grow to thousands of edits. Large payloads risk HTTP timeouts, memory exhaustion, and extremely long database transactions that block other operations.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 89,
+     "title": "No request timeout or connection draining loses work during deploys",
+     "description": "No request timeout combined with 'in-flight requests are not drained on shutdown' means rolling deploys will lose in-flight sync work. Load balancers typically have their own timeouts (30-60s), so long syncs will be killed mid-transaction.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 143,
+     "title": "No backpressure for thundering herd reconnect scenario",
+     "description": "Thundering herd after regional outage is assumed to be absorbed by 'adding instances', but there is no backpressure mechanism, no rate limiting, and no database connection pool management. Database connections are the limiting factor, not application instances.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Single cursor per user breaks multi-device sync semantics",
+     "description": "Single cursor per user shared across all devices creates a race condition. Device A syncs and advances cursor. Device B (offline longer) syncs with stale cursor and either misses Device A's changes or receives stale server state that overwrites newer data.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 118,
+     "title": "Health check does not detect database unavailability",
+     "description": "Health check returns 200 while database is down, so load balancer continues routing traffic to instances that cannot serve requests. All sync requests hit 500 while health check passes, delaying detection and recovery.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 93,
+     "title": "No version history prevents recovery from accidental changes",
+     "description": "Notes are overwritten in place with no version history. Accidental edits, corruption, or malicious changes cannot be recovered. Combined with no audit trail (line 159-160), there is no way to reconstruct what happened.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 153,
+     "title": "Unbounded table growth from permanent tombstones and orphaned data",
+     "description": "Deleted notes (deleted=true tombstones) and orphaned notes from deleted users accumulate forever. At 50k users with hundreds of notes each, the table grows without bound. The 'nightly job could clean them up' is not designed or scheduled.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Conflict resolution relies on unsynchronized wall clocks",
+     "description": "The design resolves conflicts by comparing modified_at timestamps (line 61-63), but these are client wall clocks with no synchronization guarantee. Devices with skewed clocks will lose edits silently when their clock runs behind. The design acknowledges this ('devices with skewed clocks are expected to be rare') but provides no detection or recovery mechanism. This directly violates the goal that 'a note edited offline is never lost'.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 93,
+     "title": "Conflicting edits permanently discard user data",
+     "description": "On conflict, the losing copy is 'discarded immediately' with no backup (line 111-113), and the server 'keeps only the latest version' (line 93-94). This means user work is permanently lost on conflict, contradicting the primary goal at line 10 that offline edits are never lost. The design justifies this by not wanting a merge UI, but data loss is the consequence.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 79,
+     "title": "Partial batch application breaks atomicity",
+     "description": "When row N in a batch fails validation, rows 1..N-1 remain applied (line 79-81). This means a logically atomic batch becomes a partial application with no rollback mechanism. The client may have sent interdependent edits that are now in an inconsistent state, and there's no way to undo the partial application.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Cursor advancement is not atomic with outbox clearance",
+     "description": "Line 49-50 describes a sequence: apply server changes, advance cursor, clear outbox. If a crash occurs between cursor advancement and outbox clearance (or vice versa), the client may lose edits or re-apply already-synced changes. The design does not specify these operations are atomic.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves orphan note rows",
+     "description": "When a user account is deleted, note rows are 'left in place' (line 156-157) with no owner. These rows accumulate forever and cannot be accessed. The design mentions 'a nightly job could clean them up later' but this is not specified.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Dual ID system with no reconciliation documented",
+     "description": "Clients generate random 32-bit IDs (line 24), while the server uses BIGSERIAL primary keys with client ID in a secondary column (line 25-26). The design does not explain how these two ID systems are reconciled for lookups, or what happens if two clients generate the same random ID.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "No audit trail for sync operations",
+     "description": "The design explicitly states there is no audit trail of which device sent which batch (line 159-161). This makes debugging 'why does this device not have my note' (line 14-15) dependent solely on the current note state, not the sync history.",
+     "lens": "design-data",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 125098,
+      "output_tokens": 2784
+     },
+     "duration_ms": 86988,
+     "failed": false,
+     "output_bytes": 9680
+    },
+    {
+     "usage": {
+      "input_tokens": 82962,
+      "output_tokens": 2522
+     },
+     "duration_ms": 67936,
+     "failed": false,
+     "output_bytes": 8317
+    }
+   ]
+  }
+ ]
+}

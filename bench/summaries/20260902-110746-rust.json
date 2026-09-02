@@ -1,0 +1,330 @@
+{
+ "run": "20260902-110746",
+ "task": "code",
+ "target": "rust",
+ "model": "qwen3.5:397b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Panic on first link creation due to uninitialized quota map",
+     "description": "In create(), the quota map is never initialized for new owners. Calling get_mut(owner).unwrap() panics on the first link created for any owner since the key does not exist.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 57,
+     "title": "Inverted expiry check deletes valid links and serves expired ones",
+     "description": "In resolve(), the expired flag logic is inverted. The condition SystemTime::now() < link.expires_at is true when the link is VALID, yet the code removes links when expired is true. This deletes working links and serves expired ones.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 71,
+     "title": "rename() validates 'from' twice, never validates 'to'",
+     "description": "In rename(), validate_code(from) is called twice instead of validating both from and to parameters. Invalid 'to' codes bypass validation.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "page() can panic with out-of-bounds slice when offset + size > len",
+     "description": "In page(), when offset + size exceeds the vector length, end is set to all.len() + 1, causing a potential out-of-bounds panic in the slice all[offset..end].",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 102,
+     "title": "success_rate() always returns 0 due to integer division order",
+     "description": "In success_rate(), integer division used / self.links.len() happens before multiplying by 100, so for any case where used < len, the result is always 0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 121,
+     "title": "top() returns least-followed links due to wrong sort order",
+     "description": "In top(), the sort is ascending (a.hits.cmp(&b.hits)) but the doc comment states it returns 'most hits first'. This returns the least-followed links instead of the most-followed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 130,
+     "title": "by_owner() matches partial owner names instead of exact",
+     "description": "In by_owner(), uses l.owner.contains(owner) instead of exact equality. This matches partial owner names incorrectly (e.g., 'alice' would match 'palice').",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 152,
+     "title": "import() is not atomic - partial imports on validation failure",
+     "description": "In import(), links are inserted one-by-one without atomicity. If validation fails midway, some links are already inserted, violating the stated 'all or nothing' guarantee.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 187,
+     "title": "expires_at() panics on unknown code instead of handling gracefully",
+     "description": "In expires_at(), calling .unwrap() on a get() that can return None causes a panic if the code does not exist.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "require_admin() always rejects due to tautological condition",
+     "description": "In require_admin(), the condition session.role != 'admin' || session.role != 'owner' is a tautology - it is ALWAYS true because a role cannot be both values simultaneously. Even an admin is rejected because their role != 'owner'.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 96,
+     "title": "bearer_token() panics on malformed authorization header",
+     "description": "In bearer_token(), accessing parts[1] without checking if the header has the 'Bearer ' prefix causes a panic on malformed or missing authorization headers.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "count_by_owner() deadlocks due to double lock acquisition",
+     "description": "In count_by_owner(), the function acquires the store lock twice in sequence. Since Rust's Mutex is not reentrant, the second lock() call will deadlock.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 92,
+     "title": "handle() panics on missing authorization header",
+     "description": "In handle(), bearer_token is called on the authorization header value. When no header is present, the default empty string is passed, causing bearer_token to panic when splitting and accessing parts[1].",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "stats() divides by zero when no links exist",
+     "description": "In stats(), guard.len() can be 0, causing division by zero in hits / guard.len() as i64.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 105,
+     "title": "sweep() deadlocks trying to acquire write lock while holding read lock",
+     "description": "In sweep(), the function acquires a read lock, then calls self.delete() for each expired entry. delete() needs a write lock, which will deadlock since the read lock is still held.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "utilization() always returns 0 due to integer division order",
+     "description": "In utilization(), integer division guard.len() / self.limit happens before multiplying by 100, so the result is always 0 unless the cache is completely full.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Race condition in add_resolved uses non-atomic read-modify-write",
+     "description": "The add_resolved method loads the current value with Relaxed ordering, then stores value+1. Between the load and store, another thread can modify the counter, causing lost updates. The pattern current = load(); store(current + 1) is not atomic.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 51,
+     "title": "Janitor thread handle is dropped, causing unbounded thread leak",
+     "description": "start_janitor spawns a thread but drops the JoinHandle (line 90: let _ = handles in warm_cache shows the pattern, but janitor is worse). The main thread calls janitor.stop() which sends a message, but the thread handle is never joined. If the main loop exits before the janitor thread finishes its sleep, the process may terminate mid-operation or the thread becomes a zombie.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 82,
+     "title": "warm_cache drops thread handles, threads may not complete",
+     "description": "The function spawns threads to warm the cache but drops their handles with let _ = handles. The threads are detached and may not complete before the function returns, violating the documented contract 'Returns after every probe has finished.' Additionally, if the cache is dropped while threads are still running, they may panic on the Arc.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 95,
+     "title": "check_targets leaks sender clones and may deadlock on channel",
+     "description": "The function clones the sender for each target thread (line 98), but the original sender is never dropped before receiving. Since sync_channel(0) is blocking, if a thread sends before all threads are spawned, it will block forever because the original tx is still held. Also, exactly targets.len() receives are attempted but one sender clone remains unused, potentially causing deadlock.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 119,
+     "title": "count_by_owner acquires same lock twice causing potential deadlock",
+     "description": "The function locks store twice in sequence (lines 120 and 122). While this appears to be the same mutex, if another thread holds the lock between the two acquisitions, this creates unnecessary contention. More critically, this pattern is a code smell that could easily become a real deadlock if the code is refactored to use different locks.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 32,
+     "title": "Cache::get holds write lock for read operations, causing unnecessary contention",
+     "description": "The get method acquires a write lock (line 33) even though it only needs to read in the common case. The lock is upgraded from read to write only when updating the 'used' timestamp for LRU. This serializes all concurrent reads unnecessarily.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 93,
+     "title": "Cache::sweep has TOCTOU race between read and write locks",
+     "description": "The sweep method collects dead keys under a read lock, drops it, then deletes them one by one. Between dropping the read lock and acquiring the write lock in delete(), another thread could re-insert a key that was just marked dead, causing it to be incorrectly removed.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 44,
+     "title": "Janitor stop called before accepting connections, race with handler threads",
+     "description": "The janitor.stop() is called at line 60, but this is inside the main thread's loop that accepts connections. The stop message is sent before any handler threads are spawned, meaning the janitor may exit before it has done any work. The code structure suggests the intent was to stop the janitor on shutdown, but shutdown never happens - the loop is infinite.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 56,
+     "title": "Authenticator::verify iterates HashMap without synchronization",
+     "description": "The verify method iterates over self.sessions.values() while holding only an immutable reference. This is safe when called from a single thread, but Authenticator is wrapped in Arc<Mutex<>> and accessed from multiple handler threads. The iteration is safe due to the mutex, but the linear search O(n) is a performance concern under load.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 24,
+     "title": "Hardcoded default secret enables token forgery",
+     "description": "When LINKD_SECRET is not set, the authenticator falls back to 'dev-secret-do-not-use'. This value is known to attackers and allows forging valid session tokens for any owner/role combination.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 35,
+     "title": "Predictable token generation from timestamp seed",
+     "description": "Tokens are generated using a linear congruential generator seeded with the current Unix timestamp. An attacker who knows the approximate token creation time (within seconds) can brute-force the seed and recover valid tokens.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "Admin check always passes due to logic error",
+     "description": "The condition `session.role != 'admin' || session.role != 'owner'` is always true for any value since a string cannot equal both 'admin' and 'owner' simultaneously. Any authenticated user can access admin endpoints.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 94,
+     "title": "bearer_token panics on malformed Authorization header",
+     "description": "The function splits on space and directly accesses parts[1] without checking length. A header value like 'Bearer' (no space) or empty string causes an index-out-of-bounds panic, enabling DoS.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 243,
+     "title": "Permissive CORS with credentials enables credential theft",
+     "description": "Setting Access-Control-Allow-Origin: * together with Access-Control-Allow-Credentials: true allows any website to make authenticated requests to this API and read responses, enabling CSRF and credential theft attacks.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 13,
+     "title": "Path traversal via user-controlled export name",
+     "description": "The export name comes directly from user input and is joined to the export directory without sanitization. An attacker can use '../' sequences to write CSV files outside the intended directory, potentially overwriting sensitive files.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 50,
+     "title": "Session token logged to stdout",
+     "description": "The full session token is printed to stdout when issued. In production environments, this exposes tokens in log files, making them accessible to anyone with log access.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Panic on first link creation per owner",
+     "description": "The code calls get_mut().unwrap() on the quota map for an owner that may not exist yet. The first link creation for any owner will panic because the key doesn't exist.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 130,
+     "title": "Owner enumeration via substring matching",
+     "description": "The by_owner filter uses contains() instead of equality, so querying for owner 'admin' returns links owned by 'administrator', 'siteadmin', etc. This leaks ownership information across owner boundaries.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 208,
+     "title": "Predictable short code generation",
+     "description": "Short codes are generated from subsecond nanoseconds of the creation timestamp. An attacker can predict or brute-force codes for recently created links, enabling unauthorized access to shortened URLs.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 92,
+     "title": "Missing Authorization header causes panic",
+     "description": "When no Authorization header is present, bearer_token receives an empty string and may panic. While the verify call would fail anyway, the panic is unnecessary and could be exploited for DoS.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 92160,
+      "output_tokens": 4018
+     },
+     "duration_ms": 51525,
+     "failed": false,
+     "output_bytes": 12284
+    },
+    {
+     "usage": {
+      "input_tokens": 92212,
+      "output_tokens": 2518
+     },
+     "duration_ms": 37246,
+     "failed": false,
+     "output_bytes": 6672
+    },
+    {
+     "usage": {
+      "input_tokens": 92137,
+      "output_tokens": 2718
+     },
+     "duration_ms": 39776,
+     "failed": false,
+     "output_bytes": 7476
+    }
+   ]
+  }
+ ]
+}

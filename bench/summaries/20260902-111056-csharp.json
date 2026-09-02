@@ -1,0 +1,306 @@
+{
+ "run": "20260902-111056",
+ "task": "code",
+ "target": "csharp",
+ "model": "qwen3.5:397b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "Authenticator.cs",
+     "line": 69,
+     "title": "RequireAdmin always returns true bypassing authorization",
+     "description": "The RequireAdmin method returns true unconditionally on line 69, regardless of whether the session has admin or owner role. This allows any authenticated user to access admin endpoints.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 55,
+     "title": "Resolve removes valid links and returns null for expired ones",
+     "description": "The condition on line 55 checks `DateTime.Now < link.ExpiresAt` (not expired) but then removes the link and returns null. This deletes valid links and only returns targets for expired links, which is backwards.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 41,
+     "title": "Quota increment throws for new owners",
+     "description": "The expression `quota[owner] = quota[owner] + 1` accesses quota[owner] before assignment, throwing KeyNotFoundException for first-time owners since the key doesn't exist yet.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 66,
+     "title": "LRU eviction picks arbitrary key instead of least recently used",
+     "description": "The victim selection uses `entries.Keys.First()` which returns an arbitrary dictionary key, not the entry with the oldest Used timestamp. This defeats the LRU cache policy.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 126,
+     "title": "Utilization returns 0 due to integer division order",
+     "description": "The expression `entries.Count / limit * 100` performs integer division first, which yields 0 when count < limit (the common case), then multiplies by 100, still resulting in 0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 44,
+     "title": "Cache TTL uses wrong time unit",
+     "description": "The LINKD_CACHE_TTL_MS environment variable is parsed as milliseconds but then passed to TimeSpan.FromSeconds instead of FromMilliseconds, causing TTL to be 1000x longer than intended.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 126,
+     "title": "Validate always returns true even when problems detected",
+     "description": "The Validate method logs problems but unconditionally returns true on line 126, even when the problems list is non-empty. This allows invalid configurations to pass validation.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 94,
+     "title": "BearerToken crashes on malformed Authorization header",
+     "description": "The method splits the header and accesses parts[1] without checking if the split produced at least two elements. A header without 'Bearer ' prefix or an empty string will throw IndexOutOfRangeException.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 68,
+     "title": "Rename validates 'from' parameter twice, never validates 'to'",
+     "description": "Lines 67-68 both call ValidateCode(from), so the 'to' parameter is never validated. Invalid 'to' codes would be accepted.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 93,
+     "title": "Page method off-by-one error causes ArgumentOutOfRangeException",
+     "description": "When offset + size exceeds the list count, end is set to `all.Count + 1`, then GetRange is called with a count that exceeds the remaining elements, throwing ArgumentOutOfRangeException.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 109,
+     "title": "SuccessRate returns 0 due to integer division",
+     "description": "The expression `used / links.Count * 100` performs division first, yielding 0 for any case where used < count, which is then multiplied by 100.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 136,
+     "title": "ByOwner uses substring match instead of equality",
+     "description": "The filter `l.Owner.Contains(owner)` matches any owner whose name contains the search term as a substring, leaking links across different owners with similar names.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 186,
+     "title": "Prune returns remaining count instead of removed count",
+     "description": "The method tracks `removed` correctly but returns `links.Count` (the remaining items) instead of `removed`, misleading callers about how many items were pruned.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 28,
+     "title": "ExportCsv may leak file handle on exception",
+     "description": "StreamWriter is not wrapped in a using statement. If an exception occurs during Write, Close() is never called and the file handle leaks.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Export.cs",
+     "line": 42,
+     "title": "ArchiveAll may leak file handles on exception",
+     "description": "StreamWriter is not wrapped in using. An exception during the inner loop leaves the file handle unclosed.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Config.cs",
+     "line": 56,
+     "title": "FetchLimit never set from environment variable",
+     "description": "Line 56 is a no-op assignment `parsed = parsed`. The cfg.FetchLimit field is never actually updated from the LINKD_FETCH_LIMIT environment variable.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 208,
+     "title": "Store.All() exposes internal dictionary without synchronization",
+     "description": "The All() method returns the internal `links` dictionary reference directly, allowing any caller to mutate it without synchronization. The janitor worker (Worker.cs:34-38) calls store.All().Remove(code) while request threads simultaneously read/write via Resolve(), Create(), Delete(). This causes undefined behavior from concurrent dictionary access.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "Store.cs",
+     "line": 20,
+     "title": "Store class has no synchronization on shared mutable state",
+     "description": "Store is accessed concurrently by multiple request-handling threads (Program.cs:37 spawns Task per request) and the janitor timer thread. The `links` and `quota` dictionaries are mutated in Create(), Resolve(), Delete(), Extend(), ImportAll(), Prune() without any locking. Concurrent Dictionary<TKey,TValue> access with concurrent writes is undefined behavior in .NET.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 31,
+     "title": "Janitor timer callback modifies collection while iterating",
+     "description": "The janitor callback iterates store.All().Keys and calls store.All().Remove(code) inside the loop at line 38. Since All() returns the raw dictionary, this modifies the collection during enumeration. Combined with concurrent request threads accessing the same dictionary, this can throw InvalidOperationException or corrupt state.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 91,
+     "title": "Cache.Warm() has check-then-act race condition",
+     "description": "Warm() calls Peek(pair.Key) then Set(pair.Key, ...) without holding a lock across both operations. Another thread could add/remove the key between the check and set, causing duplicate work or violating the 'warm only if missing' intent. The comment at line 4-5 claims 'Every method is safe to call from any number of threads at once' which is not true for compound operations.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 19,
+     "title": "System.Random instance is not thread-safe",
+     "description": "The `random` field is used in Issue() line 32 to generate tokens. System.Random is explicitly not thread-safe in .NET documentation - concurrent calls can return corrupt values or throw. The sessions dictionary is also accessed without synchronization.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 34,
+     "title": "Request handling loop has no cancellation or graceful shutdown",
+     "description": "The main loop spawns unbounded Task.Run() calls with no CancellationToken, no exception handling, and no mechanism to drain pending requests. On shutdown, in-flight requests are abandoned mid-execution, potentially leaving partial writes to Store, Cache, and metrics. The janitor Timer also has no disposal tied to shutdown.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 74,
+     "title": "Blocking on async with .Result can deadlock",
+     "description": "CheckTargets calls ProbeAsync(link.Target).Result at line 74. In a synchronization context that captures continuations (like ASP.NET classic), this can deadlock when the async operation tries to resume on the captured context. While HttpListener may not have this issue, the pattern is fragile and should be avoided.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Metrics.cs",
+     "line": 17,
+     "title": "AddCreated uses plain increment instead of Interlocked",
+     "description": "The created counter is incremented with created++ at line 17, but Interlocked.Increment is used for resolved at line 12. Plain ++ on a long is not guaranteed atomic on all platforms. The errors field is never incremented anywhere in the codebase.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 24,
+     "title": "Hardcoded default secret key",
+     "description": "When LINKD_SECRET environment variable is not set, the authenticator falls back to a hardcoded secret 'dev-secret-do-not-use'. Any attacker who knows this default can forge valid authentication tokens and gain unauthorized access to all protected endpoints.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 69,
+     "title": "Admin authorization check always passes",
+     "description": "The RequireAdmin method returns true unconditionally on line 69, regardless of the session's role. This allows any authenticated user to access admin-only endpoints like /admin/quotas, bypassing the role-based access control entirely.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 32,
+     "title": "Predictable session token generation",
+     "description": "Session tokens are generated using System.Random which is not cryptographically secure. The token format (two hex-encoded 32-bit integers) provides only ~64 bits of entropy and can be predicted by an attacker who observes a few tokens, enabling session hijacking.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 145,
+     "title": "Open redirect vulnerability in /out endpoint",
+     "description": "The /out endpoint redirects to any URL provided in the 'next' query parameter without validation. Attackers can craft links that appear to be from the legitimate site but redirect users to phishing sites or malware.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 75,
+     "title": "Path traversal in ReadReport",
+     "description": "The ReadReport method accepts a user-provided 'name' parameter and combines it with the directory using Path.Combine without validating that the result stays within the intended directory. An attacker could use '../' sequences to read arbitrary files accessible to the service account.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 103,
+     "title": "Timing-vulnerable secret comparison",
+     "description": "SecretEquals uses a simple == operator which short-circuits on the first mismatched character, leaking information about the secret through timing analysis. Despite the comment on lines 98-99, this is not constant-time.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 85,
+     "title": "Insecure password hashing",
+     "description": "HashPassword uses plain SHA-256 without salt, making stored hashes vulnerable to rainbow table attacks and parallel brute-force. An attacker who obtains the hash database can quickly recover weak passwords.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 228,
+     "title": "Predictable short code generation",
+     "description": "NewCode uses System.Random which is not cryptographically secure. The 8-character hex output from a 32-bit integer provides limited entropy and can be predicted, allowing attackers to guess valid short codes.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 198,
+     "title": "Invalid CORS configuration",
+     "description": "The response sets both 'Access-Control-Allow-Origin: *' and 'Access-Control-Allow-Credentials: true'. This combination is rejected by browsers per the CORS specification, but indicates a misconfigured security posture that may confuse developers about the actual security boundaries.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 90281,
+      "output_tokens": 3950
+     },
+     "duration_ms": 53056,
+     "failed": false,
+     "output_bytes": 11671
+    },
+    {
+     "usage": {
+      "input_tokens": 90332,
+      "output_tokens": 3118
+     },
+     "duration_ms": 45697,
+     "failed": false,
+     "output_bytes": 9634
+    },
+    {
+     "usage": {
+      "input_tokens": 90258,
+      "output_tokens": 2939
+     },
+     "duration_ms": 42238,
+     "failed": false,
+     "output_bytes": 8504
+    }
+   ]
+  }
+ ]
+}

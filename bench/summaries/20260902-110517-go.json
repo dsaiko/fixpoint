@@ -1,0 +1,290 @@
+{
+ "run": "20260902-110517",
+ "task": "code",
+ "target": "go",
+ "model": "qwen3.5:397b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "auth.go",
+     "line": 84,
+     "title": "RequireAdmin condition always true",
+     "description": "The condition `s.Role != \"admin\" || s.Role != \"owner\"` is a tautology - no single value can equal both strings simultaneously, so this OR expression always evaluates to true. Admin checks will always reject every request.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 78,
+     "title": "Rename validates wrong variable",
+     "description": "The `to` parameter is validated by checking `from` again on line 78. Invalid codes can be used as the new name, bypassing the 4-32 character and allowed character checks.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 65,
+     "title": "Resolve deletes valid links and keeps expired ones",
+     "description": "The condition `time.Now().Before(l.ExpiresAt)` deletes links that are NOT yet expired and returns an error, while expired links proceed to increment hits and return their target. This inverts the intended behavior.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.go",
+     "line": 106,
+     "title": "Page has off-by-one error causing panic",
+     "description": "When `end > len(all)`, the code sets `end = len(all) + 1`, which causes `all[offset:end]` to panic with index out of range. The +1 is incorrect.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 205,
+     "title": "Prune returns wrong count",
+     "description": "The function documents returning the count of removed links but returns `len(s.links)` which is the count of remaining links after pruning.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 54,
+     "title": "Create panics due to uninitialized quota map",
+     "description": "NewStore() initializes `links` but not `quota`. The line `s.quota[owner]++` will panic on first Create call because s.quota is nil.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "export.go",
+     "line": 40,
+     "title": "ArchiveAll leaks file handles",
+     "description": "The `defer f.Close()` inside the loop means each iteration adds another deferred close. Only the last file's defer executes properly; all earlier files remain open until the function returns, potentially exhausting file descriptors.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.go",
+     "line": 60,
+     "title": "WriteSnapshot ignores rename error",
+     "description": "The `os.Rename` return value is not checked. If the rename fails (e.g., cross-device link, permission denied), the snapshot is not persisted but the function returns nil, falsely indicating success.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 67,
+     "title": "WarmCache has goroutine race condition",
+     "description": "`wg.Add(1)` is called inside the goroutine, creating a race: the main goroutine may call `wg.Wait()` before any child goroutine has incremented the counter, causing premature return.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 90,
+     "title": "CheckTargets panics on request creation failure",
+     "description": "mustHead returns nil when http.NewRequest fails, then client.Do(nil) panics. The error is logged but not propagated.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 89,
+     "title": "Cache.Delete has race condition with timer callback",
+     "description": "The Delete method unlocks the mutex before returning, but the timer callback in Set() calls Delete() which acquires the lock. If the timer fires during a concurrent operation, it can cause a deadlock or race.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.go",
+     "line": 116,
+     "title": "Config.Validate never returns an error",
+     "description": "Validate() logs problems but always returns nil. Callers cannot detect invalid configurations programmatically, defeating the purpose of validation.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 51,
+     "title": "StartJanitor iterates store.links without synchronization",
+     "description": "The janitor goroutine reads and deletes from s.links without holding any lock, while Resolve() and other Store methods may concurrently access the same map. This is a data race that can cause concurrent map iteration and map write panics in Go.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 47,
+     "title": "Cache.Get writes to entry.used while holding only RLock",
+     "description": "Get() acquires RLock but then writes e.used = time.Now() at line 47. This is a data race because multiple readers can simultaneously update the same entry's used field, corrupting the LRU ordering that eviction depends on.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 79,
+     "title": "Cache.evict calls Get() while caller holds the lock",
+     "description": "evict() is called at line 64 with the lock already held, but then calls c.Get(code) at line 79 which will try to acquire the same RLock. While Go's RWMutex allows reentrant read locks, this is a design flaw that could deadlock if the mutex type changes or if evict is ever called without the lock held.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 67,
+     "title": "WarmCache calls wg.Add(1) inside the goroutine instead of before",
+     "description": "wg.Add(1) is called at line 68 inside the spawned goroutine, but wg.Wait() at line 81 may be reached before any goroutine has called Add. This can cause Wait() to return immediately while goroutines are still running, or cause a panic if Wait() is called when the counter is zero and a goroutine then tries to Add.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 87,
+     "title": "CheckTargets never closes the results channel",
+     "description": "results channel is created at line 87 but never closed. The range loop at line 99 will block forever waiting for more values after all goroutines have finished, causing a goroutine leak / deadlock. The function will never return.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 54,
+     "title": "Store.Create accesses s.quota without synchronization",
+     "description": "Store.Create increments s.quota[owner]++ at line 54 without any mutex protection. The Store has no mutex at all, and multiple concurrent Create calls will race on both s.links and s.quota maps.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 60,
+     "title": "Store.Resolve has no synchronization for map access",
+     "description": "Resolve reads and deletes from s.links at lines 61-70 without any lock. Combined with Create, Rename, Delete, Page, and the janitor goroutine all accessing the same map, this is a guaranteed data race.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 44,
+     "title": "Authenticator.Issue uses math/rand without synchronization",
+     "description": "rand.Intn() at line 44 is not safe for concurrent use without external synchronization. If Issue() is called from multiple goroutines simultaneously, this can cause a panic or produce predictable tokens.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 95,
+     "title": "Cache.Delete releases lock then calls Delete recursively without protection",
+     "description": "Delete() releases the lock at line 95, then the timer callback at line 71 calls Delete() again. While this specific path may be safe due to map deletion being idempotent, the pattern of releasing a lock before calling a method that should be synchronized is fragile.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "auth.go",
+     "line": 32,
+     "title": "Hardcoded secret key in production",
+     "description": "When LINKD_SECRET environment variable is not set, the authenticator falls back to 'dev-secret-do-not-use'. This hardcoded secret would be used in production deployments where the env var is missing, allowing attackers to forge session tokens.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.go",
+     "line": 44,
+     "title": "Predictable session token generation using math/rand",
+     "description": "Session tokens are generated using math/rand.Intn() which is a deterministic PRNG seeded by time. An attacker who observes a few tokens can predict future tokens and hijack sessions.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.go",
+     "line": 75,
+     "title": "BearerToken panics on malformed Authorization header",
+     "description": "BearerToken accesses parts[1] without checking if the Authorization header contains a space-separated value. A request with 'Authorization: Bearer' (no token) or any single-word header will cause an index out of bounds panic, enabling DoS attacks.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 96,
+     "title": "SSRF vulnerability in preview endpoint",
+     "description": "The /preview/{code} endpoint fetches user-controlled URLs without validation. An attacker can create a short link pointing to internal services (169.254.169.254 for cloud metadata, localhost, internal APIs) and use /preview to probe and exfiltrate data from internal network resources.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 144,
+     "title": "Open redirect vulnerability in /out endpoint",
+     "description": "The /out endpoint redirects to any URL provided in the 'next' parameter without validation. Attackers can craft links like /out?next=http://evil.com to make the trusted domain redirect users to phishing sites.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.go",
+     "line": 16,
+     "title": "Path traversal in CSV export filename",
+     "description": "ExportCSV accepts user-controlled 'name' parameter and writes to filepath.Join(dir, name+'.csv'). An attacker can use '../' sequences (e.g., '../../../etc/passwd.csv') to write files outside the intended export directory.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 69,
+     "title": "Weak password hashing with unsalted SHA256",
+     "description": "HashPassword uses plain SHA256 without salt or key derivation. This is vulnerable to rainbow table attacks and GPU-accelerated brute force. Passwords can be cracked offline if the database is compromised.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 26,
+     "title": "World-readable/writable export files",
+     "description": "CSV export files are created with mode 0666, making them readable and writable by any user on the system. This could expose sensitive link data to unauthorized users on multi-tenant systems.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 84,
+     "title": "Authorization bypass due to incorrect boolean logic",
+     "description": "RequireAdmin uses 's.Role != \"admin\" || s.Role != \"owner\"' which is always true (a role cannot be both admin AND owner). This means the check never actually rejects non-admin users as intended.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 133,
+     "title": "Missing owner validation on link deletion",
+     "description": "The deleteLink handler comment states links can only be deleted by their creator, but the code never validates that the authenticated session's owner matches the link's owner. Any authenticated user can delete any other user's links.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 139557,
+      "output_tokens": 3356
+     },
+     "duration_ms": 48706,
+     "failed": false,
+     "output_bytes": 7825
+    },
+    {
+     "usage": {
+      "input_tokens": 90105,
+      "output_tokens": 2283
+     },
+     "duration_ms": 33249,
+     "failed": false,
+     "output_bytes": 6134
+    },
+    {
+     "usage": {
+      "input_tokens": 90051,
+      "output_tokens": 3431
+     },
+     "duration_ms": 49573,
+     "failed": false,
+     "output_bytes": 10108
+    }
+   ]
+  }
+ ]
+}
