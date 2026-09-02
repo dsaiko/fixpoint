@@ -12,7 +12,7 @@ STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@2025.1.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.12.5
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds implement-go implement-node implement-web \
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds bench-readme implement-go implement-node implement-web \
         fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help \
         release-check release-snapshot release-verify
 
@@ -149,6 +149,16 @@ implement-go implement-node implement-web: build
 bench:
 	@test -n "$(MODEL)" || { echo "usage: make bench MODEL=<ollama-model> [TASK=code|design|all] [N=repeats]"; exit 2; }
 	bench/run.sh "$(MODEL)" "$(or $(TASK),all)" "$(or $(N),1)"
+
+## bench-readme: regenerate the results table in README.md from results.csv.
+## RUN THIS AFTER EVERY NEW MODEL. The table is generated, not hand-written, for
+## the same reason the HTML page is: a pasted copy stops matching results.csv the
+## first time a model is added, and a stale leaderboard in the README is worse
+## than none, because it is the number people quote without opening the CSV.
+## The two HTML comment markers in README.md are the contract -- the target
+## fails loudly if they are missing rather than appending a second table.
+bench-readme:
+	python3 bench/report.py --markdown README.md
 
 ## bench-seeds: per-seed hit rate across every scored run -- which seeds still
 ## discriminate, which are near-dead, which nobody has ever found. No quota.

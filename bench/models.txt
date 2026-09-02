@@ -1,5 +1,8 @@
 # Candidates for the 2026-08 reviewer sweep, one per line. Run each with:
 #   make bench MODEL=<name>
+# THEN RUN `make bench-readme`. The results table in README.md is generated from
+# results.csv and does not update itself; adding a model without regenerating it
+# leaves the README quoting a leaderboard that no longer exists.
 # Every seed number in the notes below (17/20, 20/20, ...) is from the 20-seed
 # bench retired on 2026-08-20. The bench is 100 seeds now and results.csv was
 # emptied with it; those rows are in git at 70b9113. The DISQUALIFIED notes are

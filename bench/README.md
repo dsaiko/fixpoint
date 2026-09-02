@@ -177,7 +177,16 @@ make bench-check                               # validate the manifests, no mode
 make bench-seeds                               # per-seed hit rate: what still discriminates
 python3 bench/report.py                        # scores, plus recall per target
 python3 bench/report.py --html out.html        # the same as a shareable page
+make bench-readme                              # regenerate the table in README.md
 ```
+
+**After measuring a new model, run `make bench-readme`.** The results table in
+the top-level [README.md](../README.md) is generated from `results.csv` between
+two HTML comment markers, exactly like the shareable page, and it does not
+update itself. A hand-maintained copy would go stale on the first new model, and
+a stale leaderboard in the README is worse than no leaderboard: it is the number
+people quote without opening the CSV. The same applies to the published page --
+regenerate it with `--html` and republish.
 
 `TASK` names a **target**, not a task: `go`, `design`, or any language target
 added under `bench/testdata/target-<name>` with a matching
