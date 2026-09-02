@@ -42,8 +42,8 @@ recall **40/56** · 61 finding(s), 0 unmatched · 598016 tokens · 231s · 11 re
 | EX02 | YES | the export holding every owner's links is written world-readable | review-security: Export written with 0666 despite the comment promising owner |
 | EX03 | YES | CSV rows are built with Sprintf, so a comma or quote in a target break | review-bugs: ExportCSV writes fields unescaped, producing a corrupt CSV f |
 | EX04 | — | defer inside the loop holds every file open until ArchiveAll returns |  |
-| EX06 | — | the rename's error is discarded and /tmp is usually another filesystem |  |
-| EX07 | YES | nothing fsyncs before the rename the comment calls durable, and the te | review-bugs: WriteSnapshot creates the temp file in /tmp and ignores the  |
+| EX06 | YES | the rename's error is discarded and /tmp is usually another filesystem | review-bugs: WriteSnapshot creates the temp file in /tmp and ignores the  |
+| EX07 | — | nothing fsyncs before the rename the comment calls durable, and the te |  |
 | CA01 | YES | Get deletes from the map and increments hits while holding only a read | review-concurrency: Cache.Get mutates map, entry and hits while holding only an  |
 | CA02 | — | Peek reads the map with no lock at all while other goroutines are writ |  |
 | CA03 | — | Delete returns without unlocking when the code is absent, deadlocking  |  |

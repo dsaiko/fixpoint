@@ -13,7 +13,7 @@ median, because single-run recall on a hundred seeds is noisy and the variance
 is itself information: a model that scores 61 then 38 is worse than one that
 scores 49 twice.
 
-A row missing one of the two targets is reported as incomplete rather than
+A row missing any scored target is reported as incomplete rather than
 silently scored out of one target's pool. The denominator comes from each row's
 own `seeds` column, so a retired seed changes the scale everywhere at once.
 """
@@ -31,11 +31,25 @@ import sys
 # it was calibrated.
 CALIBRATED_2026_08_20 = {"go": 60, "design": 40}
 
-# The calibrated pair the published /100 has always meant. New language targets
-# are reported per-target instead of being folded into this total, because a
-# score is only comparable to the runs it shares a scale with -- and every seat
-# decision on record quotes this one.
+# The calibrated pair the published /100 used to mean. Kept because the seat
+# decisions on record quote it, and because the by-target matrix still orders
+# these two first.
 LEGACY_SCALE = ("go", "design")
+
+# What the headline score is out of, as of 2026-09-02: every target, not the
+# calibrated pair.
+#
+# The pair was the whole benchmark when it was calibrated. With seven languages
+# measured it became the least representative slice available, and measurably
+# so -- against the all-target order it misranked six of twenty models by three
+# places or more. nemotron-3-ultra was thirteenth on go+design and seventh on
+# all eight, because go and design happen to be its two weakest targets; the
+# seated minimax-m3 read tenth and is fifteenth. Two targets out of eight
+# cannot carry a headline once the other six disagree with them.
+#
+# Order is the reading order of the matrix, not a ranking.
+SCORED_TARGETS = ("go", "design", "rust", "java", "typescript", "csharp",
+                  "cpp", "python")
 AGENTS = pathlib.Path(__file__).resolve().parent.parent / "config" / "agents"
 
 # (input, output, cache-read) $/MTok. Two kinds of row live here and the
@@ -551,7 +565,10 @@ def write_html(ranked, all_targets, out_path):
         measured = resolve(model)
         baseline = model in ("claude", "codex")
         width = 100.0 * e["points"] / max(top, 1)
-        incomplete = "  (code only)" if e["missing"] else ""
+        # "code only" was accurate when the scale was go+design; now a row can
+        # be short of any of the eight, so name what is actually missing.
+        incomplete = ("  (no " + ", ".join(e["missing"]) + ")"
+                      if e["missing"] else "")
         rows_html.append(f"""      <tr class="{'failed' if e['errors'] else ''}">
         <td class="rank">{i}</td>
         <td class="left">
@@ -848,7 +865,7 @@ def main():
 
     per_model = {}
     for (model, repeat), tasks in sorted(runs.items()):
-        scored = {t: r for t, r in tasks.items() if t in LEGACY_SCALE}
+        scored = {t: r for t, r in tasks.items() if t in SCORED_TARGETS}
         points = sum(int(r["matched_seeds"]) for r in scored.values())
         possible = sum(int(r["seeds"]) for r in scored.values())
         per_model.setdefault(model, []).append({
@@ -865,7 +882,7 @@ def main():
             "seconds": sum(int(t["duration_s"]) for t in tasks.values()),
             "sessions": sum(int(t["sessions"]) for t in tasks.values()),
             "dates": sorted({d for t in tasks.values() for d in t["_dates"]}),
-            "missing": sorted(set(LEGACY_SCALE) - set(scored)),
+            "missing": sorted(set(SCORED_TARGETS) - set(scored)),
             # recall per target, for the by-target matrix
             # errors per target too: a run that lost a LENS to a contract
             # failure has a deflated recall, not a low one. On the python target
@@ -951,13 +968,14 @@ def main():
 
     print()
     scales = sorted({e["possible"] for _, es in ranked for e in es})
-    print(f"{len(ranked)} model(s); score is {'+'.join(LEGACY_SCALE)}, out of "
+    print(f"{len(ranked)} model(s); score is every target, out of "
           + (str(scales[0]) if len(scales) == 1 else
              f"{scales[0]}-{scales[-1]} (SCALES DIFFER -- rows are not comparable)"))
-    if len(all_targets) > len(LEGACY_SCALE):
-        extra = [t for t in all_targets if t not in LEGACY_SCALE]
-        print(f"score covers {'+'.join(LEGACY_SCALE)} only, the calibrated scale; "
-              f"{', '.join(extra)} are reported per target above")
+    print(f"scored targets: {', '.join(SCORED_TARGETS)}. A row short of any of "
+          "them is marked INCOMPLETE and its")
+    print("total is not comparable with a full row. The go+design pair the "
+          "older /90 headline used is still")
+    print("readable as the first two columns of the matrix above.")
     print("per point: cost of one seeded defect found. $ = money actually spent "
           "from credits (ollama included since")
     print("           2026-09-01, when its plans moved to published per-token "
