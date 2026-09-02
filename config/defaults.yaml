@@ -92,15 +92,25 @@ roles:
   # glm-5.2 remains the standing alternative if the ollama seat underperforms live
   # (20/20 with zero extras, glm-ollama.yaml).
   #
-  # THE QUOTA RULE THAT USED TO BE HERE IS DEAD, 2026-09-01. Ollama replaced the
-  # 5-hour and weekly limits with per-token pricing against a monthly credit pool
-  # that refreshes and then continues pay-as-you-go, so there is no weekly limit
-  # to hit and no reset to wait for. The instruction to drop the ollama seat when
-  # the limit was spent -- minimax first, then deepseek -- no longer has a
-  # trigger. Cost is money now, and it is per model rather than per plan: a full
-  # 8-target bench sweep measured $0.78 for glm-5.3-flash against $7.31 for
-  # glm-5.3, a 9.4x spread that identical token counts had hidden completely.
-  # Rates live in bench/report.py as OLLAMA_RATES.
+  # THE QUOTA RULE IS NOT DEAD. I declared it dead on 2026-09-01, reading the
+  # per-token pricing announcement as having replaced the plan's limits.
+  # Corrected 2026-09-02 from the account's own usage page: ollama publishes
+  # per-token rates AND still meters a session limit (3h reset) and a weekly
+  # limit (4d reset). Paid "Extra usage" is a separate prepaid balance that
+  # starts at $0, so nothing overflows into money unless someone tops it up.
+  #
+  # So the instruction to drop the ollama seat when the limit is spent still has
+  # its trigger, and it fired on 2026-09-02: a kimi-k3 bench sweep took the
+  # session quota to 100% with 3 hours to reset.
+  #
+  # What the rates DID buy is a comparison the token counts hid: a full 8-target
+  # sweep is $0.78 notional for glm-5.3-flash against $7.31 for glm-5.3, a 9.4x
+  # spread at near-identical token counts. Rates live in bench/report.py as
+  # OLLAMA_RATES -- and read them as notional, not as an invoice.
+  #
+  # Cost there is also per REQUEST, not just per token: 104 kimi-k3 requests ate
+  # a whole session quota while 579 minimax-m3 requests were a thin slice of the
+  # week. kimi-k3's page warns it "consumes extra usage credits"; believe it.
   #
   # What SURVIVES from that rule and still matters: a dead ollama agent burns its
   # full 30m timeout and can flip quorum to INCONCLUSIVE. That is about the
