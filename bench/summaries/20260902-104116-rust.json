@@ -1,0 +1,386 @@
+{
+ "run": "20260902-104116",
+ "task": "code",
+ "target": "rust",
+ "model": "gpt-oss:120b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/config.rs",
+     "line": 111,
+     "title": "`Config::validate` never returns an error",
+     "description": "The method collects validation problems in the `problems` vector but always returns `Ok(())`. Invalid configuration values (e.g., port out of range or timeout == 0) are therefore silently accepted, which can cause the server to start in an unusable state.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 52,
+     "title": "`LINKD_CACHE_TTL_MS` parsed as seconds instead of milliseconds",
+     "description": "The comment states the environment variable is expressed in milliseconds, but the code uses `Duration::from_secs(n)`, causing the cache TTL to be orders of magnitude larger than intended.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 45,
+     "title": "Invalid `LINKD_TIMEOUT_MS` results in zero timeout",
+     "description": "When parsing `LINKD_TIMEOUT_MS` fails, the code sets `cfg.timeout` to `Duration::from_millis(0)`. A zero timeout defeats request time\u2011outs and may cause the server to hang indefinitely.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 63,
+     "title": "`LINKD_FETCH_LIMIT` environment variable is ignored",
+     "description": "The value is parsed and checked but never assigned to `cfg.fetch_limit`, so the setting has no effect.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Quota increment panics for new owners",
+     "description": "`create` increments `self.quota.get_mut(owner).unwrap()` without ensuring the key exists. For a first link from a given owner the map entry is missing, causing a panic.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 57,
+     "title": "`Store::resolve` treats non\u2011expired links as expired",
+     "description": "The expiration check uses `SystemTime::now() < link.expires_at`, which is true for *valid* links. The code then removes the link and returns `None`, dropping live links and breaking redirects.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 70,
+     "title": "`Store::rename` validates the source code twice, never validates destination",
+     "description": "`validate_code` is called on `from` two times and not on `to`. This permits invalid destination codes and defeats the intended validation.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "`Store::page` can panic due to out\u2011of\u2011bounds slice",
+     "description": "When `end > all.len()` the code sets `end = all.len() + 1`, which may exceed the vector length and cause a panic on the slice operation `all[offset..end]`.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 102,
+     "title": "`Store::success_rate` integer division truncates to zero",
+     "description": "The calculation `(used / self.links.len() * 100)` performs division before multiplication, yielding zero unless `used == self.links.len()`. This reports an incorrect success rate.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "`require_admin` always returns an error",
+     "description": "The condition `if session.role != \"admin\" || session.role != \"owner\"` is always true, so even admin sessions are rejected.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 95,
+     "title": "`bearer_token` panics on malformed Authorization header",
+     "description": "The function splits the header and unconditionally accesses `parts[1]`. If the header is missing or does not contain a space, this index access panics, crashing the request handling.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 106,
+     "title": "`secret_eq` is not constant\u2011time",
+     "description": "The function returns early on the first mismatching byte, which leaks timing information about the secret.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "`Cache::utilization` computes percentage incorrectly",
+     "description": "`guard.len() / self.limit * 100` uses integer division before multiplying, yielding zero for most non\u2011full caches.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 61,
+     "title": "`Cache::set` evicts arbitrary entry instead of LRU",
+     "description": "When the cache is full the code removes `guard.keys().next()`, which selects an arbitrary entry rather than the least\u2011recently\u2011used entry as documented.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "`stats` endpoint can divide by zero",
+     "description": "`let per_link = hits / guard.len() as i64;` panics when `guard.len()` is zero (no links stored), causing the whole request to crash.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 27,
+     "title": "Non\u2011atomic increment in Metrics::add_resolved",
+     "description": "add_resolved loads the current counter value and stores a new value with separate atomic operations (load + store). Concurrent calls can interleave, causing lost increments and inaccurate metrics.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 119,
+     "title": "Deadlock in count_by_owner due to double\u2011locking the same Mutex",
+     "description": "The function locks the Store mutex, reads its length, then attempts to lock the same mutex again without releasing the first guard. Since std::sync::Mutex is not re\u2011entrant, this will block forever, hanging the thread that calls the function.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 32,
+     "title": "Lock\u2011order inversion between Cache::get and Cache::flush",
+     "description": "Cache::get acquires the entries RwLock (write) first and then locks the hits Mutex, while Cache::flush acquires the hits Mutex first and then acquires the entries RwLock (write). If get and flush run concurrently, each thread may hold one lock and wait for the other, producing a classic deadlock.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 11,
+     "title": "Unsynchronized concurrent writes in export_csv",
+     "description": "export_csv writes a CSV file directly with fs::write. If multiple request threads invoke export_csv with the same target directory and name, their writes can race, causing truncated or corrupted files and inconsistent responses.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 31,
+     "title": "Unsynchronized per\u2011owner file writes in archive_all",
+     "description": "archive_all creates/opens a file for each owner and writes links without any coordination. Concurrent invocations for the same owner can interleave, corrupting the CSV for that owner.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 55,
+     "title": "Concurrent appends to audit log may interleave",
+     "description": "append_audit opens the audit file with O_APPEND on each call, but multiple threads writing at the same time can interleave their writes, breaking line ordering and making the audit log unreliable.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 24,
+     "title": "Hardcoded development secret fallback",
+     "description": "When the environment variable LINKD_SECRET is missing, the code falls back to a static secret dev-secret-do-not-use. This secret is printed in logs and can be used to authenticate as any user if the service runs in production without the variable set.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 35,
+     "title": "Predictable session token generation and logging",
+     "description": "Tokens are generated with a deterministic linear-congruent generator seeded only by the current Unix time and printed to stdout. An attacker can guess future tokens and retrieve the printed token from logs, allowing unauthorized access.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 56,
+     "title": "Session verification does not enforce expiration",
+     "description": "Auth::verify returns a session for any known token without checking the expires_at field, so expired tokens remain valid indefinitely.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "Incorrect admin requirement logic",
+     "description": "The require_admin function uses if session.role != \"admin\" || session.role != \"owner\" which is always true, denying all admin access. Although not a direct exploit, it disables intended access controls.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 101,
+     "title": "Constant-time secret comparison not constant-time",
+     "description": "secret_eq returns early on the first mismatching byte, leaking timing information that can aid brute-force attacks.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 85,
+     "title": "Insecure password hashing (DJB2)",
+     "description": "hash_password implements the DJB2 hash, which is fast, deterministic, and lacks salting, making password hashes trivially crackable.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 94,
+     "title": "Bearer token extraction can panic on malformed header",
+     "description": "bearer_token splits the Authorization header on spaces and unconditionally accesses parts[1]. A malformed header triggers an out-of-bounds panic, causing a denial-of-service.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 186,
+     "title": "Admin quota endpoint authorizes based solely on a request header",
+     "description": "admin_quotas checks only the x-admin header for the value \"true\" and does not verify the caller's authentication or role, allowing any client to obtain admin-only data.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 166,
+     "title": "Link deletion lacks ownership verification",
+     "description": "delete_link removes a link without checking that the authenticated session\u2019s owner matches the link\u2019s owner, enabling any authenticated user to delete any other user\u2019s link.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 145,
+     "title": "Open redirect via stored target URLs",
+     "description": "redirect endpoint redirects to any stored target URL without validating its domain or intention, allowing phishing or malicious redirects.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 198,
+     "title": "Potential division-by-zero panic in stats endpoint",
+     "description": "per_link = hits / guard.len() as i64 will panic if guard.len() is zero, causing a denial-of-service on an empty store.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 13,
+     "title": "Path traversal in CSV export (export_csv)",
+     "description": "export_csv constructs a file path from user-supplied name without sanitisation. Supplying \"../../evil\" can cause writes outside the intended export directory.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 33,
+     "title": "Path traversal in per-owner archive (archive_all)",
+     "description": "archive_all builds file paths from the raw owner string, which can contain \"../\" or other path components, allowing arbitrary file writes.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 67,
+     "title": "Path traversal in CSV report read (read_report)",
+     "description": "read_report reads a file based on a user-supplied name without validation, enabling directory traversal attacks to read arbitrary files.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 56,
+     "title": "Unrestricted audit log file path (append_audit)",
+     "description": "append_audit accepts an arbitrary path and opens it for append, allowing any user to write to files they control, potentially overwriting logs or creating files in privileged locations.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Quota map panic on first link creation",
+     "description": "create increments the quota for owner with self.quota.get_mut(owner).unwrap(), but the map is empty for new owners, causing a panic and denial-of-service.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 55,
+     "title": "Logic error in link resolution removes valid links",
+     "description": "resolve treats a non-expired link as expired, deleting the link on first access and potentially exposing a race condition where a link disappears for other users.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 70,
+     "title": "Rename validation checks only the source code",
+     "description": "rename calls validate_code(from)? twice, never validating the destination code. This allows an attacker to rename a link to an invalid or malicious code string.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 110,
+     "title": "Link deletion does not restore quota",
+     "description": "delete removes a link but does not decrement the owner's quota, allowing a user to consume quota indefinitely.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 213,
+     "title": "Predictable short code generation",
+     "description": "new_code uses the current nanosecond timestamp to generate the link code, which is highly predictable and can be guessed by an attacker.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 102,
+     "title": "Config::validate does not enforce validation errors",
+     "description": "validate prints configuration problems but always returns Ok(()), allowing a misconfigured server to start.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 61,
+     "title": "Cache eviction does not respect LRU policy",
+     "description": "set evicts using guard.keys().next() which selects an arbitrary entry rather than the least-recently-used entry, allowing an attacker to fill the cache and cause uncontrolled memory growth.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 1077899,
+      "output_tokens": 14402
+     },
+     "duration_ms": 670928,
+     "failed": false,
+     "output_bytes": 7453
+    },
+    {
+     "usage": {
+      "input_tokens": 718973,
+      "output_tokens": 9322
+     },
+     "duration_ms": 659566,
+     "failed": false,
+     "output_bytes": 3977
+    },
+    {
+     "usage": {
+      "input_tokens": 310133,
+      "output_tokens": 22329
+     },
+     "duration_ms": 213221,
+     "failed": false,
+     "output_bytes": 22175
+    }
+   ]
+  }
+ ]
+}

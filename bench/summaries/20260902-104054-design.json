@@ -1,0 +1,169 @@
+{
+ "run": "20260902-104054",
+ "task": "design",
+ "target": "design",
+ "model": "gpt-oss:120b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 38,
+     "title": "Notes stored unencrypted on device",
+     "description": "The client stores `notes.db` in cleartext with only default file permissions; if the device is stolen or compromised, all notes are readable, violating confidentiality.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Random 32\u2011bit client note IDs risk collisions",
+     "description": "Note IDs are generated as random 32\u2011bit integers on the client; collisions across devices could cause duplicate IDs, leading to lost updates or incorrect mapping on the server.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 31,
+     "title": "Unbounded outbox size can exhaust client and server resources",
+     "description": "The outbox table has no cap; a device staying offline can accumulate arbitrarily many rows, causing a single sync POST to be extremely large, potentially exceeding request size limits and causing server OOM.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Sync POST sends entire outbox in one request",
+     "description": "The sync protocol transmits the whole outbox batch in a single POST, which combined with an unbounded outbox can produce megabyte\u2011scale payloads, increasing latency and risk of request failure.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 89,
+     "title": "Server lacks request timeout for sync",
+     "description": "The server allows sync requests to run indefinitely; a large or stalled request can tie up server resources, leading to denial\u2011of\u2011service.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 147,
+     "title": "No per\u2011user rate limiting on sync",
+     "description": "A misbehaving client can issue sync requests in a tight loop, overwhelming the server because there is no rate limit.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Clock\u2011skew\u2011based conflict resolution can lose data",
+     "description": "When two sides edit the same note, the version with the newer client `modified_at` wins; since `modified_at` is the client\u2019s wall clock, clock skew can cause the older edit to be incorrectly discarded.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "Sync batches lack device attribution",
+     "description": "The server does not record which device sent each batch, making it difficult to trace misbehaving clients or diagnose data inconsistencies.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 124,
+     "title": "Silent client sync failures are not alertable",
+     "description": "Clients that never manage to sync generate no alertable signal; only support tickets surface the issue, delaying detection.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Backup restore procedure not rehearsed",
+     "description": "The design acknowledges that restores have not been rehearsed, leaving the team untested for catastrophic database loss, which risks prolonged downtime or data loss.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 28,
+     "title": "Unlimited note body size can cause oversized sync payloads",
+     "description": "Notes have no length cap; a user could create extremely large note bodies, inflating the outbox and sync request size, leading to performance degradation or request failures.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Random 32\u2011bit client\u2011generated note IDs risk collisions",
+     "description": "Note `id` is generated on the device as a random 32\u2011bit integer (line\u202f24). With many users and notes, the probability of a collision grows, which could cause two distinct notes to be treated as the same record, leading to silent overwrites and data loss.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Conflict resolution based on client wall\u2011clock timestamps can lose edits",
+     "description": "When both client and server edit the same note, the copy with the newer `modified_at` (client wall\u2011clock) wins (lines\u202f61\u201163). Devices with skewed clocks can falsely appear newer, causing legitimate edits to be discarded without any merge UI.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 37,
+     "title": "SQLite notes database stored unencrypted with default file permissions",
+     "description": "`notes.db` is written in clear text to the application's data directory (lines\u202f37\u201139). On a lost or stolen device, an attacker can read all user notes, violating privacy expectations.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 152,
+     "title": "Deleted notes retained forever, growing storage and reducing privacy",
+     "description": "Rows with `deleted = true` are never purged (lines\u202f152\u2011155). Over time the table will bloat, and deleted user content remains indefinitely, which may conflict with data\u2011retention policies or privacy regulations.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "No audit trail of sync operations or device provenance",
+     "description": "The server does not record which device sent which batch (lines\u202f159\u2011160). This hampers debugging, forensic analysis, and compliance reporting.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 31,
+     "title": "Unbounded outbox growth on long\u2011term offline devices",
+     "description": "The outbox table has no cap; a device that stays offline indefinitely accumulates rows (lines\u202f31\u201135). This can exhaust local storage and lead to very large sync payloads.",
+     "lens": "design-data",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 41876,
+      "output_tokens": 6276
+     },
+     "duration_ms": 21274,
+     "failed": false,
+     "output_bytes": 6245
+    },
+    {
+     "usage": {
+      "input_tokens": 41643,
+      "output_tokens": 4233
+     },
+     "duration_ms": 16335,
+     "failed": false,
+     "output_bytes": 4252
+    }
+   ]
+  }
+ ]
+}
