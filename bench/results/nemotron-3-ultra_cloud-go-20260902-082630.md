@@ -1,15 +1,15 @@
 # nemotron-3-ultra:cloud · go · run 20260902-082630 (repeat 1)
 
-recall **29/56** · 80 finding(s), 13 unmatched · 555381 tokens · 3041s · 11 retired seed(s) not scored
+recall **32/56** · 80 finding(s), 10 unmatched · 555381 tokens · 3041s · 11 retired seed(s) not scored
 
 | seed | found | note | matched by |
 |---|---|---|---|
 | C02 | YES | expiry comparison inverted: live links are deleted, expired ones resol | review-bugs: Resolve expiry check logic inverted - deletes valid links; review-security: Resolve deletes non-expired links due to inverted expiration |
 | C03 | YES | Rename validates `from` twice; `to` is never validated | review-bugs: Rename validates 'from' twice, never validates 'to'; review-security: Rename validates 'from' code twice instead of validating 'to |
-| C04 | — | Page clamps end to len(all)+1; last page slices out of range |  |
+| C04 | YES | Page clamps end to len(all)+1; last page slices out of range | review-bugs: Page has off-by-one error causing panic on last page |
 | C05 | — | used/len*100 in integer arithmetic is 0 for every rate under 100% |  |
 | C09 | YES | Delete drops the link but never returns the owner's quota slot the doc | review-bugs: Delete doesn't decrement quota - users can't recreate after ; review-concurrency: Store.Delete doesn't decrement quota |
-| C12 | — | Extend re-dates an already-expired link, resurrecting a code the comme |  |
+| C12 | YES | Extend re-dates an already-expired link, resurrecting a code the comme | review-bugs: Extend sets expiry from now instead of extending current exp |
 | C13 | YES | Import writes links as it validates, so a bad code leaves the earlier  | review-bugs: Import not atomic - partial links stored on validation failu |
 | C14 | YES | Quotas hands out the store's own map; a caller mutating it rewrites th | review-bugs: Quotas returns internal map directly, not a snapshot; review-concurrency: Store.Quotas returns internal map reference |
 | C06 | — | strconv.Atoi error discarded; bad TTL silently becomes 0 hours |  |
@@ -42,7 +42,7 @@ recall **29/56** · 80 finding(s), 13 unmatched · 555381 tokens · 3041s · 11 
 | EX02 | YES | the export holding every owner's links is written world-readable | review-bugs: ExportCSV uses world-readable 0666 permissions despite comme; review-security: Exported CSV files created with world-readable permissions ( |
 | EX03 | — | CSV rows are built with Sprintf, so a comma or quote in a target break |  |
 | EX04 | — | defer inside the loop holds every file open until ArchiveAll returns |  |
-| EX06 | — | the rename's error is discarded and /tmp is usually another filesystem |  |
+| EX06 | YES | the rename's error is discarded and /tmp is usually another filesystem | review-bugs: WriteSnapshot doesn't check os.Rename error; cross-device re |
 | EX07 | — | nothing fsyncs before the rename the comment calls durable, and the te |  |
 | CA01 | YES | Get deletes from the map and increments hits while holding only a read | review-bugs: Get modifies map and counters under read lock (data races); review-concurrency: Cache.Get mutates map and counters under RLock |
 | CA02 | YES | Peek reads the map with no lock at all while other goroutines are writ | review-bugs: Peek has no locking (concurrent map access race); review-concurrency: Cache.Peek accesses map without lock |
@@ -79,10 +79,7 @@ Retired seeds — still matched so their findings are not counted as noise, but 
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (critical) cache.go:77 — evict calls Get while holding write lock (deadlock)
-- (high) export.go:52 — WriteSnapshot doesn't check os.Rename error; cross-device rename fails silently
-- (high) store.go:96 — Page has off-by-one error causing panic on last page
 - (medium) store.go:113 — SuccessRate integer division order wrong - always returns 0 for partial success
-- (medium) store.go:168 — Extend sets expiry from now instead of extending current expiry
 - (low) store.go:197 — Prune returns remaining count instead of removed count
 - (medium) cache.go:71 — Cache.Set timer can delete wrong entry after code reuse
 - (medium) cache.go:89 — Cache.Delete doesn't clean up timer, double-delete risk

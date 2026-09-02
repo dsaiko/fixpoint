@@ -51,7 +51,10 @@ seeds:
   - id: C04
     file: store.go
     anchor: "end = len(all) + 1"
-    span: 6
+    # 12, not 6: the clamp sits ten lines below `func (s *Store) Page`, and
+    # models routinely cite the function declaration instead of the statement.
+    # Verified safe -- no other seed in store.go is within fourteen lines.
+    span: 12
     need: 1
     keywords: [off-by-one, "out of range", bounds, "len(all) + 1", clamp, panic, exceed]
     note: "Page clamps end to len(all)+1; last page slices out of range"
@@ -90,7 +93,7 @@ seeds:
     anchor: "func (s *Store) Extend"
     span: 8
     need: 1
-    keywords: [expired, resurrect, "back to life", revive, "already expired", dead]
+    keywords: [expired, resurrect, "back to life", revive, "already expired", dead, "from now", "instead of extending", "not extended", "current expiry"]
     note: "Extend re-dates an already-expired link, resurrecting a code the comment says is final"
   - id: C13
     file: store.go
@@ -352,7 +355,9 @@ seeds:
   - id: EX06
     file: export.go
     anchor: 'os.Rename(tmp.Name(), filepath.Join(dir, "snapshot.json"))'
-    span: 6
+    # 10, not 6: cited from the WriteSnapshot declaration. EX07 is four lines
+    # away but shares no keyword with this one, so it cannot steal the finding.
+    span: 10
     need: 1
     keywords: [error, ignored, "os.Rename", "cross-device", "different filesystem", EXDEV, "/tmp"]
     note: "the rename's error is discarded and /tmp is usually another filesystem, so the snapshot silently never lands"

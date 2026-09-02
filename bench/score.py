@@ -84,6 +84,15 @@ def read_manifest(path):
         elif line.strip().startswith("- id:"):
             cur = {"id": line.split(":", 1)[1].strip()}
             seeds.append(cur)
+        elif cur is not None and ":" not in line:
+            # A continuation line -- a keyword list wrapped onto a second line,
+            # say. This parser is line-based, so it used to drop such a line in
+            # silence: the seed kept the keywords from the first line only and
+            # scored every model as if the rest had never been written. Fail
+            # instead; a manifest that does not parse the way it reads is worse
+            # than one that does not parse at all.
+            sys.exit(f"bench: {path}: seed {cur['id']}: line without a key: "
+                     f"{line.strip()!r}. Keep every field on one line.")
         elif cur is not None and ":" in line:
             key, val = (s.strip() for s in line.strip().split(":", 1))
             if key == "keywords":
