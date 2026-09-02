@@ -308,7 +308,7 @@ def measured_on(dates):
 PAGE_JS = """
 // Click a header to sort. Values come from data-sort on each cell rather than
 // from the rendered text, because the display strings are not sortable: scores
-// read "63/90", tokens carry thousands separators, and the per-point column
+// read "376/484", tokens carry thousands separators, and the per-point column
 // mixes dollars with token counts.
 (function () {
   function val(row, i) {
@@ -675,8 +675,10 @@ def write_html(ranked, all_targets, out_path):
     document &mdash; and is scored against planted defects. No judge, no taste: a deterministic
     matcher credits each finding to at most one seed. Nobody scores full marks, and that is the
     point. What matters is the distance to the <strong>claude baseline</strong>, and what the
-    points cost. The headline score is go+design; every other language is in the matrix below,
-    because one number cannot show a language the whole field is weak on.</p>
+    points cost. The headline score is <strong>every target</strong>, because the go+design
+    pair it used to be misranked six of these models by three places or more once the other
+    six languages disagreed with it &mdash; the per-language matrix below is where a model
+    that is strong in one language and weak in another becomes visible.</p>
   </header>
 
   <dl class="facts">
