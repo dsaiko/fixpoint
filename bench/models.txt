@@ -14,6 +14,21 @@
 claude-opus-4-8
 claude-opus-5
 claude-fable-5
+# Fable 5.1, added 2026-09-01 the day it shipped. Same $10/$50 per MTok as
+# Fable 5, but cached input drops 75% ($1.00 -> $0.25), which on this bench is
+# most of the bill: the claude route caches ~98% of a sweep's input.
+#
+# TWO TRAPS, both hit while verifying it. The id is the DASH form; the dot form
+# `claude-fable-5.1` fails with exit 1, zero output tokens, and only haiku in
+# modelUsage. And Claude Code 2.1.252 prints
+#   [claude-code:unrecognized_model] {"model":"claude-fable-5-1"}
+# and then RUNS IT ANYWAY -- the CLI's local model allowlist is stale, the API
+# serves the request. So the warning is cosmetic here, but the shape of it is
+# exactly what a silent fallback would look like: always confirm from
+# `modelUsage` in the run summary WHICH model actually did the work before
+# trusting a row. On the verification call fable-5-1 showed 9460 cache-creation
+# tokens and $0.1049 while a haiku side-call took $0.0009.
+claude-fable-5-1
 mistral-large-3:675b-cloud
 deepseek-v4-flash:0731-cloud
 glm-5.2:cloud

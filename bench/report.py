@@ -48,9 +48,9 @@ AGENTS = pathlib.Path(__file__).resolve().parent.parent / "config" / "agents"
 #     rates -- and is printed with a leading ~. It is the only way to compare a
 #     seat paid in subscription against one paid in credits.
 #
-# Ollama cloud models are deliberately absent: their plan has no per-token price
-# at all, only a usage level drawing on a weekly quota, so a dollar figure for
-# them would be fiction. They are priced in tokens instead.
+# Ollama models are NOT here -- not because they lack a price (they have had one
+# since 2026-09-01) but because they live in OLLAMA_RATES below, keyed by the
+# name ollama's own price list uses rather than by the tag the bench invokes.
 #
 # Anthropic rates: platform.claude.com/docs/en/about-claude/pricing, 2026-08-20
 # (cache read is the documented 0.1x of base input). gpt-5.6-sol: $5/$30, cached
@@ -59,6 +59,10 @@ RATES = {
     "claude-opus-5": (5.00, 25.00, 0.50),
     "claude-opus-4-8": (5.00, 25.00, 0.50),
     "claude-fable-5": (10.00, 50.00, 1.00),
+    # Fable 5.1: same input/output as Fable 5, but cached input drops 75%
+    # ($1.00 -> $0.25), announced 2026-09-01. On a bench sweep the claude
+    # route caches ~98%, so that cut is most of what a run actually pays.
+    "claude-fable-5-1": (10.00, 50.00, 0.25),
     "gpt-5.6-sol": (5.00, 30.00, 0.50),
     "x-ai/grok-4.6": (2.00, 6.00, None),
     "qwen/qwen3.8-27b": (0.40, 3.00, 0.04),

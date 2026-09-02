@@ -1,0 +1,622 @@
+{
+ "run": "20260901-213544",
+ "task": "code",
+ "target": "rust",
+ "model": "claude-fable-5-1",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "create() unwraps a quota entry that is never inserted, panicking on every POST /links",
+     "description": "`self.quota` is never populated anywhere, so `self.quota.get_mut(owner).unwrap()` panics for every owner on the first link they create. The panic fires after the link was inserted and while the caller (`Server::create_link`) holds the store mutex, so the mutex is poisoned and every later `self.store.lock().unwrap()` in every handler panics as well. The first successful-looking POST bricks the service.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 57,
+     "title": "resolve() has the expiry test inverted: live links are deleted, expired ones resolve",
+     "description": "`expired` is computed as `SystemTime::now() < link.expires_at`, which is true for a link that is still valid. The first GET /l for any live link removes it from the store and returns 404, while a link past its expiry is served and has its hit count bumped. This is data loss on the primary path of the service.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "page() clamps the slice end to len()+1 and panics out of bounds",
+     "description": "When `offset + size > all.len()` the code sets `end = all.len() + 1`, then slices `all[offset..end]`, which is out of bounds and panics. GET /links with the default size of 20 hits this whenever fewer than offset+20 links exist, and GET /report calls `page(0, 1000)`. Both callers hold the store mutex, so the panic poisons it and takes down every other handler.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "stats() divides by the link count, panicking on an empty store",
+     "description": "`hits / guard.len() as i64` is an integer division by zero whenever no links exist (e.g. right after startup or after the janitor pruned everything). The panic happens while `guard` holds the store mutex, so the mutex is poisoned and all subsequent requests panic.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 96,
+     "title": "bearer_token indexes parts[1] and panics when the header has no space",
+     "description": "`header.split(' ')` on an empty or single-word value (no Authorization header at all yields `\"\"`) produces one element, so `parts[1]` panics. Every request without a well-formed `Bearer <token>` header kills its handler thread before any response is written; the client sees a dropped connection instead of a 401.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "handle() reads the request with read_to_end, which never returns for a normal HTTP client",
+     "description": "`read_to_end` blocks until the peer closes its write side. Ordinary HTTP clients (curl, browsers, reqwest) send the request and then wait for the response without half-closing, so the server never sees EOF and never answers; both sides hang. It also reads an unbounded body into memory.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 93,
+     "title": "No code path ever issues a session, so verify() rejects every request",
+     "description": "`Authenticator::issue` is never called; `sessions` stays empty for the life of the process, so `verify` returns Err for every token and every route (including the redirect path) responds 401. Combined with `bearer_token` panicking on missing headers, no request can ever succeed against this server.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 57,
+     "title": "verify() never checks expires_at, so expired sessions stay valid forever",
+     "description": "The doc comment promises an error once the session's lifetime has run out, but the loop only compares tokens. A token issued with a 12-hour `expires_at` keeps working indefinitely until explicitly revoked.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 121,
+     "title": "Unchecked ttl arithmetic lets a request panic the handler while holding the store lock",
+     "description": "`v.parse::<u64>().unwrap_or(0) * 3600` overflows for large values (panic in debug, wrap in release), and any surviving huge `Duration` makes `SystemTime::now() + ttl` in `Store::create` panic with an overflow. That panic happens under the store mutex in `create_link`, poisoning it for all other handlers. A request like `ttl=99999999999999999` is enough.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 218,
+     "title": "report() writes '<name>.csv' with a default name but reads back the raw empty name",
+     "description": "`export_csv` substitutes `\"links\"` when `name` is empty, but `read_report` is called with the original `name`, so a request without `?name=` writes `links.csv` then tries to read `.csv`, fails, and returns 500 every time.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 261,
+     "title": "parse_query does no percent-decoding and splits targets on '&'",
+     "description": "Query strings and the form body are split on `&` and `=` with no URL decoding. A target such as `https://x.com/?a=1&b=2` is truncated to `https://x.com/?a=1` and `b=2` becomes a separate field; percent-encoded characters (`%20`, `%3D`, `+`) are stored literally and the resulting redirects point at the wrong URL.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 113,
+     "title": "validate() always returns Ok, so a bad deploy starts anyway",
+     "description": "Problems are collected and printed but the function returns `Ok(())` regardless, so `cfg.validate().unwrap()` in main never fails. With `LINKD_PORT=abc`, `port` is parsed to 0 and the server binds to a random ephemeral port instead of refusing to start; a zero timeout is also accepted.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 52,
+     "title": "LINKD_CACHE_TTL_MS is interpreted as seconds",
+     "description": "The variable is documented as milliseconds, but the value is passed to `Duration::from_secs`, making the cache TTL 1000\u00d7 longer than configured (e.g. `300000` becomes ~3.5 days instead of 5 minutes).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 45,
+     "title": "A bad LINKD_TIMEOUT_MS sets the timeout to zero while claiming to keep the default",
+     "description": "On a parse error the code logs \"keeping default\" but then overwrites `cfg.timeout` with 0 ms, which is exactly the value `validate` flags as invalid (and `validate` does not reject it anyway).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 65,
+     "title": "LINKD_FETCH_LIMIT is parsed and then discarded",
+     "description": "The value is parsed and range-checked but never assigned to `cfg.fetch_limit`, so the environment override silently has no effect and the default of 32 is always used.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "utilization() uses integer division and panics when the limit is 0",
+     "description": "`guard.len() / self.limit * 100` divides first, so the result is 0 for anything below 100% full; and with `LINKD_CACHE_SIZE=0` it is a division by zero that panics GET /stats.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 102,
+     "title": "success_rate() divides before multiplying, so it is 0 unless every link was used",
+     "description": "`used / self.links.len() * 100` is integer division; for any `used < len` the quotient is 0 and the percentage reported to the dashboard is 0 instead of the real value.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 61,
+     "title": "set() evicts an arbitrary entry, not the least recently used",
+     "description": "`guard.keys().next()` picks whatever key HashMap iteration yields first; the `used` timestamp maintained by `get()` is never read. The cache therefore evicts hot entries as readily as cold ones, contradicting the documented LRU behaviour.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 130,
+     "title": "by_owner() uses substring match instead of equality",
+     "description": "`l.owner.contains(owner)` returns links for any owner whose name contains the query (`\"bob\"` matches `\"bobby\"`), and an empty owner string matches every link. The doc promises \"exactly this owner\".",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 121,
+     "title": "top() sorts ascending, returning the least-followed links",
+     "description": "`a.hits.cmp(&b.hits)` orders by ascending hits, then `truncate(n)` keeps the n smallest, so the leaderboard shows the links with the fewest hits.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 154,
+     "title": "import() is not atomic: links are inserted before the rest of the batch is validated",
+     "description": "Each link is validated and inserted in the same iteration, so a batch whose fifth entry has an invalid code returns Err with four links already committed, contradicting the all-or-nothing contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 139,
+     "title": "extend() revives expired links",
+     "description": "The doc says an already-expired link stays expired, but the function unconditionally sets `expires_at = now + ttl`, bringing a dead code back to life.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 165,
+     "title": "prune() returns the remaining count, not the number removed",
+     "description": "`before` is captured and then discarded; the function returns `self.links.len()` after the retain, which is how many links survived, not how many were dropped as documented.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 71,
+     "title": "rename() validates `from` twice and never validates `to`",
+     "description": "The second `validate_code(from)?` is a copy-paste of the first, so the destination code is stored without any length or character checks and can be empty or contain arbitrary characters.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 213,
+     "title": "new_code() derives codes from sub-second nanos and silently overwrites on collision",
+     "description": "The code is just the current `subsec_nanos()` in hex, so the same code recurs every second and `self.links.insert` in `create()` replaces an existing link without any check, destroying it. The value can also be shorter than 4 characters (nanos below 0x1000), producing codes that `validate_code` later rejects in `rename`/`import`.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 110,
+     "title": "delete() never gives the owner's quota slot back",
+     "description": "The doc says deletion returns the quota slot, but the code only does `let _ = link.owner;` and leaves `self.quota` untouched, so the owner's count only ever increases.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "require_admin rejects everyone, including admins",
+     "description": "`session.role != \"admin\" || session.role != \"owner\"` is true for every possible role (a string cannot equal both), so the function always returns Err and no admin request can ever pass.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 35,
+     "title": "issue() seeds tokens from whole seconds, so two sessions issued in one second share a token",
+     "description": "The generator is fully determined by `as_secs()`, so every `issue` call within the same second produces the identical token; the later `sessions.insert` replaces the earlier session and the first user's token now resolves to the second user's session.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "count_by_owner locks the same std Mutex twice and deadlocks",
+     "description": "`guard` is still alive when `store.lock()` is called a second time on the same non-reentrant `Mutex`, so any call to this function blocks forever (or panics, which std documents as the alternative).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "warm_cache does not join its threads despite promising to return after every probe finished",
+     "description": "The join handles are collected and then discarded with `let _ = handles;`, so the function returns immediately while the `set` calls may still be running; callers that rely on the cache being warm on return see misses.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 49,
+     "title": "write_snapshot ignores the rename result and does not sync, so the snapshot may silently never land",
+     "description": "The temp file is created under `/tmp`; when `dir` is on a different filesystem (`/var/lib/...` typically is), `fs::rename` fails with EXDEV, the error is discarded with `let _ =`, and the function returns Ok although no snapshot was written. There is also no `sync_all` before the rename, so the documented crash-safety does not hold.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 128,
+     "title": "create_link builds JSON by string formatting without escaping",
+     "description": "A target containing `\"` or `\\` (both legal in URLs after decoding) produces a syntactically invalid JSON body for the 201 response.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 141,
+     "title": "redirect() lowercases the code before lookup, but stored codes are case-sensitive",
+     "description": "`validate_code` accepts mixed-case codes and `rename`/`import` store them as given, yet the redirect path looks up `code.to_lowercase()`, so any code containing an uppercase letter can never be resolved via GET /l.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Panic under the store lock on every create poisons the mutex for all threads",
+     "description": "Store::create runs while the handler holds the global store Mutex (main.rs:124). `self.quota.get_mut(owner).unwrap()` panics on every successful create because nothing ever inserts into `quota`. The panic unwinds through the MutexGuard and marks the Mutex poisoned. Every other place that touches the store does `store.lock().unwrap()` (main.rs:140,156,165,190,197,215; worker.rs:59), so after the first POST /links each of those threads panics on lock acquisition: every endpoint dies with no response, and the janitor thread panics on its next tick and never runs again. The accept loop in main() never locks anything, so the process stays up and looks healthy while answering nothing. Interleaving: T1 POST /links with a valid target -> panic under lock -> poisoned; T2..Tn any request -> lock().unwrap() panics.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "GET /stats on an empty store panics under the lock and poisons it permanently",
+     "description": "`hits / guard.len() as i64` divides by zero whenever the store has no links (the state right after startup, or after the janitor sweeps everything). The panic happens while `guard` (the store MutexGuard) is alive, so the Mutex is poisoned. Every subsequent `self.store.lock().unwrap()` in every handler thread and in the janitor (worker.rs:59) then panics, so a single unauthenticated-looking GET /stats at the wrong moment converts into a permanent outage of every store-backed endpoint plus the background sweep. `self.cache.utilization()` on line 207 has the same shape with `limit == 0` (config accepts LINKD_CACHE_SIZE=0), poisoning the cache RwLock and killing the janitor's `cache.sweep()`.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "cfg.timeout is never applied; one thread per connection blocks forever in read_to_end",
+     "description": "Config::load_config parses LINKD_TIMEOUT_MS and validate() checks it, but the value is never used: no `set_read_timeout`/`set_write_timeout` is called on any TcpStream. `stream.read_to_end` returns only when the peer half-closes its write side, so a client that connects and sends nothing (or a normal HTTP client that keeps the connection open waiting for a response) parks one OS thread indefinitely. main.rs:55 spawns a thread per accepted connection with no cap, so idle connections accumulate threads without bound until the process hits the thread/fd limit and `listener.incoming()` starts failing. Scenario: N clients open sockets and never write -> N threads blocked in read_to_end forever.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 215,
+     "title": "Socket and disk I/O performed while holding the global store lock",
+     "description": "`report` takes the store lock on line 215 and keeps `guard` alive through `export_csv` (disk write), `read_report` (disk read) and `self.respond` (socket write of up to 1000 CSV rows). Every other handler (create_link, redirect, list_links, delete_link, admin_quotas, stats) likewise calls `self.respond`/`redirect_to` while its `guard` is still in scope. TCP writes block when the peer's receive window is full and no write timeout is set, so one client that requests /report and never reads its socket holds the single store Mutex indefinitely; every other request thread and the janitor block on `store.lock()` behind it. Interleaving: T1 GET /report, response exceeds socket send buffer, client stops reading -> T1 sleeps in write() holding the lock -> T2..Tn all block in lock().",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 29,
+     "title": "Metrics::add_resolved is a non-atomic load/store and loses increments",
+     "description": "`add_resolved` reads `resolved` with `load` and then writes `current + 1` with `store`. Two handler threads (GET /l or GET /out are both served concurrently from separate threads) can both load the same value and both store value+1, dropping one increment. The struct's doc says all methods are safe for concurrent use, and `add_created`/`add_error` correctly use `fetch_add`, so this is an inconsistency that silently undercounts the main traffic metric on the busiest path. Interleaving: T1 load=5, T2 load=5, T1 store 6, T2 store 6.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "count_by_owner re-locks a std Mutex it already holds: guaranteed deadlock or panic",
+     "description": "`guard` from `store.lock()` on line 120 is still alive when line 122 calls `store.lock()` again on the same thread. std::sync::Mutex is not reentrant; its documentation states the second call 'will not return' (it deadlocks on most platforms, panics on some). Any caller of count_by_owner therefore hangs forever holding the global store lock, which in turn blocks every handler and the janitor. Not wired into main today, but it is a public helper described as feeding the quota dashboard.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 117,
+     "title": "Lock-ordering inversion between Cache::flush and Cache::get deadlocks",
+     "description": "`flush` locks `hits` (line 116) and then takes the `entries` write lock (line 117). `get` takes the `entries` write lock (line 33) and then locks `hits` (line 45) while still holding it. With one thread in each: T1 flush holds hits, waits for entries; T2 get holds entries, waits for hits. Neither can proceed and every later caller of get/set/sweep/utilization/stats queues behind them, including the janitor's `cache.sweep()`.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "warm_cache discards its JoinHandles and returns before any probe has run",
+     "description": "The doc promises 'Returns after every probe has finished', but `let _ = handles;` drops the Vec<JoinHandle> without joining. The function returns immediately; the spawned threads run detached at some later point, so a caller that warms the cache and then reads it sees misses, and callers cannot observe panics in the probes. It also spawns one unbounded thread per pair with no cap.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 54,
+     "title": "JanitorStop does not stop the janitor on drop, and stop() neither joins nor takes effect promptly",
+     "description": "The doc on start_janitor says the handle 'stops the sweep when it is dropped', but JanitorStop has no Drop impl. Dropping it only drops the Sender, which makes `rx.try_recv()` return `Err(Disconnected)`; the loop tests `.is_ok()`, so a disconnected channel is treated as 'keep running' and the thread loops forever against the store and cache -- a thread leak in any test or embedding that drops the handle. `stop()` itself sends and returns immediately without joining, and the check on line 54 runs only once per `interval` (60 s in main) before a full `thread::sleep`, so after stop() the janitor still sleeps, then performs one more full sweep under the store lock before noticing the message.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 46,
+     "title": "write_snapshot shares one fixed /tmp path across concurrent callers",
+     "description": "Every call creates and truncates the same `/tmp/linkd-snapshot.json`, then renames it into `dir`. Two concurrent writers (or two processes) interleave: A creates+truncates tmp, B creates+truncates tmp, A write_all, B write_all appends/overwrites at its own offset, A renames -> `snapshot.json` now holds bytes from both payloads, exactly the 'half-written snapshot' the doc claims is impossible. `fs::rename` across filesystems (/tmp vs dir) also fails and the error is discarded with `let _ =`, so the caller is told Ok while nothing landed.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 86,
+     "title": "Cache::warm peek-then-set is a check-then-act race with concurrent handlers",
+     "description": "`warm` calls `peek` (read lock) and then `set` (write lock) as two separate critical sections while, per its own doc, handlers are serving. Between the two a handler can `set` the same code; `warm` then overwrites that entry, resetting its `expires`/`used` to the warm's values. Harmless for identical targets but it undermines the LRU/TTL bookkeeping the cache is meant to maintain, and it silently re-inserts a code that a handler `delete`d in the same window.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 103,
+     "title": "Cache::sweep decides expiry under one lock and deletes under another",
+     "description": "`sweep` collects expired codes under a read lock, drops it, then calls `delete` (a fresh write lock) per code. Between the two a handler can `set` the same code with a new TTL; the sweep then removes a fresh, live entry, causing a spurious cache miss right after a write. Interleaving: janitor collects [c] as expired; handler set(c) with new expiry; janitor delete(c).",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 186,
+     "title": "Admin endpoint is gated by a client-supplied X-Admin header",
+     "description": "`admin_quotas` grants access when the request carries `x-admin: true`. Any caller holding any valid session token adds that header and reads every owner's quota. `Authenticator::require_admin` (the role check) is never called anywhere in the server, so the session's role plays no part in authorization.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 13,
+     "title": "Report name from the query string is joined to the export dir unsanitised (path traversal / arbitrary file write)",
+     "description": "`name` arrives from `?name=` in `Server::report` and goes straight into `Path::new(dir).join(format!(\"{}.csv\", name))`. `../../etc/cron.d/x` walks out of `export_dir`, and an absolute name (`/tmp/x`) makes `join` discard `dir` altogether. `fs::write` then creates or truncates that file as the service user with content the attacker partly controls (link owners/targets). The doc comment claims the name 'is confined to dir'; nothing enforces it.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 216,
+     "title": "/report dumps every owner's links to any authenticated caller",
+     "description": "`report` exports `guard.page(0, 1000)` \u2014 all links, all owners, including targets and owner names \u2014 and returns the file body to whoever asked. There is no ownership filter or admin check, so any user with a session enumerates everyone else's URLs.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 166,
+     "title": "DELETE /links ignores ownership: any user deletes any link",
+     "description": "The doc comment says a link may only be deleted by its creator and that the owner comes from the session, but `delete_link` never looks at the session (the `Session` returned by `verify` is discarded in `handle`) and `Store::delete` removes by code alone. Short codes are 8 hex chars derived from a clock (see store.rs finding), so a hostile user can wipe other people's links.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 119,
+     "title": "Link owner is taken from the request body, not the session",
+     "description": "`create_link` reads `owner` from the POST payload. A caller writes links attributed to any other user, poisoning per-owner quotas, the admin quota view and any future owner-scoped export/delete checks. The authenticated identity is available but unused.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 175,
+     "title": "Open redirect via /out?next=",
+     "description": "`out` 301-redirects to whatever `next` contains with no validation. The endpoint is meant for email links, so `https://linkd.example/out?next=https://evil.example/login` gives phishing pages a trusted first-party hostname.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 251,
+     "title": "HTTP header injection through stored link targets",
+     "description": "The request body is rebuilt with `join(\"\\r\\n\")`, and `parse_query` only splits on `&` and `=`, so a POST body `target=https://a.example\\r\\nSet-Cookie: sid=evil` is stored verbatim \u2014 `Store::create` (store.rs:35) only checks the `http(s)://` prefix. Every subsequent `GET /l?code=...` writes that value into `Location:` unescaped, letting the link creator inject arbitrary response headers (cookie fixing, cache poisoning) or split the response for every visitor.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 208,
+     "title": "Short codes are clock-derived, enumerable and can silently overwrite existing links",
+     "description": "`new_code` is `format!(\"{:x}\", subsec_nanos)` \u2014 at most 30 bits of a clock value, not randomness, and never checked for uniqueness. The `insert` on line 47 replaces an existing entry with the same code, so an attacker hammering POST /links will eventually collide with a victim's code and repoint it to an attacker URL (link hijack). Codes are also short enough to enumerate for the unauthenticated-in-practice `/l` resolver. Very small nanosecond values additionally yield codes shorter than the 4-char minimum `validate_code` requires.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 35,
+     "title": "Session tokens are generated from a whole-second timestamp with an LCG",
+     "description": "`issue` seeds a fixed-constant LCG with `as_secs()` and derives all 16 bytes deterministically from it. Anyone who knows roughly when a token was issued (or observes the `auth: issued` log line timestamp) recomputes the token by trying a few thousand seed values; two tokens issued in the same second are identical. The doc calls it 'unguessable'.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 57,
+     "title": "verify never checks expires_at, so tokens live forever",
+     "description": "The doc promises an error when the lifetime has run out, but `verify` only compares the token string. `expires_at` is set on line 47 and never read anywhere in the crate; a leaked token (e.g. from the stdout log) stays valid until an explicit `revoke`.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 50,
+     "title": "Full session token printed to stdout on issue",
+     "description": "`println!(\"auth: issued token {} for {}\", \u2026)` writes the bearer credential into whatever captures stdout (journald, container logs, log shippers). Combined with the missing expiry check, anyone with log read access holds a permanent credential for every user.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Unbounded, unauthenticated request read per connection (resource exhaustion)",
+     "description": "`handle` runs before any auth check and calls `read_to_end` into a `Vec` with no size or time limit, on a fresh OS thread per connection. A client that streams gigabytes, or simply opens connections and never closes its write side (any keep-alive client does this), pins memory and threads indefinitely. No timeout is set on the stream even though `cfg.timeout` exists.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "create panics for any new owner while holding the store mutex, poisoning it for the whole process",
+     "description": "`self.quota.get_mut(owner).unwrap()` unwraps `None` for every owner that has never been seen (quota is never populated). The panic happens inside `Server::create_link` while `self.store.lock()` is held, poisoning the mutex; every later `store.lock().unwrap()` on every thread then panics, so one POST /links from any authenticated user takes the service down until restart.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "GET /stats divides by zero on an empty store and poisons the store mutex",
+     "description": "`hits / guard.len() as i64` panics when there are no links. The panic occurs while the store lock is held, so the mutex is poisoned and every subsequent handler (`lock().unwrap()`) panics \u2014 a persistent remote denial of service triggered by one request. `Cache::utilization` (cache.rs:125) has the same shape if `LINKD_CACHE_SIZE=0`.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 96,
+     "title": "bearer_token panics on any Authorization header without a space (including a missing header)",
+     "description": "`parts[1]` indexes past the end when the header is absent (`handle` substitutes an empty string) or has a single word. Every unauthenticated request therefore panics the handler thread and drops the connection instead of returning 401. The scheme is also never checked, so `Basic xyz` is accepted as a bearer token.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "require_admin condition is always true, so the role check can never pass",
+     "description": "`role != \"admin\" || role != \"owner\"` holds for every role including admin. The intended authorization primitive is unusable, which is presumably why `admin_quotas` fell back to the spoofable `X-Admin` header. As written it is fail-closed, but it means no role-based control exists in the service.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 24,
+     "title": "Hardcoded fallback secret when LINKD_SECRET is unset",
+     "description": "A missing environment variable silently selects the string literal `dev-secret-do-not-use`, so a production deploy that forgets the variable runs with a secret that is in the public source. Nothing warns at startup.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 85,
+     "title": "hash_password is an unsalted 64-bit djb2 variant",
+     "description": "The stored value is a 64-bit non-cryptographic hash with no salt or work factor. A leaked user table is reversed by dictionary attack at billions of guesses per second, identical passwords share identical hashes, and 64 bits invites collisions that let a different password authenticate.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 106,
+     "title": "secret_eq is not constant-time despite its contract",
+     "description": "The loop returns on the first mismatching byte, so response time reveals how many leading bytes matched \u2014 exactly the oracle the doc comment says it prevents. Any caller trusting the name gets a timing side channel. (`verify` itself uses plain `==` and would have the same problem.)",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 46,
+     "title": "Snapshot staged at a fixed world-writable /tmp path (symlink / TOCTOU)",
+     "description": "`write_snapshot` creates `/tmp/linkd-snapshot.json` by fixed name. Any local user pre-creates a symlink there; `File::create` follows it and the service truncates and overwrites whatever the link points to with attacker-influenced link data. The `rename` result is also discarded, so a cross-filesystem failure leaves the snapshot in /tmp readable by everyone.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 25,
+     "title": "Export written with default permissions, contrary to the 'service user only' comment",
+     "description": "`fs::write` creates the file with mode 0644 (minus umask), so every local account can read a report that the comment says contains every owner's links. Nothing sets a restrictive mode.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 33,
+     "title": "archive_all builds file names from user-supplied owner strings",
+     "description": "`owner` comes from the request body (`create_link`), so an owner value of `../../home/svc/.ssh/authorized_keys` or an absolute path makes `Path::join` escape `dir` and `File::create` truncate/overwrite that file with attacker-chosen link rows.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 19,
+     "title": "CSV export does not quote fields (CSV/formula injection)",
+     "description": "`owner` (free text from the request) and `target` are written raw. An owner of `=HYPERLINK(\"http://evil\",\"x\")` or a value containing commas/newlines corrupts the report or executes as a formula when support opens it in a spreadsheet.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 130,
+     "title": "by_owner uses substring match and returns other owners' links",
+     "description": "`l.owner.contains(owner)` means a query for owner `bob` also returns `bobby`'s and `robbob`'s links, and an empty owner returns everything. Any access control built on this helper (the doc says 'exactly this owner', for support hand-offs) leaks data across tenants.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 243,
+     "title": "CORS wildcard origin combined with Allow-Credentials on authenticated responses",
+     "description": "Every response, including authenticated ones, sends `Access-Control-Allow-Origin: *` with `Access-Control-Allow-Credentials: true`. Browsers reject that combination for credentialed requests, which limits exploitation today, but the header pair states an intent to let any origin read authenticated responses and will become exploitable the moment someone 'fixes' it by reflecting the Origin.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 223,
+     "title": "500 responses leak internal filesystem paths",
+     "description": "Failed exports return `export to {path} failed: {io error}` including the full `export_dir` path and OS error text to the client, disclosing deployment layout to any user who can trigger a failure (e.g. via the traversal above).",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 1943,
+      "output_tokens": 13809,
+      "cache_read_tokens": 34800,
+      "cache_write_tokens": 27892,
+      "cost_usd": 0.643244,
+      "cost_known": true
+     },
+     "duration_ms": 174359,
+     "failed": false,
+     "output_bytes": 19645
+    },
+    {
+     "usage": {
+      "input_tokens": 1967,
+      "output_tokens": 12838,
+      "cache_read_tokens": 70703,
+      "cache_write_tokens": 27954,
+      "cost_usd": 0.6375125,
+      "cost_known": true
+     },
+     "duration_ms": 177037,
+     "failed": false,
+     "output_bytes": 15364
+    },
+    {
+     "usage": {
+      "input_tokens": 1942,
+      "output_tokens": 12493,
+      "cache_read_tokens": 34800,
+      "cache_write_tokens": 27887,
+      "cost_usd": 0.6102329999999999,
+      "cost_known": true
+     },
+     "duration_ms": 169195,
+     "failed": false,
+     "output_bytes": 18232
+    }
+   ]
+  }
+ ]
+}
