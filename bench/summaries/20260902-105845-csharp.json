@@ -1,0 +1,562 @@
+{
+ "run": "20260902-105845",
+ "task": "code",
+ "target": "csharp",
+ "model": "gpt-oss:120b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "Authenticator.cs",
+     "line": 62,
+     "title": "RequireAdmin always returns true",
+     "description": "The RequireAdmin method returns true for both allowed and disallowed roles, effectively granting admin access to any authenticated session.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 46,
+     "title": "Verify does not check token expiration",
+     "description": "The Verify method returns a session even if its ExpiresAt timestamp is in the past, allowing expired tokens to be used.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 94,
+     "title": "BearerToken may throw IndexOutOfRange",
+     "description": "BearerToken splits the Authorization header and blindly accesses `parts[1]`. If the header is missing or malformed, this will throw.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 37,
+     "title": "Issue can overwrite an existing session token",
+     "description": "`sessions[session.Token] = session;` overwrites any existing entry with the same token, potentially hijacking a session.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 126,
+     "title": "Utilization uses integer division",
+     "description": "`return entries.Count / limit * 100;` performs integer division before multiplication, often yielding 0% for small caches.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 107,
+     "title": "Sweep mutates dictionary during enumeration",
+     "description": "Iterating over `entries.Keys` while removing entries causes `InvalidOperationException`.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 53,
+     "title": "Peek reports expired entries as cached",
+     "description": "`Peek` only checks key existence; it does not verify whether the entry has expired.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 66,
+     "title": "Eviction does not follow LRU policy",
+     "description": "`Set` evicts `entries.Keys.First()` which is arbitrary, not the least\u2011recently\u2011used entry indicated by the comment.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Config.cs",
+     "line": 38,
+     "title": "Timeout is set even when parsing fails",
+     "description": "If `LINKD_TIMEOUT_MS` cannot be parsed, `ms` remains 0 and the timeout is set to zero, violating the later validation.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Config.cs",
+     "line": 44,
+     "title": "Cache TTL parsed using wrong time unit",
+     "description": "`LINKD_CACHE_TTL_MS` is interpreted with `TimeSpan.FromSeconds`, treating milliseconds as seconds.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 56,
+     "title": "`FETCH_LIMIT` environment variable is ignored",
+     "description": "The parsed value is stored in a local variable `parsed` but never assigned to `cfg.FetchLimit`.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Config.cs",
+     "line": 126,
+     "title": "`Validate` always returns true",
+     "description": "Even when configuration problems are detected, the method returns `true`, allowing the service to start with invalid settings.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 83,
+     "title": "`ExportCsvAsync` writes only header",
+     "description": "The async export function writes a static header and never includes the provided `links` data.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 80,
+     "title": "`ExportCsvAsync` is declared `async void`",
+     "description": "`async void` methods swallow exceptions and cannot be awaited, making error handling unreliable.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 41,
+     "title": "Quota increment may throw KeyNotFoundException",
+     "description": "`quota[owner] = quota[owner] + 1;` assumes the dictionary already contains the owner key.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 55,
+     "title": "Resolve removes valid links and returns null",
+     "description": "The expiration check is inverted: it removes a link when it is still valid (`DateTime.Now < link.ExpiresAt`).",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "Store.cs",
+     "line": 68,
+     "title": "`Rename` validates the source code twice",
+     "description": "Both validation calls use `ValidateCode(from)`, leaving the target code unchecked.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 93,
+     "title": "`Page` off\u2011by\u2011one may cause `ArgumentOutOfRangeException`",
+     "description": "When `end > all.Count`, the code sets `end = all.Count + 1`, causing the range length to exceed the list size.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 109,
+     "title": "`SuccessRate` integer division truncates result",
+     "description": "`used / links.Count * 100` performs integer division, often yielding 0% for small counts.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 129,
+     "title": "`Top` sorts ascending, returning least\u2011used links",
+     "description": "The comparison `(a.Hits.CompareTo(b.Hits))` orders links from smallest to largest hits, contrary to the comment.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 136,
+     "title": "`ByOwner` uses substring match",
+     "description": "`Owner.Contains(owner)` matches any owner whose name contains the query string, potentially returning unrelated owners.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 158,
+     "title": "`Quotas` exposes internal mutable dictionary",
+     "description": "Returning the internal `quota` dictionary allows callers to modify it, violating the snapshot contract.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 178,
+     "title": "`Prune` removes entries while iterating over keys",
+     "description": "Modifying `links` during enumeration throws `InvalidOperationException` and may leave the collection in an inconsistent state.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 186,
+     "title": "`Prune` returns remaining count instead of removed count",
+     "description": "The method returns `links.Count` after pruning, which is the number of links left, not the number removed as described.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 118,
+     "title": "`Delete` does not restore owner quota",
+     "description": "When a link is deleted the owner's quota is not decremented, causing quota counts to drift upward.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 228,
+     "title": "`NewCode` may generate duplicate short codes",
+     "description": "`random.Next().ToString(\"x8\")` can produce collisions, overwriting existing links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Metrics.cs",
+     "line": 17,
+     "title": "`AddCreated` is not thread\u2011safe",
+     "description": "`created++` is a non\u2011atomic increment and can lose counts under concurrent use.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 34,
+     "title": "`StartJanitor` mutates store while enumerating keys",
+     "description": "Iterating over `store.All().Keys` and removing entries from the same dictionary causes `InvalidOperationException`.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 74,
+     "title": "`CheckTargets` blocks on async call",
+     "description": "`ProbeAsync(...).Result` synchronously blocks on an async task, which can deadlock in certain contexts.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 86,
+     "title": "`CountForOwner` throws if owner not present",
+     "description": "`store.Quotas()[owner]` assumes the owner key exists; missing owners cause `KeyNotFoundException`.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 37,
+     "title": "Unsynchronized access to shared sessions dictionary",
+     "description": "The `sessions` dictionary is mutated in `Issue` (line 37) and `Revoke` (line 75) and iterated in `Verify` (line 48) without any locking or concurrent collection. Concurrent requests can cause race conditions, lost sessions, or `InvalidOperationException` during enumeration.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 32,
+     "title": "Non\u2011thread\u2011safe `Random` used for token generation",
+     "description": "`Random` is not safe for concurrent use. Simultaneous calls to `Issue` can corrupt the RNG state, leading to duplicate or predictable tokens.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 53,
+     "title": "`Peek` reads dictionary without synchronization",
+     "description": "`Peek` checks `entries.ContainsKey` without acquiring the lock used by `Set`, `Get`, and `Delete`. If another thread modifies `entries` concurrently, a race can produce incorrect results or throw.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 107,
+     "title": "Removing entries while iterating over dictionary keys in `Sweep`",
+     "description": "`Sweep` iterates `foreach (var code in entries.Keys)` and removes entries inside the loop. Modifying a collection during enumeration throws `InvalidOperationException` and can leave the cache in an inconsistent state.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 28,
+     "title": "File writes are not synchronized",
+     "description": "`ExportCsv` creates a new `StreamWriter` for a path derived from user input and writes without any coordination. Concurrent calls with the same `dir`/`name` can interleave writes, corrupting the CSV file or causing `IOException`.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 58,
+     "title": "Shared temporary file in `WriteSnapshot` creates a race condition",
+     "description": "`WriteSnapshot` always writes to the same temporary path `\"/tmp/linkd-snapshot.json\"`. Parallel snapshot operations will race, overwriting each other's data and potentially leaving the final snapshot incomplete.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 80,
+     "title": "`ExportCsvAsync` is declared `async void`",
+     "description": "`async void` fire\u2011and\u2011forget methods hide exceptions and cannot be awaited. If the asynchronous write fails, the failure is lost and the caller has no way to detect it.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 40,
+     "title": "Unsynchronized mutation of `links` and `quota` dictionaries",
+     "description": "`Create` adds entries to `links` (line 40) and increments `quota[owner]` (line 41) without any locking. Simultaneous creates can corrupt the dictionaries, cause lost updates, or throw `KeyNotFoundException`.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 228,
+     "title": "`Random` used for code generation is not thread\u2011safe",
+     "description": "`NewCode` calls `random.Next()` which is unsafe when multiple threads generate codes simultaneously, potentially producing duplicate or corrupted codes.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 60,
+     "title": "`link.Hits++` is not atomic",
+     "description": "The `Resolve` method increments the `Hits` field without using atomic operations. Concurrent resolutions of the same code can lose increments, under\u2011reporting usage statistics.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 178,
+     "title": "`Prune` removes entries while iterating over `links.Keys`",
+     "description": "`foreach (var code in links.Keys)` loop modifies `links` inside the body (`links.Remove(code)`). This triggers `InvalidOperationException` and can leave the store partially pruned.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 158,
+     "title": "`Quotas` exposes internal mutable dictionary",
+     "description": "`Quotas` returns the raw `quota` dictionary, allowing callers to modify it without synchronization, which can corrupt quota counts when accessed concurrently.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 108,
+     "title": "`SuccessRate` enumerates `links` without synchronization",
+     "description": "The method reads `links.Values` while other threads may add or remove entries, risking `InvalidOperationException` and inconsistent results.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 192,
+     "title": "`Followed` returns a live enumerable over mutable dictionary values",
+     "description": "The returned `IEnumerable<Link>` captures `links.Values`. If the store is mutated after the call, enumerating the sequence can throw or yield inconsistent data.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Metrics.cs",
+     "line": 17,
+     "title": "`AddCreated` increments a non\u2011atomic counter",
+     "description": "`created++` is not thread\u2011safe; concurrent calls can lose increments, causing an under\u2011count of created links.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 34,
+     "title": "Janitor timer removes entries from `Store` without synchronization",
+     "description": "The timer callback iterates `store.All().Keys` and removes entries (`store.All().Remove(code)`) while other request handlers may be accessing or mutating the store. This can cause race conditions and `InvalidOperationException`.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 69,
+     "title": "RequireAdmin always authorises",
+     "description": "Authenticator.RequireAdmin returns true unconditionally, even when the session role is not admin or owner. This allows any authenticated user to access admin\u2011only endpoints such as /admin/quotas.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 32,
+     "title": "Predictable session tokens",
+     "description": "Session tokens are generated with `System.Random`, which is not cryptographically secure. An attacker can predict future tokens and hijack sessions.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 24,
+     "title": "Hard\u2011coded development secret",
+     "description": "If the `LINKD_SECRET` environment variable is missing, the code falls back to the literal string `dev-secret-do-not-use`, which is a known secret and compromises authentication.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 103,
+     "title": "Non\u2011constant\u2011time secret comparison",
+     "description": "`SecretEquals` uses `==` which can leak timing information about the matching prefix, enabling a timing side\u2011channel.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 94,
+     "title": "Bearer token parsing can throw",
+     "description": "`BearerToken` splits the Authorization header and accesses `parts[1]` without validating that the header contains a space. A missing or malformed header throws `IndexOutOfRangeException`, leading to a denial\u2011of\u2011service.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 103,
+     "title": "Delete endpoint lacks ownership check",
+     "description": "Authenticated users can delete any link by providing its code; the handler does not verify that the requesting session\u2019s Owner matches the link\u2019s Owner.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Program.cs",
+     "line": 152,
+     "title": "Open redirect in /out endpoint",
+     "description": "The `next` query parameter is copied directly into the `Location` header without validation, allowing an attacker\u2011controlled redirect after authentication.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 158,
+     "title": "Admin flag trusted without authentication",
+     "description": "`/admin/quotas` checks only the custom header `X-Admin` for the literal value `true`. Any client can set this header to gain admin information, especially because `RequireAdmin` is broken.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 45,
+     "title": "Bearer token extraction used before validation",
+     "description": "`Authenticator.BearerToken` is called on whatever string is in the `Authorization` header, which can cause the earlier `IndexOutOfRangeException` and abort the entire request handling.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 55,
+     "title": "Expired\u2011link logic inverted",
+     "description": "`Store.Resolve` removes a link when the current time is *before* its expiry and returns the target when the link is expired, effectively allowing usage of stale links while discarding fresh ones.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Store.cs",
+     "line": 176,
+     "title": "Dictionary mutation during enumeration in Prune",
+     "description": "`Store.Prune` iterates over `links.Keys` and removes entries inside the loop, which throws `InvalidOperationException` and can crash the process.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 34,
+     "title": "Janitor mutates store while iterating",
+     "description": "`Worker.StartJanitor` enumerates `store.All().Keys` and removes expired entries inside the same loop, causing the same `InvalidOperationException` and service downtime.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Export.cs",
+     "line": 18,
+     "title": "Path traversal in CSV export",
+     "description": "The `name` parameter supplied by a user is concatenated with `Path.Combine(dir, name + \".csv\")` without sanitisation. By including `../` or path separators, an attacker can cause the server to write files outside the intended export directory.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 75,
+     "title": "Path traversal in CSV read",
+     "description": "`ReadReport` constructs the file path from an unvalidated `name` value in the same way as `ExportCsv`. An attacker can cause the service to read arbitrary CSV files within the export directory hierarchy.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 58,
+     "title": "Symlink race on temporary snapshot file",
+     "description": "`WriteSnapshot` writes to a fixed temporary path `/tmp/linkd-snapshot.json` before moving it into place. An attacker who can create a symlink at that path could cause arbitrary file overwrite when the move occurs.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 126,
+     "title": "Validate always returns true",
+     "description": "`Config.Validate` logs configuration problems but always returns `true`, so the service starts with invalid settings (e.g., out\u2011of\u2011range ports) that may expose insecure behaviour.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 44,
+     "title": "Cache TTL interpreted as seconds instead of milliseconds",
+     "description": "`LINKD_CACHE_TTL_MS` is parsed as an integer and assigned using `TimeSpan.FromSeconds`, treating the value as seconds. This makes TTLs up to 1000\u00d7 longer than intended, potentially keeping stale data longer.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 66,
+     "title": "Rename validates wrong variable and skips new code check",
+     "description": "`Store.Rename` calls `ValidateCode(from)` twice and never validates the destination code `to`. An attacker could rename a link to an invalid code that later bypasses validation checks.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 93,
+     "title": "Off\u2011by\u2011one error in paging logic",
+     "description": "`Store.Page` sets `end = all.Count + 1` when `end > all.Count`, causing `GetRange` to request one element past the end of the list, which throws an exception and can be used for denial\u2011of\u2011service.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 240357,
+      "output_tokens": 19328
+     },
+     "duration_ms": 119849,
+     "failed": false,
+     "output_bytes": 24055
+    },
+    {
+     "usage": {
+      "input_tokens": 486170,
+      "output_tokens": 14224
+     },
+     "duration_ms": 145662,
+     "failed": false,
+     "output_bytes": 18190
+    },
+    {
+     "usage": {
+      "input_tokens": 228383,
+      "output_tokens": 12180
+     },
+     "duration_ms": 125432,
+     "failed": false,
+     "output_bytes": 10005
+    }
+   ]
+  }
+ ]
+}

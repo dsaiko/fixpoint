@@ -1,0 +1,458 @@
+{
+ "run": "20260902-110116",
+ "task": "code",
+ "target": "cpp",
+ "model": "gpt-oss:120b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "auth.cpp",
+     "line": 49,
+     "title": "Admin role check always fails",
+     "description": "Authenticator::require_admin uses `if (session.role != \"admin\" || session.role != \"owner\")`, which is always true because a role cannot be both \"admin\" and \"owner\" at the same time. The function therefore returns false for every session, preventing any admin access.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 37,
+     "title": "Token verification ignores expiration",
+     "description": "Authenticator::verify iterates over sessions and returns a pointer if the token matches, but never checks `session.expires_at`. Expired sessions are considered valid.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 73,
+     "title": "Bearer token parser buffer overflow and missing space handling",
+     "description": "bearer_token copies the header into a fixed-size `char copy[64]` with `std::strcpy` without bounds checking and assumes a space character exists. Missing space or an overly long header can cause overflow or a null-pointer dereference.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 55,
+     "title": "Iterator invalidation in Cache::sweep",
+     "description": "Cache::sweep erases entries from the `entries_` map while iterating with a simple `for` loop, invalidating the iterator and causing undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 38,
+     "title": "Memory leak when evicting LRU entry",
+     "description": "Cache::set evicts a victim with `entries_.erase(victim)` but does not delete the allocated `Entry*`, leaking memory.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 20,
+     "title": "Memory leak on expired cache entry",
+     "description": "Cache::get removes an expired entry from the map but does not `delete` the associated `Entry*`, leaking memory.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 30,
+     "title": "Cache::peek reports expired entries as present",
+     "description": "Cache::peek simply checks map existence, ignoring expiration. Callers may believe a key is cached when it has already expired.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 36,
+     "title": "LINKD_FETCH_LIMIT environment variable is parsed but never applied",
+     "description": "The code parses `LINKD_FETCH_LIMIT` into `parsed` but discards it, leaving the default value unchanged.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "config.cpp",
+     "line": 73,
+     "title": "`validate` always reports success",
+     "description": "Config::validate collects problems and prints them, but unconditionally returns `true` even when errors exist, allowing the service to start with invalid configuration.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "Link expiration logic inverted",
+     "description": "Store::resolve checks `if (Clock::now() < it->second.expires_at)` and erases the entry when the link is *not* expired, causing every newly created link to be deleted immediately.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 49,
+     "title": "Duplicate validation of `from` code in rename",
+     "description": "Store::rename calls `validate_code(from)` twice and never validates the `to` code, allowing invalid destination codes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 73,
+     "title": "Off\u2011by\u2011one error when computing page end iterator",
+     "description": "When `end > all.size()`, the code sets `end = all.size() + 1`, which can produce an iterator past the container\u2019s end and leads to undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 81,
+     "title": "Incorrect integer division order in success_rate",
+     "description": "The expression `used / links_.size() * 100` performs integer division before multiplication, losing precision.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.cpp",
+     "line": 96,
+     "title": "Quota not decremented on link removal",
+     "description": "Store::remove erases the link but never reduces `quota_[owner]`, causing quotas to become permanently inflated.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 110,
+     "title": "Top\u2011links sorting order reversed",
+     "description": "Store::top sorts links in ascending order of hits, returning the least\u2011used links instead of the most\u2011used.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.cpp",
+     "line": 119,
+     "title": "Owner lookup uses substring match",
+     "description": "Store::by_owner selects links where `owner` contains the query string, which can return links belonging to different owners whose names contain the substring.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.cpp",
+     "line": 154,
+     "title": "Iterator invalidation and wrong return value in prune",
+     "description": "Store::prune erases entries while iterating, invalidating the iterator, and returns the final map size instead of the number of removed entries.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 172,
+     "title": "Dangling string_view in last_code",
+     "description": "Store::last_code builds a local `std::string newest` and returns a `std::string_view` to it. The view dangles after the function returns, leading to undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "linkd.h",
+     "line": 141,
+     "title": "Uninitialized `errors_` counter in Metrics",
+     "description": "The `errors_` member is never initialized, so reading `g_metrics->errors()` may yield garbage.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "main.cpp",
+     "line": 40,
+     "title": "Assumes required query parameters are present",
+     "description": "create_link accesses `req.query.at(\"target\")` and `req.query.at(\"owner\")` without checking existence, causing `std::out_of_range` exceptions if the parameters are missing.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 100,
+     "title": "Potential division by zero in stats",
+     "description": "stats computes `g_store->total_hits() / g_store->size()`; if the store is empty, `g_store->size()` is zero, leading to a runtime divide\u2011by\u2011zero error.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.cpp",
+     "line": 73,
+     "title": "Returning pointer to stack\u2011allocated buffer in format_row",
+     "description": "format_row creates a local `char row[128]`, fills it with `snprintf`, and returns `row`. The pointer becomes dangling after the function returns.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 18,
+     "title": "Iterator invalidation while erasing expired links in janitor",
+     "description": "The janitor loop erases entries from `store.all()` while iterating, invalidating the iterator and causing undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 35,
+     "title": "Warm\u2011cache spawns threads without joining",
+     "description": "`warm_cache` creates a thread per link but never joins them, potentially leaving background threads running after the function returns.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 43,
+     "title": "Off\u2011by\u2011one out\u2011of\u2011bounds access in check_targets",
+     "description": "`for (size_t i = 0; i <= links.size(); i++)` iterates one step past the vector, accessing `links[links.size()]` and causing undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 20,
+     "title": "Invalid iterator erase in janitor thread",
+     "description": "The janitor thread iterates over the store map and calls `store.all().erase(it)` while the iterator `it` is still valid. Erasing a map element invalidates the iterator, leading to undefined behavior, crashes or memory corruption, especially when other threads access the map concurrently.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 37,
+     "title": "warm_cache spawns joinable threads without joining and captures loop variable by reference",
+     "description": "`warm_cache` creates a `std::thread` for each link, capturing `link` by reference. The reference becomes invalid after the loop iteration, causing data races. Moreover, the `workers` vector is destroyed without joining its threads, which triggers `std::terminate`.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 57,
+     "title": "Invalid iterator erase in Cache::sweep",
+     "description": "`Cache::sweep` iterates over `entries_` and calls `entries_.erase(it)` while still using `it`. This invalidates the iterator and leads to undefined behavior when the loop continues.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 157,
+     "title": "Invalid iterator erase in Store::prune",
+     "description": "`Store::prune` erases entries from `links_` while iterating with a normal `for` loop, invalidating `it` and causing undefined behavior. The function also lacks synchronization, so concurrent accesses can race.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 22,
+     "title": "Use of non\u2011thread\u2011safe std::rand in Authenticator::issue",
+     "description": "`std::rand` uses global state that is not safe for concurrent calls. Simultaneous token issuance can corrupt the RNG state, produce duplicate tokens, or cause data races.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 15,
+     "title": "Use of non\u2011thread\u2011safe std::rand in Store::create",
+     "description": "Link code generation uses `std::rand`, which is not thread\u2011safe. Concurrent link creation can corrupt the RNG state and lead to duplicate or malformed codes.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 23,
+     "title": "Shared mutable globals accessed without synchronization",
+     "description": "Global pointers `g_store`, `g_cache`, `g_auth`, and `g_metrics` are accessed by request\u2011handling functions and the janitor thread without any mutex or atomic protection. This creates data races on the underlying maps, counters, and other state when multiple requests are handled concurrently.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 29,
+     "title": "stop_janitor does not join the janitor thread",
+     "description": "`stop_janitor` only clears the atomic flag `g_running` but never joins the thread started by `start_janitor`. This leaks the thread and may leave it running after shutdown.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 13,
+     "title": "Hardcoded default secret",
+     "description": "Authenticator falls back to a static secret \"dev-secret-do-not-use\" when LINKD_SECRET is not set. An attacker can guess this value and use it to authenticate if the secret is ever checked elsewhere.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 22,
+     "title": "Predictable session token generation",
+     "description": "Session tokens are built with two calls to std::rand() and formatted with sprintf. std::rand() is not cryptographically secure, making tokens guessable and allowing session hijacking.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 73,
+     "title": "Stack buffer overflow in bearer_token",
+     "description": "bearer_token copies the entire Authorization header into a fixed 64\u2011byte buffer with strcpy, without checking length. A long header can overflow the buffer and lead to arbitrary code execution.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 75,
+     "title": "Missing space delimiter check in bearer_token",
+     "description": "If the Authorization header does not contain a space, strchr returns nullptr and the code dereferences it (space + 1), causing a crash (potential denial\u2011of\u2011service).",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 81,
+     "title": "Non\u2011constant\u2011time secret comparison",
+     "description": "secret_equals returns early on first mismatched byte, leaking timing information that can be used to guess the secret via side\u2011channel attacks.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 61,
+     "title": "Weak password hashing",
+     "description": "hash_password uses an unsalted DJB2 hash (a simple 32\u2011bit accumulator) which is fast to compute and trivially invertible, exposing stored passwords to offline cracking.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 49,
+     "title": "Incorrect admin role check",
+     "description": "require_admin uses `if (session.role != \"admin\" || session.role != \"owner\")` which is always true, making the function always reject even legitimate admin sessions.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 70,
+     "title": "Missing ownership verification on link deletion",
+     "description": "delete_link removes a link based solely on the supplied code without checking that the authenticated session's owner matches the link's owner, allowing any authenticated user to delete any other's link.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 92,
+     "title": "Admin quota endpoint authorizes via client\u2011supplied header",
+     "description": "admin_quotas trusts the `x-admin: true` header without verifying the caller's authentication or role, so any client can obtain quota information.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 120,
+     "title": "Bearer token extraction assumes Authorization header exists and is well\u2011formed",
+     "description": "If the Authorization header is missing, an empty string is passed to bearer_token, which then dereferences a null pointer from strchr, causing a crash.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 80,
+     "title": "Open redirect in /out endpoint",
+     "description": "The `next` query parameter is used directly as a redirect location without validation, allowing phishing or malicious site redirection.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.cpp",
+     "line": 16,
+     "title": "Path traversal in export_csv",
+     "description": "The `name` parameter supplied by the user is concatenated to the export directory without sanitization, enabling an attacker to write files outside the intended directory via \"../\" sequences.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.cpp",
+     "line": 37,
+     "title": "Path traversal in archive_all",
+     "description": "Owner strings are concatenated into filenames (`dir + \"/\" + pair.first + \".csv\"`) without validation, allowing an attacker-controlled owner value to write files outside the export directory.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.cpp",
+     "line": 63,
+     "title": "Path traversal in read_report",
+     "description": "The `name` query parameter is used directly to build a file path for reading reports, permitting arbitrary file reads via \"../\" sequences.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 15,
+     "title": "Predictable short link codes",
+     "description": "Link codes are generated with `std::rand()` and a simple sprintf, making them predictable and enabling enumeration of existing links.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "Link expiration logic inverted",
+     "description": "Store::resolve deletes a link when the current time is *before* its expiry (`now < expires_at`), causing valid links to be removed prematurely and leading to denial\u2011of\u2011service.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 18,
+     "title": "Iterator invalidation while erasing in janitor",
+     "description": "The janitor loop erases entries from `store.all()` while iterating with a normal iterator, resulting in undefined behavior and possible crashes.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 55,
+     "title": "Cache sweep erases entries while iterating",
+     "description": "Cache::sweep removes entries from the map during a range\u2011based loop, invalidating the iterator and causing undefined behavior.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 91,
+     "title": "Config validation always returns true",
+     "description": "validate() prints configuration problems but still returns true, allowing the service to start with invalid or unsafe settings.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 246720,
+      "output_tokens": 12500
+     },
+     "duration_ms": 81550,
+     "failed": false,
+     "output_bytes": 11654
+    },
+    {
+     "usage": {
+      "input_tokens": 430034,
+      "output_tokens": 9191
+     },
+     "duration_ms": 93859,
+     "failed": false,
+     "output_bytes": 5120
+    },
+    {
+     "usage": {
+      "input_tokens": 205503,
+      "output_tokens": 13051
+     },
+     "duration_ms": 69253,
+     "failed": false,
+     "output_bytes": 9682
+    }
+   ]
+  }
+ ]
+}

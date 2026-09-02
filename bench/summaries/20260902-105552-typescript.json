@@ -1,0 +1,394 @@
+{
+ "run": "20260902-105552",
+ "task": "code",
+ "target": "typescript",
+ "model": "gpt-oss:120b-cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "requireAdmin always returns true for non\u2011admin roles",
+     "description": "The check uses `allowed.indexOf(session.role)` which returns -1 for unknown roles (truthy) and 0 for \"admin\" (falsy). As a result admins are rejected and any other role is accepted, breaking admin\u2011only access.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 37,
+     "title": "Session verification ignores expiration",
+     "description": "`verify` returns a session as long as the token matches, without checking `session.expiresAt`. Expired tokens remain valid, allowing continued access after the intended lifetime.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 78,
+     "title": "bearerToken crashes on missing or malformed header",
+     "description": "The function uses a non\u2011null assertion on `header` and assumes it contains a space\u2011separated token, which throws if the header is undefined or has an unexpected format.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 112,
+     "title": "`validate` always returns true even on errors",
+     "description": "After collecting configuration problems, the function logs them but still returns `true`, allowing the service to start with invalid settings.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 46,
+     "title": "Cache TTL environment variable multiplied twice",
+     "description": "`LINKD_CACHE_TTL_MS` is documented as milliseconds, but the code multiplies it by 1000, inflating the TTL by a factor of 1000 and effectively disabling expiration.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 31,
+     "title": "`loadConfig` mutates the shared DEFAULT_CONFIG object",
+     "description": "`const cfg = DEFAULT_CONFIG;` creates a reference, so any runtime changes alter the constant defaults, affecting later loads and potentially other parts of the program.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 34,
+     "title": "Quota count becomes NaN for first link of an owner",
+     "description": "`this.quota[owner] = this.quota[owner]! + 1;` assumes the entry exists. For a new owner `undefined + 1` yields NaN, breaking quota tracking.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 47,
+     "title": "Link expiration check inverted",
+     "description": "`resolve` deletes the link when `Date.now() < link.expiresAt` (i.e., when it is still valid) and returns the target for already\u2011expired links. This permanently removes fresh links and serves stale ones.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 106,
+     "title": "`delete` does not adjust owner quota",
+     "description": "When a link is removed, the owner's quota entry is left unchanged, so the quota count can become inaccurate and prevent the owner from creating new links.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 58,
+     "title": "`rename` validates the source code twice, never validates the target",
+     "description": "The second validation call repeats `validateCode(from)`. The target code `to` is not validated, allowing invalid codes to be set.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 116,
+     "title": "`top` returns lowest\u2011hit links instead of highest",
+     "description": "The comparator returns `1` when `a.hits > b.hits`, which sorts ascending. The subsequent slice returns the least\u2011used links, contrary to the comment.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 122,
+     "title": "`byOwner` matches owners by substring",
+     "description": "`l.owner.includes(owner)` returns true for partial matches, e.g., owner \"bob\" matches \"bobette\".",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 134,
+     "title": "`extend` resets expiry instead of extending it",
+     "description": "`extend` sets `expiresAt = Date.now() + ttlMs`, discarding any remaining time. The intended behavior is to add `ttlMs` to the current expiry.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 142,
+     "title": "`quotas` returns a mutable reference",
+     "description": "The method returns the internal `quota` map directly, so callers can mutate the store's internal state, violating the snapshot contract.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 165,
+     "title": "`prune` returns the remaining size instead of removed count",
+     "description": "The function counts removed links in `removed` but returns `this.links.size`, which is the post\u2011prune size, not the number of entries removed.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 98,
+     "title": "`successRate` always rounds to 0% unless every link is used",
+     "description": "`Math.floor(used / this.links.size) * 100` floors the fraction before multiplying, yielding 0 for any usage below 100%.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 84,
+     "title": "`utilization` integer division yields 0 until cache is full",
+     "description": "`Math.floor(this.entries.size / this.limit) * 100` performs the floor before scaling, so any partial fill reports 0%.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 90,
+     "title": "`keys` iterates over Map with `for\u2026in` and returns an empty array",
+     "description": "`for (const key in this.entries)` enumerates object properties, not Map entries, so no keys are collected.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 46,
+     "title": "Cache eviction does not follow LRU policy",
+     "description": "When the cache is full, the code evicts the first inserted entry (`this.entries.keys().next().value`) instead of the least\u2011recently used entry tracked by `used` timestamps.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 51,
+     "title": "`bearerToken` called without checking Authorization header",
+     "description": "`bearerToken(req.headers[\\\"authorization\\\"])` will throw if the header is missing, causing the whole request handler to crash instead of returning a 401.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 97,
+     "title": "Redirect handler assumes `code` query param exists",
+     "description": "`req.query[\\\"code\\\"]!` uses a non\u2011null assertion; a request without `code` raises an exception.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 139,
+     "title": "Admin quota endpoint trusts only an `x-admin` header",
+     "description": "The check `req.headers[\\\"x-admin\\\"] !== \\\"true\\\"` allows any client to set this header and gain admin data, bypassing authentication.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 160,
+     "title": "Report endpoint reads a different file than it writes",
+     "description": "`exportCsv` writes to `<name>.csv` (or `links.csv` when name is empty) but `readReport` reads `${name}.csv`. When `name` is empty the read attempts `.csv`, which does not exist.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "`warmCache` does not await async operations",
+     "description": "`pairs.forEach(async \u2026)` starts asynchronous probes but the function returns before they finish, so the cache may be incomplete when the caller assumes it is ready.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 60,
+     "title": "`checkTargets` fails to handle probe rejections",
+     "description": "`probe` throws on insecure URLs; `Promise.all` propagates the rejection, causing the whole function to throw instead of returning the first failing target.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 77,
+     "title": "`countForOwner` returns NaN for owners without a quota entry",
+     "description": "`return quotas[owner] + 0;` yields `undefined + 0` \u2192 `NaN` when the owner is absent.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 48,
+     "title": "`warmCache` returns before async work completes",
+     "description": "The function uses `pairs.forEach(async ...)` without awaiting the async callbacks. The `warmCache` promise resolves as soon as the synchronous `forEach` finishes, leaving cache population and possible probe errors running later. Callers that await `warmCache` may assume the cache is fully warmed, leading to race conditions where look\u2011ups miss cached entries.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 60,
+     "title": "`checkTargets` does not short\u2011circuit and mishandles probe failures",
+     "description": "`checkTargets` uses `Promise.all` to run all `probe` calls concurrently and then scans the results. This ignores the comment about abandoning remaining probes after the first failure and also propagates any rejection from `probe` (e.g., insecure target) as an unhandled promise rejection, which can crash the process.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 70,
+     "title": "`flushAudit` ignores the asynchronous write operation",
+     "description": "`flushAudit` invokes the provided async `write` function but does not await or return its promise. The caller has no guarantee that the audit record has been persisted before subsequent actions, which can cause lost audit entries if the process exits early.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 64,
+     "title": "`Cache.delete` leaves TTL timer running",
+     "description": "`Cache.delete` removes the entry from `entries` but does not clear the associated timeout stored in `timers`. The timer remains scheduled and will fire later, calling `delete` again. Over time this leaks timer IDs and may keep the event loop busy, especially when many entries are evicted manually.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 22,
+     "title": "Predictable session tokens",
+     "description": "Authenticator.issue generates tokens using Math.random, which is not cryptographically secure. An attacker can guess token values and hijack sessions.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 36,
+     "title": "Token verification ignores expiration",
+     "description": "Authenticator.verify returns a session only based on token existence and never checks the session.expiresAt field, allowing expired tokens to remain valid.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "Incorrect admin role check",
+     "description": "requireAdmin uses allowed.indexOf(session.role) as a truthy test. Index 0 (admin) is falsy, while -1 for unknown roles is truthy, granting admin privileges to any non\u2011admin role.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 86,
+     "title": "Timing\u2011attack\u2011prone secret comparison",
+     "description": "secretEquals performs a simple === comparison, which can leak timing information and enable attackers to guess secret values.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 12,
+     "title": "Path traversal in CSV export",
+     "description": "exportCsv constructs the output path with path.join(dir, `${reportName}.csv`) where reportName is taken directly from client input. Supplying '../' sequences can cause files to be written outside the intended export directory.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 60,
+     "title": "Path traversal when reading exported reports",
+     "description": "readReport builds a file path from a user\u2011supplied name without validation, allowing an attacker to read arbitrary files via directory traversal.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 35,
+     "title": "Path traversal in per\u2011owner archive",
+     "description": "archiveAll writes owner\u2011named CSV files with join(dir, `${owner}.csv`). If the owner string contains '../' an attacker can write files outside the target directory.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 139,
+     "title": "Admin endpoint trusts client header without authentication",
+     "description": "adminQuotas only checks the 'x-admin' header for the literal value \"true\". Any client can set this header and retrieve quota information, bypassing authentication and exposing internal data.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 115,
+     "title": "Delete endpoint lacks ownership verification",
+     "description": "deleteLink calls store.delete without confirming that the authenticated session's owner matches the link's owner, allowing any authenticated user to delete any link.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 47,
+     "title": "Expiration logic inverted in resolve()",
+     "description": "resolve() deletes a link when Date.now() < link.expiresAt, i.e., while the link is still valid, causing premature removal of active links on first access.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 105,
+     "title": "Delete does not update per\u2011owner quota",
+     "description": "store.delete removes a link but never decrements the owner's quota count, eventually preventing owners from creating new links.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 34,
+     "title": "Quota counter can become NaN",
+     "description": "`this.quota[owner]` may be undefined; adding 1 results in NaN, breaking quota tracking.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 112,
+     "title": "Configuration validation always returns true",
+     "description": "validate() gathers configuration problems but unconditionally returns true, allowing invalid configurations (e.g., out\u2011of\u2011range port) to be used.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 38,
+     "title": "Invalid timeout environment variable results in NaN",
+     "description": "If LINKD_TIMEOUT_MS is non\u2011numeric, `cfg.timeoutMs` is set to NaN, which can cause unexpected behavior or denial\u2011of\u2011service.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 515102,
+      "output_tokens": 24709
+     },
+     "duration_ms": 167568,
+     "failed": false,
+     "output_bytes": 24999
+    },
+    {
+     "usage": {
+      "input_tokens": 322447,
+      "output_tokens": 10010
+     },
+     "duration_ms": 115405,
+     "failed": false,
+     "output_bytes": 3215
+    },
+    {
+     "usage": {
+      "input_tokens": 386135,
+      "output_tokens": 11171
+     },
+     "duration_ms": 123135,
+     "failed": false,
+     "output_bytes": 7195
+    }
+   ]
+  }
+ ]
+}
