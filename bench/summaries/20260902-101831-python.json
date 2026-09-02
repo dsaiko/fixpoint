@@ -1,0 +1,570 @@
+{
+ "run": "20260902-101831",
+ "task": "code",
+ "target": "python",
+ "model": "nemotron-3-ultra:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "auth.py",
+     "line": 50,
+     "title": "require_admin always returns False",
+     "description": "The require_admin check uses `or` instead of `and`/`not in`, causing all admin/owner requests to be denied. The condition `session.role != \"admin\" or session.role != \"owner\"` is always True because a role cannot be both simultaneously.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 64,
+     "title": "bearer_token crashes on missing/malformed header",
+     "description": "Request without Authorization header or with malformed header (e.g., \"Bearer\" without token) causes IndexError on `header.split(\" \")[1]` in bearer_token, crashing the request handler.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 70,
+     "title": "secret_equals vulnerable to timing attacks",
+     "description": "secret_equals uses `==` for secret comparison, which is vulnerable to timing attacks. The comment claims it avoids leaking match information but the implementation does the opposite.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 63,
+     "title": "Cache.sweep() modifies dict during iteration",
+     "description": "Cache.sweep() iterates over `self.entries` while deleting from it, raising RuntimeError: dictionary changed size during iteration.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 80,
+     "title": "Cache.flush() deadlocks on lock re-acquisition",
+     "description": "Cache.flush() calls self.delete() while already holding self.lock, causing deadlock because delete() also tries to acquire the same lock.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 73,
+     "title": "utilization() returns 0 until cache is full",
+     "description": "utilization() computes `len(self.entries) // self.limit * 100` which evaluates to 0 for any cache less than full due to integer division happening first.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 41,
+     "title": "Timeout/TTL units mismatch (ms vs seconds)",
+     "description": "LINKD_TIMEOUT_MS and LINKD_CACHE_TTL_MS are documented as milliseconds but assigned directly to fields that default to seconds (10 and 300), creating a 1000x mismatch.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.py",
+     "line": 100,
+     "title": "validate() returns True despite problems",
+     "description": "validate() prints problems but returns True anyway, so callers cannot detect invalid configuration.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 61,
+     "title": "parse_report mutable default argument",
+     "description": "parse_report uses mutable default argument `rows=[]` which persists across calls, accumulating results from previous invocations.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 13,
+     "title": "Path traversal in export_csv",
+     "description": "export_csv joins user-controlled `name` with directory without validation, allowing path traversal via `../../../etc/passwd` to write outside export_dir.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 40,
+     "title": "Missing auth header crashes request handler",
+     "description": "handle() calls auth.bearer_token with empty string when Authorization header is missing, causing IndexError in bearer_token.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 117,
+     "title": "Open redirect in /out endpoint",
+     "description": "out() redirects to user-controlled `next` parameter without validation, enabling open redirect attacks to arbitrary destinations.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 130,
+     "title": "Division by zero in stats()",
+     "description": "stats() divides by zero when store is empty: `store.total_hits() / store.size()` and `store.success_rate()` both crash.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 46,
+     "title": "KeyError on new owner in create()",
+     "description": "Store.create() raises KeyError on first link for a new owner because `self.quota[owner]` doesn't exist yet.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 57,
+     "title": "resolve() logic inverted - deletes valid links",
+     "description": "Store.resolve() deletes valid (non-expired) links and returns None, while keeping expired links. The condition `if time.time() < link.expires_at:` means \"not expired\" but then deletes the link.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.py",
+     "line": 65,
+     "title": "rename() validates frm twice, not to",
+     "description": "Store.rename() calls validate_code(frm) twice instead of validating both frm and to.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 83,
+     "title": "page() off-by-one in end calculation",
+     "description": "Store.page() computes `end = len(all_links) + 1` causing off-by-one: it returns one extra element when offset+size exceeds length.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.py",
+     "line": 91,
+     "title": "success_rate() returns 0 until all links used",
+     "description": "Store.success_rate() computes `used // len(self.links) * 100` which is 0 for any used < total due to integer division order.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 94,
+     "title": "delete() doesn't decrement quota",
+     "description": "Store.delete() removes the link but doesn't decrement the owner's quota count, causing quota to drift upward permanently.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 105,
+     "title": "top() sorts ascending not descending",
+     "description": "Store.top() sorts by hits ascending (least first) but comment says \"most hits first\".",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.py",
+     "line": 110,
+     "title": "by_owner() uses substring match",
+     "description": "Store.by_owner() uses substring match `owner in l.owner` so owner \"alice\" matches \"alice_admin\" and \"malice\".",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 121,
+     "title": "extend() replaces instead of extending expiry",
+     "description": "Store.extend() replaces expiry with `time.time() + ttl` instead of adding ttl to current expiry, and doesn't check if already expired.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 143,
+     "title": "prune() modifies dict during iteration",
+     "description": "Store.prune() iterates over `self.links` while deleting from it, raising RuntimeError.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 147,
+     "title": "prune() returns wrong value",
+     "description": "Store.prune() returns `len(self.links)` (remaining count) but comment says \"reporting how many went\".",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "worker.py",
+     "line": 69,
+     "title": "check_targets() IndexError on empty problems",
+     "description": "worker.check_targets() returns `problems[0]` without checking if list is empty, causing IndexError when all links are https.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 74,
+     "title": "count_for_owner() KeyError for unknown owner",
+     "description": "worker.count_for_owner() accesses `store.quotas()[owner]` directly, raising KeyError for owners with zero links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 28,
+     "title": "Store class has no synchronization - data races on all operations",
+     "description": "The Store class uses plain dicts (self.links, self.quota) with no locks. Multiple threads (HTTP handlers + janitor thread) concurrently call create(), resolve(), delete(), page(), top(), by_owner(), extend(), import_all(), prune(), find_expired(), quotas(), total_hits(), size() without any synchronization. This causes data races: lost updates, corrupted dict internal state, iterator invalidation (RuntimeError), and use-after-free on Link objects.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 23,
+     "title": "Authenticator.sessions dict accessed without locks",
+     "description": "Authenticator.sessions is a plain dict. issue() writes, verify() iterates values(), and revoke() deletes - all without synchronization. Concurrent verify() iteration while another thread inserts/deletes causes RuntimeError (dict changed size during iteration) or missed/duplicate sessions. Token validation can be bypassed or valid tokens rejected.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.py",
+     "line": 10,
+     "title": "Metrics counters are not thread-safe",
+     "description": "Metrics.resolved, created, errors are plain ints. add_resolved(), add_created(), and snapshot() are called from multiple threads (HTTP handlers) without atomicity or locks. Lost updates cause incorrect dashboard counts. In CPython the GIL makes single bytecode ops atomic but += is not atomic (read-modify-write).",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.py",
+     "line": 36,
+     "title": "Janitor thread accesses store.links directly without synchronization",
+     "description": "The janitor loop (line 40-41) directly iterates store.find_expired() and deletes from store.links while HTTP handlers concurrently call store methods. No locks protect this access. Additionally, store.find_expired() returns a generator over live dict items - iterating it while another thread modifies the dict raises RuntimeError.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.py",
+     "line": 33,
+     "title": "Cache.peek() reads entries without lock - data race with writers",
+     "description": "peek() accesses self.entries without holding self.lock while get(), set(), delete(), sweep(), flush() all hold the lock when writing. This allows stale reads, missed entries, or dict corruption during resize. warm() compounds this with a TOCTOU: peek() (no lock) then set() (with lock) - entry can expire or be evicted between check and set.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.py",
+     "line": 62,
+     "title": "Cache.sweep() modifies dict during iteration",
+     "description": "sweep() iterates 'for code in self.entries:' and deletes entries inside the loop. In Python, mutating a dict during iteration raises RuntimeError: 'dictionary changed size during iteration'. This crashes the janitor thread.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 77,
+     "title": "Cache.flush() deadlocks on non-reentrant lock",
+     "description": "flush() acquires self.lock, then calls self.delete('__sentinel__') which also tries to acquire self.lock. Python's threading.Lock is not reentrant - this deadlocks the calling thread.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 140,
+     "title": "Store.prune() modifies dict during iteration",
+     "description": "prune() iterates 'for code in self.links:' and deletes entries. Same RuntimeError as cache.sweep(). Also returns len(self.links) after deletion but the loop variable 'removed' is unused.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 128,
+     "title": "Store.quotas() returns live internal dict reference",
+     "description": "quotas() returns self.quota directly. Callers (e.g., admin_quotas in main.py) can mutate the store's internal quota tracking, breaking invariants. The docstring claims 'mutating it must not affect the store' but the code does the opposite.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 29,
+     "title": "Janitor _running flag has no memory visibility guarantee",
+     "description": "_running is a plain boolean. stop_janitor() sets _running = False but without a memory barrier (threading.Event, Lock, or volatile), the janitor thread may cache the value and never exit. No way to reliably shut down the background thread.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 55,
+     "title": "warm_cache() starts threads but never joins them - thread leak",
+     "description": "warm_cache() creates and starts a thread per cache entry but doesn't track or join them. Caller has no way to wait for completion. Unbounded thread creation under load. Threads run cache.set() which is thread-safe but the leak remains.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 43,
+     "title": "Authenticator.verify() linear search races with modifications",
+     "description": "verify() iterates self.sessions.values() (O(n)) while other threads may modify the dict. Even with a lock added, holding it during linear search blocks all other auth operations. The dict should be keyed by token for O(1) lookup.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 157,
+     "title": "Store.find_expired() returns generator over live dict",
+     "description": "find_expired() returns a generator expression over self.links.items(). If the caller (janitor) iterates while another thread modifies self.links, RuntimeError or missed/duplicate entries. The generator captures the dict at creation but iteration is lazy.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "main.py",
+     "line": 41,
+     "title": "Global shared state with no synchronization in request handlers",
+     "description": "main.py creates global store, cache, authenticator, metrics at module level. All handle() calls share these instances concurrently with zero synchronization. Every handler method (create_link, redirect, delete_link, stats, report) races on the unsynchronized internals.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 63,
+     "title": "check_targets() raises IndexError on empty list",
+     "description": "check_targets() returns problems[0] without checking if problems is empty. If all links are https://, problems == [] and this raises IndexError. Not a concurrency bug but a crash on valid input.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "auth.py",
+     "line": 22,
+     "title": "Hardcoded default secret used when LINKD_SECRET not set",
+     "description": "The Authenticator falls back to a hardcoded weak secret 'dev-secret-do-not-use' when LINKD_SECRET environment variable is not configured, allowing token forgery.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 27,
+     "title": "Non-cryptographic random used for session token generation",
+     "description": "Token generation uses random.getrandbits() instead of a CSPRNG (secrets module), making tokens predictable.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 61,
+     "title": "Password hashing uses unsalted SHA-256",
+     "description": "hash_password() uses a single iteration of SHA-256 with no salt, making password hashes trivial to crack.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 71,
+     "title": "Timing attack in secret comparison",
+     "description": "secret_equals() uses == which is vulnerable to timing attacks, allowing an attacker to extract secrets byte-by-byte.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.py",
+     "line": 13,
+     "title": "Path traversal in export_csv via name parameter",
+     "description": "export_csv() concatenates user-controlled 'name' with directory using os.path.join without validating that the result stays within directory.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.py",
+     "line": 31,
+     "title": "Path traversal in archive_all via owner parameter",
+     "description": "archive_all() uses owner directly in os.path.join without path traversal protection.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "export.py",
+     "line": 58,
+     "title": "Path traversal in read_report via name parameter",
+     "description": "read_report() joins user-controlled name with directory without validation, allowing arbitrary file read.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.py",
+     "line": 112,
+     "title": "Open redirect in /out endpoint",
+     "description": "The /out endpoint performs an open redirect using user-supplied 'next' parameter without validation.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.py",
+     "line": 94,
+     "title": "Missing authorization check in delete_link",
+     "description": "delete_link() does not verify that the session owner matches the link owner before deletion.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "store.py",
+     "line": 34,
+     "title": "SSRF via insufficient URL validation in store.create",
+     "description": "Target URL validation only checks scheme prefix, allowing requests to internal/private IP addresses and metadata endpoints.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.py",
+     "line": 30,
+     "title": "Invalid CORS: wildcard origin with credentials",
+     "description": "respond() sets Access-Control-Allow-Origin: * and Access-Control-Allow-Credentials: true, which browsers reject and indicates confused CORS policy.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.py",
+     "line": 43,
+     "title": "Token leaked in error response and logs",
+     "description": "handle() includes the raw token in the 401 error body, exposing session tokens in logs and client responses.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 43,
+     "title": "Timing attack in session token verification",
+     "description": "verify() uses linear search with == comparison, leaking timing information about token existence and position.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 50,
+     "title": "Logic bug in require_admin always returns False",
+     "description": "The condition uses OR instead of AND, making it impossible for any session to pass the admin check.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "config.py",
+     "line": 72,
+     "title": "Path traversal in load_file via user-supplied path",
+     "description": "load_file() opens the given path directly without validating it's within an allowed directory.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 109,
+     "title": "Substring match in by_owner allows authorization bypass",
+     "description": "by_owner() checks if owner string is a substring of link.owner, not exact equality, allowing cross-user data access.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 123,
+     "title": "Admin endpoint protected by spoofable header",
+     "description": "Admin check relies on a client-controlled header rather than session-based authorization.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 170,
+     "title": "Non-cryptographic random used for short code generation",
+     "description": "new_code() uses random.getrandbits() instead of secrets module, making short codes predictable.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 63,
+     "title": "Dictionary modified during iteration in cache.sweep",
+     "description": "sweep() iterates over self.entries and deletes entries during iteration, causing RuntimeError.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.py",
+     "line": 143,
+     "title": "Dictionary modified during iteration in store.prune",
+     "description": "prune() iterates over self.links and deletes entries during iteration, causing RuntimeError.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.py",
+     "line": 41,
+     "title": "Dictionary modified during iteration in janitor loop",
+     "description": "Janitor loop deletes from store.links while iterating over a generator that reads from store.links.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 66,
+     "title": "IndexError in bearer_token on malformed header",
+     "description": "bearer_token() does not validate header format before splitting, causing IndexError on missing/invalid Authorization header.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.py",
+     "line": 79,
+     "title": "Bare except clause catches critical exceptions",
+     "description": "Bare except: in parse_lifetime() catches all exceptions including KeyboardInterrupt, preventing clean shutdown.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "config.py",
+     "line": 100,
+     "title": "validate() returns True despite configuration errors",
+     "description": "validate() prints problems but returns True, so invalid configurations are not rejected at startup.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.py",
+     "line": 43,
+     "title": "Predictable temp file path in write_snapshot",
+     "description": "Hardcoded /tmp path allows symlink attacks and race conditions.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 162879,
+      "output_tokens": 13225
+     },
+     "duration_ms": 930636,
+     "failed": false,
+     "output_bytes": 11309
+    },
+    {
+     "usage": {
+      "input_tokens": 311908,
+      "output_tokens": 15106
+     },
+     "duration_ms": 936144,
+     "failed": false,
+     "output_bytes": 9816
+    },
+    {
+     "usage": {
+      "input_tokens": 161901,
+      "output_tokens": 12264
+     },
+     "duration_ms": 597012,
+     "failed": false,
+     "output_bytes": 11454
+    }
+   ]
+  }
+ ]
+}
