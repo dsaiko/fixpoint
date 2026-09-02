@@ -306,28 +306,32 @@ def main():
     # exactly what the disqualifier exists to prevent (review run
     # 20260813-124710).
     errors = sum(1 for s in steps if s.get("failed") or s.get("output_bytes", 0) == 0)
-    # A run that never reached its panel has no steps at all, and the reason
-    # decides what it means. A dead or misconfigured agent IS the loudest kind
-    # of contract failure. A provider refusal is NOT: on 2026-09-01 the Claude
-    # session limit refused eleven runs across three models with
-    # "You've hit your session limit", and each one wrote a row reading 0/68
-    # with errors=1 -- three models libelled as broken reviewers by a quota we
-    # ran out of. fixpoint's own log says so plainly at the time: "the API
-    # refused the call, the agent did not fail".
+    # ZERO SESSIONS IS NOT A MEASUREMENT, whatever the cause. The panel never
+    # ran, so there is no recall to record, and a row reading 0/66 is a false
+    # claim that the model scored nothing.
     #
-    # Such a run is NOT A MEASUREMENT and must not be recorded at all, so the
-    # scorer exits rather than writing a row. Re-run it when the limit resets.
+    # This replaces two earlier attempts, both wrong. The first recorded
+    # errors=1 on the theory that a dead agent is "the loudest kind of contract
+    # failure"; the second tried to tell a provider refusal apart from a dead
+    # agent by grepping the journal for "429" / "session limit". The second
+    # cannot work: fixpoint persists only the EFFECT --
+    # `"error": "agent(s) not working: bench-candidate"` -- while the cause
+    # ("provider returned 429 ... the agent did not fail") is printed to stdout
+    # and never written to the journal or the summary. There is nothing to
+    # match on.
+    #
+    # And the distinction did not deserve the effort. The contract-failure
+    # disqualifier is about a model that ANSWERS with unparseable output, which
+    # is `failed` on a step and therefore requires steps to exist. A preflight
+    # refusal -- whether the provider said no or the agent is misconfigured --
+    # is an absent measurement, not a bad one. A missing row reads as "-" in the
+    # report, which is true; a 0/66 row enters the score and the field median as
+    # a data point, which is a lie. The failure is still on stdout and in the
+    # journal for the operator either way.
     if not steps:
-        refusal = (summary.get("error") or "")
-        journal = pathlib.Path(summary_path).parent / "journal.jsonl"
-        if journal.exists():
-            refusal += journal.read_text()
-        if any(k in refusal for k in ("429", "session limit", "usage limit",
-                                      "rate limit", "quota")):
-            sys.exit(f"bench: {model} {target}: the PROVIDER refused this run "
-                     f"(rate/session limit), so it is not a measurement and no "
-                     f"row was written. Re-run it when the limit resets.")
-        errors = 1
+        sys.exit(f"bench: {model} {target}: the panel never ran "
+                 f"({summary.get('error') or 'no sessions'}), so this is not a "
+                 f"measurement and no row was written. Re-run it.")
     mtok = (tok_in + tok_out) / 1e6
     eff = round(found / mtok, 2) if mtok else 0.0
 
