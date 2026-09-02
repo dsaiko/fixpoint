@@ -756,6 +756,15 @@ var permissionBypassFlags = map[string]string{
 // only granted tools are Edit and Write is exactly the outcome can_edit: false is
 // there to prevent, and in -p/exec mode there is no interactive approver left to
 // stop it.
+// codex's two write-permitting sandbox values. Named because each is spelled in
+// three places -- the flag map, its short alias, and the `-c key=value` setting
+// map -- and a typo in any one of them would silently stop rejecting a
+// write-granting argument on a reviewer that claims can_edit: false.
+const (
+	sandboxWorkspaceWrite   = "workspace-write"
+	sandboxDangerFullAccess = "danger-full-access"
+)
+
 var writeGrantingModes = map[string][]string{
 	// claude: bypassPermissions drops every check; acceptEdits auto-approves the
 	// edit tools specifically, which reads like a safe middle ground and is not one.
@@ -764,8 +773,8 @@ var writeGrantingModes = map[string][]string{
 	// claim (see config/agents/codex.yaml); both other modes permit writes.
 	// Matched under the short spelling too -- `-s` is codex's own alias, and the
 	// value is specific enough that no other CLI collides with it.
-	"--sandbox": {"workspace-write", "danger-full-access"},
-	"-s":        {"workspace-write", "danger-full-access"},
+	"--sandbox": {sandboxWorkspaceWrite, sandboxDangerFullAccess},
+	"-s":        {sandboxWorkspaceWrite, sandboxDangerFullAccess},
 	// agy: --mode takes only plan or accept-edits (see config/agents/agy.yaml).
 	"--mode": {"accept-edits"},
 	// gemini-cli, qwen-code: the value form of --yolo, plus its edits-only preset.
@@ -787,7 +796,7 @@ var writeGrantingModes = map[string][]string{
 var writeGrantingConfigSettings = map[string][]string{
 	// codex: the setting --sandbox sets. read-only is the enforced no-write value
 	// that earns a read-only claim; both others permit writes.
-	"sandbox_mode": {"workspace-write", "danger-full-access"},
+	"sandbox_mode": {sandboxWorkspaceWrite, sandboxDangerFullAccess},
 }
 
 // dataScopeFlags are the flags whose value is a directory the CLI merely adds to

@@ -356,10 +356,10 @@ func loadCreateTemplates(cfg *config.Config, load func(name, path string, data a
 // internal/runlog implements it; anything that only wants the text can ignore it
 // and read logf, which every phase call also has a plain equivalent for.
 type Phaser interface {
-	Rule(format string, args ...any)
-	Phase(format string, args ...any)
-	EndPhase(format string, args ...any)
-	Progress(format string, args ...any)
+	Rulef(format string, args ...any)
+	Phasef(format string, args ...any)
+	EndPhasef(format string, args ...any)
+	Progressf(format string, args ...any)
 }
 
 // WithProgress installs the structure sink and returns o, so a caller can build
@@ -373,25 +373,25 @@ func (o *Orchestrator) WithProgress(p Phaser) *Orchestrator {
 // falls back to an ordinary line when no sink is installed, so the orchestrator
 // never has to ask whether one is -- and a test reading the log still sees every
 // word, just without the shape.
-func (o *Orchestrator) rule(format string, args ...any) {
+func (o *Orchestrator) rulef(format string, args ...any) {
 	if o.progress != nil {
-		o.progress.Rule(format, args...)
+		o.progress.Rulef(format, args...)
 		return
 	}
 	o.logf("=== "+format+" ===", args...)
 }
 
-func (o *Orchestrator) phase(format string, args ...any) {
+func (o *Orchestrator) phasef(format string, args ...any) {
 	if o.progress != nil {
-		o.progress.Phase(format, args...)
+		o.progress.Phasef(format, args...)
 		return
 	}
 	o.logf(format, args...)
 }
 
-func (o *Orchestrator) endPhase(format string, args ...any) {
+func (o *Orchestrator) endPhasef(format string, args ...any) {
 	if o.progress != nil {
-		o.progress.EndPhase(format, args...)
+		o.progress.EndPhasef(format, args...)
 		return
 	}
 	o.logf(format, args...)
@@ -399,7 +399,7 @@ func (o *Orchestrator) endPhase(format string, args ...any) {
 
 func (o *Orchestrator) progressf(format string, args ...any) {
 	if o.progress != nil {
-		o.progress.Progress(format, args...)
+		o.progress.Progressf(format, args...)
 		return
 	}
 	o.logf(format, args...)
@@ -718,12 +718,12 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// Then ping (spends a little on each agent), then Prepare (may mutate
 	// state -- pr checkout): each stage fails before the next spends more.
 	if o.cfg.Ping() {
-		o.phase("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
+		o.phasef("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
 		if err := o.Ping(ctx); err != nil {
-			o.endPhase("PREFLIGHT  failed")
+			o.endPhasef("PREFLIGHT  failed")
 			return err
 		}
-		o.endPhase("PREFLIGHT  every agent responded")
+		o.endPhasef("PREFLIGHT  every agent responded")
 	}
 
 	// Prepare can switch branches (pr mode runs gh pr checkout), which invalidates
@@ -1063,7 +1063,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 					return false, committed, err
 				}
 			}
-			o.endPhase("FIX %s  rejected by the coder", it.ID)
+			o.endPhasef("FIX %s  rejected by the coder", it.ID)
 			continue
 		}
 		if clean {
@@ -1072,7 +1072,7 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 		}
 		did, err := o.verifyAndCommitFix(ctx, rec, it)
 		if err != nil {
-			o.endPhase("FIX %s  failed: %v", it.ID, err)
+			o.endPhasef("FIX %s  failed: %v", it.ID, err)
 			return false, committed, o.withdrawUncommittedFix(rec, it.ID, err)
 		}
 		if did {
@@ -1089,10 +1089,10 @@ func (o *Orchestrator) runFixSessions(ctx context.Context, rec *model.RoundRecor
 // the complexity limit, does not grow a branch for a log line.
 func (o *Orchestrator) closeFix(issueID string, committed bool) {
 	if committed {
-		o.endPhase("FIX %s  committed", issueID)
+		o.endPhasef("FIX %s  committed", issueID)
 		return
 	}
-	o.endPhase("FIX %s  not committed; the finding stays open", issueID)
+	o.endPhasef("FIX %s  not committed; the finding stays open", issueID)
 }
 
 // answerConversations posts this session's replies, but only once its fix is
@@ -1656,7 +1656,7 @@ func (o *Orchestrator) warnFinalPhaseCapped(sum *model.RunSummary, passes int) {
 // reaches the coder.
 func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, asgs []model.Assignment, label string) (done bool, err error) {
 	round := len(sum.Rounds) + 1
-	o.phase("CLOSING %s  round %d, %d reviewer(s) over the finished tree", label, round, len(asgs))
+	o.phasef("CLOSING %s  round %d, %d reviewer(s) over the finished tree", label, round, len(asgs))
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
@@ -1687,7 +1687,7 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 		Issues:       len(recP.Issues),
 		Corroborated: corroboratedCount(recP.Issues),
 	})
-	o.endPhase("CLOSING %s  %d finding(s), %d advisory, %d reviewer error(s)",
+	o.endPhasef("CLOSING %s  %d finding(s), %d advisory, %d reviewer error(s)",
 		label, len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
 	// A failed closing reviewer is a failed closing pass, checked BEFORE an empty
 	// finding set is read as a completed final review. Nothing follows to catch what
@@ -2181,7 +2181,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		sum.Termination = model.TermInterrupted
 		return true, nil //nolint:nilerr // interruption is a normal termination, not a round error
 	}
-	o.rule("round %d/%d", round, o.maxRounds())
+	o.rulef("round %d/%d", round, o.maxRounds())
 
 	material, err := o.collector.Collect(ctx)
 	if err != nil {
@@ -2202,7 +2202,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 	o.journal(model.EvRoundStarted, round, model.JournalRoundStarted{
 		Assignments: journalAssignments(rec.Assignments),
 	})
-	o.phase("REVIEW  %d reviewer(s), %d lens(es)", len(panelAgents(rec.Assignments)), len(rec.Assignments))
+	o.phasef("REVIEW  %d reviewer(s), %d lens(es)", len(panelAgents(rec.Assignments)), len(rec.Assignments))
 	o.review(ctx, &rec, material, sum.Rounds)
 	// Billed for having RUN, not for what it decided. A pass that declined every
 	// conversation, or that failed to parse, spent the same tokens as one that
@@ -2245,7 +2245,7 @@ func (o *Orchestrator) runRound(ctx context.Context, round int, sum *model.RunSu
 		Corroborated: corroboratedCount(recP.Issues),
 	})
 
-	o.endPhase("REVIEW  %d finding(s), %d advisory, %d reviewer error(s)",
+	o.endPhasef("REVIEW  %d finding(s), %d advisory, %d reviewer error(s)",
 		len(recP.Findings), len(recP.Advisory), len(recP.ReviewErrors))
 
 	if ctx.Err() != nil {
@@ -3647,7 +3647,7 @@ func (o *Orchestrator) fix(ctx context.Context, rec *model.RoundRecord, history 
 	if err != nil {
 		return false, nil, err
 	}
-	o.phase("FIX %s  %s", fixSubject(active), firstLineOf(fixTitle(active)))
+	o.phasef("FIX %s  %s", fixSubject(active), firstLineOf(fixTitle(active)))
 	o.logf("%s starting on %d issue(s) (prompt %s)", label, len(active), logstore.SizeDesc(len(text)))
 	res := o.runAgent(ctx, label, "fix", coder.Agent, promptName, rec.Round, text)
 	var out model.FixOutput
@@ -4088,12 +4088,12 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 	if !o.cfg.Verify.Enabled() || o.cfg.Loop.ReviewOnly {
 		return
 	}
-	o.phase("BASELINE  capturing %d verification command(s)", len(o.cfg.Verify.Commands))
+	o.phasef("BASELINE  capturing %d verification command(s)", len(o.cfg.Verify.Commands))
 	// Closed on every path, including the returns in the middle: the block's summary
 	// is the last thing said about the baseline, and an unclosed block would indent
 	// the whole run under it.
 	outcome := "no baseline"
-	defer func() { o.endPhase("BASELINE  %s", outcome) }()
+	defer func() { o.endPhasef("BASELINE  %s", outcome) }()
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
 	// A cancellation inside the baseline is ordinary -- it is the longest step before
 	// round 1, a full build and test suite over an untouched tree -- and it leaves a
@@ -4417,12 +4417,12 @@ func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord
 		FilterFailed: !judged,
 	})
 	sum.Verdict = d.Summary()
-	o.phase("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	o.phasef("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
 	for _, r := range d.Reasons {
 		o.logf("%s", r)
 	}
 	err := o.writeReviewBody(ctx, rec, sum, d)
-	o.endPhase("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	o.endPhasef("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
 	return err
 }
 
@@ -4641,7 +4641,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		o.logf("refutation: skipped -- none of the %d finding(s) is %s or above", len(rec.Issues), floor)
 		return
 	}
-	o.phase("REFUTE  %d reviewer(s) judging %d of %d finding(s) at %s or above",
+	o.phasef("REFUTE  %d reviewer(s) judging %d of %d finding(s) at %s or above",
 		len(panel), len(subject), len(rec.Issues), floor)
 
 	type reply struct {
@@ -4692,7 +4692,7 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 	// be part of what happens to a finding.
 	if ctx.Err() != nil {
 		o.logf("refutation: interrupted before it could run; every finding stands")
-		o.endPhase("REFUTE  interrupted; every finding stands")
+		o.endPhasef("REFUTE  interrupted; every finding stands")
 		return
 	}
 
@@ -4748,11 +4748,11 @@ func (o *Orchestrator) runRefutation(ctx context.Context, rec *model.RoundRecord
 		// Nobody judged anything. Dropping findings on the strength of an empty round
 		// would be the worst possible reading of silence.
 		o.logf("refutation: no reviewer returned a usable position; every finding stands")
-		o.endPhase("REFUTE  no usable position returned; every finding stands")
+		o.endPhasef("REFUTE  no usable position returned; every finding stands")
 		return
 	}
 	dropped, contested := applyRefutations(rec, byIssue, responded, len(panel), o.logf)
-	o.endPhase("REFUTE  %d of %d responder(s), %d dropped, %d contested", responded, len(panel), dropped, contested)
+	o.endPhasef("REFUTE  %d of %d responder(s), %d dropped, %d contested", responded, len(panel), dropped, contested)
 }
 
 // guidance is the mode line every prompt opens with, document-aware: a directory
@@ -5045,7 +5045,7 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 	if open == 0 {
 		return true
 	}
-	o.phase("JUDGE  %s weighing %d surviving finding(s)", j.Agent, open)
+	o.phasef("JUDGE  %s weighing %d surviving finding(s)", j.Agent, open)
 
 	d := prompt.JudgeData{
 		Mode:           o.cfg.Target.Mode,
@@ -5065,13 +5065,13 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 		// Orchestrator. Rendering a nil template PANICS, which would take down a run
 		// over a filter -- fail the filter closed instead.
 		o.logf("WARNING: judge prompt %q was never loaded; every finding stands and the review cannot approve", j.Prompt)
-		o.endPhase("JUDGE  did not run; every finding stands")
+		o.endPhasef("JUDGE  did not run; every finding stands")
 		return false
 	}
 	text, err := prompt.Render(tmpl, d)
 	if err != nil {
 		o.logf("WARNING: judge: render failed (%v); every finding stands and the review cannot approve", err)
-		o.endPhase("JUDGE  did not run; every finding stands")
+		o.endPhasef("JUDGE  did not run; every finding stands")
 		return false
 	}
 	res := o.runAgent(ctx, "judge: "+j.Agent, "judge", j.Agent, j.Prompt, rec.Round, text)
@@ -5088,11 +5088,11 @@ func (o *Orchestrator) runJudge(ctx context.Context, rec *model.RoundRecord, mat
 		logstore.RenderJudgeMD(j.Agent, rec.Round, out.Verdicts, parseErr), res, "")
 	if parseErr != nil {
 		o.logf("WARNING: judge failed (%v); every finding stands and the review cannot approve", parseErr)
-		o.endPhase("JUDGE  did not finish; every finding stands")
+		o.endPhasef("JUDGE  did not finish; every finding stands")
 		return false
 	}
 	kept, dropped := applyJudgment(rec, out.Verdicts, o.cfg.Review.BlockAt, j.Agent, o.logf)
-	o.endPhase("JUDGE  %d kept, %d dropped", kept, dropped)
+	o.endPhasef("JUDGE  %d kept, %d dropped", kept, dropped)
 	return true
 }
 
@@ -5750,11 +5750,11 @@ func (o *Orchestrator) preflightPing(ctx context.Context) error {
 	if !o.cfg.Ping() {
 		return nil
 	}
-	o.phase("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
+	o.phasef("PREFLIGHT  pinging %d agent(s)", len(o.activeAgentNames()))
 	if err := o.Ping(ctx); err != nil {
-		o.endPhase("PREFLIGHT  failed")
+		o.endPhasef("PREFLIGHT  failed")
 		return err
 	}
-	o.endPhase("PREFLIGHT  every agent responded")
+	o.endPhasef("PREFLIGHT  every agent responded")
 	return nil
 }

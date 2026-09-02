@@ -1,7 +1,8 @@
 module github.com/dsaiko/fixpoint
 
-go 1.26
+go 1.27
 
-require gopkg.in/yaml.v3 v3.0.1
-
-require golang.org/x/sys v0.47.0
+require (
+	golang.org/x/sys v0.47.0
+	gopkg.in/yaml.v3 v3.0.1
+)

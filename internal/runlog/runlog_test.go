@@ -24,11 +24,11 @@ func fixed(w *bytes.Buffer) *Log {
 func TestABlockIsVisibleFromTheLeftMargin(t *testing.T) {
 	var buf bytes.Buffer
 	l := fixed(&buf)
-	l.Rule("round 3/3")
-	l.Phase("REVIEW  3 reviewers")
+	l.Rulef("round 3/3")
+	l.Phasef("REVIEW  3 reviewers")
 	l.Printf("claude done (2 findings)")
-	l.Progress("kimi still running (5m0s)")
-	l.EndPhase("REVIEW  4 findings, 1 error")
+	l.Progressf("kimi still running (5m0s)")
+	l.EndPhasef("REVIEW  4 findings, 1 error")
 	l.Printf("after the block")
 
 	// The rule fills a fixed width, so it reads as one continuous separator
@@ -52,8 +52,8 @@ func TestABlockIsVisibleFromTheLeftMargin(t *testing.T) {
 func TestARuleClosesAnOpenPhase(t *testing.T) {
 	var buf bytes.Buffer
 	l := fixed(&buf)
-	l.Phase("FIX i19")
-	l.Rule("round 2/3")
+	l.Phasef("FIX i19")
+	l.Rulef("round 2/3")
 	l.Printf("at the margin")
 	if strings.Contains(buf.String(), "     at the margin") {
 		t.Errorf("a rule must close the open phase:\n%s", buf.String())
@@ -66,7 +66,7 @@ func TestARuleClosesAnOpenPhase(t *testing.T) {
 func TestAMultiLineMessageStaysInsideItsBlock(t *testing.T) {
 	var buf bytes.Buffer
 	l := fixed(&buf)
-	l.Phase("REVIEW")
+	l.Phasef("REVIEW")
 	l.Printf("claude failed:\ngoroutine 1:\n  main.go:7")
 	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")[2:] {
 		if !strings.HasPrefix(line, "23:30:17     ") && !strings.HasPrefix(line, "             ") {
@@ -80,11 +80,11 @@ func TestAMultiLineMessageStaysInsideItsBlock(t *testing.T) {
 func TestEveryMessagePassesThroughTheTransform(t *testing.T) {
 	var buf bytes.Buffer
 	l := fixed(&buf).Transform(func(s string) string { return strings.ReplaceAll(s, "sk-secret", "[REDACTED]") })
-	l.Rule("round with sk-secret")
-	l.Phase("PHASE with sk-secret")
+	l.Rulef("round with sk-secret")
+	l.Phasef("PHASE with sk-secret")
 	l.Printf("detail with sk-secret")
-	l.Progress("progress with sk-secret")
-	l.EndPhase("end with sk-secret")
+	l.Progressf("progress with sk-secret")
+	l.EndPhasef("end with sk-secret")
 	if strings.Contains(buf.String(), "sk-secret") {
 		t.Errorf("a message bypassed the transform:\n%s", buf.String())
 	}
@@ -99,8 +99,8 @@ func TestPipedOutputCarriesNoEscapes(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf) // not a character device
 	l.now = func() time.Time { return time.Time{} }
-	l.Phase("REVIEW")
-	l.Progress("waiting")
+	l.Phasef("REVIEW")
+	l.Progressf("waiting")
 	if strings.Contains(buf.String(), "\x1b[") {
 		t.Errorf("escapes reached a non-terminal writer: %q", buf.String())
 	}
@@ -112,14 +112,14 @@ func TestPipedOutputCarriesNoEscapes(t *testing.T) {
 func TestConcurrentWritesDoNotInterleave(t *testing.T) {
 	var buf bytes.Buffer
 	l := fixed(&buf)
-	l.Phase("REVIEW")
+	l.Phasef("REVIEW")
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			l.Printf("reviewer %d reporting a finding", i)
-			l.Progress("reviewer %d still running", i)
+			l.Progressf("reviewer %d still running", i)
 		}(i)
 	}
 	wg.Wait()

@@ -53,7 +53,7 @@ func (o *Orchestrator) proposeAll(ctx context.Context, snapDir, material string,
 	sort.Strings(pool)
 	labels := create.Labels(pool)
 
-	o.phase("PROPOSE  %d agent(s), independently", len(pool))
+	o.phasef("PROPOSE  %d agent(s), independently", len(pool))
 	out := make([]proposal, len(pool))
 	var wg sync.WaitGroup
 	for i, name := range pool {
@@ -73,7 +73,7 @@ func (o *Orchestrator) proposeAll(ctx context.Context, snapDir, material string,
 			ok++
 		}
 	}
-	o.endPhase("PROPOSE  %d of %d proposal(s)", ok, len(pool))
+	o.endPhasef("PROPOSE  %d of %d proposal(s)", ok, len(pool))
 	return out
 }
 
@@ -138,7 +138,7 @@ func (o *Orchestrator) critiqueAll(ctx context.Context, snapDir string, proposal
 			alive = append(alive, p)
 		}
 	}
-	o.phase("CRITIQUE  %d critic(s), each reading the others' proposals", len(alive))
+	o.phasef("CRITIQUE  %d critic(s), each reading the others' proposals", len(alive))
 	out := make([]critiqueResult, len(alive))
 	var wg sync.WaitGroup
 	for i, p := range alive {
@@ -156,7 +156,7 @@ func (o *Orchestrator) critiqueAll(ctx context.Context, snapDir string, proposal
 			ok++
 		}
 	}
-	o.endPhase("CRITIQUE  %d of %d critique(s)", ok, len(alive))
+	o.endPhasef("CRITIQUE  %d of %d critique(s)", ok, len(alive))
 	return out
 }
 
@@ -285,7 +285,7 @@ func (o *Orchestrator) synthesize(ctx context.Context, snapDir, material string,
 			byCritic = append(byCritic, c.critiques)
 		}
 	}
-	o.phase("SYNTHESIZE  %s over %d proposal(s) and %d critique set(s)", e.Agent, len(labeled), len(byCritic))
+	o.phasef("SYNTHESIZE  %s over %d proposal(s) and %d critique set(s)", e.Agent, len(labeled), len(byCritic))
 	d := prompt.EditorData{
 		Path:           snapDir,
 		ModeGuidance:   prompt.DocumentGuidance,
@@ -299,10 +299,10 @@ func (o *Orchestrator) synthesize(ctx context.Context, snapDir, material string,
 	})
 	doc, step, err := o.editorSession(ctx, snapDir, "synthesize", d)
 	if err != nil {
-		o.endPhase("SYNTHESIZE  failed; the run fails with it")
+		o.endPhasef("SYNTHESIZE  failed; the run fails with it")
 		return "", step, err
 	}
-	o.endPhase("SYNTHESIZE  %d bytes", len(doc))
+	o.endPhasef("SYNTHESIZE  %d bytes", len(doc))
 	return doc, step, nil
 }
 
@@ -319,7 +319,7 @@ type objectionResult struct {
 func (o *Orchestrator) objectAll(ctx context.Context, snapDir, draft string) []objectionResult {
 	pool := append([]string(nil), o.cfg.Roles.Review.Agents...)
 	sort.Strings(pool)
-	o.phase("OBJECT  %d agent(s) reading the final draft", len(pool))
+	o.phasef("OBJECT  %d agent(s) reading the final draft", len(pool))
 	out := make([]objectionResult, len(pool))
 	var wg sync.WaitGroup
 	for i, name := range pool {
@@ -338,7 +338,7 @@ func (o *Orchestrator) objectAll(ctx context.Context, snapDir, draft string) []o
 		}
 		total += len(r.objections)
 	}
-	o.endPhase("OBJECT  %d objection(s), %d objector(s) failed", total, failed)
+	o.endPhasef("OBJECT  %d objection(s), %d objector(s) failed", total, failed)
 	return out
 }
 
@@ -400,7 +400,7 @@ func (o *Orchestrator) objectWith(ctx context.Context, snapDir, draft, agentName
 // defect the phase exists to close.
 func (o *Orchestrator) revise(ctx context.Context, snapDir, draft string, objections []model.Objection) (string, model.StepStat, error) {
 	e := o.cfg.Roles.Editor
-	o.phase("REVISE  %s addressing %d objection(s)", e.Agent, len(objections))
+	o.phasef("REVISE  %s addressing %d objection(s)", e.Agent, len(objections))
 	d := prompt.EditorData{
 		Path:           snapDir,
 		ModeGuidance:   prompt.DocumentGuidance,
@@ -413,10 +413,10 @@ func (o *Orchestrator) revise(ctx context.Context, snapDir, draft string, object
 	})
 	doc, step, err := o.editorSession(ctx, snapDir, "revise", d)
 	if err != nil {
-		o.endPhase("REVISE  failed; the draft ships with the objections appended")
+		o.endPhasef("REVISE  failed; the draft ships with the objections appended")
 		return "", step, err
 	}
-	o.endPhase("REVISE  %d bytes", len(doc))
+	o.endPhasef("REVISE  %d bytes", len(doc))
 	return doc, step, nil
 }
 

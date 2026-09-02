@@ -178,16 +178,16 @@ func (p *phaseRecorder) record(kind, title string) {
 	}
 }
 
-func (p *phaseRecorder) Rule(format string, args ...any) {
+func (p *phaseRecorder) Rulef(format string, args ...any) {
 	p.record("rule", fmt.Sprintf(format, args...))
 }
-func (p *phaseRecorder) Phase(format string, args ...any) {
+func (p *phaseRecorder) Phasef(format string, args ...any) {
 	p.record("phase", fmt.Sprintf(format, args...))
 }
-func (p *phaseRecorder) EndPhase(format string, args ...any) {
+func (p *phaseRecorder) EndPhasef(format string, args ...any) {
 	p.record("end", fmt.Sprintf(format, args...))
 }
-func (p *phaseRecorder) Progress(string, ...any) {}
+func (p *phaseRecorder) Progressf(string, ...any) {}
 
 // titles reports the recorded titles of one kind of event, in order.
 func (p *phaseRecorder) titles(kind string) []string {

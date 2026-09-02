@@ -532,16 +532,16 @@ func watchSignals(ch <-chan os.Signal, done <-chan struct{}, logf func(string, .
 			}
 			handled++
 			if handled == 1 {
-				// Cancel BEFORE announcing, and announce through announce() rather than
+				// Cancel BEFORE announcing, and announce through announcef() rather than
 				// logf: the operator's stop request must not be contingent on a writer that
 				// may never drain.
 				cancel()
 				// Name what the pause is: the run does not stop the instant the signal
 				// lands, it stops the current step and then reconciles the tree.
-				announce(logf, "interrupted: stopping after the current step, then stashing any edits so the tree is left clean -- interrupt again to quit immediately")
+				announcef(logf, "interrupted: stopping after the current step, then stashing any edits so the tree is left clean -- interrupt again to quit immediately")
 				continue
 			}
-			announce(logf, "interrupted again: quitting now; the working tree may be left dirty (check `git status` and `git stash list`)")
+			announcef(logf, "interrupted again: quitting now; the working tree may be left dirty (check `git status` and `git stash list`)")
 			forceQuit()
 		}
 	}
@@ -574,7 +574,7 @@ const announceGrace = 2 * time.Second
 // release it. Writing announcements off-mutex would therefore not rescue a
 // single line of output, and would forfeit what the one lock buys (newLogger):
 // a concurrent line splitting the scoreboard's columns.
-func announce(logf func(string, ...any), format string, args ...any) {
+func announcef(logf func(string, ...any), format string, args ...any) {
 	written := make(chan struct{})
 	go func() {
 		defer close(written)

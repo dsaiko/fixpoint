@@ -76,7 +76,12 @@ linters:
     - nestif             # deeply nested if chains (threshold below)
     - nolintlint         # nolint directives must name a linter + a reason
     - perfsprint         # Sprintf where a faster equivalent exists
-    - prealloc           # slices that could be preallocated
+    # prealloc is OFF for the reason rangeValCopy and hugeParam are off below:
+    # this program is I/O-bound on agent subprocesses. Every site it flagged
+    # builds a six-element git argument list or a small table immediately
+    # before spawning a process that runs for minutes, and the fix turns a
+    # readable slice literal into make()+append(). Zero measurable gain,
+    # measurably worse to read.
     - predeclared        # shadowing of Go predeclared identifiers
     - revive             # the maintained golint successor (rules below)
     - unconvert          # unnecessary type conversions
@@ -99,6 +104,15 @@ linters:
       # A switch with a default case is considered exhaustive: this codebase
       # uses default-branch validation for Mode/Strategy string enums.
       default-signifies-exhaustive: true
+    goconst:
+      # These are not magic values waiting to be named -- they are the literal
+      # text of a git subcommand, a YAML section name, or a JSON field. A
+      # constant would put an identifier where the reader wants to see the
+      # command line or the document being built, and every one of them is
+      # already pinned by a struct tag or by git's own CLI. The security-
+      # relevant repeated literals DID get constants: see
+      # sandboxWorkspaceWrite / sandboxDangerFullAccess in internal/config.
+      ignore-string-values: "^(ls-files|loop|review|coder|json|kind|status)$"
     gocognit:
       min-complexity: 30
     gocritic:
@@ -120,6 +134,13 @@ linters:
         # G304 (file path from variable): reading user-configured files
         # (config, prompt templates) is likewise the program's purpose.
         - G304
+        # G703 (path traversal by taint analysis) fires on the PATH-hijack
+        # DETECTOR in internal/config: it walks $PATH looking for an entry
+        # inside the target and os.Lstat()s each one to see whether it exists
+        # and where it points. Tainted input is the whole point -- the function
+        # exists to warn about exactly the untrusted entries gosec is objecting
+        # to, and it reads metadata rather than opening anything.
+        - G703
     govet:
       enable-all: true
       disable:
@@ -189,11 +210,18 @@ linters:
           - cyclop
           - gocognit
           - nestif
+          # noctx gained an os/exec check in golangci-lint v2.13. In tests it
+          # flags exec.Command("git", ...) and the like, where the point is to
+          # run a short local command to completion; there is no request to
+          # cancel and no deadline to honour. Kept on for production code,
+          # where an uncancellable subprocess is a real defect.
+          - noctx
       # testfixture is test-support code (fixture files, fake agents); hold it
       # to test standards, not production hardening.
       - path: internal/testfixture/
         linters:
           - gosec
+          - noctx # test-support code; same reason as _test.go above
 
 issues:
   # Report everything; don't silently cap per-linter or duplicate counts.
