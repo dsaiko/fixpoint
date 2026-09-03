@@ -133,6 +133,28 @@ across the panel is <4%, so non-overlap is the panel's whole value).
   `bench/run.sh` records `ollama show` output at run time, and a dated tag
   (like `deepseek-v4-flash:0731-cloud`) beats a floating one where the
   library offers it. A seat decision quotes the resolved model, not the tag.
+- **The prompts are instrument too.** The bench runs the PRODUCTION prompts:
+  `config/bench-code.yaml` names `review-bugs`, `review-concurrency` and
+  `review-security`, `config/bench-design.yaml` names `design-failure` and
+  `design-data`, and `internal/prompt/prompt.go` injects the output contract,
+  the mode guidance, the prelude and the untrusted-material envelope into every
+  one of them. There are deliberately no bench-private copies — a seat decision
+  has to predict the reviewer you actually run, not a frozen ancestor of it.
+  The price is that editing any of them changes the scale, and this is the one
+  drift the bench cannot repair afterwards: a keyword widening re-scores from
+  the kept summaries, but a prompt edit changed what the model was *asked*, so
+  those summaries answer a question that no longer exists and the only repair
+  is a re-sweep of every model that still needs a comparable row (5 sessions
+  per candidate per repeat, 21 models). `score.py` therefore stamps every row
+  with an `instrument` hash of those files plus the two lens lists, so the
+  boundary is visible instead of silent. Every row in `results.csv` carries
+  `993af70a5111`, verified constant from `6e2327a` (the commit these rows start
+  at) through HEAD; the archived 2026-08-20 rows predate the column and share
+  that value, their break being the seed set, not the prompts. When the hash
+  moves, check `git diff` first — it is a whole-file hash, so a comment-only
+  edit to `prompt.go` moves it too — and if the change is real, treat it the
+  way the seed-set change of 2026-08-20 was treated: archive, re-sweep, and
+  never compare across the boundary.
 - **Matcher, not judge.** `score.py` counts a seed as found when a finding
   names the right file, lands within ±span lines (code seeds), and mentions
   enough of the seed's keywords (`need`). Deterministic and cheap, at the

@@ -28,10 +28,90 @@ understands exactly the shape bench/manifest-*.yaml uses.
 """
 
 import csv
+import hashlib
 import json
 import pathlib
 import re
 import sys
+
+
+# THE INSTRUMENT: the files whose bytes decide what a reviewer is actually
+# asked. A row is comparable only to rows measured through the same one, and
+# results.csv recorded nothing about it -- so an edit to review-security.md
+# would have mixed two scales silently in the file that decides panel seats,
+# with no way to tell the halves apart afterwards.
+#
+# This is the one kind of drift the bench cannot repair after the fact. A
+# manifest keyword widening is safe because every run re-scores from its kept
+# summary; a prompt edit changed what the model was ASKED, so the summaries are
+# answers to a question that no longer exists and the only repair is a full
+# re-sweep. The column exists to make that boundary visible, not to prevent it.
+#
+# The five prompts are the ones config/bench-code.yaml and config/bench-design.yaml
+# name. prompt.go carries what no .md holds -- the output contract, the mode
+# guidance, the prelude and the untrusted-material envelope -- and is injected
+# into every review prompt, so it is instrument exactly as much as they are.
+#
+# Deliberately CONSERVATIVE in one direction: whole-file hashes, so a
+# comment-only edit to prompt.go moves the value too. A false epoch boundary
+# costs one `git diff` to dismiss; a missed one costs a grid nobody can trust.
+INSTRUMENT_FILES = [
+    "config/prompts/review-bugs.md",
+    "config/prompts/review-concurrency.md",
+    "config/prompts/review-security.md",
+    "config/prompts/design-failure.md",
+    "config/prompts/design-data.md",
+    "internal/prompt/prompt.go",
+]
+
+# WHICH lenses run is instrument too, and that lives in the bench configs -- but
+# those files are mostly prose, and hashing them whole would have split the grid
+# at 86870b8, a commit whose only change to bench-code.yaml was two stale paths
+# in a comment. So the lens list is read out and nothing else is.
+INSTRUMENT_CONFIGS = [
+    "config/bench-code.yaml",
+    "config/bench-design.yaml",
+]
+
+
+def read_lenses(path):
+    """The `prompts:` list from a bench config, in order.
+
+    Same rule as the manifest reader above: no YAML dependency, and it
+    understands exactly the shape config/bench-*.yaml uses.
+    """
+    lenses, inside = [], False
+    for raw in path.read_text().splitlines():
+        line = raw.split(" #")[0].rstrip()
+        if re.match(r"^\s*prompts:\s*$", line):
+            inside = True
+            continue
+        if not inside:
+            continue
+        m = re.match(r"^\s*-\s*(\S+)", line)
+        if m:
+            lenses.append(m.group(1))
+        elif line.strip() and not line.lstrip().startswith("#"):
+            break
+    return lenses
+
+
+def instrument_id(root=None):
+    """Short hash of the prompt text every bench run is measured through."""
+    root = root or pathlib.Path(__file__).resolve().parent.parent
+    h = hashlib.sha256()
+    for rel in INSTRUMENT_FILES + INSTRUMENT_CONFIGS:
+        f = root / rel
+        # A renamed or deleted instrument file must never hash as "unchanged".
+        if not f.exists():
+            return "missing"
+        h.update(rel.encode())
+        h.update(b"\0")
+        if rel in INSTRUMENT_CONFIGS:
+            h.update("\n".join(read_lenses(f)).encode())
+        else:
+            h.update(f.read_bytes())
+    return h.hexdigest()[:12]
 
 
 def parse_list(val):
@@ -390,10 +470,14 @@ def main():
         if new:
             w.writerow(["run", "task", "target", "model", "repeat", "sessions", "errors",
                         "findings", "matched_seeds", "seeds", "recall", "extras",
-                        "tokens_in", "tokens_out", "cache_read", "duration_s", "found_per_mtok"])
+                        "tokens_in", "tokens_out", "cache_read", "duration_s", "found_per_mtok",
+                        "instrument"])
+        # `instrument` last, so the column can be added to a results.csv that
+        # already has rows without moving anything a positional reader counts.
         w.writerow([run_id, task, target, model, repeat, sessions, errors,
                     len(findings), found, len(active), f"{recall:.2f}", len(extras),
-                    tok_in, tok_out, tok_cache, int(duration_s), eff])
+                    tok_in, tok_out, tok_cache, int(duration_s), eff,
+                    instrument_id()])
 
     lines = [f"# {model} · {target} · run {run_id} (repeat {repeat})", ""]
     lines.append(f"recall **{found}/{len(active)}** · {len(findings)} finding(s), "
