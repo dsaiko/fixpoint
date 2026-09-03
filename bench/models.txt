@@ -170,3 +170,40 @@ qwen/qwen3.8-max
 # google/gemini-3.7-flash
 # codex@google/gemini-3.7-flash
 # codex@google/gemini-3.7-flash:vertex
+
+# GPT-6 Astra -- announced 2026-09-03, NOT REACHABLE from here on that date.
+# Checked the same day, all three routes this bench can drive:
+#
+# 1. codex + ChatGPT-account auth (the codex.yaml baseline route). The CLI's
+#    model list (~/.codex/models_cache.json, refetched 2026-09-03) offers only
+#    gpt-reserve / gpt-5.6-{sol,terra,luna} / gpt-5.5 / gpt-5.4{,-mini} /
+#    codex-auto-review -- no gpt-6 slug. Forcing it gives a local metadata
+#    warning and then a server 400:
+#      "The 'gpt-6-astra' model is not supported when using Codex with a
+#       ChatGPT account."
+# 2. OpenRouter (both the claude and the codex@ templates): 425 models listed,
+#    newest OpenAI ids are the gpt-5.6-* family. No gpt-6 upstream to route to.
+# 3. Direct API key: no OPENAI_API_KEY on this machine, and OpenAI's own launch
+#    note puts day-one access behind the enterprise Trusted Access Program with
+#    plan/API access "in the coming days" -- so a key would likely 404 anyway.
+#
+# So this is an availability gap, not a harness or contract failure: nothing to
+# fix on our side, and no row to record. It is a WAIT, not a dead end: OpenAI's
+# own Codex docs (learn.chatgpt.com/docs/models, checked 2026-09-03) list Astra
+# as a Codex model, and the launch note puts "Plus, Pro, Business and Enterprise
+# plans ... in the coming days" with Plus carrying limited usage. This machine
+# is on a Plus account (chatgpt_plan_type in ~/.codex/auth.json), so the 400
+# above is the rollout, not the plan. Poll for it by re-running the probe --
+#   printf x | codex exec --sandbox read-only --skip-git-repo-check --json \
+#     --model gpt-6-astra -
+# -- which either 400s again or works. There is no --refresh-models flag; the
+# CLI refetches ~/.codex/models_cache.json on its own (it carries fetched_at and
+# an etag), so a stale slug list there is not proof on its own. When the cache
+# does list a
+# gpt-6 slug (or OpenRouter carries openai/gpt-6-astra), the seat question is
+# the usual one -- it is the same harness as the codex baseline, so copy
+# config/agents/codex.yaml to config/agents/gpt-6-astra.yaml with the model
+# swapped and run it as an existing-agent candidate. Its rate card ($10/M in,
+# $1/M cached, $50/M out) is Fable-5.1-class, so bench/report.py needs those
+# rates before the per-point column means anything on it.
+# gpt-6-astra
