@@ -852,8 +852,8 @@ computed separately the prompt asked for "8–25 tasks" beside a computed "at mo
 contradiction by making tasks too big for one session.
 
 At the shipped 32h and `clean_check: last`, that admits **20** tasks for
-implement-go (30m session, 3 × 5m gate), **17** for implement-node (3 × 8m), and
-**30** for the ungated implement-web; three fewer each at `clean_check: every`.
+implement-go (30m session, 3 × 5m gate), **17** for implement-node and
+implement-java (3 × 8m each), and **30** for the ungated implement-web; three fewer each at `clean_check: every`.
 `max_tasks: 40` is the absolute ceiling, reachable only by raising the deadline
 or shortening the gate. An operator running smaller plans lowers the deadline;
 the fit rule keeps whichever number is set honest.
@@ -994,6 +994,7 @@ reuse hypothesis whose failure invalidated a section outright). So there is no
 ```
 config/implement-go.yaml       extends defaults; roles + verify: go build / vet / test
 config/implement-node.yaml     extends defaults; roles + verify: npm ci / build / test
+config/implement-java.yaml     extends defaults; roles + verify: mvn resolve / package / test
 config/implement-web.yaml      extends defaults; roles + verify.policy: off
 ```
 

@@ -12,7 +12,7 @@ STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@v0.8.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.7.0
 GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.18.0
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds bench-readme implement-go implement-node implement-web \
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds bench-readme implement-go implement-node implement-java implement-web \
         fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help \
         release-check release-snapshot release-verify
 
@@ -136,10 +136,10 @@ create-design: build
 	@test -n "$(TARGET)" || { echo "usage: make create-design TARGET=<file-or-dir> [OUT=<file>]"; exit 2; }
 	./$(BINARY) create-design -target "$(TARGET)" $(if $(OUT),-out "$(OUT)") --trusted-bundle
 
-## implement-go / implement-node / implement-web: build a reviewed design
+## implement-go / implement-node / implement-java / implement-web: build a reviewed design
 ## into a new project, one task per commit
 ##   make implement-go TARGET=docs/DESIGN.md OUT=~/src/newproject
-implement-go implement-node implement-web: build
+implement-go implement-node implement-java implement-web: build
 	@test -n "$(TARGET)" -a -n "$(OUT)" || { echo "usage: make $@ TARGET=<design.md> OUT=<fresh-dir>"; exit 2; }
 	./$(BINARY) $@ -target "$(TARGET)" -out "$(OUT)" --trusted-target --trusted-bundle
 
