@@ -1,0 +1,81 @@
+# Implement a reviewed design as a new Java project, one task per commit.
+#
+#   fixpoint implement-java -target DESIGN.md -out ~/src/newservice -trusted-target
+#
+# See implement-go.yaml for the shape; only the stack differs. MAVEN, not
+# Gradle, and the reason is the pipeline rather than taste: this run starts
+# from an empty directory, and Gradle's idiomatic entry point is a checked-in
+# `gradlew` wrapper -- a binary JAR the coder cannot author and that the gate
+# would otherwise have to fetch and execute unreviewed on the first task.
+# Maven has no bootstrap of its own: a pom.xml the coder writes is enough.
+#
+# The gate names `mvn`, and the planner is SHOWN the gate ("Task 1 must leave
+# the project passing these commands", config/prompts/implement-plan.md), so
+# naming it here is also what tells the plan to produce a Maven project. Change
+# the gate to change the stack; do not expect the design to decide it.
+description: Implement a reviewed design as a new Java project, one task per commit. Needs -trusted-target and -out.
+
+extends: defaults
+
+roles:
+  planner: { agent: claude, prompt: implement-plan }
+  coder: { agent: claude-coder, prompt: implement-task }
+
+implement:
+  # Maven writes its build output INTO the project, unlike go; without this the
+  # coder's own `mvn test` run would leave class files for the commit to carry.
+  gitignore_seed: ["target/"]
+  # Nothing: Maven has no lockfile. The version set is pinned in pom.xml, which
+  # the CODER writes and owns -- so it is ordinary source, not gate output, and
+  # listing it here would tell the gate it may rewrite the coder's dependencies.
+  # Contrast implement-node.yaml, where package-lock.json genuinely is written
+  # by the gate's own `npm ci`.
+  gate_generated: []
+
+verify:
+  policy: must_pass # no baseline: the pristine tree is empty (see DESIGN.md §7.2)
+  # Per command, and the arithmetic in implement-go.yaml applies: attempts x
+  # (session + SUM of the per-command timeouts + 1m) is what decides how many
+  # tasks a 32h run admits. Three commands at 8m is the same 24m ceiling
+  # implement-node.yaml already accepts, and a cold Maven is in node's class
+  # rather than go's -- a first `mvn` in a fresh container downloads the plugin
+  # set as well as the dependencies.
+  timeout: 8m
+  commands:
+    # infra: this command reaches Maven Central, so its failure is a fact about
+    # the network and not about the code -- see implement-node.yaml's `npm ci`
+    # for what the flag buys (no attempt burned, no permanent marker, retried
+    # with backoff).
+    #
+    # Weaker than `npm ci` in one way worth knowing: go-offline warms the local
+    # repository but does not make the goals below offline, so a Central outage
+    # DURING `test` is still misread as a code failure. It catches the cold-cache
+    # case, which is where the minutes and most of the flakiness are.
+    #
+    # -ntp (--no-transfer-progress) keeps the download log out of the gate's
+    # output; -B is batch mode, which is what makes mvn non-interactive.
+    - name: resolve
+      infra: true
+      run: ["mvn", "-B", "-ntp", "dependency:go-offline"]
+    - name: build
+      run: ["mvn", "-B", "-ntp", "-DskipTests", "package"]
+    - name: test
+      run: ["mvn", "-B", "-ntp", "test"]
+
+# TWO THINGS THIS GATE CANNOT PROTECT YOU FROM, both worth reading before a run.
+#
+# 1. There is no --ignore-scripts for Maven. A pom.xml derived from an
+#    untrusted design names plugins, and every Maven goal IS plugin execution:
+#    the build runs that code as the operator, on the host, once per task,
+#    before anything has reviewed it. implement-node.yaml can drop npm's
+#    lifecycle scripts and keep installing; the equivalent here would be
+#    refusing to build. So the mitigation is the ordinary one and it is
+#    weaker: read the pom the first task produces, and run review-code over
+#    the project afterwards. Treat `-trusted-target` on a design you did not
+#    write as the decision it is.
+#
+# 2. The JDK is whichever `java` the gate finds on PATH. Verify commands run
+#    with a denylist-filtered environment (internal/agent/env.go), so JAVA_HOME
+#    DOES reach mvn -- exporting it is how you choose the toolchain. Without
+#    it, a pom targeting a modern release against an old default JDK fails in
+#    the compiler with an error that reads like the coder's fault.
