@@ -78,7 +78,18 @@ RATES = {
     # ($1.00 -> $0.25), announced 2026-09-01. On a bench sweep the claude
     # route caches ~98%, so that cut is most of what a run actually pays.
     "claude-fable-5-1": (10.00, 50.00, 0.25),
+    # Sonnet 5, added 2026-09-05 when it was benched. The cheapest Anthropic
+    # entry here by a distance -- $2/$10 against Opus's $5/$25 -- which is the
+    # whole reason to measure it: the claude route caches ~98% of a sweep, so
+    # the $0.20 cached-input rate is most of what it would actually pay.
+    "claude-sonnet-5": (2.00, 10.00, 0.20),
     "gpt-5.6-sol": (5.00, 30.00, 0.50),
+    # GPT-6 Astra, from developers.openai.com on 2026-09-05, the day the model
+    # became reachable on ChatGPT-account auth. Fable-5-class list price, and
+    # 2x the input of the gpt-5.6-sol it is benched against. Requests over 272K
+    # INPUT tokens are surcharged (2x in, 1.5x out); a bench session's own input
+    # is nowhere near that, so the plain rate is the right one here.
+    "gpt-6-astra": (10.00, 50.00, 1.00),
     "x-ai/grok-4.6": (2.00, 6.00, None),
     "qwen/qwen3.8-27b": (0.40, 3.00, 0.04),
     "qwen/qwen3.8-max": (2.00, 6.00, None),
@@ -198,6 +209,19 @@ def route(model):
     return "ollama"
 
 
+def runs_codex(model):
+    """True when this candidate's agent file invokes the codex CLI."""
+    path = AGENTS / f"{model}.yaml"
+    if not path.exists():
+        return False
+    for line in path.read_text().splitlines():
+        # The command list's first entry, as `  - codex`; `command: [codex, ...]`
+        # is not a form any agent file in this bundle uses.
+        if line.strip() in ("- codex", "- codex.cmd"):
+            return True
+    return False
+
+
 def billing(model, harness):
     if harness.startswith("openrouter"):
         return "credits"
@@ -214,7 +238,12 @@ def billing(model, harness):
         # stay useful -- they are the only way to compare what a sweep COST
         # across routes -- but reporting them as money spent was wrong.
         return "sub (ollama)"
-    if model == "codex":
+    # Which SUBSCRIPTION pays is a property of the harness, not of the agent's
+    # name: `codex` was the only ChatGPT-auth candidate until gpt-6-astra was
+    # added on 2026-09-05, and a name check reported that row as billing the
+    # claude plan. Read the invocation instead, so any future candidate wired
+    # through the codex harness is classified by what it actually runs.
+    if runs_codex(model):
         return "sub (chatgpt)"
     return "sub (claude)"
 

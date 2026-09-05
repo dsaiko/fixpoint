@@ -17,6 +17,17 @@
 claude-opus-4-8
 claude-opus-5
 claude-fable-5
+# Sonnet 5, measured 2026-09-05: the cheap END of the tier question the block
+# above asks. $2/$10 per MTok against Opus's $5/$25, cached input $0.20.
+# 245/484, 20th of 24, no contract failures. The answer is a clear no, and the
+# reason is the one the price would not predict: it is HALF as token-efficient
+# as the Opus tier (548 pts/Mtok against claude's 1062), which eats almost all
+# of the discount -- ~$0.020 per point against claude's ~$0.023, a 13% saving
+# for a 35% lower score. Its design row is 8/34, the weakest of any Anthropic
+# model here and near the floor of the whole field. Marginal contribution over
+# claude+codex is +7, and swapped INTO the claude seat the panel drops 413 ->
+# 376. It finds 15 seeds claude misses; claude finds 146 it misses.
+claude-sonnet-5
 # Fable 5.1, added 2026-09-01 the day it shipped. Same $10/$50 per MTok as
 # Fable 5, but cached input drops 75% ($1.00 -> $0.25), which on this bench is
 # most of the bill: the claude route caches ~98% of a sweep's input.
@@ -171,6 +182,42 @@ qwen/qwen3.8-max
 # codex@google/gemini-3.7-flash
 # codex@google/gemini-3.7-flash:vertex
 
+# GPT-6 Astra -- MEASURED 2026-09-05. Both effort rungs, full 8-target grid,
+# no contract failures:
+#
+#   gpt-6-astra        (high)   265/484  2.06M tok  3267s  ~$25.27  ~$0.095/pt
+#   gpt-6-astra-xhigh  (xhigh)  270/484  2.71M tok  5617s  ~$35.97  ~$0.133/pt
+#
+# It loses to the gpt-5.6-sol it shares a harness with (298/484) on the same
+# route, same effort, same prompts. C# is where the high run collapses --
+# 28/68 against codex's 44/68, a third of the whole deficit.
+#
+# THE EFFORT LADDER IS REAL BUT NOT WORTH BUYING: xhigh is +5 seeds for +121%
+# output tokens and +72% wall clock. Per target it swings +6 (rust) to -6
+# (java), so most of that +5 is noise; the token and clock costs are not.
+# Read it against glm-5.3, whose ladder is real on Z.ai and dead through
+# ollama -- here the knob moves, it just does not pay.
+#
+# Marginal over claude+codex: high +7, xhigh +12. Swapped into the codex seat
+# the panel reads 407 (high) and 414 (xhigh) against the shipped 413 -- a loss
+# and a wash. NOT a seat candidate, and the reason is structural as much as
+# numeric: it shares the ChatGPT payer with codex, so it cannot be ADDED
+# without putting two seats on one subscription, which is exactly the failure
+# the one-payer-one-seat rule exists to prevent. That risk is not theoretical:
+# the xhigh sweep hit the Plus usage limit mid-run on 2026-09-05 (see below).
+#
+# QUOTA, the operational fact worth keeping: Astra on ChatGPT Plus is metered
+# ("limited usage"), and 23 sessions at xhigh exhausted it. The failure is
+# ugly -- three csharp sessions returned exit status 1 carrying the model's own
+# narration instead of findings, 0 tokens recorded, and score.py wrote a
+# 0/68 row. That row is NOT a measurement and was deleted; the bench cannot
+# tell a provider refusal from a contract failure, because the cause is only
+# ever on stdout. Check `codex exec --model gpt-6-astra` before a sweep.
+#
+# ------------------------------------------------------------------------
+# The original note from announcement day, kept because the three routes it
+# rules out are still the map of how this model can be reached:
+#
 # GPT-6 Astra -- announced 2026-09-03, NOT REACHABLE from here on that date.
 # Checked the same day, all three routes this bench can drive:
 #
@@ -206,4 +253,5 @@ qwen/qwen3.8-max
 # swapped and run it as an existing-agent candidate. Its rate card ($10/M in,
 # $1/M cached, $50/M out) is Fable-5.1-class, so bench/report.py needs those
 # rates before the per-point column means anything on it.
-# gpt-6-astra
+gpt-6-astra
+gpt-6-astra-xhigh
