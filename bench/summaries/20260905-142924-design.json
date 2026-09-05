@@ -1,0 +1,235 @@
+{
+ "run": "20260905-142924",
+ "task": "design",
+ "target": "design",
+ "model": "gpt-6-astra-xhigh",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "Authentication failures erase unsynchronized notes",
+     "description": "A password change or revoked refresh token causes the client to delete notes.db, including edits created offline that have never reached the server. Signing in and performing first sync cannot recover those edits because this deletes their only copy.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 49,
+     "title": "Clearing the entire outbox loses edits made during sync",
+     "description": "The request snapshots the outbox before the response arrives. Any edits appended while that request is in flight, including by the CLI sharing notes.db, are then removed by the instruction to clear the outbox even though the server never received them. Applying the response can also overwrite those newer local edits.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 111,
+     "title": "Ordinary offline conflicts permanently destroy user edits",
+     "description": "When two devices edit the same note offline, the protocol discards one complete body, acknowledges the batch, and clears its outbox entry. Neither the server nor the conflict mechanism retains a recoverable revision. Clock skew makes this worse: an older edit with a future timestamp can repeatedly destroy subsequent legitimate edits.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Client timestamps cannot identify all newly committed changes",
+     "description": "An offline edit can reach the server after another device has advanced its cursor beyond that edit's modified_at. The strict greater-than query will never deliver that change to the other device. Equal timestamps and future-dated client clocks produce the same permanent omissions.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 79,
+     "title": "Partial batch commits have no safe client recovery transition",
+     "description": "The server retains edits before a validation failure, but the client protocol only describes clearing the whole outbox after acknowledgment or replaying the same POST. Clearing loses the unapplied suffix; replaying encounters the same invalid row and prevents later edits from progressing. Reporting the failing row alone does not define which entries the client may safely remove.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Backup restoration cannot reconcile already-acknowledged client state",
+     "description": "Restoring a nightly dump omits acknowledged changes made since that dump. Clients have already cleared those edits from their outboxes and may hold cursors ahead of the restored database, so the normal incremental protocol neither reuploads the missing changes nor detects the rollback. Fresh devices receive incomplete or obsolete data.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "The client ID space produces ambiguous note identities at scale",
+     "description": "At ten times the target, 500,000 users with 300 notes each produce about five expected same-account collisions among random 32-bit IDs. Two independently created notes then have the same identifier in their edits. A server BIGSERIAL key cannot disambiguate the identifier already shared by the originating devices, so a valid note must be rejected or confused with another.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Unbounded synchronization payloads can prevent recovery indefinitely",
+     "description": "Every offline edit stores a full, uncapped body, and reconnecting requires sending the entire accumulated outbox in one request. Responses likewise return all matching notes. A sufficiently large backlog exceeds available memory or transfer capacity, and each retry repeats the same oversized operation without making partial progress; continued offline accumulation can also exhaust local storage.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "Every incremental sync scans the global notes table",
+     "description": "Neither user_id nor modified_at is indexed, so even a sync returning no changes must scan notes belonging to every user. The initial target already implies millions of rows. Increasing users tenfold increases both table size and request volume tenfold, producing roughly one hundred times the scanning work at the shared database.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 89,
+     "title": "Timed-out clients leave unbounded server work behind",
+     "description": "A slow query or lock wait can retain a server request and database transaction indefinitely. The client times out and retries on another instance while the original request continues, accumulating connections and competing transactions. This can exhaust the shared database and block synchronization for otherwise healthy users.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 147,
+     "title": "Unrestricted sync traffic can monopolize the shared database",
+     "description": "A single misbehaving authenticated client can issue unlimited database-backed sync requests. Regional recovery also synchronizes clients onto the same retry schedule. Adding HTTP instances increases access to the same database without bounding incoming work, allowing either case to deny synchronization to other users.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deployment exposes old binaries to the migrated schema",
+     "description": "Running migrations before starting the new version necessarily changes the schema while old instances are still serving requests. Deployment speed does not prevent this overlap. A migration that removes or changes an old field can break the running fleet and also prevent rollback to the previous binary.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 117,
+     "title": "An instance unable to reach Postgres remains in rotation",
+     "description": "If one instance loses database connectivity while its peers remain healthy, its process-only health check continues returning 200. The load balancer therefore sends it requests indefinitely, causing avoidable sync failures until an operator intervenes.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "The retained telemetry cannot explain missing notes",
+     "description": "Endpoint request counts, 5xx rates, and latency cannot reveal a device receiving successful but incomplete sync responses or accumulating unsent edits. With no device, batch, cursor, or conflict history, support cannot determine whether a missing edit was uploaded, rejected, discarded, or never downloaded, contrary to the dashboard-only support goal.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves permanent orphaned note data",
+     "description": "Deleting the user row deliberately leaves all note bodies in the live database, and cleanup is only a possible future job. Storage therefore grows with historical account churn even when active usage is stable, and an account deletion never completes removal of its content.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 139,
+     "title": "The scheduling policy cannot meet the reconnect latency goal",
+     "description": "Connectivity can return while the application remains foregrounded just after a timer fires, leaving almost 15 minutes before the next scheduled sync. A client already retrying can also wait up to a minute. Neither path meets the stated 30-second recovery goal, even with an idle, healthy server.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 49,
+     "title": "Clearing the outbox deletes edits created during sync",
+     "description": "The request contains the outbox as it existed when sent, but acknowledgment clears the entire outbox. An edit appended while that request is in flight, including by the CLI, is therefore removed without reaching the server. Applying the response can also overwrite its local body, losing the edit entirely.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Conflict resolution permanently discards offline writing",
+     "description": "Two disconnected devices can edit different portions of the same note. Choosing one complete body and discarding the other loses one device's writing even with perfectly synchronized clocks. The latest-version-only server and explicit destruction of conflict bodies leave no recovery path, contradicting the offline preservation goal.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "Refresh failures erase the only copy of unsynced notes",
+     "description": "An offline device can accumulate edits and then encounter a refresh-token 401 after a password change. Wiping notes.db destroys both the local bodies and their outbox entries before upload. Signing in and performing first sync cannot recover content the server never received.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Client timestamps cannot serve as reliable change cursors",
+     "description": "After a device advances its cursor to timestamp 200, an offline edit uploaded later with timestamp 100 is permanently excluded from that device's incremental query. Changes arriving later with the same millisecond timestamp are also excluded by the strict comparison. These omissions occur without clock skew; a future-dated client clock makes them worse.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 80,
+     "title": "Partial batch commits have no matching acknowledgment model",
+     "description": "When row N fails validation, the server retains the preceding rows and returns an error report. However, acknowledgment is defined as receiving the batch response, and the client clears the whole outbox. There is no representation for acknowledging only the applied prefix, so unprocessed edits can be discarded as though they were stored.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Backup recovery loses acknowledged writes without reconciliation",
+     "description": "Restoring the nightly dump removes server writes acknowledged since that dump. Clients have already cleared those edits from their outboxes, and the shared incremental recovery path does not upload existing local note-table contents. Consequently, surviving client copies do not automatically repair the restored database, and other devices cannot retrieve those notes.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "Discarded sync history makes the support requirement impossible",
+     "description": "The stated requirement is to explain a device's missing note from dashboards alone. Current note rows and aggregate endpoint metrics cannot establish which device uploaded an edit, which changes another device received, or whether conflict resolution discarded the missing content. Explicitly retaining no sync history makes those questions unanswerable retrospectively.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Random 32-bit identifiers allow distinct notes to collide",
+     "description": "Two devices belonging to the same account can independently assign the same 32-bit identifier to different notes. The server's separate BIGSERIAL key does not resolve the ambiguity because client edits look up notes through the colliding client identifier. Without collision handling, one note can overwrite another or subsequent edits cannot identify their intended row.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves note data without a deletion lifecycle",
+     "description": "Removing the user while retaining its notes creates orphaned rows containing note bodies. The optional cleanup job has no committed trigger or completion requirement, so deleted-account content remains indefinitely and continues accumulating without a live owner.",
+     "lens": "design-data",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 60200,
+      "output_tokens": 8404,
+      "cache_read_tokens": 53504
+     },
+     "duration_ms": 261456,
+     "failed": false,
+     "output_bytes": 11675
+    },
+    {
+     "usage": {
+      "input_tokens": 59777,
+      "output_tokens": 4695,
+      "cache_read_tokens": 53504
+     },
+     "duration_ms": 151240,
+     "failed": false,
+     "output_bytes": 6951
+    }
+   ]
+  }
+ ]
+}
