@@ -918,8 +918,9 @@ func (o *Orchestrator) finishRun(ctx context.Context, sum *model.RunSummary, run
 //
 // must_pass needs no such line: there the same checks block every round and the
 // run says so each time. And a run that never invoked the gate (review-only, or
-// no round reached it) has nothing to report -- an empty everPassed set with no
-// gate runs behind it would accuse every baseline failure.
+// no round reached it) has nothing to report -- the nil map is that state, and it
+// is nil ONLY then: verifyPass allocates it on every run, whatever passed, so an
+// all-red gate arrives here as an empty map and is reported in full.
 func (o *Orchestrator) reportUnverifiedChecks() {
 	if !o.cfg.Verify.Enabled() || o.cfg.Loop.ReviewOnly || o.cfg.Verify.Policy != config.VerifyNoRegressions || o.verifyEverPassed == nil {
 		return
@@ -4257,11 +4258,16 @@ func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, i
 	}
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
 	o.logf("round %d verify%s: %s", rec.Round, verifyAttemptLabel[attempt], rep.Summary())
+	// Allocated on EVERY gate run, before the loop, so a non-nil map means "the
+	// gate ran" and an empty one means "it ran and nothing ever passed". The first
+	// version allocated inside `if res.Passed`, which made the two states
+	// indistinguishable and silenced reportUnverifiedChecks in exactly the all-red
+	// case it exists for -- caught by the panel on review run 20260907-000650.
+	if o.verifyEverPassed == nil {
+		o.verifyEverPassed = map[string]bool{}
+	}
 	for _, res := range rep.Results {
 		if res.Passed {
-			if o.verifyEverPassed == nil {
-				o.verifyEverPassed = map[string]bool{}
-			}
 			o.verifyEverPassed[res.Name] = true
 		}
 	}

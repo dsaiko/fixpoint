@@ -334,12 +334,16 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loa
 	// The gate override lands BEFORE resolution, alone among the overrides: it
 	// names a file to load rather than a value to set, so applying it with the
 	// others below would be too late to matter. Replacing rather than merging --
-	// commands the config spelled out go too -- because the operator is stating
-	// what the project is, and a Go `vet` left beside a Node gate would be the
-	// vacuous-check problem this key exists to remove.
+	// commands the config spelled out go too, and so do its test-file globs --
+	// because the operator is stating what the project is, and a Go `vet` or a
+	// `**/*_test.go` left beside a Node gate would be the vacuous-check problem
+	// this key exists to remove (the globs half was missed at first and caught on
+	// review run 20260907-000650: the node gate's commands beside Go's globs
+	// would leave the run's own *.test.ts files in the closing round's view).
 	if ov.Gate != "" {
 		cfg.Verify.Gate = ov.Gate
 		cfg.Verify.Commands = nil
+		cfg.Loop.FinalSkipRunEdits = nil
 	}
 	if err := cfg.resolveGate(r, &src.Gate); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)

@@ -10,9 +10,14 @@ commands:
   # gofmt -l LISTS unformatted files and exits 0 either way, so on its own it is
   # a check that can never fail. The shell wrapper turns a non-empty listing into
   # a failure -- the same thing the repository's `make fmt-check` did, without
-  # needing the repository's Makefile.
+  # needing the repository's Makefile. The `|| exit 1` on the assignment carries
+  # gofmt's OWN status: an assignment's exit status is its substitution's, so a
+  # gofmt that is not installed, or that exits 2 on a file it cannot parse,
+  # fails the check instead of leaving stdout empty and the check green -- which
+  # on a non-Go tree is exactly the vacuous pass that would keep a wrong gate
+  # looking partly alive.
   - name: fmt
-    run: [sh, -c, 'unformatted=$(gofmt -l .); test -z "$unformatted" || { echo "not gofmt-formatted:"; echo "$unformatted"; exit 1; }']
+    run: [sh, -c, 'unformatted=$(gofmt -l .) || exit 1; test -z "$unformatted" || { echo "not gofmt-formatted:"; echo "$unformatted"; exit 1; }']
   - name: vet
     run: [go, vet, ./...]
   # -race, not a plain `go test`. review-concurrency is a recurring loop lens, so

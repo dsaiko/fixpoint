@@ -5,31 +5,38 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-// The shipped bundle has to actually deliver what a task config sets while keeping
-// what the base holds. fix-code.yaml and fix-branch.yaml each declare a `loop:`
-// block naming exactly one key, and `extends` merges PER KEY -- so a decode that
-// replaced the block wholesale would silently blank max_iterations,
-// clean_rounds_to_stop and commit_policy for both fix configs, and the run would
-// take its behavior from Go's zero values instead of from defaults.yaml.
+// The shipped fix configs take their language-shaped keys from gates/go.yaml and
+// everything else from defaults.yaml, and both halves have to actually arrive.
+// `extends` merges PER KEY, so a decode that replaced a block wholesale would
+// blank max_iterations, clean_rounds_to_stop and commit_policy -- fix-pr is the
+// config that still sets one `loop:` key (max_iterations: 3) over the base, and
+// so the one that exercises that merge; fix-code and fix-branch set none, and
+// prove the base arrives untouched. The skip globs come from the GATE now, not
+// the task config, and Source.Gate has to say so.
 //
 // Validate is deliberately not called: it checks that every agent's binary is on
 // PATH, which says nothing about inheritance and would make this fail on a machine
 // that simply has no agent CLIs installed.
-func TestShippedFixConfigsInheritLoopWhileSettingTheirOwnSkipGlobs(t *testing.T) {
-	for _, name := range []string{"fix-code", "fix-branch"} {
+func TestShippedFixConfigsInheritLoopAndTakeTheirGlobsFromTheGate(t *testing.T) {
+	wantIterations := map[string]int{"fix-code": 5, "fix-branch": 5, "fix-pr": 3}
+	for _, name := range []string{"fix-code", "fix-branch", "fix-pr"} {
 		t.Run(name, func(t *testing.T) {
-			l, err := LoadBundle(&Resolver{Bundles: []string{"../../config"}}, name, "", Overrides{})
+			l, err := LoadBundle(&Resolver{Bundles: []string{"../../config"}}, name, "", Overrides{PR: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
+			if l.Config.Verify.Gate != "go" || !strings.HasSuffix(l.Source.Gate, filepath.Join(gatesDir, "go"+configExt)) {
+				t.Errorf("gate = %q from %q, want go from gates/go.yaml", l.Config.Verify.Gate, l.Source.Gate)
+			}
 			loop := l.Config.Loop
 			if got := loop.FinalSkipRunEdits; len(got) != 1 || got[0] != "**/*_test.go" {
-				t.Errorf("final_skip_run_edits = %v, want [**/*_test.go] from the task config", got)
+				t.Errorf("final_skip_run_edits = %v, want [**/*_test.go] from the go gate", got)
 			}
-			if loop.MaxIterations != 5 {
-				t.Errorf("max_iterations = %d, want 5 inherited from defaults.yaml", loop.MaxIterations)
+			if loop.MaxIterations != wantIterations[name] {
+				t.Errorf("max_iterations = %d, want %d", loop.MaxIterations, wantIterations[name])
 			}
 			if loop.MaxFinalPasses != 1 {
 				t.Errorf("max_final_passes = %d, want 1 inherited from defaults.yaml", loop.MaxFinalPasses)
@@ -41,6 +48,65 @@ func TestShippedFixConfigsInheritLoopWhileSettingTheirOwnSkipGlobs(t *testing.T)
 				t.Errorf("commit_policy = %q, want %q inherited from defaults.yaml", loop.CommitPolicy, CommitPerFix)
 			}
 		})
+	}
+}
+
+// Every shipped gate file is decoded here, the way the loader decodes it, with the
+// rules Config.Validate applies to what it inlines. Otherwise six of the seven ship
+// untouched by any test -- only go.yaml is reached, through fix-code -- and a typo'd
+// key, a duplicate name or an empty `run:` surfaces for the first time on an
+// operator's machine, mid-invocation, after they pointed a fix run at a real
+// project with `-gate rust`. Keyed by name, so a new gate has to be registered here
+// -- the same guard bundle_agents_test.go gives the agent files.
+func TestShippedGatesDecodeAndCarryUsableCommands(t *testing.T) {
+	want := map[string]bool{"go": true, "rust": true, "node": true, "java": true, "python": true, "dotnet": true, "cpp": true}
+	paths, err := filepath.Glob(filepath.Join("..", "..", projectBundleDir, gatesDir, "*"+configExt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, path := range paths {
+		name := strings.TrimSuffix(filepath.Base(path), configExt)
+		seen[name] = true
+		t.Run(name, func(t *testing.T) {
+			if !want[name] {
+				t.Fatalf("gates/%s%s is not registered in this test -- add it, and decide what it should look like", name, configExt)
+			}
+			var g Gate
+			if err := decodeInto(path, &g); err != nil {
+				t.Fatal(err)
+			}
+			if len(g.Commands) == 0 {
+				t.Fatal("no commands; the loader refuses an empty gate, so this file could never be used")
+			}
+			names := map[string]bool{}
+			for i, c := range g.Commands {
+				if c.Name == "" {
+					t.Errorf("commands[%d] has no name", i)
+				}
+				if names[c.Name] {
+					t.Errorf("commands[%d] duplicates name %q", i, c.Name)
+				}
+				names[c.Name] = true
+				if len(c.Run) == 0 {
+					t.Errorf("commands[%s].run is empty", c.Name)
+				}
+			}
+			if len(g.SkipRunEdits) == 0 {
+				t.Error("no skip_run_edits: the closing round would review the test files this run wrote, which is the measured non-convergence the key exists for")
+			}
+			// The two keys are the file's whole reason to exist, and the rule they
+			// stand on -- Validate's, on the inlined result -- is applied here too.
+			v := Verify{Policy: VerifyNoRegressions, Timeout: Duration(time.Minute), Commands: g.Commands}
+			if err := v.validate(); err != nil {
+				t.Errorf("Validate would refuse the inlined gate: %v", err)
+			}
+		})
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("gates/%s%s is registered here but not shipped", name, configExt)
+		}
 	}
 }
 

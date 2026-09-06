@@ -184,6 +184,28 @@ func TestProjectRootFindsNonGitProjectBundle(t *testing.T) {
 // the link's own path climbs the link's parents -- which are not the project's --
 // finds no marker, and anchors the run to the linked subtree: a fraction of the
 // repository reviewed, artifacts written next to the link.
+// A project that ships ONLY its own gate is shipping policy fixpoint executes.
+// Root discovery has to stop there, or a run started from a subdirectory of a
+// non-git tree walks past it and resolves the installed gate instead -- the
+// project's chosen commands replaced by another language's, silently.
+func TestProjectRootFindsGatesOnlyBundle(t *testing.T) {
+	root := realDir(t, t.TempDir())
+	if err := os.MkdirAll(filepath.Join(root, projectBundleDir, gatesDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "src", "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProjectRoot(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != root {
+		t.Errorf("ProjectRoot(%s) = %s, want %s: a bundle holding only gates/ is still the project's bundle", sub, got, root)
+	}
+}
+
 func TestProjectRootResolvesSymlinkedDir(t *testing.T) {
 	root := realDir(t, t.TempDir())
 	t.Setenv("HOME", t.TempDir())
@@ -1162,14 +1184,22 @@ func TestLoadBundleRejectsEmptyGate(t *testing.T) {
 // the same reason. KnownFields makes the stray key an error rather than a second
 // level of indirection nobody can read from two files.
 func TestLoadBundleRejectsGateChain(t *testing.T) {
-	root := t.TempDir()
-	dir := gateBundle(t, root, "verify: {gate: outer}\n", map[string]string{
-		"outer": "gate: inner\n" + goGate,
-		"inner": goGate,
-	})
-	_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
-	if err == nil || !strings.Contains(err.Error(), "gate") {
-		t.Fatalf("err = %v, want the gate-inside-a-gate key refused", err)
+	// Both keys that would make a gate reach for another file. The error has to
+	// name the FIELD: every error out of this path is wrapped in the gate file's
+	// path, which contains "gate", so a substring check on that word would pass
+	// on an unreadable file or a syntax error and prove nothing about the rule.
+	for _, key := range []string{"gate", "extends"} {
+		t.Run(key, func(t *testing.T) {
+			root := t.TempDir()
+			dir := gateBundle(t, root, "verify: {gate: outer}\n", map[string]string{
+				"outer": key + ": inner\n" + goGate,
+				"inner": goGate,
+			})
+			_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+			if err == nil || !strings.Contains(err.Error(), "field "+key+" not found") {
+				t.Fatalf("err = %v, want the stray %q key refused as an unknown field", err, key)
+			}
+		})
 	}
 }
 
@@ -1195,6 +1225,27 @@ func TestGateOverrideReplacesConfiguredCommands(t *testing.T) {
 	}
 	if applied := l.Overrides.Applied(); !slices.Contains(applied, "gate=node") {
 		t.Errorf("Applied() = %v, want gate=node recorded: a flag changed which commands the run executes", applied)
+	}
+}
+
+// The override replaces the config's test-file globs too, not only its commands:
+// a Node gate's commands beside Go's `**/*_test.go` would leave the *.test.ts files
+// the run itself wrote in the closing round's view, which is the non-convergence
+// final_skip_run_edits exists to prevent. The config's explicit globs win over a
+// gate NAMED IN THE CONFIG (the sibling test above); a gate named on the command
+// line is the operator saying what the project is, and everything language-shaped
+// follows it.
+func TestGateOverrideReplacesConfiguredSkipGlobsToo(t *testing.T) {
+	root := t.TempDir()
+	dir := gateBundle(t, root,
+		"verify: {commands: [{name: vet, run: [go, vet, ./...]}]}\nloop: {final_skip_run_edits: ['**/*_test.go']}\n",
+		map[string]string{"node": "commands:\n  - {name: test, run: [npm, test]}\nskip_run_edits: ['**/*.test.ts']\n"})
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{Gate: "node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.Config.Loop.FinalSkipRunEdits; len(got) != 1 || got[0] != "**/*.test.ts" {
+		t.Errorf("loop.final_skip_run_edits = %v, want the node gate's globs; Go's must not survive a -gate node override", got)
 	}
 }
 
