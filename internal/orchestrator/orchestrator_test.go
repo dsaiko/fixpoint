@@ -6566,6 +6566,104 @@ func TestVerifyBaselineNarrationMatchesThePolicy(t *testing.T) {
 	}
 }
 
+// reportUnverifiedChecks is the line that says a gate verified nothing, and its
+// headline case is a gate where EVERY command is red on every run -- a Go gate on
+// a Node tree. That case has to be told apart from a gate that never ran at all,
+// which has nothing to report; the first version could not tell them apart (the
+// pass-tracking map was allocated only when something passed) and was silent on
+// exactly the run it was written for. Pinned per branch: the all-red report, the
+// partly-green report, and the three suppressions.
+func TestReportUnverifiedChecksNamesEveryCheckTheRunNeverSawPass(t *testing.T) {
+	newO := func(policy config.VerifyPolicy, reviewOnly bool, log *strings.Builder) *Orchestrator {
+		return &Orchestrator{
+			cfg: &config.Config{
+				Loop: config.Loop{ReviewOnly: reviewOnly},
+				Verify: config.Verify{
+					Policy:  policy,
+					Timeout: config.Duration(30 * time.Second),
+					Commands: []config.VerifyCommand{
+						{Name: "vet", Run: []string{"false"}},
+						{Name: "test", Run: []string{"false"}},
+						{Name: "lint", Run: []string{"false"}, Optional: true},
+					},
+				},
+			},
+			logf:         func(format string, args ...any) { fmt.Fprintf(log, format+"\n", args...) },
+			journalWrite: func(string, int, any) error { return nil },
+		}
+	}
+	gateRun := func(t *testing.T, o *Orchestrator) {
+		t.Helper()
+		if _, err := o.verifyPass(t.Context(), &model.RoundRecord{Round: 1}, "i1", model.VerifyAttemptInitial); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("all red, every run: the case the report exists for", func(t *testing.T) {
+		var log strings.Builder
+		o := newO(config.VerifyNoRegressions, false, &log)
+		o.captureVerifyBaseline(t.Context())
+		gateRun(t, o)
+		gateRun(t, o)
+		log.Reset()
+		o.reportUnverifiedChecks()
+		got := log.String()
+		for _, want := range []string{"2 check(s)", "vet, test", "verified NOTHING", "-gate"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("report is missing %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "lint") {
+			t.Errorf("report names the optional check, which never blocks and so was never a claim:\n%s", got)
+		}
+	})
+
+	t.Run("a check that passed once is not reported", func(t *testing.T) {
+		var log strings.Builder
+		o := newO(config.VerifyNoRegressions, false, &log)
+		o.captureVerifyBaseline(t.Context())
+		gateRun(t, o)
+		o.verifyEverPassed["test"] = true // as a later run that fixed it would record
+		log.Reset()
+		o.reportUnverifiedChecks()
+		if got := log.String(); !strings.Contains(got, "1 check(s)") || !strings.Contains(got, ": vet.") {
+			t.Errorf("report should name only vet:\n%s", got)
+		}
+	})
+
+	t.Run("the gate never ran: nothing to report", func(t *testing.T) {
+		var log strings.Builder
+		o := newO(config.VerifyNoRegressions, false, &log)
+		o.captureVerifyBaseline(t.Context())
+		log.Reset()
+		o.reportUnverifiedChecks()
+		if log.Len() != 0 {
+			t.Errorf("a run whose gate never ran must not accuse its baseline:\n%s", log.String())
+		}
+	})
+
+	t.Run("must_pass already blocked every round", func(t *testing.T) {
+		var log strings.Builder
+		o := newO(config.VerifyMustPass, false, &log)
+		o.captureVerifyBaseline(t.Context())
+		gateRun(t, o)
+		log.Reset()
+		o.reportUnverifiedChecks()
+		if log.Len() != 0 {
+			t.Errorf("under must_pass the same checks blocked every round and said so; no end-of-run line:\n%s", log.String())
+		}
+	})
+
+	t.Run("review-only never gates", func(t *testing.T) {
+		var log strings.Builder
+		o := newO(config.VerifyNoRegressions, true, &log)
+		o.reportUnverifiedChecks()
+		if log.Len() != 0 {
+			t.Errorf("review-only must stay silent:\n%s", log.String())
+		}
+	})
+}
+
 // End to end: the closing round is not shown the test files the run itself wrote.
 //
 // This is the wiring that makes loop.final_skip_run_edits mean anything -- the glob
