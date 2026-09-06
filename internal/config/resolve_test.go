@@ -1071,3 +1071,140 @@ func TestResolverSearchPathHasNoDuplicates(t *testing.T) {
 		t.Errorf("search path %v does not include the binary's own bundle %s", r.Bundles, want)
 	}
 }
+
+// gateBundle is bundle() plus a gates/ directory holding the given gate files,
+// which the shared helper does not know about.
+func gateBundle(t *testing.T, root string, task string, gates map[string]string) string {
+	t.Helper()
+	dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
+		"task": "target: {mode: directory}\n" + task + taskBody,
+	}, []string{"fix", "review-bugs"}, []string{"mock"})
+	if err := os.MkdirAll(filepath.Join(dir, gatesDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range gates {
+		if err := os.WriteFile(filepath.Join(dir, gatesDir, name+configExt), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+const goGate = "commands:\n  - {name: vet, run: [go, vet, ./...]}\n  - {name: test, run: [go, test, ./...]}\nskip_run_edits: ['**/*_test.go']\n"
+
+// A gate is the language's share of a task config: naming one must land its
+// commands in verify.commands and its test-file globs in loop.final_skip_run_edits,
+// and Source must say which file they came from -- that file is argv fixpoint
+// executes, so provenance is not optional.
+func TestLoadBundleResolvesGate(t *testing.T) {
+	root := t.TempDir()
+	dir := gateBundle(t, root, "verify: {gate: go}\n", map[string]string{"go": goGate})
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(l.Config.Verify.Commands); got != 2 {
+		t.Fatalf("verify.commands has %d entries, want the gate's 2 inlined", got)
+	}
+	if l.Config.Verify.Commands[0].Name != "vet" || l.Config.Verify.Commands[1].Name != "test" {
+		t.Errorf("commands = %v, want the gate's order kept", l.Config.Verify.Commands)
+	}
+	if !l.Config.Verify.Enabled() {
+		t.Error("Verify.Enabled() = false after a gate resolved; downstream reads Commands and must see them")
+	}
+	if got := l.Config.Loop.FinalSkipRunEdits; len(got) != 1 || got[0] != "**/*_test.go" {
+		t.Errorf("loop.final_skip_run_edits = %v, want the gate's skip_run_edits when the config set none", got)
+	}
+	if want := filepath.Join(dir, gatesDir, "go"+configExt); l.Source.Gate != want {
+		t.Errorf("Source.Gate = %q, want %q", l.Source.Gate, want)
+	}
+	if l.Config.Verify.Gate != "go" {
+		t.Errorf("Verify.Gate = %q, want the name kept for the run log", l.Config.Verify.Gate)
+	}
+}
+
+// A config that set its own final_skip_run_edits keeps it: the gate's globs are a
+// default for the language, not an override of a decision the config made.
+func TestLoadBundleGateDoesNotOverrideExplicitSkipGlobs(t *testing.T) {
+	root := t.TempDir()
+	dir := gateBundle(t, root, "verify: {gate: go}\nloop: {final_skip_run_edits: ['**/fixtures/**']}\n", map[string]string{"go": goGate})
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.Config.Loop.FinalSkipRunEdits; len(got) != 1 || got[0] != "**/fixtures/**" {
+		t.Errorf("loop.final_skip_run_edits = %v, want the config's own list to win over the gate's", got)
+	}
+}
+
+// Both a gate and inline commands is refused, not merged: "which of these runs?"
+// has to be answerable from the file.
+func TestLoadBundleRejectsGateWithInlineCommands(t *testing.T) {
+	root := t.TempDir()
+	dir := gateBundle(t, root, "verify: {gate: go, commands: [{name: x, run: [true]}]}\n", map[string]string{"go": goGate})
+	_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "both set") {
+		t.Fatalf("err = %v, want a refusal naming both verify.gate and verify.commands", err)
+	}
+}
+
+// A gate file with no commands would disable the gate while looking configured.
+func TestLoadBundleRejectsEmptyGate(t *testing.T) {
+	root := t.TempDir()
+	dir := gateBundle(t, root, "verify: {gate: go}\n", map[string]string{"go": "skip_run_edits: ['**/*_test.go']\n"})
+	_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "defines no commands") {
+		t.Fatalf("err = %v, want a refusal of the empty gate", err)
+	}
+}
+
+// A gate file cannot name another gate -- the one-level rule `extends` has, for
+// the same reason. KnownFields makes the stray key an error rather than a second
+// level of indirection nobody can read from two files.
+func TestLoadBundleRejectsGateChain(t *testing.T) {
+	root := t.TempDir()
+	dir := gateBundle(t, root, "verify: {gate: outer}\n", map[string]string{
+		"outer": "gate: inner\n" + goGate,
+		"inner": goGate,
+	})
+	_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "gate") {
+		t.Fatalf("err = %v, want the gate-inside-a-gate key refused", err)
+	}
+}
+
+// -gate names a FILE to load, so unlike every other override it has to land before
+// resolution -- and it replaces the config's commands rather than merging with
+// them: the operator typing -gate node is saying what the project is, and a Go
+// `vet` left beside a Node gate would be exactly the vacuous check the key exists
+// to remove.
+func TestGateOverrideReplacesConfiguredCommands(t *testing.T) {
+	root := t.TempDir()
+	dir := gateBundle(t, root, "verify: {commands: [{name: vet, run: [go, vet, ./...]}]}\n", map[string]string{
+		"node": "commands:\n  - {name: test, run: [npm, test]}\nskip_run_edits: ['**/*.test.ts']\n",
+	})
+	l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{Gate: "node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.Config.Verify.Commands; len(got) != 1 || got[0].Name != "test" {
+		t.Fatalf("verify.commands = %v, want ONLY the node gate's commands; the config's inline `vet` must not survive the override", got)
+	}
+	if l.Config.Verify.Gate != "node" || !strings.HasSuffix(l.Source.Gate, filepath.Join(gatesDir, "node"+configExt)) {
+		t.Errorf("gate provenance = %q / %q, want node from gates/node.yaml", l.Config.Verify.Gate, l.Source.Gate)
+	}
+	if applied := l.Overrides.Applied(); !slices.Contains(applied, "gate=node") {
+		t.Errorf("Applied() = %v, want gate=node recorded: a flag changed which commands the run executes", applied)
+	}
+}
+
+// The gate name is joined onto a bundle directory, so it is untrusted input like a
+// prompt or agent name: a separator must not walk the lookup out of the bundle.
+func TestGateNameCannotEscapeTheBundle(t *testing.T) {
+	root := t.TempDir()
+	dir := gateBundle(t, root, "verify: {gate: '../fix'}\n", map[string]string{"go": goGate})
+	_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "path separator") {
+		t.Fatalf("err = %v, want the escaping gate name refused", err)
+	}
+}

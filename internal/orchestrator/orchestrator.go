@@ -87,6 +87,11 @@ type Orchestrator struct {
 	// verifyBaseline is how the project's checks behaved before any fix round, so
 	// a pre-existing failure is not blamed on this run. Captured once at startup.
 	verifyBaseline verify.Report
+	// verifyEverPassed names every check that passed on at least one gate run in
+	// the round loop. Read against the baseline at the end of the run: a check red
+	// there that never once went green was never verified by this run at all, and
+	// under no_regressions nothing else in the loop would have said so.
+	verifyEverPassed map[string]bool
 	// verifyEnv is the environment the gate's commands run with: fixpoint's, minus
 	// the agents' credentials. Verify commands are argv the TARGET can supply, so
 	// running them with everything the agents deliberately do not see is the one
@@ -898,7 +903,34 @@ func (o *Orchestrator) finishRun(ctx context.Context, sum *model.RunSummary, run
 	if ctx.Err() != nil {
 		return nil //nolint:nilerr // interruption is a normal termination, not a run failure
 	}
+	o.reportUnverifiedChecks()
 	return o.squashRun(ctx, sum, runBase)
+}
+
+// reportUnverifiedChecks says, once and at the end, which gate commands this run
+// never saw pass. It exists for one measured failure mode: the shipped fix configs
+// carried Go's gate, and on a non-Go tree under no_regressions every command was
+// red at the baseline, every round tolerated it as pre-existing, and the run
+// finished looking gated while having verified nothing. The baseline log did say
+// "permitted to keep failing" -- once, at the top, in the voice of a policy being
+// applied, not of a gate being pointed at the wrong language. This is the line that
+// says the second thing, where an operator reads the outcome.
+//
+// must_pass needs no such line: there the same checks block every round and the
+// run says so each time. And a run that never invoked the gate (review-only, or
+// no round reached it) has nothing to report -- an empty everPassed set with no
+// gate runs behind it would accuse every baseline failure.
+func (o *Orchestrator) reportUnverifiedChecks() {
+	if !o.cfg.Verify.Enabled() || o.cfg.Loop.ReviewOnly || o.cfg.Verify.Policy != config.VerifyNoRegressions || o.verifyEverPassed == nil {
+		return
+	}
+	never := o.verifyBaseline.NeverPassed(o.verifyEverPassed)
+	if len(never) == 0 {
+		return
+	}
+	o.logf("verify: %d check(s) were red at the baseline and never passed during this run, so the gate verified NOTHING about them: %s. "+
+		"If that is a pre-existing failure, fine; if this gate does not match the project (a Go gate on a Node tree, say), name the right one with -gate <name> or verify.gate -- see config/gates/",
+		len(never), strings.Join(never, ", "))
 }
 
 // squashRun collapses the whole run into one commit for commit_policy: per_run.
@@ -4225,6 +4257,14 @@ func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, i
 	}
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
 	o.logf("round %d verify%s: %s", rec.Round, verifyAttemptLabel[attempt], rep.Summary())
+	for _, res := range rep.Results {
+		if res.Passed {
+			if o.verifyEverPassed == nil {
+				o.verifyEverPassed = map[string]bool{}
+			}
+			o.verifyEverPassed[res.Name] = true
+		}
+	}
 	blocking := rep.Blocking(o.cfg.Verify.Policy, o.verifyBaseline)
 	// Appended, not assigned: the gate runs once per fix, so a round holds one record
 	// per run. The blocking set is recorded next to the results it was derived from --

@@ -180,7 +180,60 @@ commits changed, whose matches are hidden from the closing round's material only
 Both exist for the same measured failure — `review-tests` asks for a test, the coder
 writes it, and the next look reviews *that test* rather than the code. The shipped Go
 configs set `["**/*_test.go"]`; the base leaves it empty, because the pattern is
-per-language for the same reason `verify.commands` is.
+per-language for the same reason `verify.commands` is — and both now come from
+the same place, the gate.
+
+## The verify gate
+
+`verify.commands` are the checks fixpoint runs itself after every fix round, and
+`loop.final_skip_run_edits` is the test-file shape the closing round hides. They
+are the **only** two keys in a fix config that change with the project's language,
+so they live in one file per language under `gates/`:
+
+```
+config/gates/go.yaml       gofmt -l · go vet · go test -race        **/*_test.go
+config/gates/rust.yaml     cargo fmt --check · build · clippy? · test
+config/gates/node.yaml     npm run build · lint? · npm test           *.test.* *.spec.* __tests__/
+config/gates/java.yaml     mvn compile · mvn test                     src/test/
+config/gates/python.yaml   compileall · pytest                        test_*.py tests/
+config/gates/dotnet.yaml   dotnet build · dotnet test --no-build      *Tests.cs
+config/gates/cpp.yaml      cmake --build · ctest                      test/ tests/
+```
+
+A task config names one — `verify: { gate: go, policy: ..., timeout: ... }` — and
+the loader inlines the gate's `commands` into `verify.commands` and its
+`skip_run_edits` into `loop.final_skip_run_edits` (unless the config set that
+itself). Nothing downstream knows a gate was involved. `fixpoint <config> -check`
+prints which file resolved:
+
+```
+  gate go: /Users/you/src/fixpoint/config/gates/go.yaml
+```
+
+**`-gate <name>` on the command line replaces it**, inline commands included, so
+the shipped `fix-*` configs — which name `go`, because this repository is what they
+dogfood on — run on a Node project without copying anything:
+
+```
+fixpoint fix-branch -gate node -trusted-target
+```
+
+Three rules, each for a reason the gate would otherwise get wrong:
+
+- **A gate cannot name a gate.** Same one-level rule as `extends`: the effective
+  gate is readable from two files, the config and the gate it names.
+- **`gate` and `commands` together are refused**, not merged — "which of these
+  runs?" has to be answerable from the file.
+- **A gate file is policy the target may have shipped.** It is argv fixpoint
+  executes, so the trust gate lists it beside the agent files, not inside the
+  config that named it.
+
+Why this exists: the `fix-*` configs used to spell Go's gate out inline. On a Rust
+or Node tree under `no_regressions` every command was red at the baseline, every
+round tolerated it as pre-existing, and the run finished looking gated while having
+verified nothing. That silence is also closed directly: a fix run now ends by naming
+every non-optional check that was red at the baseline and **never once passed**, so
+a gate pointed at the wrong language says so where the outcome is read.
 
 ## Commits
 

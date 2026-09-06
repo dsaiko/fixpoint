@@ -749,3 +749,25 @@ func TestBoundedBufferTruncatesAndReportsTheDrop(t *testing.T) {
 		t.Errorf("the dropped-byte count must be reported (want %s), got: %q", agent.HumanSize(1026), marker)
 	}
 }
+
+// NeverPassed is the end-of-run answer to "did this gate verify anything?": a
+// check red at the baseline that never once went green was tolerated by
+// no_regressions on every round, and nothing else in the loop would say so. The
+// measured case is a Go gate on a non-Go tree -- every command red, every round
+// committed, the run finishing as if gated.
+func TestNeverPassedNamesBaselineFailuresTheRunNeverCleared(t *testing.T) {
+	baseline := Report{Results: []Result{
+		{Name: "vet", Passed: false},                         // red at the baseline, never fixed
+		{Name: "test", Passed: false},                        // red at the baseline, later fixed
+		{Name: "build", Passed: true},                        // green throughout: not a candidate
+		{Name: "lint", Passed: false, Optional: true},        // optional never blocks, so never reported
+		{Name: "fmt", Passed: false, Err: "exec: not found"}, // could not run: Regressions blocks on it already
+	}}
+	got := baseline.NeverPassed(map[string]bool{"test": true, "build": true})
+	if len(got) != 1 || got[0] != "vet" {
+		t.Fatalf("NeverPassed() = %v, want just [vet]: test was cleared, build never failed, lint is optional, fmt is unrunnable", got)
+	}
+	if got := baseline.NeverPassed(nil); len(got) != 2 {
+		t.Errorf("NeverPassed(nil) = %v, want both non-optional runnable failures when nothing ever passed", got)
+	}
+}

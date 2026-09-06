@@ -51,31 +51,18 @@ roles:
       # here and review-design deliberately absent; both are gone now, because an
       # unread report costs a session per run.
 
-# Inherited from defaults.yaml except for this one key -- see fix-code.yaml.
-loop:
-  # Keep the closing round off the test files this run itself wrote. It matters
-  # MORE here than in fix-code: the material is already only what the branch
-  # changed, so without this the closing pass is looking at almost nothing but the
-  # run's own commits.
-  final_skip_run_edits: ["**/*_test.go"]
+# `loop` is inherited from defaults.yaml whole. The closing round's
+# do-not-review-your-own-tests glob comes from the gate below (see fix-code.yaml);
+# it matters MORE here than in fix-code, because the material is already only what
+# the branch changed, so without it the closing pass is looking at almost nothing
+# but the run's own commits.
 
 # The deterministic gate. Identical to fix-code on purpose: a fix is committed
 # only if the WHOLE project still builds and passes, never merely the files the
 # branch touched. A change confined to one package can break another, and a gate
-# scoped to the diff would not see it.
+# scoped to the diff would not see it. `gate: go` names config/gates/go.yaml;
+# for another language: `fixpoint fix-branch -gate rust -trusted-target`.
 verify:
+  gate: go
   policy: no_regressions
   timeout: 15m
-  commands:
-    - name: fmt
-      run: [make, fmt-check]
-    - name: vet
-      run: [go, vet, ./...]
-    # -race, for the reason spelled out in fix-code.yaml: the concurrency lens
-    # recurs every round, and the tests guarding those invariants pass with the
-    # synchronization removed unless the detector is watching.
-    - name: test
-      run: [go, test, -race, ./...]
-    - name: lint
-      run: [make, lint]
-      optional: true # informative: a pre-existing lint debt should not block a fix

@@ -128,18 +128,22 @@ func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 	// Keyed by file name, so a new agent file has to be added here -- the same
 	// guard the claude-backed count above provides.
 	want := map[string]int{
-		"claude":          local,
-		"claude-coder":    local,
-		"codex":           local,
-		"agy":             onArgv,
-		"deepseek-ollama": remote,
-		"gemma4-ollama":   remote,
-		"glm-ollama":      remote,
-		"kimi-ollama":     remote,
-		"minimax-ollama":  remote,
-		"glm-openrouter":  remote,
-		"kimi-openrouter": remote,
-		"qwen-openrouter": remote,
+		"claude":       local,
+		"claude-coder": local,
+		"codex":        local,
+		// Bench candidates through the codex harness: codex.yaml with the model
+		// swapped, so codex's budget. See bench/models.txt.
+		"gpt-6-astra":       local,
+		"gpt-6-astra-xhigh": local,
+		"agy":               onArgv,
+		"deepseek-ollama":   remote,
+		"gemma4-ollama":     remote,
+		"glm-ollama":        remote,
+		"kimi-ollama":       remote,
+		"minimax-ollama":    remote,
+		"glm-openrouter":    remote,
+		"kimi-openrouter":   remote,
+		"qwen-openrouter":   remote,
 	}
 	agents := shippedAgents(t)
 	for name, a := range agents {
@@ -187,18 +191,22 @@ func TestShippedAgentsPinTheirEnvironment(t *testing.T) {
 		pass []string
 		set  map[string]string
 	}{
-		"claude":          {pass: []string{"ANTHROPIC_API_KEY"}},
-		"claude-coder":    {pass: []string{"ANTHROPIC_API_KEY"}},
-		"codex":           {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
-		"agy":             {pass: []string{"GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"}},
-		"deepseek-ollama": {pass: ollama},
-		"gemma4-ollama":   {pass: ollama},
-		"glm-ollama":      {pass: ollama},
-		"kimi-ollama":     {pass: ollama},
-		"minimax-ollama":  {pass: ollama},
-		"glm-openrouter":  {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
-		"kimi-openrouter": {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
-		"qwen-openrouter": {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+		"claude":       {pass: []string{"ANTHROPIC_API_KEY"}},
+		"claude-coder": {pass: []string{"ANTHROPIC_API_KEY"}},
+		"codex":        {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+		// The two Astra bench candidates are codex.yaml with the model swapped, and
+		// see exactly what codex sees.
+		"gpt-6-astra":       {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+		"gpt-6-astra-xhigh": {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+		"agy":               {pass: []string{"GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"}},
+		"deepseek-ollama":   {pass: ollama},
+		"gemma4-ollama":     {pass: ollama},
+		"glm-ollama":        {pass: ollama},
+		"kimi-ollama":       {pass: ollama},
+		"minimax-ollama":    {pass: ollama},
+		"glm-openrouter":    {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+		"kimi-openrouter":   {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+		"qwen-openrouter":   {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
 	}
 	for name, a := range shippedAgents(t) {
 		w, ok := want[name]

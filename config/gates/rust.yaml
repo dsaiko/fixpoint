@@ -1,0 +1,20 @@
+# The Rust gate (`verify.gate: rust`). See gates/go.yaml for what a gate file is.
+commands:
+  # rustfmt ships with every rustup toolchain, so --check is a safe default here
+  # where a linter is not: clippy is a separate component and a gate that cannot
+  # run blocks every round under no_regressions (verify.Regressions treats "could
+  # not run" as having no baseline). It is listed optional for that reason -- it
+  # informs when present and never blocks when absent.
+  - name: fmt
+    run: [cargo, fmt, --check]
+  - name: build
+    run: [cargo, build, --all-targets]
+  - name: clippy
+    run: [cargo, clippy, --all-targets, --, -D, warnings]
+    optional: true
+  - name: test
+    run: [cargo, test]
+# Integration tests live under tests/; unit tests live INSIDE the source file
+# (#[cfg(test)]) and cannot be hidden by a path glob. So this rule reaches less of
+# Rust than of Go, and the closing round may still see a unit test the run wrote.
+skip_run_edits: ["tests/**", "**/*_test.rs"]

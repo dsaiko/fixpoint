@@ -1,0 +1,15 @@
+# The Python gate (`verify.gate: python`). See gates/go.yaml for what a gate is.
+#
+# Python has no build step, so the closest thing to one is compiling every module:
+# it catches syntax errors and nothing else, which is still more than the test run
+# alone catches in a file no test imports. pytest is the assumption for tests; a
+# project on unittest replaces the last command with
+# [python3, -m, unittest, discover]. The interpreter is whichever python3 is on
+# PATH -- activate the project's virtualenv before the run, or the gate tests
+# against the wrong site-packages and fails on imports the project has.
+commands:
+  - name: compile
+    run: [python3, -m, compileall, -q, .]
+  - name: test
+    run: [python3, -m, pytest, -q]
+skip_run_edits: ["**/test_*.py", "**/*_test.py", "**/tests/**", "**/conftest.py"]

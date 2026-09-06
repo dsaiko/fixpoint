@@ -439,7 +439,7 @@ command line.
 | [review-design](config/review-design.yaml) | Review a design document (`-target docs/DESIGN.md`) or a project's architecture (`-target <dir>`), no edits. Structure, data and failure modes — not code defects. |
 | [create-design](config/create-design.yaml) | Draft a design from an assignment (`-target assignment.md`): the pool proposes independently, critiques anonymously, an editor synthesizes with dissent recorded. Writes `DESIGN.md` beside the assignment (or `-out`), never overwriting. |
 | [implement-go](config/implement-go.yaml) / [implement-node](config/implement-node.yaml) / [implement-java](config/implement-java.yaml) / [implement-web](config/implement-web.yaml) | Build a reviewed design into a **new project** (`-target DESIGN.md -out <fresh-dir>`): one planner session decomposes it, the coder builds one task per gated commit, and every task's outcome lands in the history as durable trailers. `implement-web` is the asserted-ungated stack. Spec: [docs/design/DESIGN.md](docs/design/DESIGN.md). |
-| [fix-code](config/fix-code.yaml) | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`. |
+| [fix-code](config/fix-code.yaml) | Review → fix → verify → commit loop over a whole project. Needs `-trusted-target`; the gate is Go's unless `-gate <lang>` says otherwise. |
 | [fix-branch](config/fix-branch.yaml) | The same loop over only what this branch changed — git-diff against the merge base with `@{upstream}`. Needs `-trusted-target`. |
 | [fix-pr](config/fix-pr.yaml) | Fix a pull request's changes and triage its open conversations; replies are posted only with `-post`. Needs `-allow-untrusted-fix`. |
 | [defaults](config/defaults.yaml) | Shared base the others extend; not runnable on its own. |
@@ -513,6 +513,7 @@ explained: each one acts under your identity on somebody else's branch.
 | `-review-only` | Run exactly one review round; the coder is never invoked (no edits in git-diff/directory mode; pr mode still runs `gh pr checkout`, switching the branch and working tree in Prepare). |
 | `-max-iterations n` | Override `loop.max_iterations`. |
 | `-base-ref ref` | Override `target.base_ref` in git-diff mode; a trailing `...` means the merge base with HEAD. For `fix-branch` on a branch with no upstream: `-base-ref 'origin/main...'`. |
+| `-gate name` | Override `verify.gate`: which language's toolchain the deterministic gate runs, by name under `<bundle>/gates/` (`go`, `rust`, `node`, `java`, `python`, `dotnet`, `cpp`). The shipped `fix-*` configs name `go`; on another project: `fixpoint fix-branch -gate node -trusted-target`. Replaces the config's commands. |
 | `-target path` | Point a directory-mode run at a file or a directory. A file is reviewed as a **document**, shown to the panel in full; a directory is collected as a listing. How `review-design` is aimed. |
 | `-out path` | Where a create run writes its deliverable (default: `DESIGN.md` beside the assignment). An existing file is never overwritten. |
 | `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. |

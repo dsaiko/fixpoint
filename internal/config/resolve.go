@@ -20,9 +20,11 @@ import (
 //	<bundle>/fix-code.yaml        a task config, referenced as "fix-code"
 //	<bundle>/prompts/fix.md       a prompt, referenced as "fix"
 //	<bundle>/agents/claude.yaml   an agent, referenced as "claude"
+//	<bundle>/gates/go.yaml        a verify gate, referenced as "go"
 const (
 	promptsDir = "prompts"
 	agentsDir  = "agents"
+	gatesDir   = "gates"
 
 	configExt = ".yaml"
 	promptExt = ".md"
@@ -355,6 +357,18 @@ func (r *Resolver) Agent(name string) (string, error) {
 		return "", err
 	}
 	return r.find("agent", agentsDir, withExt(name, configExt))
+}
+
+// Gate resolves a verify gate by bare name to <bundle>/gates/<name>.yaml. A gate
+// is the language's share of a task config -- the commands the deterministic
+// gate runs and the test-file shape the closing round hides -- kept in its own
+// file so a task config can name the language instead of restating its
+// toolchain, and so a run can swap it from the command line (-gate).
+func (r *Resolver) Gate(name string) (string, error) {
+	if err := checkBundleName("gate", name); err != nil {
+		return "", err
+	}
+	return r.find("gate", gatesDir, withExt(name, configExt))
 }
 
 // checkBundleName rejects a reference that would resolve outside its bundle.
