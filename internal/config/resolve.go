@@ -180,11 +180,14 @@ func isProjectRoot(dir string, homes []string) bool {
 }
 
 // isBundle reports whether dir has the shape of a config bundle: at least one of
-// the two subdirectories the layout above defines. Shape rather than name is what
-// keeps an unrelated "config" directory -- a Go package, an application's settings
-// folder -- from being mistaken for a project root.
+// the three subdirectories the layout above defines. Shape rather than name is
+// what keeps an unrelated "config" directory -- a Go package, an application's
+// settings folder -- from being mistaken for a project root. gates/ counts for the
+// same reason agents/ does: a project that ships only its own gate is shipping
+// policy fixpoint executes, and root discovery that walked past it would resolve
+// the installed gate instead, silently.
 func isBundle(dir string) bool {
-	for _, sub := range []string{promptsDir, agentsDir} {
+	for _, sub := range []string{promptsDir, agentsDir, gatesDir} {
 		if st, err := os.Stat(filepath.Join(dir, sub)); err == nil && st.IsDir() {
 			return true
 		}
