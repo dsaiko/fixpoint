@@ -1,0 +1,15 @@
+# The Java gate (`verify.gate: java`), Maven. See config/implement-java.yaml for
+# why Maven and not Gradle -- the same reasoning holds for a fix gate, plus one
+# more: a Gradle project carries its own `gradlew`, so a project on Gradle should
+# copy this file and put `./gradlew build` / `./gradlew test` in it rather than
+# expect one gate to serve both. See gates/go.yaml for what a gate file is.
+commands:
+  # -ntp keeps download progress out of the gate's output; -B is batch mode, which
+  # is what makes mvn non-interactive. No dependency:go-offline step here: an
+  # existing checkout has a warm local repository, and the implement pipeline is
+  # where the cold-cache case lives.
+  - name: build
+    run: [mvn, -B, -ntp, -DskipTests, compile]
+  - name: test
+    run: [mvn, -B, -ntp, test]
+skip_run_edits: ["**/src/test/**"]

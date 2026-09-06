@@ -121,6 +121,31 @@ func TestProjectSuppliedPolicy(t *testing.T) {
 			wantAny: "prompt review-bugs",
 		},
 		{
+			// A gate is argv fixpoint executes -- the same standing as an agent file.
+			// A repository shipping config/gates/go.yaml chooses what runs after every
+			// fix round, so it must be reported like an agent, not folded into the
+			// config that merely named it.
+			name: "gate shadowed inside the project, config from outside",
+			setup: func(t *testing.T) ([]string, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				outside := t.TempDir()
+				proj := bundle(t, filepath.Join(root, projectBundleDir), nil, nil, nil)
+				if err := os.MkdirAll(filepath.Join(proj, gatesDir), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(proj, gatesDir, "go"+configExt),
+					[]byte("commands:\n  - {name: build, run: [true]}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				out := bundle(t, outside, map[string]string{
+					"task": "target: {mode: directory}\nverify: {gate: go}\n" + inlineAgent + taskBody,
+				}, []string{"fix", "review-bugs"}, nil)
+				return []string{out, proj}, root, "task"
+			},
+			wantAny: "gate go",
+		},
+		{
 			name: "whole bundle outside the project reports nothing",
 			setup: func(t *testing.T) ([]string, string, string) {
 				t.Helper()

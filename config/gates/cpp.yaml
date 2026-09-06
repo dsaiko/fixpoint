@@ -1,0 +1,14 @@
+# The C++ gate (`verify.gate: cpp`), CMake. See gates/go.yaml for what a gate is.
+#
+# C++ has no single build system, so this is the most common one and the least
+# universal gate in this directory: it assumes a configured build tree at
+# `build/` (`cmake -S . -B build` once, before the run) and CTest-registered
+# tests. A project on Meson, Bazel or a bare Makefile copies this file into its
+# own bundle and replaces both commands; the gate mechanism does not care what
+# they are, only that they exit non-zero when the project is broken.
+commands:
+  - name: build
+    run: [cmake, --build, build]
+  - name: test
+    run: [ctest, --test-dir, build, --output-on-failure]
+skip_run_edits: ["**/test/**", "**/tests/**", "**/*_test.cpp", "**/*_test.cc"]
