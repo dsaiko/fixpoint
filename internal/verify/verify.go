@@ -68,6 +68,25 @@ func (r Report) InfraFailures() []Result {
 	return out
 }
 
+// NeverPassed names the non-optional commands that failed in this baseline and
+// are absent from everPassed -- the set of names that passed on at least one gate
+// run during the round loop. These are the checks the run verified NOTHING about:
+// under no_regressions a command red at the baseline is permitted to stay red, so
+// a gate pointed at the wrong toolchain -- Go's `vet` and `test` on a Node tree --
+// fails every command every time and never blocks a round, which reads exactly
+// like a gate that is working. A command that could not run at all (Err set) is
+// excluded: Regressions already blocks on those, so they are loud on their own.
+func (r Report) NeverPassed(everPassed map[string]bool) []string {
+	var out []string
+	for _, res := range r.Results {
+		if res.Optional || res.Passed || res.Err != "" || everPassed[res.Name] {
+			continue
+		}
+		out = append(out, res.Name)
+	}
+	return out
+}
+
 // Failures returns the non-optional commands that did not pass.
 func (r Report) Failures() []Result {
 	var out []Result

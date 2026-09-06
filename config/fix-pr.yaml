@@ -60,21 +60,13 @@ loop:
   # request somebody else is reading, and a five-round run turns a reviewable
   # change into an unreviewable one.
   max_iterations: 3
-  final_skip_run_edits: ["**/*_test.go"]
 
-# The same gate as the other Go configs. It matters more here: the code being
-# verified was written by somebody else, so "it still builds and passes" is the
-# only claim in the run that no model produced.
+# The same gate as the other fix configs (see fix-code.yaml for `gate:`). It
+# matters more here: the code being verified was written by somebody else, so "it
+# still builds and passes" is the only claim in the run that no model produced --
+# which is also why a gate silently pointed at the wrong language is worst here.
+# For another language: `fixpoint fix-pr -pr 12 -gate node -allow-untrusted-fix`.
 verify:
+  gate: go
   policy: no_regressions
   timeout: 15m
-  commands:
-    - name: fmt
-      run: [make, fmt-check]
-    - name: vet
-      run: [go, vet, ./...]
-    - name: test
-      run: [go, test, -race, ./...]
-    - name: lint
-      run: [make, lint]
-      optional: true

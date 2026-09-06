@@ -1,0 +1,18 @@
+# The Node gate (`verify.gate: node`), for a project that already has its
+# node_modules -- which is what a fix run over an existing checkout is. It
+# deliberately does NOT install: `npm ci` wipes and reinstalls the tree on every
+# gate pass (minutes, each round), and `npm install` can rewrite the lockfile the
+# coder did not touch. Missing dependencies fail `build`/`test` loudly, which is
+# the right outcome; a fresh project is implement-node.yaml's job, and that one
+# does install. See gates/go.yaml for what a gate file is.
+commands:
+  # --if-present, so a project without one of these scripts is not failed for the
+  # absence: the gate is only as strict as the project's own package.json.
+  - name: build
+    run: [npm, run, build, --if-present]
+  - name: lint
+    run: [npm, run, lint, --if-present]
+    optional: true
+  - name: test
+    run: [npm, test, --if-present]
+skip_run_edits: ["**/*.test.js", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.js", "**/*.spec.ts", "**/*.spec.tsx", "**/__tests__/**"]

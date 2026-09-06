@@ -86,6 +86,7 @@ Flags:
 	reviewOnly := fs.Bool("review-only", false, "run exactly one review round; never invoke the coder")
 	maxIter := fs.Int("max-iterations", 0, "override loop.max_iterations (0 = use config)")
 	baseRef := fs.String("base-ref", "", "override target.base_ref in git-diff mode; a trailing \"...\" means the merge base with HEAD (empty = use config)")
+	gate := fs.String("gate", "", "override verify.gate: which language's toolchain the deterministic gate runs, by name under <bundle>/gates/ (empty = use config); replaces the config's commands")
 	pr := fs.Int("pr", 0, "override target.pr in pr mode; which PR to review is per-invocation, so review-pr ships without a number (0 = use config)")
 	targetPath := fs.String("target", "", "point a directory-mode run at a file or a directory; a file is reviewed as a document, shown to the panel in full (empty = use config)")
 	outPath := fs.String("out", "", "where a create run writes its deliverable (default: DESIGN.md beside the assignment); an existing file is never overwritten")
@@ -181,6 +182,7 @@ Flags:
 		ReviewOnly:        *reviewOnly,
 		MaxIterations:     *maxIter,
 		BaseRef:           *baseRef,
+		Gate:              *gate,
 		PR:                *pr,
 		Target:            paths["target"],
 		Out:               paths["out"],
@@ -614,6 +616,9 @@ func logSource(logf func(string, ...any), l *config.Loaded) {
 	logf("config: %s", l.Source.Config)
 	if l.Source.Extends != "" {
 		logf("  extends: %s", l.Source.Extends)
+	}
+	if l.Source.Gate != "" {
+		logf("  gate %s: %s", l.Config.Verify.Gate, l.Source.Gate)
 	}
 	for _, name := range sortedKeys(l.Source.Agents) {
 		logf("  agent %s: %s", name, l.Source.Agents[name])

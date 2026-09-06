@@ -1,0 +1,14 @@
+# The .NET gate (`verify.gate: dotnet`). See gates/go.yaml for what a gate is.
+#
+# Both commands find the solution or project themselves when the working directory
+# holds exactly one; a repository with several needs the path added
+# ([dotnet, build, src/App.sln, ...]) -- copy this file into the project's bundle
+# and say which.
+commands:
+  - name: build
+    run: [dotnet, build, --nologo]
+  # --no-build: the build above already ran, and rebuilding inside `test` would
+  # double the gate's time on every pass for nothing.
+  - name: test
+    run: [dotnet, test, --nologo, --no-build]
+skip_run_edits: ["**/*Tests.cs", "**/*Test.cs", "**/*.Tests/**"]

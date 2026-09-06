@@ -46,38 +46,30 @@ roles:
       # for the shape that worked (advisory + final + pinned to one agent).
 
 # Everything else in `loop` is inherited from defaults.yaml -- `extends` is per-key
-# and reaches inside nested blocks, so setting one key here keeps the rest.
-loop:
-  # The Go spelling of "a test file", for the closing round's do-not-review-your-own-
-  # tests rule (see defaults.yaml for the measurement). Applies ONLY to files this
-  # run's own commits wrote: a test file the run did not touch stays in scope.
-  final_skip_run_edits: ["**/*_test.go"]
+# and reaches inside nested blocks, so setting one key here keeps the rest. The
+# closing round's do-not-review-your-own-tests glob (loop.final_skip_run_edits)
+# is NOT set here: it comes from the gate below, because "what is a test file" is
+# a property of the language, and the language is the gate's to name.
 
-# The deterministic gate for THIS project. fixpoint runs these itself after the
-# coder and refuses to commit a round that fails them, so a fix that breaks the
-# build never becomes a commit later rounds build on.
+# The deterministic gate. fixpoint runs its commands itself after the coder and
+# refuses to commit a round that fails them, so a fix that breaks the build never
+# becomes a commit later rounds build on.
 #
-# Every command runs on every pass -- a failure does not stop the pass, because the
-# coder gets one correction attempt and needs all the failures at once. Ordered
-# cheapest-first for readability only: the summary and the coder's failure block
-# follow this order.
+# `gate: go` names config/gates/go.yaml -- the toolchain, and nothing else. This
+# config used to spell out `go vet`, `go test -race`, `make fmt-check` and `make
+# lint` inline, which made it a config for THIS repository shipped to everyone: on
+# a Rust or Node tree every command went red at the baseline, no_regressions
+# tolerated every one of them, and the run finished looking gated while having
+# verified nothing. Go stays the default because this repository is what the
+# shipped configs dogfood on; for another language, name its gate on the command
+# line without touching this file:
+#
+#     fixpoint fix-code -gate node -trusted-target
+#
+# `-check` prints which gate file resolved. Every command runs on every pass -- a
+# failure does not stop the pass, because the coder gets one correction attempt
+# and needs all the failures at once.
 verify:
+  gate: go
   policy: no_regressions
   timeout: 15m
-  commands:
-    - name: fmt
-      run: [make, fmt-check]
-    - name: vet
-      run: [go, vet, ./...]
-    # -race, not a plain `go test`. review-concurrency is a recurring loop lens, so
-    # the coder edits synchronization code round after round -- and the tests that
-    # guard those invariants only assert on the RESULT, so they stay green if a
-    # mutex or a sync.Once is dropped. Without the detector the gate cannot see a
-    # race it just committed. It costs ~70s against ~15s on the whole module here,
-    # which is far inside the timeout above; narrow to the concurrent packages only
-    # if that ever stops being true.
-    - name: test
-      run: [go, test, -race, ./...]
-    - name: lint
-      run: [make, lint]
-      optional: true # informative: a pre-existing lint debt should not block a fix

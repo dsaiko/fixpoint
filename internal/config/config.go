@@ -2377,6 +2377,36 @@ type Verify struct {
 	// Timeout bounds EACH command. A hung test suite must not hang the run.
 	Timeout  Duration        `yaml:"timeout"`
 	Commands []VerifyCommand `yaml:"commands"`
+	// Gate names a file under <bundle>/gates/ that supplies Commands (and the
+	// closing round's loop.final_skip_run_edits) instead of this config spelling
+	// them out. It exists because those two keys are the ONLY part of a fix config
+	// that changes with the project's language, and the shipped fix-* configs
+	// were spelling out Go's -- `go vet`, `go test -race`, `**/*_test.go` -- in
+	// files that ship to every user. On a Rust or Node tree under no_regressions
+	// that gate went silently vacuous: every command red at the baseline, every
+	// one tolerated, nothing ever blocked, and no line of output said "wrong
+	// language". A gate is named, in this key or with -gate on the command line,
+	// and `-check` prints which file it resolved to.
+	//
+	// Mutually exclusive with Commands: a config that sets both is refused rather
+	// than merged, because "which of these actually runs?" must be answerable
+	// from the file. A gate file cannot name another gate -- the same one-level
+	// rule as `extends`, for the same reason: the effective gate is readable from
+	// two files, the config and the gate it names. Resolution inlines the gate's
+	// commands here, so everything downstream reads Commands and never knows.
+	Gate string `yaml:"gate"`
+}
+
+// Gate is the shape of a <bundle>/gates/<name>.yaml file: the language's share of
+// a task config. Both keys land in the config that names the gate -- Commands
+// into verify.commands, SkipRunEdits into loop.final_skip_run_edits (only when
+// the config left that empty; an explicit list in the config wins).
+type Gate struct {
+	Commands []VerifyCommand `yaml:"commands"`
+	// SkipRunEdits is the test-file shape of the language ("**/*_test.go",
+	// "**/test_*.py"), which is why it lives here beside the commands: what
+	// counts as a test file is a property of the language, not of the task.
+	SkipRunEdits []string `yaml:"skip_run_edits"`
 }
 
 // ReviewPolicy holds what a REVIEW run concludes with, as opposed to what it

@@ -22,6 +22,7 @@ type Source struct {
 	Extends string            // the config it inherited from, if any
 	Agents  map[string]string // agent name -> file
 	Prompts map[string]string // prompt name -> file
+	Gate    string            // the verify gate file, if the config names one
 }
 
 // Loaded is a fully resolved configuration plus the provenance of its parts.
@@ -88,7 +89,14 @@ type Overrides struct {
 	Target string
 	// Out is where a create run writes its deliverable, absolute for the same
 	// reason Target is: the flag was typed in the operator's cwd.
-	Out               string
+	Out string
+	// Gate overrides verify.gate: which language's toolchain the deterministic
+	// gate runs. Per-invocation for the same reason BaseRef is -- the shipped fix
+	// configs name Go's gate because this repository is what they dogfood on, and
+	// pointing them at a Node project must not require copying a config to change
+	// one word. It REPLACES whatever the config set, inline commands included: the
+	// operator typing -gate node is saying what the project is.
+	Gate              string
 	AllowUntrustedFix bool
 	// Post publishes the review on the pull request, and PostVerdict additionally
 	// lets it carry the verdict (approve / request changes) instead of a comment.
@@ -257,6 +265,9 @@ func (o Overrides) Applied() []string {
 	if o.TrustedBundle {
 		out = append(out, "trusted_bundle=true")
 	}
+	if o.Gate != "" {
+		out = append(out, "gate="+o.Gate)
+	}
 	if o.MaxIterations != 0 {
 		out = append(out, "max_iterations="+strconv.Itoa(o.MaxIterations))
 	}
@@ -318,6 +329,19 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loa
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := cfg.resolvePrompts(r, src.Prompts); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// The gate override lands BEFORE resolution, alone among the overrides: it
+	// names a file to load rather than a value to set, so applying it with the
+	// others below would be too late to matter. Replacing rather than merging --
+	// commands the config spelled out go too -- because the operator is stating
+	// what the project is, and a Go `vet` left beside a Node gate would be the
+	// vacuous-check problem this key exists to remove.
+	if ov.Gate != "" {
+		cfg.Verify.Gate = ov.Gate
+		cfg.Verify.Commands = nil
+	}
+	if err := cfg.resolveGate(r, &src.Gate); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	// Last, so the operator's assertions win over every file in the bundle, and so
@@ -536,6 +560,41 @@ func (c *Config) resolveAgents(r *Resolver, into map[string]string) error {
 // which resolveAgents and the refusal loop already skip.
 func (c *Config) referencedAgents() []string {
 	return append(c.Roles.Review.ActiveAgents(), c.Roles.Coder.Agent, c.Roles.Judge.Agent, c.Roles.Triage.Agent, c.Roles.Editor.Agent, c.Roles.Planner.Agent)
+}
+
+// resolveGate loads the verify gate the config names and inlines it: the file's
+// commands become verify.commands, and its test-file globs become
+// loop.final_skip_run_edits unless the config set its own. After this nothing
+// downstream knows a gate was involved -- Verify.Enabled, the baseline, every
+// round's pass all read Commands -- which is the point: one indirection, resolved
+// at load, recorded in Source for the trust gate and the run log.
+//
+// A gate file is decoded with KnownFields, so a `gate:` or `extends:` key inside
+// one is an error rather than a second level of indirection.
+func (c *Config) resolveGate(r *Resolver, into *string) error {
+	if c.Verify.Gate == "" {
+		return nil
+	}
+	if len(c.Verify.Commands) > 0 {
+		return fmt.Errorf("verify.gate %q and verify.commands are both set; a gate supplies the commands, so name one or spell them out, not both -- otherwise which of them runs is not answerable from the file", c.Verify.Gate)
+	}
+	path, err := r.Gate(c.Verify.Gate)
+	if err != nil {
+		return err
+	}
+	var g Gate
+	if err := decodeInto(path, &g); err != nil {
+		return err
+	}
+	if len(g.Commands) == 0 {
+		return fmt.Errorf("gate %q (%s) defines no commands; a gate exists to supply verify.commands, and an empty one would disable the gate while looking configured", c.Verify.Gate, path)
+	}
+	c.Verify.Commands = g.Commands
+	if len(c.Loop.FinalSkipRunEdits) == 0 {
+		c.Loop.FinalSkipRunEdits = g.SkipRunEdits
+	}
+	*into = path
+	return nil
 }
 
 // resolvePrompts turns every bare prompt name into a concrete file path, stored
@@ -761,6 +820,10 @@ func (l *Loaded) policyFrom(within func(string) bool) []string {
 	// inline `agents:` map or a verify command lives in.
 	add("config", "", l.Source.Config)
 	add("extends base", "", l.Source.Extends)
+	// The gate is argv fixpoint executes, from a file the repository under review
+	// may have shipped -- the same standing as an agent file, so it is listed with
+	// them rather than treated as part of the config that merely named it.
+	add("gate", l.Config.Verify.Gate, l.Source.Gate)
 	for name, path := range l.Source.Agents {
 		add("agent", name, path)
 	}
