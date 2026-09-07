@@ -12,7 +12,7 @@ STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@v0.8.1
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.7.0
 GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.18.0
 
-.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds bench-readme implement-go implement-node implement-java implement-web \
+.PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds bench-readme bench-publish implement-go implement-node implement-java implement-web \
         fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help \
         release-check release-snapshot release-verify
 
@@ -160,7 +160,17 @@ bench:
 ## one. The two HTML comment markers in README.md are the contract -- the target
 ## fails loudly if they are missing rather than appending a second table.
 bench-readme:
-	python3 bench/report.py --markdown README.md --html bench/report.html
+	python3 bench/report.py --markdown README.md --html bench/report.html --json bench/results.json
+
+## bench-publish: bench-readme, then push the standings to www.saiko.cz/ai-benchmarks.
+## The site lives in a sibling checkout (BENCH_SITE_DIR); its `make publish` copies
+## bench/results.json in, builds the page from it, syncs to S3 and invalidates
+## CloudFront. Every new results generation should end here, not at bench-readme:
+## the public page is the third generated surface and it does not update itself.
+BENCH_SITE_DIR ?= ../www.saiko.cz.ai-benchmarks
+bench-publish: bench-readme
+	@test -d "$(BENCH_SITE_DIR)" || { echo "bench-publish: $(BENCH_SITE_DIR) not found -- set BENCH_SITE_DIR to the www.saiko.cz.ai-benchmarks checkout"; exit 2; }
+	$(MAKE) -C "$(BENCH_SITE_DIR)" publish FIXPOINT_DIR="$(CURDIR)"
 
 ## bench-seeds: per-seed hit rate across every scored run -- which seeds still
 ## discriminate, which are near-dead, which nobody has ever found. No quota.

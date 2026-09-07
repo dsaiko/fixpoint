@@ -198,17 +198,24 @@ make bench MODEL=kimi-k3:cloud TASK=go,design  # a list of targets
 make bench-check                               # validate the manifests, no model
 make bench-seeds                               # per-seed hit rate: what still discriminates
 python3 bench/report.py                        # scores, plus recall per target
-make bench-readme                              # regenerate README.md's table AND bench/report.html
+make bench-readme                              # regenerate README.md's table, bench/report.html and bench/results.json
+make bench-publish                             # bench-readme, then publish the table to www.saiko.cz/ai-benchmarks
 ```
 
-**After measuring a new model, run `make bench-readme`.** It rewrites two
-generated surfaces from `results.csv` in one pass: the results table in the
-top-level [README.md](../README.md), between two HTML comment markers, and the
-standings page [report.html](report.html), which is kept under source control
-because it is the file people ask for. Neither updates itself. A hand-maintained
-copy would go stale on the first new model, and a stale leaderboard is worse
-than no leaderboard: it is the number people quote without opening the CSV.
-Commit both with the `results.csv` rows they were generated from.
+**After measuring a new model, run `make bench-publish`.** Its first half,
+`make bench-readme`, rewrites three generated surfaces from `results.csv` in one
+pass: the results table in the top-level [README.md](../README.md), between two
+HTML comment markers; the standings page [report.html](report.html), kept under
+source control because it is the file people ask for; and
+[results.json](results.json), the same standings as data. Its second half hands
+that JSON to the public page at
+[www.saiko.cz/ai-benchmarks](https://www.saiko.cz/ai-benchmarks/), a sibling
+checkout (`BENCH_SITE_DIR`, default `../www.saiko.cz.ai-benchmarks`) whose
+`make publish` builds the page from it and deploys. None of the four updates
+itself. A hand-maintained copy would go stale on the first new model, and a
+stale leaderboard is worse than no leaderboard: it is the number people quote
+without opening the CSV. Commit the three files with the `results.csv` rows they
+were generated from.
 
 `TASK` names a **target**, not a task: `go`, `design`, or any language target
 added under `bench/testdata/target-<name>` with a matching

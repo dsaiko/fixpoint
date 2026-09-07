@@ -1,0 +1,1687 @@
+{
+ "source": "https://github.com/dsaiko/fixpoint/blob/main/bench/results.csv",
+ "generated_by": "bench/report.py --json",
+ "targets": [
+  "go",
+  "design",
+  "cpp",
+  "csharp",
+  "java",
+  "python",
+  "rust",
+  "typescript"
+ ],
+ "pool": {
+  "design": 34,
+  "go": 56,
+  "rust": 64,
+  "java": 69,
+  "typescript": 63,
+  "csharp": 68,
+  "cpp": 64,
+  "python": 66
+ },
+ "possible": 484,
+ "measured": {
+  "first": "2026-08-20",
+  "last": "2026-09-07"
+ },
+ "totals": {
+  "candidates": 25,
+  "sessions": 584,
+  "targets": 8,
+  "contract_failures": 3
+ },
+ "candidates": [
+  {
+   "rank": 1,
+   "candidate": "claude",
+   "baseline": true,
+   "model": "claude-opus-5",
+   "effort": "high",
+   "route": "cli",
+   "pays": "sub (claude)",
+   "points": 376,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 354048,
+   "points_per_mtok": 1062.0,
+   "cost_usd": 8.61,
+   "cost_per_point_usd": 0.023,
+   "notional": true,
+   "seconds": 3958,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-08-20",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "design": {
+     "found": 20,
+     "of": 34,
+     "deflated": false
+    },
+    "go": {
+     "found": 43,
+     "of": 56,
+     "deflated": false
+    },
+    "rust": {
+     "found": 53,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 52,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 55,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 51,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 51,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 51,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 2,
+   "candidate": "claude-opus-5",
+   "baseline": false,
+   "model": "claude-opus-5",
+   "effort": null,
+   "route": "anthropic",
+   "pays": "sub (claude)",
+   "points": 373,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 355041,
+   "points_per_mtok": 1050.6,
+   "cost_usd": 8.84,
+   "cost_per_point_usd": 0.024,
+   "notional": true,
+   "seconds": 4152,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 42,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 16,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 53,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 55,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 55,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 52,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 51,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 49,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 3,
+   "candidate": "claude-fable-5-1",
+   "baseline": false,
+   "model": "claude-fable-5-1",
+   "effort": null,
+   "route": "anthropic",
+   "pays": "sub (claude)",
+   "points": 365,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 303615,
+   "points_per_mtok": 1202.2,
+   "cost_usd": 13.65,
+   "cost_per_point_usd": 0.037,
+   "notional": true,
+   "seconds": 3504,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-02"
+   },
+   "by_target": {
+    "go": {
+     "found": 40,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 15,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 52,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 53,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 53,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 51,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 49,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 52,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 4,
+   "candidate": "qwen/qwen3.8-max",
+   "baseline": false,
+   "model": "qwen/qwen3.8-max",
+   "effort": null,
+   "route": "openrouter",
+   "pays": "credits",
+   "points": 331,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 465715,
+   "points_per_mtok": 710.7,
+   "cost_usd": 6.35,
+   "cost_per_point_usd": 0.019,
+   "notional": false,
+   "seconds": 11266,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-08-20",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 37,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 19,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 44,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 44,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 47,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 43,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 49,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 48,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 5,
+   "candidate": "kimi-k3:cloud",
+   "baseline": false,
+   "model": "kimi-k3:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 319,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1818863,
+   "points_per_mtok": 175.4,
+   "cost_usd": 7.58,
+   "cost_per_point_usd": 0.024,
+   "notional": true,
+   "seconds": 2179,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-02",
+    "last": "2026-09-02"
+   },
+   "by_target": {
+    "go": {
+     "found": 41,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 41,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 44,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 46,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 48,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 46,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 39,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 6,
+   "candidate": "qwen/qwen3.8-27b",
+   "baseline": false,
+   "model": "qwen/qwen3.8-27b",
+   "effort": null,
+   "route": "openrouter",
+   "pays": "credits",
+   "points": 314,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1939356,
+   "points_per_mtok": 161.9,
+   "cost_usd": 2.48,
+   "cost_per_point_usd": 0.008,
+   "notional": false,
+   "seconds": 12930,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-08-20",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 38,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 15,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 47,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 44,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 43,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 50,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 42,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 7,
+   "candidate": "glm-5.3:cloud",
+   "baseline": false,
+   "model": "glm-5.3:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 313,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 4706916,
+   "points_per_mtok": 66.5,
+   "cost_usd": 7.31,
+   "cost_per_point_usd": 0.023,
+   "notional": true,
+   "seconds": 2540,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-08-31",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 39,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 39,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 49,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 42,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 44,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 38,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 48,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 8,
+   "candidate": "nemotron-3-ultra:cloud",
+   "baseline": false,
+   "model": "nemotron-3-ultra:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 310,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 5937436,
+   "points_per_mtok": 52.2,
+   "cost_usd": 1.66,
+   "cost_per_point_usd": 0.005,
+   "notional": true,
+   "seconds": 20316,
+   "sessions": 26,
+   "errors": 1,
+   "measured": {
+    "first": "2026-09-02",
+    "last": "2026-09-02"
+   },
+   "by_target": {
+    "go": {
+     "found": 32,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 16,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 39,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 47,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 43,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 44,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 47,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 42,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 9,
+   "candidate": "glm-5.3-flash:cloud",
+   "baseline": false,
+   "model": "glm-5.3-flash:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 304,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 4717634,
+   "points_per_mtok": 64.4,
+   "cost_usd": 0.78,
+   "cost_per_point_usd": 0.003,
+   "notional": true,
+   "seconds": 2209,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-08-28",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 40,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 11,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 44,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 41,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 45,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 43,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 45,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 10,
+   "candidate": "codex",
+   "baseline": true,
+   "model": "gpt-5.6-sol",
+   "effort": "high",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 298,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 569942,
+   "points_per_mtok": 522.9,
+   "cost_usd": 8.36,
+   "cost_per_point_usd": 0.028,
+   "notional": true,
+   "seconds": 6810,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-08-20",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "design": {
+     "found": 13,
+     "of": 34,
+     "deflated": false
+    },
+    "go": {
+     "found": 39,
+     "of": 56,
+     "deflated": false
+    },
+    "rust": {
+     "found": 36,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 44,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 41,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 44,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 42,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 39,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 11,
+   "candidate": "glm-5.2:cloud",
+   "baseline": false,
+   "model": "glm-5.2:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 278,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 3596257,
+   "points_per_mtok": 77.3,
+   "cost_usd": 5.72,
+   "cost_per_point_usd": 0.021,
+   "notional": true,
+   "seconds": 3948,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 33,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 42,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 37,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 38,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 40,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 39,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 12,
+   "candidate": "claude-fable-5",
+   "baseline": false,
+   "model": "claude-fable-5",
+   "effort": null,
+   "route": "anthropic",
+   "pays": "sub (claude)",
+   "points": 277,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 298667,
+   "points_per_mtok": 927.5,
+   "cost_usd": 13.39,
+   "cost_per_point_usd": 0.048,
+   "notional": true,
+   "seconds": 3653,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 41,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 12,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 33,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 38,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 36,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 36,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 33,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 48,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 13,
+   "candidate": "x-ai/grok-4.6",
+   "baseline": false,
+   "model": "x-ai/grok-4.6",
+   "effort": null,
+   "route": "openrouter",
+   "pays": "credits",
+   "points": 277,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1427795,
+   "points_per_mtok": 194.0,
+   "cost_usd": 6.0,
+   "cost_per_point_usd": 0.022,
+   "notional": false,
+   "seconds": 7955,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-08-20",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 32,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 11,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 38,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 38,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 41,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 37,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 39,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 41,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 14,
+   "candidate": "deepseek-v4-pro:cloud",
+   "baseline": false,
+   "model": "deepseek-v4-pro:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 270,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 3546238,
+   "points_per_mtok": 76.1,
+   "cost_usd": 2.83,
+   "cost_per_point_usd": 0.01,
+   "notional": true,
+   "seconds": 2551,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 29,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 15,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 33,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 42,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 40,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 35,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 38,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 38,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 15,
+   "candidate": "gpt-6-astra-xhigh",
+   "baseline": false,
+   "model": "gpt-6-astra",
+   "effort": "xhigh",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 270,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 607708,
+   "points_per_mtok": 444.3,
+   "cost_usd": 14.94,
+   "cost_per_point_usd": 0.055,
+   "notional": true,
+   "seconds": 5617,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-05",
+    "last": "2026-09-05"
+   },
+   "by_target": {
+    "go": {
+     "found": 32,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 34,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 37,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 31,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 45,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 42,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 16,
+   "candidate": "claude-opus-4-8",
+   "baseline": false,
+   "model": "claude-opus-4-8",
+   "effort": null,
+   "route": "anthropic",
+   "pays": "sub (claude)",
+   "points": 268,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 254630,
+   "points_per_mtok": 1052.5,
+   "cost_usd": 6.04,
+   "cost_per_point_usd": 0.023,
+   "notional": true,
+   "seconds": 2912,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 31,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 12,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 32,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 44,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 35,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 37,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 37,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 40,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 17,
+   "candidate": "gpt-6-astra",
+   "baseline": false,
+   "model": "gpt-6-astra",
+   "effort": "high",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 265,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 478240,
+   "points_per_mtok": 554.1,
+   "cost_usd": 9.42,
+   "cost_per_point_usd": 0.036,
+   "notional": true,
+   "seconds": 3267,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-05",
+    "last": "2026-09-05"
+   },
+   "by_target": {
+    "go": {
+     "found": 35,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 29,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 40,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 37,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 28,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 42,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 40,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 18,
+   "candidate": "minimax-m3:cloud",
+   "baseline": false,
+   "model": "minimax-m3:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 251,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 6569978,
+   "points_per_mtok": 38.2,
+   "cost_usd": 4.56,
+   "cost_per_point_usd": 0.018,
+   "notional": true,
+   "seconds": 6003,
+   "sessions": 29,
+   "errors": 2,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 37,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 13,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 28,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 37,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 31,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 31,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 38,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 36,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 19,
+   "candidate": "deepseek-v4-flash:0731-cloud",
+   "baseline": false,
+   "model": "deepseek-v4-flash:0731-cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 249,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 4499460,
+   "points_per_mtok": 55.3,
+   "cost_usd": 1.19,
+   "cost_per_point_usd": 0.005,
+   "notional": true,
+   "seconds": 6800,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-02",
+    "last": "2026-09-02"
+   },
+   "by_target": {
+    "go": {
+     "found": 28,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 9,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 28,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 33,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 43,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 35,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 32,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 41,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 20,
+   "candidate": "claude-sonnet-5",
+   "baseline": false,
+   "model": "claude-sonnet-5",
+   "effort": null,
+   "route": "anthropic",
+   "pays": "sub (claude)",
+   "points": 245,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 447211,
+   "points_per_mtok": 547.8,
+   "cost_usd": 4.89,
+   "cost_per_point_usd": 0.02,
+   "notional": true,
+   "seconds": 4313,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-05",
+    "last": "2026-09-05"
+   },
+   "by_target": {
+    "go": {
+     "found": 28,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 8,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 29,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 44,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 31,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 35,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 33,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 37,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 21,
+   "candidate": "kimi-k2.7-code:cloud",
+   "baseline": false,
+   "model": "kimi-k2.7-code:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 242,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1561494,
+   "points_per_mtok": 155.0,
+   "cost_usd": 2.54,
+   "cost_per_point_usd": 0.01,
+   "notional": true,
+   "seconds": 2876,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 32,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 15,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 33,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 37,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 33,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 34,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 30,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 28,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 22,
+   "candidate": "gpt-oss:120b-cloud",
+   "baseline": false,
+   "model": "gpt-oss:120b-cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 236,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 8458314,
+   "points_per_mtok": 27.9,
+   "cost_usd": 1.41,
+   "cost_per_point_usd": 0.006,
+   "notional": true,
+   "seconds": 3533,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-02",
+    "last": "2026-09-02"
+   },
+   "by_target": {
+    "go": {
+     "found": 23,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 9,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 31,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 41,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 31,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 38,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 28,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 23,
+   "candidate": "gpt-5.6-terra",
+   "baseline": false,
+   "model": "gpt-5.6-terra",
+   "effort": "high",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 221,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 612382,
+   "points_per_mtok": 360.9,
+   "cost_usd": 3.04,
+   "cost_per_point_usd": 0.014,
+   "notional": true,
+   "seconds": 2896,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-07",
+    "last": "2026-09-07"
+   },
+   "by_target": {
+    "go": {
+     "found": 28,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 9,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 26,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 29,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 35,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 27,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 32,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 24,
+   "candidate": "qwen3.5:397b-cloud",
+   "baseline": false,
+   "model": "qwen3.5:397b-cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 186,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 2376518,
+   "points_per_mtok": 78.3,
+   "cost_usd": 1.66,
+   "cost_per_point_usd": 0.009,
+   "notional": true,
+   "seconds": 1187,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-02",
+    "last": "2026-09-02"
+   },
+   "by_target": {
+    "go": {
+     "found": 17,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 12,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 26,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 31,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 21,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 26,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 28,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 25,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 25,
+   "candidate": "gemma4:31b-cloud",
+   "baseline": false,
+   "model": "gemma4:31b-cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 156,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 4444302,
+   "points_per_mtok": 35.1,
+   "cost_usd": 0.66,
+   "cost_per_point_usd": 0.004,
+   "notional": true,
+   "seconds": 1598,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-01",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 17,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 10,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 19,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 30,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 17,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 20,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 24,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 19,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  }
+ ]
+}
