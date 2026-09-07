@@ -150,15 +150,17 @@ bench:
 	@test -n "$(MODEL)" || { echo "usage: make bench MODEL=<ollama-model> [TASK=code|design|all] [N=repeats]"; exit 2; }
 	bench/run.sh "$(MODEL)" "$(or $(TASK),all)" "$(or $(N),1)"
 
-## bench-readme: regenerate the results table in README.md from results.csv.
-## RUN THIS AFTER EVERY NEW MODEL. The table is generated, not hand-written, for
-## the same reason the HTML page is: a pasted copy stops matching results.csv the
-## first time a model is added, and a stale leaderboard in the README is worse
-## than none, because it is the number people quote without opening the CSV.
-## The two HTML comment markers in README.md are the contract -- the target
+## bench-readme: regenerate the results table in README.md AND the standings
+## page bench/report.html from results.csv, in one pass so they cannot disagree.
+## RUN THIS AFTER EVERY NEW MODEL. Both are generated, not hand-written: a
+## pasted copy stops matching results.csv the first time a model is added, and a
+## stale leaderboard is worse than none, because it is the number people quote
+## without opening the CSV. bench/report.html is tracked on purpose -- it is the
+## page people ask for -- so a sweep that does not regenerate it ships a stale
+## one. The two HTML comment markers in README.md are the contract -- the target
 ## fails loudly if they are missing rather than appending a second table.
 bench-readme:
-	python3 bench/report.py --markdown README.md
+	python3 bench/report.py --markdown README.md --html bench/report.html
 
 ## bench-seeds: per-seed hit rate across every scored run -- which seeds still
 ## discriminate, which are near-dead, which nobody has ever found. No quota.

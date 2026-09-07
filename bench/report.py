@@ -83,7 +83,16 @@ RATES = {
     # whole reason to measure it: the claude route caches ~98% of a sweep, so
     # the $0.20 cached-input rate is most of what it would actually pay.
     "claude-sonnet-5": (2.00, 10.00, 0.20),
+    # NOTE 2026-09-07: developers.openai.com now shows sol at $4/$20, cached
+    # $0.40, footnoted as "promotional pricing ... at least through November 21,
+    # 2026". The row keeps the list price it was measured at so the codex
+    # figures do not move under a promotion; revisit if the promo becomes list.
     "gpt-5.6-sol": (5.00, 30.00, 0.50),
+    # GPT-5.6 Terra, from developers.openai.com on 2026-09-07 when it was added
+    # as a candidate: $2/$12, cached $0.20 -- the cheap sibling of the codex
+    # seat, and 20% of astra's list price. Long-context (>272K input) rows are
+    # 2x in / 1.5x out, which no bench session reaches.
+    "gpt-5.6-terra": (2.00, 12.00, 0.20),
     # GPT-6 Astra, from developers.openai.com on 2026-09-05, the day the model
     # became reachable on ChatGPT-account auth. Fable-5-class list price, and
     # 2x the input of the gpt-5.6-sol it is benched against. Requests over 272K
@@ -119,9 +128,24 @@ RATES = {
 # the whole session quota, while 579 minimax-m3 requests over the same week
 # were a thin slice of it. Per REQUEST it is in a different class from
 # everything else here, and the dollar column does not show that.
+#
+# DEEPSEEK HAS TWO TIERS since 2026-09-07 (ollama's mailing, confirmed on
+# ollama.com/pricing the same day). The page now labels the halved figures
+# "Standard" and the old ones "Peak": peak is 12:00-18:00 UTC Monday-Friday,
+# everything else -- weekday mornings and evenings, all weekend -- is standard.
+#   deepseek-v4-flash  standard 0.22 / 0.66 / 0.007   peak 0.44 / 1.32 / 0.014
+#   deepseek-v4-pro    standard 0.66 / 1.98 / 0.022   peak 1.32 / 3.96 / 0.044
+# The table carries STANDARD, for two reasons: it is ollama's own base label,
+# and both measured deepseek sweeps ran in it -- pro on 2026-09-01 at 09:22
+# UTC, flash on 2026-09-02 at 06:26 UTC (run ids in results.csv are local
+# time, UTC+2). A sweep started in a European afternoon (14:00-20:00 local)
+# would bill at peak, 2x these; read a deepseek dollar figure with that in mind,
+# and check the run id before quoting one in a seat decision. Ollama says
+# off-peak pricing "for more models will be available soon", so this note may
+# grow into a general mechanism; it is not one yet.
 OLLAMA_RATES = {
-    "deepseek-v4-flash": (0.44, 1.32, 0.014),
-    "deepseek-v4-pro":   (1.32, 3.96, 0.044),
+    "deepseek-v4-flash": (0.22, 0.66, 0.007),
+    "deepseek-v4-pro":   (0.66, 1.98, 0.022),
     "gemma4":            (0.14, 0.40, 0.05),
     "glm-5.1":           (1.00, 3.20, 0.20),
     "glm-5.2":           (1.40, 4.40, 0.26),
@@ -1027,11 +1051,16 @@ def main():
     ranked = sorted(per_model.items(),
                     key=lambda kv: -statistics.median(r["points"] for r in kv[1]))
 
+    # --html and --markdown are independent outputs, not alternatives, so one
+    # invocation can write both: `make bench-readme` does exactly that, and
+    # until 2026-09-07 the early return here made it silently skip the README
+    # whenever both flags were given -- the html was fresh, the table stale,
+    # which is the drift the target exists to prevent.
     if html_out:
         write_html(ranked, all_targets, html_out)
-        return
     if md_out:
         write_markdown(ranked, all_targets, md_out)
+    if html_out or md_out:
         return
 
     print(f"{'candidate':30s} {'model measured':22s} {'route':11s} {'pays':13s} "
