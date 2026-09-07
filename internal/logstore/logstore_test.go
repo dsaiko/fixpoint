@@ -835,3 +835,29 @@ func TestRunStateRedactsIsOwnerOnlyAndReplacesCleanly(t *testing.T) {
 		}
 	}
 }
+
+// The gate is argv the run executed after every fix, from a file the target's
+// bundle may have shadowed -- exactly the kind of source the "Configuration
+// sources" section exists to make visible after the fact. The stderr listing and
+// the trust gate already named it; the durable summary has to as well, or the
+// question "which file supplied the commands that gated this run?" is answerable
+// only while the terminal is still open (review run 20260907-084831).
+func TestSummaryRecordsTheGateAmongItsSources(t *testing.T) {
+	sum := &model.RunSummary{Sources: model.RunSources{
+		Config:  "/b/fix-code.yaml",
+		Extends: "/b/defaults.yaml",
+		Gate:    "/b/gates/go.yaml",
+		Agents:  map[string]string{"claude": "/b/agents/claude.yaml"},
+	}}
+	got := renderSummaryMD(sum)
+	gate := strings.Index(got, "- gate: `/b/gates/go.yaml`")
+	if gate < 0 {
+		t.Fatalf("summary does not list the gate file among its sources:\n%s", got)
+	}
+	if ext := strings.Index(got, "- extends: `/b/defaults.yaml`"); ext < 0 || ext > gate {
+		t.Errorf("the gate should follow extends, the file it inherits alongside:\n%s", got)
+	}
+	if strings.Contains(renderSummaryMD(&model.RunSummary{Sources: model.RunSources{Config: "/b/review-code.yaml"}}), "- gate:") {
+		t.Error("a run with no gate must not print an empty gate line")
+	}
+}

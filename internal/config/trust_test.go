@@ -135,7 +135,7 @@ func TestProjectSuppliedPolicy(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(filepath.Join(proj, gatesDir, "go"+configExt),
-					[]byte("commands:\n  - {name: build, run: [true]}\n"), 0o600); err != nil {
+					[]byte("commands:\n  - {name: build, run: [true]}\nskip_run_edits: ['**/*_test.go']\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				out := bundle(t, outside, map[string]string{

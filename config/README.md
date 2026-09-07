@@ -224,6 +224,9 @@ Three rules, each for a reason the gate would otherwise get wrong:
   gate is readable from two files, the config and the gate it names.
 - **`gate` and `commands` together are refused**, not merged — "which of these
   runs?" has to be answerable from the file.
+- **A gate carries both keys or is refused.** No `commands` would disable the
+  gate while looking configured; no `skip_run_edits` would, under `-gate`, leave
+  a run with no test-file globs at all.
 - **A gate file is policy the target may have shipped.** It is argv fixpoint
   executes, so the trust gate lists it beside the agent files, not inside the
   config that named it.

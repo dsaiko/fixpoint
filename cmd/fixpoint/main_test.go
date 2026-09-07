@@ -184,6 +184,54 @@ func TestRunCheck(t *testing.T) {
 	}
 }
 
+// -gate is the documented interface of the verify gate, and every test of it in
+// internal/config drives LoadBundle with Overrides{Gate} directly. This pins the
+// two things only this layer can: that the flag's value reaches the Overrides
+// literal in run (a field written at the call site but never read back is a
+// silently empty string, not a compile error -- the drift TestAbsPathFlags
+// records for the path flags), and that -check prints the provenance line both
+// READMEs promise, naming the gate from the FLAG rather than the one in the file.
+func TestRunGateFlagReachesConfigAndCheckNamesIt(t *testing.T) {
+	f := newFixture(t)
+	gates := filepath.Join(os.Getenv("HOME"), ".fixpoint", "gates")
+	if err := os.MkdirAll(gates, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		body := "commands:\n  - {name: check, run: [true]}\nskip_run_edits: ['**/*_" + name + ".x']\n"
+		if err := os.WriteFile(filepath.Join(gates, name+".yaml"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := f.configFile("directory", "", "")
+	body, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(body, []byte("verify:\n  gate: alpha\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", cfg, "-gate", "beta", "-check", "-trusted-target"}, &buf, &buf); got != 0 {
+		t.Fatalf("run(-gate beta -check) = %d, want 0; stderr:\n%s", got, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "gate=beta") {
+		t.Errorf("applied overrides do not record gate=beta; the flag did not reach Overrides:\n%s", out)
+	}
+	want := "gate beta: " + filepath.Join(gates, "beta.yaml")
+	if !strings.Contains(out, want) {
+		t.Errorf("provenance line missing %q -- -check must name the gate the FLAG chose:\n%s", want, out)
+	}
+	if strings.Contains(out, "gate alpha:") {
+		t.Errorf("the config's own gate must not be listed once the flag replaced it:\n%s", out)
+	}
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0 (-check must not run agents)", got)
+	}
+}
+
 // A base_ref that resolves to the WRONG commit is a valid configuration, so
 // validation alone cannot catch it -- the run would simply review the wrong diff
 // and bill for it. --check therefore prints the commit the base resolved to and

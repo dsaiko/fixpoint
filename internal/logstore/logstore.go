@@ -586,6 +586,9 @@ func renderSources(sb *strings.Builder, src model.RunSources) {
 	if src.Extends != "" {
 		fmt.Fprintf(sb, "- extends: `%s`\n", src.Extends)
 	}
+	if src.Gate != "" {
+		fmt.Fprintf(sb, "- gate: `%s`\n", src.Gate)
+	}
 	for _, label := range []struct {
 		name string
 		m    map[string]string

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -300,4 +302,81 @@ func TestTargetOverrideRefusesAPathThatEscapesThroughASymlinkedParent(t *testing
 	if err := (Overrides{Target: filepath.Join(checkout, "linked", "DESIGN.md")}).applyTarget(&ok); err != nil {
 		t.Errorf("a symlink that stays inside the tree was refused: %v", err)
 	}
+}
+
+// The go gate's fmt check is the one shipped command whose failure semantics are
+// hand-rolled shell, and it has regressed once already: the first version decided
+// purely from gofmt's stdout, so a missing gofmt -- or one that exits 2 on a file
+// it cannot parse -- left the check green. Decoding the file proves nothing about
+// that; this runs the argv the gate actually ships, read from the file rather than
+// restated, against the three outcomes that matter.
+func TestShippedGoGateFmtCommandFailsForTheRightReasons(t *testing.T) {
+	if _, err := exec.LookPath("gofmt"); err != nil {
+		t.Skip("gofmt not on PATH")
+	}
+	var g Gate
+	if err := decodeInto(filepath.Join("..", "..", projectBundleDir, gatesDir, "go"+configExt), &g); err != nil {
+		t.Fatal(err)
+	}
+	var fmtCmd []string
+	for _, c := range g.Commands {
+		if c.Name == "fmt" {
+			fmtCmd = c.Run
+		}
+	}
+	if len(fmtCmd) < 3 || fmtCmd[0] != "sh" {
+		t.Fatalf("go gate has no `fmt` command of the shape [sh -c ...]: %v", fmtCmd)
+	}
+	run := func(t *testing.T, dir string, env []string) (int, string) {
+		t.Helper()
+		// /bin/sh by absolute path, so the PATH the case sets governs only what the
+		// wrapper looks up (gofmt) and not whether the wrapper can start at all.
+		cmd := exec.Command("/bin/sh", fmtCmd[1:]...)
+		cmd.Dir, cmd.Env = dir, env
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return 0, string(out)
+		}
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("running the fmt check: %v\n%s", err, out)
+		}
+		return exit.ExitCode(), string(out)
+	}
+	clean := "package main\n\nfunc main() {}\n"
+	messy := "package main\n\nfunc   main( ) {\n}\n"
+
+	t.Run("formatted tree passes", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "ok.go"), []byte(clean), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code, out := run(t, dir, os.Environ()); code != 0 {
+			t.Errorf("exit %d on a gofmt-clean tree:\n%s", code, out)
+		}
+	})
+	t.Run("unformatted file fails and is named", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "messy.go"), []byte(messy), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, out := run(t, dir, os.Environ())
+		if code == 0 {
+			t.Fatalf("exit 0 on an unformatted tree; the check cannot fail:\n%s", out)
+		}
+		if !strings.Contains(out, "messy.go") {
+			t.Errorf("the failure should name the file:\n%s", out)
+		}
+	})
+	t.Run("missing gofmt fails rather than passing on empty output", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "ok.go"), []byte(clean), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// A PATH holding nothing: the wrapper's `gofmt` lookup fails, and the
+		// substitution's status has to be what decides, not its empty stdout.
+		if code, out := run(t, dir, []string{"PATH=" + t.TempDir()}); code == 0 {
+			t.Errorf("exit 0 with no gofmt on PATH -- the wrong-machine case reads as a clean tree:\n%s", out)
+		}
+	})
 }

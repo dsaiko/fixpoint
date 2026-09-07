@@ -97,7 +97,12 @@ const (
 // the summary also carries, deliberately: a journal has to be readable on its own
 // when the summary was never written.
 type JournalRunStarted struct {
-	Config        string `json:"config"`
+	Config string `json:"config"`
+	// Gate is the resolved verify gate FILE, so the journal alone says which
+	// commands gated the run -- Overrides carries only `gate=<name>`, and only
+	// when the flag was passed; the default `gate: go` resolving from the target's
+	// own bundle would otherwise leave no durable trace.
+	Gate          string `json:"gate,omitempty"`
 	Mode          string `json:"mode"`
 	Path          string `json:"path"`
 	Strategy      string `json:"strategy"`
