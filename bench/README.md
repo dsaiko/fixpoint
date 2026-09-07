@@ -198,17 +198,17 @@ make bench MODEL=kimi-k3:cloud TASK=go,design  # a list of targets
 make bench-check                               # validate the manifests, no model
 make bench-seeds                               # per-seed hit rate: what still discriminates
 python3 bench/report.py                        # scores, plus recall per target
-python3 bench/report.py --html out.html        # the same as a shareable page
-make bench-readme                              # regenerate the table in README.md
+make bench-readme                              # regenerate README.md's table AND bench/report.html
 ```
 
-**After measuring a new model, run `make bench-readme`.** The results table in
-the top-level [README.md](../README.md) is generated from `results.csv` between
-two HTML comment markers, exactly like the shareable page, and it does not
-update itself. A hand-maintained copy would go stale on the first new model, and
-a stale leaderboard in the README is worse than no leaderboard: it is the number
-people quote without opening the CSV. The same applies to the published page --
-regenerate it with `--html` and republish.
+**After measuring a new model, run `make bench-readme`.** It rewrites two
+generated surfaces from `results.csv` in one pass: the results table in the
+top-level [README.md](../README.md), between two HTML comment markers, and the
+standings page [report.html](report.html), which is kept under source control
+because it is the file people ask for. Neither updates itself. A hand-maintained
+copy would go stale on the first new model, and a stale leaderboard is worse
+than no leaderboard: it is the number people quote without opening the CSV.
+Commit both with the `results.csv` rows they were generated from.
 
 `TASK` names a **target**, not a task: `go`, `design`, or any language target
 added under `bench/testdata/target-<name>` with a matching

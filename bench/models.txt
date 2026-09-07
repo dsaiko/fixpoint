@@ -255,3 +255,51 @@ qwen/qwen3.8-max
 # rates before the per-point column means anything on it.
 gpt-6-astra
 gpt-6-astra-xhigh
+
+# GPT-5.6 Terra -- added 2026-09-07 on operator request. The middle rung of the
+# gpt-5.6 family (sol / terra / luna) and the cheap sibling of the codex seat:
+# $2/M in, $0.20/M cached, $12/M out against sol's list price, same codex
+# harness, same ChatGPT payer (config/agents/gpt-5.6-terra.yaml is codex.yaml
+# with the model swapped). Probe answered on 2026-09-07 at effort high; its
+# default effort is `medium`, so the agent file pins high to match the baseline.
+#
+# The question is the sonnet-5 question asked of OpenAI's tier: does the cheaper
+# sibling keep the discount as a reviewer, or lose it in token efficiency the
+# way sonnet-5 did (548 pts/Mtok against claude's 1062)? Read the per-point
+# column, not the total.
+#
+# Seat arithmetic before anyone runs it: even a strong number cannot ADD a seat,
+# for the same reason astra could not -- one payer, one seat, and codex already
+# holds the ChatGPT one. It could only REPLACE codex, and only if it clears
+# 298/484 or comes close enough that the token saving decides it. Check
+# `codex exec --model gpt-5.6-terra` before a sweep; Plus meters this route and
+# astra's xhigh sweep hit the limit mid-run.
+#
+# MEASURED 2026-09-07, full 8-target grid, 1 repeat, no contract failures:
+#
+#   gpt-5.6-terra (high)  221/484  23rd of 25  2.31M tok  2896s  ~$6.43  ~$0.029/pt
+#   codex / gpt-5.6-sol   298/484  10th        1.70M tok  6810s  ~$13.99 ~$0.047/pt
+#
+# The answer to the sonnet-5 question is DIFFERENT here, and worse. Sonnet kept
+# most of its score and lost the discount to token inefficiency. Terra keeps the
+# discount -- 38% cheaper per point than sol -- but loses a quarter of the score
+# to get it: 77 seeds down, the lowest of any codex-route model measured, three
+# places above the floor. It is ALSO the less token-efficient sibling (96 pts/Mtok
+# against sol's 176): it reads 36% more tokens than sol to find 26% fewer seeds,
+# and only its 5x lower rate card makes the dollar column look kind. The one
+# thing it wins outright is wall clock -- 2896s is the fastest ChatGPT-route
+# sweep, 2.4x quicker than sol -- because it gives up early, not because it is
+# quick to be right.
+#
+# Per target it is below sol everywhere, worst in java (29/69 vs 44) and csharp
+# (27/68 vs 44), the same two targets that sank astra-high; the codex harness
+# seems to carry a C#/Java weakness that only sol's depth overcomes. Design 9/34
+# is one above sonnet's floor.
+#
+# Marginal over claude+codex: +4 (astra-high +7, sonnet +7). Swapped INTO the
+# codex seat the panel reads 406 against the shipped 413. It finds 11 seeds
+# codex misses; codex finds 88 it misses. NOT a seat candidate, on either the
+# numbers or the payer rule, and there is no effort-ladder question worth a
+# second sweep: astra already showed the ladder is real and not worth buying on
+# this route.
+gpt-5.6-terra

@@ -1,0 +1,864 @@
+<title>Fixpoint Reviewer Bench</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+:root {
+  color-scheme: light dark;
+  --ground: #F2F3F5;
+  --surface: #FFFFFF;
+  --ink: #151920;
+  --muted: #5B6472;
+  --rule: #DCDFE4;
+  --rule-soft: #E9EBEF;
+  --signal: #B87514;
+  --signal-fill: rgba(184, 117, 20, 0.16);
+  --critical: #A32B21;
+  --critical-fill: rgba(163, 43, 33, 0.10);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #101318;
+    --surface: #171B22;
+    --ink: #E7E9ED;
+    --muted: #98A1AE;
+    --rule: #262B34;
+    --rule-soft: #1E232B;
+    --signal: #E39B2E;
+    --signal-fill: rgba(227, 155, 46, 0.18);
+    --critical: #E2685C;
+    --critical-fill: rgba(226, 104, 92, 0.12);
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #101318;
+  --surface: #171B22;
+  --ink: #E7E9ED;
+  --muted: #98A1AE;
+  --rule: #262B34;
+  --rule-soft: #1E232B;
+  --signal: #E39B2E;
+  --signal-fill: rgba(227, 155, 46, 0.18);
+  --critical: #E2685C;
+  --critical-fill: rgba(226, 104, 92, 0.12);
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 56px 28px 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+}
+.eyebrow {
+  font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--signal);
+}
+h1 {
+  font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+  font-size: clamp(30px, 4.4vw, 46px);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.08;
+  text-wrap: balance;
+  margin: 8px 0 0;
+}
+.lede {
+  max-width: 62ch;
+  color: var(--muted);
+  margin: 14px 0 0;
+}
+.lede strong { color: var(--ink); font-weight: 600; }
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+.fact {
+  flex: 1 1 150px;
+  padding: 16px 22px 16px 0;
+  border-right: 1px solid var(--rule-soft);
+}
+.fact:last-child { border-right: 0; }
+.fact dt {
+  font-family: "IBM Plex Sans Condensed", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.fact dd {
+  margin: 4px 0 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+.scroller { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 940px; }
+caption { text-align: left; color: var(--muted); font-size: 13px; padding-bottom: 12px; }
+th {
+  font-family: "IBM Plex Sans Condensed", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: right;
+  padding: 0 14px 10px 0;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+th.left, td.left { text-align: left; }
+td {
+  padding: 11px 14px 11px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  text-align: right;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+tbody tr:hover { background: var(--rule-soft); }
+td.rank { color: var(--muted); width: 34px; padding-left: 10px; }
+tr.failed td.rank { box-shadow: inset 3px 0 0 var(--critical); }
+tr.failed { background: var(--critical-fill); }
+.name { font-family: "IBM Plex Sans", sans-serif; font-size: 14px; font-weight: 600; }
+.sub { color: var(--muted); font-size: 12px; font-family: "IBM Plex Mono", monospace; }
+.tag {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-family: "IBM Plex Sans Condensed", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  vertical-align: 1px;
+}
+.score { position: relative; width: 190px; padding-right: 14px; }
+.bar {
+  position: absolute;
+  left: 0; top: 50%;
+  transform: translateY(-50%);
+  height: 22px;
+  background: var(--signal-fill);
+  border-left: 2px solid var(--signal);
+}
+.score span { position: relative; font-size: 14px; font-weight: 600; }
+.score .of { color: var(--muted); font-weight: 400; font-size: 12px; }
+.err { color: var(--critical); font-weight: 600; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--ink); }
+th.sortable::after { content: "\2195"; opacity: 0.35; margin-left: 5px; font-size: 10px; }
+th.sorted::after { content: "\25BC"; opacity: 1; color: var(--signal); }
+th.sorted[data-dir="asc"]::after { content: "\25B2"; }
+.pct { font-weight: 600; }
+tfoot td { border-top: 1px solid var(--rule); border-bottom: 0; padding-top: 12px; color: var(--muted); }
+.zero { color: var(--muted); }
+.notes {
+  border-top: 1px solid var(--rule);
+  padding-top: 20px;
+  display: grid;
+  gap: 10px;
+  max-width: 78ch;
+  font-size: 13px;
+  color: var(--muted);
+}
+.notes b { color: var(--ink); font-weight: 600; }
+code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.92em;
+  background: var(--rule-soft);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+@media (max-width: 640px) { .page { padding: 36px 18px 56px; } }
+</style>
+<div class="page">
+  <header>
+    <div class="eyebrow">Reviewer benchmark &middot; 2026-08-20 &ndash; 2026-09-07</div>
+    <h1>Which model is worth a panel seat</h1>
+    <p class="lede">Every candidate reviews the same frozen targets &mdash; the same
+    link-shortener service in <strong>7 languages</strong>, plus a design
+    document &mdash; and is scored against planted defects. No judge, no taste: a deterministic
+    matcher credits each finding to at most one seed. Nobody scores full marks, and that is the
+    point. What matters is the distance to the <strong>claude baseline</strong>, and what the
+    points cost. The headline score is <strong>every target</strong>, because the go+design
+    pair it used to be misranked six of these models by three places or more once the other
+    six languages disagreed with it &mdash; the per-language matrix below is where a model
+    that is strong in one language and weak in another becomes visible.</p>
+  </header>
+
+  <dl class="facts">
+    <div class="fact"><dt>Candidates</dt><dd>25</dd></div>
+    <div class="fact"><dt>Sessions</dt><dd>584</dd></div>
+    <div class="fact"><dt>Targets</dt><dd>8</dd></div>
+    <div class="fact"><dt>Repeats</dt><dd>1</dd></div>
+    <div class="fact"><dt>Contract failures</dt><dd>2</dd></div>
+  </dl>
+
+  <div class="scroller">
+    <table>
+      <caption>Ranked by score. One repeat each &mdash; single-run recall is a sample, not a verdict.</caption>
+      <thead>
+        <tr>
+          <th class="left norank" scope="col">#</th>
+          <th class="left" scope="col">Candidate</th>
+          <th class="left" scope="col">Route</th>
+          <th class="left" scope="col">Pays</th>
+          <th class="left" scope="col">Score</th>
+          <th scope="col">Tokens</th>
+          <th scope="col">Pts / Mtok</th>
+          <th scope="col">Total $</th>
+          <th scope="col">Per point</th>
+          <th scope="col">Wall (s)</th>
+          <th scope="col">Err</th>
+          <th scope="col">Measured</th>
+        </tr>
+      </thead>
+      <tbody>
+      <tr class="">
+        <td class="rank">1</td>
+        <td class="left">
+          <div class="name">claude<span class="tag">baseline</span></div>
+          <div class="sub">claude-opus-5 (high)</div>
+        </td>
+        <td class="left sub">cli</td>
+        <td class="left sub">sub (claude)</td>
+        <td class="score" data-sort="376">
+          <div class="bar" style="width: 100.0%"></div>
+          <span>376<span class="of">/484</span></span>
+        </td>
+        <td data-sort="354048">354,048</td>
+        <td data-sort="1062.0029">1062</td>
+        <td data-sort="8.6052">~$8.61</td>
+        <td data-sort="0.023">~$0.023</td>
+        <td data-sort="3958">3,958</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">2</td>
+        <td class="left">
+          <div class="name">claude-opus-5</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">anthropic</td>
+        <td class="left sub">sub (claude)</td>
+        <td class="score" data-sort="373">
+          <div class="bar" style="width: 99.2%"></div>
+          <span>373<span class="of">/484</span></span>
+        </td>
+        <td data-sort="355041">355,041</td>
+        <td data-sort="1050.5829">1051</td>
+        <td data-sort="8.8351">~$8.84</td>
+        <td data-sort="0.024">~$0.024</td>
+        <td data-sort="4152">4,152</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">3</td>
+        <td class="left">
+          <div class="name">claude-fable-5-1</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">anthropic</td>
+        <td class="left sub">sub (claude)</td>
+        <td class="score" data-sort="365">
+          <div class="bar" style="width: 97.1%"></div>
+          <span>365<span class="of">/484</span></span>
+        </td>
+        <td data-sort="303615">303,615</td>
+        <td data-sort="1202.1804">1202</td>
+        <td data-sort="13.6461">~$13.65</td>
+        <td data-sort="0.037">~$0.037</td>
+        <td data-sort="3504">3,504</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260902">09-01…2026-09-02</td>
+      </tr>
+      <tr class="">
+        <td class="rank">4</td>
+        <td class="left">
+          <div class="name">qwen/qwen3.8-max</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">openrouter</td>
+        <td class="left sub">credits</td>
+        <td class="score" data-sort="331">
+          <div class="bar" style="width: 88.0%"></div>
+          <span>331<span class="of">/484</span></span>
+        </td>
+        <td data-sort="465715">465,715</td>
+        <td data-sort="710.7351">711</td>
+        <td data-sort="6.3529">$6.35</td>
+        <td data-sort="0.019">$0.019</td>
+        <td data-sort="11266">11,266</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">5</td>
+        <td class="left">
+          <div class="name">kimi-k3:cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="319">
+          <div class="bar" style="width: 84.8%"></div>
+          <span>319<span class="of">/484</span></span>
+        </td>
+        <td data-sort="1818863">1,818,863</td>
+        <td data-sort="175.3843">175</td>
+        <td data-sort="7.5757">~$7.58</td>
+        <td data-sort="0.024">~$0.024</td>
+        <td data-sort="2179">2,179</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260902">2026-09-02</td>
+      </tr>
+      <tr class="">
+        <td class="rank">6</td>
+        <td class="left">
+          <div class="name">qwen/qwen3.8-27b</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">openrouter</td>
+        <td class="left sub">credits</td>
+        <td class="score" data-sort="314">
+          <div class="bar" style="width: 83.5%"></div>
+          <span>314<span class="of">/484</span></span>
+        </td>
+        <td data-sort="1939356">1,939,356</td>
+        <td data-sort="161.9094">162</td>
+        <td data-sort="2.4841">$2.48</td>
+        <td data-sort="0.008">$0.008</td>
+        <td data-sort="12930">12,930</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">7</td>
+        <td class="left">
+          <div class="name">glm-5.3:cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="313">
+          <div class="bar" style="width: 83.2%"></div>
+          <span>313<span class="of">/484</span></span>
+        </td>
+        <td data-sort="4706916">4,706,916</td>
+        <td data-sort="66.4979">66</td>
+        <td data-sort="7.3129">~$7.31</td>
+        <td data-sort="0.023">~$0.023</td>
+        <td data-sort="2540">2,540</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">08-31…2026-09-01</td>
+      </tr>
+      <tr class="failed">
+        <td class="rank">8</td>
+        <td class="left">
+          <div class="name">nemotron-3-ultra:cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="310">
+          <div class="bar" style="width: 82.4%"></div>
+          <span>310<span class="of">/484</span></span>
+        </td>
+        <td data-sort="5937436">5,937,436</td>
+        <td data-sort="52.2111">52</td>
+        <td data-sort="1.6569">~$1.66</td>
+        <td data-sort="0.005">~$0.005</td>
+        <td data-sort="20316">20,316</td>
+        <td class="err" data-sort="1">1</td>
+        <td class="sub" data-sort="20260902">2026-09-02</td>
+      </tr>
+      <tr class="">
+        <td class="rank">9</td>
+        <td class="left">
+          <div class="name">glm-5.3-flash:cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="304">
+          <div class="bar" style="width: 80.9%"></div>
+          <span>304<span class="of">/484</span></span>
+        </td>
+        <td data-sort="4717634">4,717,634</td>
+        <td data-sort="64.4391">64</td>
+        <td data-sort="0.7776">~$0.78</td>
+        <td data-sort="0.003">~$0.003</td>
+        <td data-sort="2209">2,209</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">08-28…2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">10</td>
+        <td class="left">
+          <div class="name">codex<span class="tag">baseline</span></div>
+          <div class="sub">gpt-5.6-sol (high)</div>
+        </td>
+        <td class="left sub">cli</td>
+        <td class="left sub">sub (chatgpt)</td>
+        <td class="score" data-sort="298">
+          <div class="bar" style="width: 79.3%"></div>
+          <span>298<span class="of">/484</span></span>
+        </td>
+        <td data-sort="1696342">1,696,342</td>
+        <td data-sort="175.6721">176</td>
+        <td data-sort="13.9884">~$13.99</td>
+        <td data-sort="0.047">~$0.047</td>
+        <td data-sort="6810">6,810</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">11</td>
+        <td class="left">
+          <div class="name">glm-5.2:cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="278">
+          <div class="bar" style="width: 73.9%"></div>
+          <span>278<span class="of">/484</span></span>
+        </td>
+        <td data-sort="3596257">3,596,257</td>
+        <td data-sort="77.3026">77</td>
+        <td data-sort="5.7223">~$5.72</td>
+        <td data-sort="0.021">~$0.021</td>
+        <td data-sort="3948">3,948</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">12</td>
+        <td class="left">
+          <div class="name">claude-fable-5</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">anthropic</td>
+        <td class="left sub">sub (claude)</td>
+        <td class="score" data-sort="277">
+          <div class="bar" style="width: 73.7%"></div>
+          <span>277<span class="of">/484</span></span>
+        </td>
+        <td data-sort="298667">298,667</td>
+        <td data-sort="927.4543">927</td>
+        <td data-sort="13.3861">~$13.39</td>
+        <td data-sort="0.048">~$0.048</td>
+        <td data-sort="3653">3,653</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">13</td>
+        <td class="left">
+          <div class="name">x-ai/grok-4.6</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">openrouter</td>
+        <td class="left sub">credits</td>
+        <td class="score" data-sort="277">
+          <div class="bar" style="width: 73.7%"></div>
+          <span>277<span class="of">/484</span></span>
+        </td>
+        <td data-sort="1427795">1,427,795</td>
+        <td data-sort="194.0054">194</td>
+        <td data-sort="6.0012">$6.00</td>
+        <td data-sort="0.022">$0.022</td>
+        <td data-sort="7955">7,955</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">14</td>
+        <td class="left">
+          <div class="name">deepseek-v4-pro:cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="270">
+          <div class="bar" style="width: 71.8%"></div>
+          <span>270<span class="of">/484</span></span>
+        </td>
+        <td data-sort="3546238">3,546,238</td>
+        <td data-sort="76.1370">76</td>
+        <td data-sort="2.8299">~$2.83</td>
+        <td data-sort="0.01">~$0.010</td>
+        <td data-sort="2551">2,551</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">15</td>
+        <td class="left">
+          <div class="name">gpt-6-astra-xhigh</div>
+          <div class="sub">gpt-6-astra (xhigh)</div>
+        </td>
+        <td class="left sub">cli</td>
+        <td class="left sub">sub (chatgpt)</td>
+        <td class="score" data-sort="270">
+          <div class="bar" style="width: 71.8%"></div>
+          <span>270<span class="of">/484</span></span>
+        </td>
+        <td data-sort="2711388">2,711,388</td>
+        <td data-sort="99.5800">100</td>
+        <td data-sort="35.9730">~$35.97</td>
+        <td data-sort="0.133">~$0.133</td>
+        <td data-sort="5617">5,617</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260905">2026-09-05</td>
+      </tr>
+      <tr class="">
+        <td class="rank">16</td>
+        <td class="left">
+          <div class="name">claude-opus-4-8</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">anthropic</td>
+        <td class="left sub">sub (claude)</td>
+        <td class="score" data-sort="268">
+          <div class="bar" style="width: 71.3%"></div>
+          <span>268<span class="of">/484</span></span>
+        </td>
+        <td data-sort="254630">254,630</td>
+        <td data-sort="1052.5076">1053</td>
+        <td data-sort="6.0379">~$6.04</td>
+        <td data-sort="0.023">~$0.023</td>
+        <td data-sort="2912">2,912</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">17</td>
+        <td class="left">
+          <div class="name">gpt-6-astra</div>
+          <div class="sub">gpt-6-astra (high)</div>
+        </td>
+        <td class="left sub">cli</td>
+        <td class="left sub">sub (chatgpt)</td>
+        <td class="score" data-sort="265">
+          <div class="bar" style="width: 70.5%"></div>
+          <span>265<span class="of">/484</span></span>
+        </td>
+        <td data-sort="2063136">2,063,136</td>
+        <td data-sort="128.4452">128</td>
+        <td data-sort="25.2716">~$25.27</td>
+        <td data-sort="0.095">~$0.095</td>
+        <td data-sort="3267">3,267</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260905">2026-09-05</td>
+      </tr>
+      <tr class="failed">
+        <td class="rank">18</td>
+        <td class="left">
+          <div class="name">minimax-m3:cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="251">
+          <div class="bar" style="width: 66.8%"></div>
+          <span>251<span class="of">/484</span></span>
+        </td>
+        <td data-sort="6569978">6,569,978</td>
+        <td data-sort="38.2041">38</td>
+        <td data-sort="4.5561">~$4.56</td>
+        <td data-sort="0.018">~$0.018</td>
+        <td data-sort="6003">6,003</td>
+        <td class="err" data-sort="2">2</td>
+        <td class="sub" data-sort="20260901">2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">19</td>
+        <td class="left">
+          <div class="name">deepseek-v4-flash:0731-cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="249">
+          <div class="bar" style="width: 66.2%"></div>
+          <span>249<span class="of">/484</span></span>
+        </td>
+        <td data-sort="4499460">4,499,460</td>
+        <td data-sort="55.3400">55</td>
+        <td data-sort="1.1898">~$1.19</td>
+        <td data-sort="0.005">~$0.005</td>
+        <td data-sort="6800">6,800</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260902">2026-09-02</td>
+      </tr>
+      <tr class="">
+        <td class="rank">20</td>
+        <td class="left">
+          <div class="name">claude-sonnet-5</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">anthropic</td>
+        <td class="left sub">sub (claude)</td>
+        <td class="score" data-sort="245">
+          <div class="bar" style="width: 65.2%"></div>
+          <span>245<span class="of">/484</span></span>
+        </td>
+        <td data-sort="447211">447,211</td>
+        <td data-sort="547.8398">548</td>
+        <td data-sort="4.8905">~$4.89</td>
+        <td data-sort="0.02">~$0.020</td>
+        <td data-sort="4313">4,313</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260905">2026-09-05</td>
+      </tr>
+      <tr class="">
+        <td class="rank">21</td>
+        <td class="left">
+          <div class="name">kimi-k2.7-code:cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="242">
+          <div class="bar" style="width: 64.4%"></div>
+          <span>242<span class="of">/484</span></span>
+        </td>
+        <td data-sort="1561494">1,561,494</td>
+        <td data-sort="154.9798">155</td>
+        <td data-sort="2.5371">~$2.54</td>
+        <td data-sort="0.01">~$0.010</td>
+        <td data-sort="2876">2,876</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">2026-09-01</td>
+      </tr>
+      <tr class="">
+        <td class="rank">22</td>
+        <td class="left">
+          <div class="name">gpt-oss:120b-cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="236">
+          <div class="bar" style="width: 62.8%"></div>
+          <span>236<span class="of">/484</span></span>
+        </td>
+        <td data-sort="8458314">8,458,314</td>
+        <td data-sort="27.9015">28</td>
+        <td data-sort="1.4113">~$1.41</td>
+        <td data-sort="0.006">~$0.006</td>
+        <td data-sort="3533">3,533</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260902">2026-09-02</td>
+      </tr>
+      <tr class="">
+        <td class="rank">23</td>
+        <td class="left">
+          <div class="name">gpt-5.6-terra</div>
+          <div class="sub">gpt-5.6-terra (high)</div>
+        </td>
+        <td class="left sub">cli</td>
+        <td class="left sub">sub (chatgpt)</td>
+        <td class="score" data-sort="221">
+          <div class="bar" style="width: 58.8%"></div>
+          <span>221<span class="of">/484</span></span>
+        </td>
+        <td data-sort="2308126">2,308,126</td>
+        <td data-sort="95.7487">96</td>
+        <td data-sort="6.4341">~$6.43</td>
+        <td data-sort="0.029">~$0.029</td>
+        <td data-sort="2896">2,896</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260907">2026-09-07</td>
+      </tr>
+      <tr class="">
+        <td class="rank">24</td>
+        <td class="left">
+          <div class="name">qwen3.5:397b-cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="186">
+          <div class="bar" style="width: 49.5%"></div>
+          <span>186<span class="of">/484</span></span>
+        </td>
+        <td data-sort="2376518">2,376,518</td>
+        <td data-sort="78.2658">78</td>
+        <td data-sort="1.6596">~$1.66</td>
+        <td data-sort="0.009">~$0.009</td>
+        <td data-sort="1187">1,187</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260902">2026-09-02</td>
+      </tr>
+      <tr class="">
+        <td class="rank">25</td>
+        <td class="left">
+          <div class="name">gemma4:31b-cloud</div>
+          <div class="sub"></div>
+        </td>
+        <td class="left sub">ollama</td>
+        <td class="left sub">sub (ollama)</td>
+        <td class="score" data-sort="156">
+          <div class="bar" style="width: 41.5%"></div>
+          <span>156<span class="of">/484</span></span>
+        </td>
+        <td data-sort="4444302">4,444,302</td>
+        <td data-sort="35.1011">35</td>
+        <td data-sort="0.6618">~$0.66</td>
+        <td data-sort="0.004">~$0.004</td>
+        <td data-sort="1598">1,598</td>
+        <td class="zero" data-sort="0">0</td>
+        <td class="sub" data-sort="20260901">2026-09-01</td>
+      </tr>
+      </tbody>
+    </table>
+  </div>
+
+    <div class="scroller">
+    <table>
+      <caption>Recall per target. The score above collapses these into one
+      number, which is what hides a target the whole field is weak on.</caption>
+      <thead>
+        <tr><th class="left" scope="col">Candidate</th><th scope="col">go</th><th scope="col">design</th><th scope="col">cpp</th><th scope="col">csharp</th><th scope="col">java</th><th scope="col">python</th><th scope="col">rust</th><th scope="col">typescript</th></tr>
+      </thead>
+      <tbody>
+      <tr><td class="left"><div class="name">claude</div></td><td data-sort="76.7857"><span class="pct">77%</span><span class="sub"> 43/56</span></td><td data-sort="58.8235"><span class="pct">59%</span><span class="sub"> 20/34</span></td><td data-sort="79.6875"><span class="pct">80%</span><span class="sub"> 51/64</span></td><td data-sort="75.0000"><span class="pct">75%</span><span class="sub"> 51/68</span></td><td data-sort="75.3623"><span class="pct">75%</span><span class="sub"> 52/69</span></td><td data-sort="77.2727"><span class="pct">77%</span><span class="sub"> 51/66</span></td><td data-sort="82.8125"><span class="pct">83%</span><span class="sub"> 53/64</span></td><td data-sort="87.3016"><span class="pct">87%</span><span class="sub"> 55/63</span></td></tr>
+      <tr><td class="left"><div class="name">claude-opus-5</div></td><td data-sort="75.0000"><span class="pct">75%</span><span class="sub"> 42/56</span></td><td data-sort="47.0588"><span class="pct">47%</span><span class="sub"> 16/34</span></td><td data-sort="79.6875"><span class="pct">80%</span><span class="sub"> 51/64</span></td><td data-sort="76.4706"><span class="pct">76%</span><span class="sub"> 52/68</span></td><td data-sort="79.7101"><span class="pct">80%</span><span class="sub"> 55/69</span></td><td data-sort="74.2424"><span class="pct">74%</span><span class="sub"> 49/66</span></td><td data-sort="82.8125"><span class="pct">83%</span><span class="sub"> 53/64</span></td><td data-sort="87.3016"><span class="pct">87%</span><span class="sub"> 55/63</span></td></tr>
+      <tr><td class="left"><div class="name">claude-fable-5-1</div></td><td data-sort="71.4286"><span class="pct">71%</span><span class="sub"> 40/56</span></td><td data-sort="44.1176"><span class="pct">44%</span><span class="sub"> 15/34</span></td><td data-sort="76.5625"><span class="pct">77%</span><span class="sub"> 49/64</span></td><td data-sort="75.0000"><span class="pct">75%</span><span class="sub"> 51/68</span></td><td data-sort="76.8116"><span class="pct">77%</span><span class="sub"> 53/69</span></td><td data-sort="78.7879"><span class="pct">79%</span><span class="sub"> 52/66</span></td><td data-sort="81.2500"><span class="pct">81%</span><span class="sub"> 52/64</span></td><td data-sort="84.1270"><span class="pct">84%</span><span class="sub"> 53/63</span></td></tr>
+      <tr><td class="left"><div class="name">qwen/qwen3.8-max</div></td><td data-sort="66.0714"><span class="pct">66%</span><span class="sub"> 37/56</span></td><td data-sort="55.8824"><span class="pct">56%</span><span class="sub"> 19/34</span></td><td data-sort="76.5625"><span class="pct">77%</span><span class="sub"> 49/64</span></td><td data-sort="63.2353"><span class="pct">63%</span><span class="sub"> 43/68</span></td><td data-sort="63.7681"><span class="pct">64%</span><span class="sub"> 44/69</span></td><td data-sort="72.7273"><span class="pct">73%</span><span class="sub"> 48/66</span></td><td data-sort="68.7500"><span class="pct">69%</span><span class="sub"> 44/64</span></td><td data-sort="74.6032"><span class="pct">75%</span><span class="sub"> 47/63</span></td></tr>
+      <tr><td class="left"><div class="name">kimi-k3:cloud</div></td><td data-sort="73.2143"><span class="pct">73%</span><span class="sub"> 41/56</span></td><td data-sort="41.1765"><span class="pct">41%</span><span class="sub"> 14/34</span></td><td data-sort="71.8750"><span class="pct">72%</span><span class="sub"> 46/64</span></td><td data-sort="70.5882"><span class="pct">71%</span><span class="sub"> 48/68</span></td><td data-sort="63.7681"><span class="pct">64%</span><span class="sub"> 44/69</span></td><td data-sort="59.0909"><span class="pct">59%</span><span class="sub"> 39/66</span></td><td data-sort="64.0625"><span class="pct">64%</span><span class="sub"> 41/64</span></td><td data-sort="73.0159"><span class="pct">73%</span><span class="sub"> 46/63</span></td></tr>
+      <tr><td class="left"><div class="name">qwen/qwen3.8-27b</div></td><td data-sort="67.8571"><span class="pct">68%</span><span class="sub"> 38/56</span></td><td data-sort="44.1176"><span class="pct">44%</span><span class="sub"> 15/34</span></td><td data-sort="78.1250"><span class="pct">78%</span><span class="sub"> 50/64</span></td><td data-sort="63.2353"><span class="pct">63%</span><span class="sub"> 43/68</span></td><td data-sort="68.1159"><span class="pct">68%</span><span class="sub"> 47/69</span></td><td data-sort="63.6364"><span class="pct">64%</span><span class="sub"> 42/66</span></td><td data-sort="54.6875"><span class="pct">55%</span><span class="sub"> 35/64</span></td><td data-sort="69.8413"><span class="pct">70%</span><span class="sub"> 44/63</span></td></tr>
+      <tr><td class="left"><div class="name">glm-5.3:cloud</div></td><td data-sort="69.6429"><span class="pct">70%</span><span class="sub"> 39/56</span></td><td data-sort="41.1765"><span class="pct">41%</span><span class="sub"> 14/34</span></td><td data-sort="59.3750"><span class="pct">59%</span><span class="sub"> 38/64</span></td><td data-sort="64.7059"><span class="pct">65%</span><span class="sub"> 44/68</span></td><td data-sort="71.0145"><span class="pct">71%</span><span class="sub"> 49/69</span></td><td data-sort="72.7273"><span class="pct">73%</span><span class="sub"> 48/66</span></td><td data-sort="60.9375"><span class="pct">61%</span><span class="sub"> 39/64</span></td><td data-sort="66.6667"><span class="pct">67%</span><span class="sub"> 42/63</span></td></tr>
+      <tr><td class="left"><div class="name">nemotron-3-ultra:cloud</div></td><td data-sort="57.1429"><span class="pct">57%</span><span class="sub"> 32/56</span></td><td data-sort="47.0588"><span class="pct">47%</span><span class="sub"> 16/34</span></td><td data-sort="73.4375"><span class="pct">73%</span><span class="sub"> 47/64</span></td><td data-sort="64.7059"><span class="pct">65%</span><span class="sub"> 44/68</span></td><td data-sort="68.1159"><span class="pct">68%</span><span class="sub"> 47/69</span></td><td data-sort="63.6364"><span class="pct">64%</span><span class="sub"> 42/66</span></td><td data-sort="60.9375"><span class="pct">61%</span><span class="sub"> 39/64</span></td><td data-sort="68.2540"><span class="pct">68%</span><span class="sub"> 43/63</span></td></tr>
+      <tr><td class="left"><div class="name">glm-5.3-flash:cloud</div></td><td data-sort="71.4286"><span class="pct">71%</span><span class="sub"> 40/56</span></td><td data-sort="32.3529"><span class="pct">32%</span><span class="sub"> 11/34</span></td><td data-sort="67.1875"><span class="pct">67%</span><span class="sub"> 43/64</span></td><td data-sort="66.1765"><span class="pct">66%</span><span class="sub"> 45/68</span></td><td data-sort="63.7681"><span class="pct">64%</span><span class="sub"> 44/69</span></td><td data-sort="68.1818"><span class="pct">68%</span><span class="sub"> 45/66</span></td><td data-sort="54.6875"><span class="pct">55%</span><span class="sub"> 35/64</span></td><td data-sort="65.0794"><span class="pct">65%</span><span class="sub"> 41/63</span></td></tr>
+      <tr><td class="left"><div class="name">codex</div></td><td data-sort="69.6429"><span class="pct">70%</span><span class="sub"> 39/56</span></td><td data-sort="38.2353"><span class="pct">38%</span><span class="sub"> 13/34</span></td><td data-sort="65.6250"><span class="pct">66%</span><span class="sub"> 42/64</span></td><td data-sort="64.7059"><span class="pct">65%</span><span class="sub"> 44/68</span></td><td data-sort="63.7681"><span class="pct">64%</span><span class="sub"> 44/69</span></td><td data-sort="59.0909"><span class="pct">59%</span><span class="sub"> 39/66</span></td><td data-sort="56.2500"><span class="pct">56%</span><span class="sub"> 36/64</span></td><td data-sort="65.0794"><span class="pct">65%</span><span class="sub"> 41/63</span></td></tr>
+      <tr><td class="left"><div class="name">glm-5.2:cloud</div></td><td data-sort="58.9286"><span class="pct">59%</span><span class="sub"> 33/56</span></td><td data-sort="41.1765"><span class="pct">41%</span><span class="sub"> 14/34</span></td><td data-sort="62.5000"><span class="pct">62%</span><span class="sub"> 40/64</span></td><td data-sort="55.8824"><span class="pct">56%</span><span class="sub"> 38/68</span></td><td data-sort="60.8696"><span class="pct">61%</span><span class="sub"> 42/69</span></td><td data-sort="59.0909"><span class="pct">59%</span><span class="sub"> 39/66</span></td><td data-sort="54.6875"><span class="pct">55%</span><span class="sub"> 35/64</span></td><td data-sort="58.7302"><span class="pct">59%</span><span class="sub"> 37/63</span></td></tr>
+      <tr><td class="left"><div class="name">claude-fable-5</div></td><td data-sort="73.2143"><span class="pct">73%</span><span class="sub"> 41/56</span></td><td data-sort="35.2941"><span class="pct">35%</span><span class="sub"> 12/34</span></td><td data-sort="51.5625"><span class="pct">52%</span><span class="sub"> 33/64</span></td><td data-sort="52.9412"><span class="pct">53%</span><span class="sub"> 36/68</span></td><td data-sort="55.0725"><span class="pct">55%</span><span class="sub"> 38/69</span></td><td data-sort="72.7273"><span class="pct">73%</span><span class="sub"> 48/66</span></td><td data-sort="51.5625"><span class="pct">52%</span><span class="sub"> 33/64</span></td><td data-sort="57.1429"><span class="pct">57%</span><span class="sub"> 36/63</span></td></tr>
+      <tr><td class="left"><div class="name">x-ai/grok-4.6</div></td><td data-sort="57.1429"><span class="pct">57%</span><span class="sub"> 32/56</span></td><td data-sort="32.3529"><span class="pct">32%</span><span class="sub"> 11/34</span></td><td data-sort="60.9375"><span class="pct">61%</span><span class="sub"> 39/64</span></td><td data-sort="54.4118"><span class="pct">54%</span><span class="sub"> 37/68</span></td><td data-sort="55.0725"><span class="pct">55%</span><span class="sub"> 38/69</span></td><td data-sort="62.1212"><span class="pct">62%</span><span class="sub"> 41/66</span></td><td data-sort="59.3750"><span class="pct">59%</span><span class="sub"> 38/64</span></td><td data-sort="65.0794"><span class="pct">65%</span><span class="sub"> 41/63</span></td></tr>
+      <tr><td class="left"><div class="name">deepseek-v4-pro:cloud</div></td><td data-sort="51.7857"><span class="pct">52%</span><span class="sub"> 29/56</span></td><td data-sort="44.1176"><span class="pct">44%</span><span class="sub"> 15/34</span></td><td data-sort="59.3750"><span class="pct">59%</span><span class="sub"> 38/64</span></td><td data-sort="51.4706"><span class="pct">51%</span><span class="sub"> 35/68</span></td><td data-sort="60.8696"><span class="pct">61%</span><span class="sub"> 42/69</span></td><td data-sort="57.5758"><span class="pct">58%</span><span class="sub"> 38/66</span></td><td data-sort="51.5625"><span class="pct">52%</span><span class="sub"> 33/64</span></td><td data-sort="63.4921"><span class="pct">63%</span><span class="sub"> 40/63</span></td></tr>
+      <tr><td class="left"><div class="name">gpt-6-astra-xhigh</div></td><td data-sort="57.1429"><span class="pct">57%</span><span class="sub"> 32/56</span></td><td data-sort="41.1765"><span class="pct">41%</span><span class="sub"> 14/34</span></td><td data-sort="70.3125"><span class="pct">70%</span><span class="sub"> 45/64</span></td><td data-sort="45.5882"><span class="pct">46%</span><span class="sub"> 31/68</span></td><td data-sort="49.2754"><span class="pct">49%</span><span class="sub"> 34/69</span></td><td data-sort="63.6364"><span class="pct">64%</span><span class="sub"> 42/66</span></td><td data-sort="54.6875"><span class="pct">55%</span><span class="sub"> 35/64</span></td><td data-sort="58.7302"><span class="pct">59%</span><span class="sub"> 37/63</span></td></tr>
+      <tr><td class="left"><div class="name">claude-opus-4-8</div></td><td data-sort="55.3571"><span class="pct">55%</span><span class="sub"> 31/56</span></td><td data-sort="35.2941"><span class="pct">35%</span><span class="sub"> 12/34</span></td><td data-sort="57.8125"><span class="pct">58%</span><span class="sub"> 37/64</span></td><td data-sort="54.4118"><span class="pct">54%</span><span class="sub"> 37/68</span></td><td data-sort="63.7681"><span class="pct">64%</span><span class="sub"> 44/69</span></td><td data-sort="60.6061"><span class="pct">61%</span><span class="sub"> 40/66</span></td><td data-sort="50.0000"><span class="pct">50%</span><span class="sub"> 32/64</span></td><td data-sort="55.5556"><span class="pct">56%</span><span class="sub"> 35/63</span></td></tr>
+      <tr><td class="left"><div class="name">gpt-6-astra</div></td><td data-sort="62.5000"><span class="pct">62%</span><span class="sub"> 35/56</span></td><td data-sort="41.1765"><span class="pct">41%</span><span class="sub"> 14/34</span></td><td data-sort="65.6250"><span class="pct">66%</span><span class="sub"> 42/64</span></td><td data-sort="41.1765"><span class="pct">41%</span><span class="sub"> 28/68</span></td><td data-sort="57.9710"><span class="pct">58%</span><span class="sub"> 40/69</span></td><td data-sort="60.6061"><span class="pct">61%</span><span class="sub"> 40/66</span></td><td data-sort="45.3125"><span class="pct">45%</span><span class="sub"> 29/64</span></td><td data-sort="58.7302"><span class="pct">59%</span><span class="sub"> 37/63</span></td></tr>
+      <tr><td class="left"><div class="name">minimax-m3:cloud</div></td><td data-sort="66.0714"><span class="pct">66%</span><span class="sub"> 37/56</span></td><td data-sort="38.2353"><span class="pct">38%</span><span class="sub"> 13/34</span></td><td data-sort="59.3750"><span class="pct">59%</span><span class="sub"> 38/64</span></td><td data-sort="45.5882"><span class="pct">46%</span><span class="sub"> 31/68</span></td><td data-sort="53.6232"><span class="pct">54%</span><span class="sub"> 37/69</span></td><td data-sort="54.5455"><span class="pct">55%</span><span class="sub"> 36/66</span></td><td data-sort="43.7500"><span class="pct">44%</span><span class="sub"> 28/64</span></td><td data-sort="49.2063"><span class="pct">49%</span><span class="sub"> 31/63</span></td></tr>
+      <tr><td class="left"><div class="name">deepseek-v4-flash:0731-cloud</div></td><td data-sort="50.0000"><span class="pct">50%</span><span class="sub"> 28/56</span></td><td data-sort="26.4706"><span class="pct">26%</span><span class="sub"> 9/34</span></td><td data-sort="50.0000"><span class="pct">50%</span><span class="sub"> 32/64</span></td><td data-sort="51.4706"><span class="pct">51%</span><span class="sub"> 35/68</span></td><td data-sort="47.8261"><span class="pct">48%</span><span class="sub"> 33/69</span></td><td data-sort="62.1212"><span class="pct">62%</span><span class="sub"> 41/66</span></td><td data-sort="43.7500"><span class="pct">44%</span><span class="sub"> 28/64</span></td><td data-sort="68.2540"><span class="pct">68%</span><span class="sub"> 43/63</span></td></tr>
+      <tr><td class="left"><div class="name">claude-sonnet-5</div></td><td data-sort="50.0000"><span class="pct">50%</span><span class="sub"> 28/56</span></td><td data-sort="23.5294"><span class="pct">24%</span><span class="sub"> 8/34</span></td><td data-sort="51.5625"><span class="pct">52%</span><span class="sub"> 33/64</span></td><td data-sort="51.4706"><span class="pct">51%</span><span class="sub"> 35/68</span></td><td data-sort="63.7681"><span class="pct">64%</span><span class="sub"> 44/69</span></td><td data-sort="56.0606"><span class="pct">56%</span><span class="sub"> 37/66</span></td><td data-sort="45.3125"><span class="pct">45%</span><span class="sub"> 29/64</span></td><td data-sort="49.2063"><span class="pct">49%</span><span class="sub"> 31/63</span></td></tr>
+      <tr><td class="left"><div class="name">kimi-k2.7-code:cloud</div></td><td data-sort="57.1429"><span class="pct">57%</span><span class="sub"> 32/56</span></td><td data-sort="44.1176"><span class="pct">44%</span><span class="sub"> 15/34</span></td><td data-sort="46.8750"><span class="pct">47%</span><span class="sub"> 30/64</span></td><td data-sort="50.0000"><span class="pct">50%</span><span class="sub"> 34/68</span></td><td data-sort="53.6232"><span class="pct">54%</span><span class="sub"> 37/69</span></td><td data-sort="42.4242"><span class="pct">42%</span><span class="sub"> 28/66</span></td><td data-sort="51.5625"><span class="pct">52%</span><span class="sub"> 33/64</span></td><td data-sort="52.3810"><span class="pct">52%</span><span class="sub"> 33/63</span></td></tr>
+      <tr><td class="left"><div class="name">gpt-oss:120b-cloud</div></td><td data-sort="41.0714"><span class="pct">41%</span><span class="sub"> 23/56</span></td><td data-sort="26.4706"><span class="pct">26%</span><span class="sub"> 9/34</span></td><td data-sort="54.6875"><span class="pct">55%</span><span class="sub"> 35/64</span></td><td data-sort="55.8824"><span class="pct">56%</span><span class="sub"> 38/68</span></td><td data-sort="59.4203"><span class="pct">59%</span><span class="sub"> 41/69</span></td><td data-sort="42.4242"><span class="pct">42%</span><span class="sub"> 28/66</span></td><td data-sort="48.4375"><span class="pct">48%</span><span class="sub"> 31/64</span></td><td data-sort="49.2063"><span class="pct">49%</span><span class="sub"> 31/63</span></td></tr>
+      <tr><td class="left"><div class="name">gpt-5.6-terra</div></td><td data-sort="50.0000"><span class="pct">50%</span><span class="sub"> 28/56</span></td><td data-sort="26.4706"><span class="pct">26%</span><span class="sub"> 9/34</span></td><td data-sort="54.6875"><span class="pct">55%</span><span class="sub"> 35/64</span></td><td data-sort="39.7059"><span class="pct">40%</span><span class="sub"> 27/68</span></td><td data-sort="42.0290"><span class="pct">42%</span><span class="sub"> 29/69</span></td><td data-sort="48.4848"><span class="pct">48%</span><span class="sub"> 32/66</span></td><td data-sort="40.6250"><span class="pct">41%</span><span class="sub"> 26/64</span></td><td data-sort="55.5556"><span class="pct">56%</span><span class="sub"> 35/63</span></td></tr>
+      <tr><td class="left"><div class="name">qwen3.5:397b-cloud</div></td><td data-sort="30.3571"><span class="pct">30%</span><span class="sub"> 17/56</span></td><td data-sort="35.2941"><span class="pct">35%</span><span class="sub"> 12/34</span></td><td data-sort="43.7500"><span class="pct">44%</span><span class="sub"> 28/64</span></td><td data-sort="38.2353"><span class="pct">38%</span><span class="sub"> 26/68</span></td><td data-sort="44.9275"><span class="pct">45%</span><span class="sub"> 31/69</span></td><td data-sort="37.8788"><span class="pct">38%</span><span class="sub"> 25/66</span></td><td data-sort="40.6250"><span class="pct">41%</span><span class="sub"> 26/64</span></td><td data-sort="33.3333"><span class="pct">33%</span><span class="sub"> 21/63</span></td></tr>
+      <tr><td class="left"><div class="name">gemma4:31b-cloud</div></td><td data-sort="30.3571"><span class="pct">30%</span><span class="sub"> 17/56</span></td><td data-sort="29.4118"><span class="pct">29%</span><span class="sub"> 10/34</span></td><td data-sort="37.5000"><span class="pct">38%</span><span class="sub"> 24/64</span></td><td data-sort="29.4118"><span class="pct">29%</span><span class="sub"> 20/68</span></td><td data-sort="43.4783"><span class="pct">43%</span><span class="sub"> 30/69</span></td><td data-sort="28.7879"><span class="pct">29%</span><span class="sub"> 19/66</span></td><td data-sort="29.6875"><span class="pct">30%</span><span class="sub"> 19/64</span></td><td data-sort="26.9841"><span class="pct">27%</span><span class="sub"> 17/63</span></td></tr>
+      </tbody>
+      <tfoot>
+        <tr><td class="left"><div class="name">field median</div></td><td><span class="pct">59%</span></td><td><span class="pct">41%</span></td><td><span class="pct">61%</span></td><td><span class="pct">54%</span></td><td><span class="pct">61%</span></td><td><span class="pct">61%</span></td><td><span class="pct">55%</span></td><td><span class="pct">63%</span></td></tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <div class="notes">
+    <p><b>Per point</b> is what one found defect cost. <code>$</code> is money actually
+    billed to a card, which is OpenRouter and only OpenRouter. <code>~$</code> is notional:
+    the route bills a plan rather than the tokens, so the figure is what the same run would
+    have cost at published rates &mdash; the only way to compare a seat paid by plan against
+    one paid in credits. That covers Claude, ChatGPT <em>and</em> ollama: ollama published
+    per-token rates on 2026-09-01, but it still meters a session quota and a weekly quota,
+    and its paid &ldquo;Extra usage&rdquo; is a separate balance that starts empty. A sweep
+    there spends quota, not money. Every route in this table is priced in the same unit;
+    only one of them is an invoice.</p>
+    <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
+    returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
+    Both models that failed here have failed before.</p>
+    <p><b>Wall clock</b> matters as much as tokens: a panel round runs at the pace of its
+    slowest reviewer.</p>
+    <p><b>!</b> marks a cell whose run lost a lens to a contract failure. That recall is
+    <em>deflated, not low</em> &mdash; the findings the failed lens would have contributed were
+    never parsed &mdash; so it is not comparable to a clean cell and is excluded from the field
+    median. Re-run the target to get a real number; the failure itself still counts against the
+    model.</p>
+  </div>
+</div>
+<script>
+// Click a header to sort. Values come from data-sort on each cell rather than
+// from the rendered text, because the display strings are not sortable: scores
+// read "376/484", tokens carry thousands separators, and the per-point column
+// mixes dollars with token counts.
+(function () {
+  function val(row, i) {
+    var c = row.children[i];
+    if (!c) return "";
+    var d = c.getAttribute("data-sort");
+    return d === null ? c.textContent.trim() : d;
+  }
+  function renumber(tb) {
+    var n = 1;
+    Array.prototype.forEach.call(tb.rows, function (r) {
+      var c = r.querySelector("td.rank");
+      if (c) c.textContent = n++;
+    });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("table"), function (t) {
+    var head = t.tHead, body = t.tBodies[0];
+    if (!head || !body) return;
+    Array.prototype.forEach.call(head.rows[0].cells, function (th, i) {
+      if (th.classList.contains("norank")) return;
+      th.classList.add("sortable");
+      th.addEventListener("click", function () {
+        var rows = Array.prototype.slice.call(body.rows);
+        // numeric when every non-empty value parses as a number
+        var numeric = rows.every(function (r) {
+          var v = val(r, i);
+          return v === "" || v === "-" || !isNaN(parseFloat(v));
+        });
+        var desc = th.getAttribute("data-dir") !== "desc";
+        rows.sort(function (a, b) {
+          var x = val(a, i), y = val(b, i);
+          if (numeric) {
+            var nx = parseFloat(x), ny = parseFloat(y);
+            if (isNaN(nx)) nx = -Infinity;
+            if (isNaN(ny)) ny = -Infinity;
+            return desc ? ny - nx : nx - ny;
+          }
+          return desc ? y.localeCompare(x) : x.localeCompare(y);
+        });
+        rows.forEach(function (r) { body.appendChild(r); });
+        Array.prototype.forEach.call(head.rows[0].cells, function (o) {
+          o.removeAttribute("data-dir");
+          o.classList.remove("sorted");
+        });
+        th.setAttribute("data-dir", desc ? "desc" : "asc");
+        th.classList.add("sorted");
+        renumber(body);
+      });
+    });
+  });
+})();
+</script>

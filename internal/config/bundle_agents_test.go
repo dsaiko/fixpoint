@@ -135,6 +135,7 @@ func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 		// swapped, so codex's budget. See bench/models.txt.
 		"gpt-6-astra":       local,
 		"gpt-6-astra-xhigh": local,
+		"gpt-5.6-terra":     local,
 		"agy":               onArgv,
 		"deepseek-ollama":   remote,
 		"gemma4-ollama":     remote,
@@ -194,10 +195,11 @@ func TestShippedAgentsPinTheirEnvironment(t *testing.T) {
 		"claude":       {pass: []string{"ANTHROPIC_API_KEY"}},
 		"claude-coder": {pass: []string{"ANTHROPIC_API_KEY"}},
 		"codex":        {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
-		// The two Astra bench candidates are codex.yaml with the model swapped, and
-		// see exactly what codex sees.
+		// The Astra and Terra bench candidates are codex.yaml with the model
+		// swapped, and see exactly what codex sees.
 		"gpt-6-astra":       {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
 		"gpt-6-astra-xhigh": {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+		"gpt-5.6-terra":     {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
 		"agy":               {pass: []string{"GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"}},
 		"deepseek-ollama":   {pass: ollama},
 		"gemma4-ollama":     {pass: ollama},
