@@ -1170,13 +1170,23 @@ func TestLoadBundleRejectsGateWithInlineCommands(t *testing.T) {
 	}
 }
 
-// A gate file with no commands would disable the gate while looking configured.
-func TestLoadBundleRejectsEmptyGate(t *testing.T) {
-	root := t.TempDir()
-	dir := gateBundle(t, root, "verify: {gate: go}\n", map[string]string{"go": "skip_run_edits: ['**/*_test.go']\n"})
-	_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
-	if err == nil || !strings.Contains(err.Error(), "defines no commands") {
-		t.Fatalf("err = %v, want a refusal of the empty gate", err)
+// A gate file must carry both of its keys. No commands would disable the gate
+// while looking configured; no skip_run_edits would, under -gate, leave a run with
+// no test-file globs at all -- the config's own were cleared as the old
+// language's, and the new gate brought none.
+func TestLoadBundleRejectsHalfAGate(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"no commands", "skip_run_edits: ['**/*_test.go']\n", "defines no commands"},
+		{"no skip_run_edits", "commands:\n  - {name: vet, run: [go, vet, ./...]}\n", "defines no skip_run_edits"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := gateBundle(t, root, "verify: {gate: go}\n", map[string]string{"go": tc.body})
+			_, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

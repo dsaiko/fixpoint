@@ -593,6 +593,14 @@ func (c *Config) resolveGate(r *Resolver, into *string) error {
 	if len(g.Commands) == 0 {
 		return fmt.Errorf("gate %q (%s) defines no commands; a gate exists to supply verify.commands, and an empty one would disable the gate while looking configured", c.Verify.Gate, path)
 	}
+	// Both keys, not one: a gate is the language's share of the config, and a
+	// language has a test-file shape. Without this, `-gate x` -- which clears the
+	// config's own globs because they belong to the OLD language -- would leave a
+	// run with no globs at all when x supplied none, and the closing round would
+	// review the test files the run itself wrote (review run 20260907-084831).
+	if len(g.SkipRunEdits) == 0 {
+		return fmt.Errorf("gate %q (%s) defines no skip_run_edits; a gate names the language's test-file shape as well as its commands (\"**/*_test.go\", \"**/*.spec.ts\", ...), so the closing round can leave the tests this run wrote out of its own review", c.Verify.Gate, path)
+	}
 	c.Verify.Commands = g.Commands
 	if len(c.Loop.FinalSkipRunEdits) == 0 {
 		c.Loop.FinalSkipRunEdits = g.SkipRunEdits

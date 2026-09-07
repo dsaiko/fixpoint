@@ -459,8 +459,12 @@ const (
 // RunSources is the provenance of one run's configuration: which file each
 // bundle name resolved to on the search path.
 type RunSources struct {
-	Config  string            `json:"config"`
-	Extends string            `json:"extends,omitempty"`
+	Config  string `json:"config"`
+	Extends string `json:"extends,omitempty"`
+	// Gate is the verify gate file the config named, when it named one: argv the
+	// run executed after every fix, from a file the target's bundle may have
+	// shadowed -- the same reason the agent files are recorded.
+	Gate    string            `json:"gate,omitempty"`
 	Agents  map[string]string `json:"agents,omitempty"`
 	Prompts map[string]string `json:"prompts,omitempty"`
 }
