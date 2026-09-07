@@ -6619,26 +6619,54 @@ func TestReportUnverifiedChecksNamesEveryCheckTheRunNeverSawPass(t *testing.T) {
 	})
 
 	t.Run("a check that passed once is not reported", func(t *testing.T) {
+		// The recovery goes THROUGH verifyPass, not through the map: a check that
+		// fails while a marker is absent and passes once it exists is red at the
+		// baseline and green on the gate run, exactly as a fix that repairs it
+		// would look. Writing the map directly would leave the res.Passed branch
+		// in verifyPass untested (review run 20260907-084831).
 		var log strings.Builder
 		o := newO(config.VerifyNoRegressions, false, &log)
+		marker := filepath.Join(t.TempDir(), "fixed")
+		o.cfg.Verify.Commands[1] = config.VerifyCommand{Name: "test", Run: []string{"test", "-e", marker}}
 		o.captureVerifyBaseline(t.Context())
+		if err := os.WriteFile(marker, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		gateRun(t, o)
-		o.verifyEverPassed["test"] = true // as a later run that fixed it would record
 		log.Reset()
 		o.reportUnverifiedChecks()
 		if got := log.String(); !strings.Contains(got, "1 check(s)") || !strings.Contains(got, ": vet.") {
-			t.Errorf("report should name only vet:\n%s", got)
+			t.Errorf("report should name only vet -- test recovered on the gate run:\n%s", got)
 		}
 	})
 
-	t.Run("the gate never ran: nothing to report", func(t *testing.T) {
+	t.Run("a clean run with no fix round still reports its all-red baseline", func(t *testing.T) {
+		// The review found nothing, so verifyPass never ran -- but the gate DID run,
+		// as the baseline, and every check was red. Saying so here is what tells the
+		// operator the gate is pointed at the wrong language before the next run
+		// commits under it. The first version was silent on this path.
 		var log strings.Builder
 		o := newO(config.VerifyNoRegressions, false, &log)
 		o.captureVerifyBaseline(t.Context())
 		log.Reset()
 		o.reportUnverifiedChecks()
+		if got := log.String(); !strings.Contains(got, "2 check(s)") || !strings.Contains(got, "verified NOTHING") {
+			t.Errorf("a clean run must still report a baseline the gate never saw pass:\n%s", got)
+		}
+	})
+
+	t.Run("no baseline was captured: nothing to report", func(t *testing.T) {
+		// An interrupted baseline records no fact about the project, so there is
+		// nothing to accuse. This is the only way the map stays nil past startup.
+		var log strings.Builder
+		o := newO(config.VerifyNoRegressions, false, &log)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		o.captureVerifyBaseline(ctx)
+		log.Reset()
+		o.reportUnverifiedChecks()
 		if log.Len() != 0 {
-			t.Errorf("a run whose gate never ran must not accuse its baseline:\n%s", log.String())
+			t.Errorf("a run with no baseline must not report:\n%s", log.String())
 		}
 	})
 
@@ -6662,6 +6690,46 @@ func TestReportUnverifiedChecksNamesEveryCheckTheRunNeverSawPass(t *testing.T) {
 			t.Errorf("review-only must stay silent:\n%s", log.String())
 		}
 	})
+}
+
+// The whole path, not the function: a real run whose gate is red at the baseline
+// and stays red, under no_regressions, must END with the "verified NOTHING" line.
+// The unit test above calls reportUnverifiedChecks directly; this pins that
+// finishRun actually reaches it after the rounds, so a refactor that drops or
+// guards the call cannot pass the suite while every real run loses the line.
+func TestRunEndsByNamingTheChecksItsGateNeverSawPass(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	// The check fails whenever red.txt exists, and it exists before the run and is
+	// never removed -- a pre-existing failure no_regressions tolerates all run.
+	f.verifyGate(config.VerifyNoRegressions, "red.txt")
+	if err := os.WriteFile(filepath.Join(f.repo, "red.txt"), []byte("red\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repo, "add", ".")
+	gitRun(t, f.repo, "commit", "-q", "-m", "pre-existing breakage")
+
+	f.respond(1, reviewResponse(t, aFinding("off by one")))
+	f.editRepoOn(2)
+	f.respond(2, fixResponse(t, model.FixResult{ID: "i1", Verdict: "fixed", Detail: "fixed"}))
+
+	o, logged := f.capturingOrchestrator()
+	if _, err := o.Run(t.Context()); err != nil {
+		t.Fatalf("Run() = %v; under no_regressions a pre-existing red check must not fail the run", err)
+	}
+	got := logged()
+	i := strings.Index(got, "verified NOTHING")
+	if i < 0 {
+		t.Fatalf("the run ended without naming the check its gate never saw pass:\n%s", got)
+	}
+	if !strings.Contains(got[i:], "build") {
+		t.Errorf("the line should name the red check (build):\n%s", got[i:])
+	}
+	if strings.Count(got, "verified NOTHING") != 1 {
+		t.Errorf("the line should appear exactly once, at the end:\n%s", got)
+	}
+	if j := strings.LastIndex(got, "round 1 verify"); j < 0 || j > i {
+		t.Errorf("the line must come after the round's own gate output, not before it:\n%s", got)
+	}
 }
 
 // End to end: the closing round is not shown the test files the run itself wrote.

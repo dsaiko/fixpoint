@@ -173,6 +173,7 @@ type Orchestrator struct {
 func (o *Orchestrator) openJournal() {
 	o.journal(model.EvRunStarted, 0, model.JournalRunStarted{
 		Config:        o.source.Config,
+		Gate:          o.source.Gate,
 		Mode:          string(o.cfg.Target.Mode),
 		Path:          o.cfg.Target.Path,
 		Strategy:      string(o.cfg.Roles.Review.Strategy),
@@ -532,6 +533,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 		Sources: model.RunSources{
 			Config:  o.source.Config,
 			Extends: o.source.Extends,
+			Gate:    o.source.Gate,
 			Agents:  o.source.Agents,
 			Prompts: o.source.Prompts,
 		},
@@ -917,10 +919,12 @@ func (o *Orchestrator) finishRun(ctx context.Context, sum *model.RunSummary, run
 // says the second thing, where an operator reads the outcome.
 //
 // must_pass needs no such line: there the same checks block every round and the
-// run says so each time. And a run that never invoked the gate (review-only, or
-// no round reached it) has nothing to report -- the nil map is that state, and it
-// is nil ONLY then: verifyPass allocates it on every run, whatever passed, so an
-// all-red gate arrives here as an empty map and is reported in full.
+// run says so each time. And a run whose gate never ran at all (review-only, or a
+// baseline interrupted before it finished) has nothing to report -- the nil map is
+// that state, and it is nil ONLY then: captureVerifyBaseline allocates it the
+// moment a baseline exists, so an all-red gate arrives here as an empty map and is
+// reported in full even when no fix round followed -- the operator learns the gate
+// is pointed at the wrong language from the clean run, not from the next one.
 func (o *Orchestrator) reportUnverifiedChecks() {
 	if !o.cfg.Verify.Enabled() || o.cfg.Loop.ReviewOnly || o.cfg.Verify.Policy != config.VerifyNoRegressions || o.verifyEverPassed == nil {
 		return
@@ -4149,6 +4153,16 @@ func (o *Orchestrator) captureVerifyBaseline(ctx context.Context) {
 		return
 	}
 	o.verifyBaseline = rep
+	// The gate has now RUN once, so pass tracking starts here rather than in
+	// verifyPass: a run whose review finds nothing never reaches verifyPass, and
+	// with the map still nil reportUnverifiedChecks read that as "the gate never
+	// ran" and stayed silent -- on a Go gate over a Node tree that converged
+	// clean, the misconfiguration went unreported although the very next run would
+	// commit under it (review run 20260907-084831). Nil now means only "no
+	// baseline was captured", which is the review-only and interrupted paths.
+	if o.verifyEverPassed == nil {
+		o.verifyEverPassed = map[string]bool{}
+	}
 	// The baseline is what makes every later "blocking" judgement meaningful under
 	// no_regressions, so it is recorded rather than only logged: a reader cannot
 	// otherwise tell whether a failing check was this run's fault.
@@ -4258,8 +4272,9 @@ func (o *Orchestrator) verifyPass(ctx context.Context, rec *model.RoundRecord, i
 	}
 	rep := verify.Run(ctx, o.cfg.Verify, o.cfg.Target.Path, o.verifyEnv)
 	o.logf("round %d verify%s: %s", rec.Round, verifyAttemptLabel[attempt], rep.Summary())
-	// Allocated on EVERY gate run, before the loop, so a non-nil map means "the
-	// gate ran" and an empty one means "it ran and nothing ever passed". The first
+	// Normally allocated by captureVerifyBaseline; kept here for a gate that runs
+	// without one (a run driven by hand in tests), and so that a non-nil map means
+	// "the gate ran" and an empty one "it ran and nothing ever passed". The first
 	// version allocated inside `if res.Passed`, which made the two states
 	// indistinguishable and silenced reportUnverifiedChecks in exactly the all-red
 	// case it exists for -- caught by the panel on review run 20260907-000650.

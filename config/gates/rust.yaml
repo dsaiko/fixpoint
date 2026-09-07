@@ -5,15 +5,19 @@ commands:
   # run blocks every round under no_regressions (verify.Regressions treats "could
   # not run" as having no baseline). It is listed optional for that reason -- it
   # informs when present and never blocks when absent.
+  # --workspace on every cargo command: --all-targets selects the targets OF THE
+  # SELECTED PACKAGE, and in a workspace whose root manifest is itself a package
+  # that is the root alone -- member crates would not be built or tested and a
+  # broken member would pass the project-wide gate. --all is fmt's spelling.
   - name: fmt
-    run: [cargo, fmt, --check]
+    run: [cargo, fmt, --all, --check]
   - name: build
-    run: [cargo, build, --all-targets]
+    run: [cargo, build, --workspace, --all-targets]
   - name: clippy
-    run: [cargo, clippy, --all-targets, --, -D, warnings]
+    run: [cargo, clippy, --workspace, --all-targets, --, -D, warnings]
     optional: true
   - name: test
-    run: [cargo, test]
+    run: [cargo, test, --workspace]
 # Integration tests live under tests/ -- of every crate, so `**/tests/**` rather
 # than `tests/**`, which compileGlobs anchors at the repository root and which
 # would miss crates/<name>/tests/ in any workspace. Unit tests live INSIDE the

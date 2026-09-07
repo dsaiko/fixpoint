@@ -2398,9 +2398,10 @@ type Verify struct {
 }
 
 // Gate is the shape of a <bundle>/gates/<name>.yaml file: the language's share of
-// a task config. Both keys land in the config that names the gate -- Commands
-// into verify.commands, SkipRunEdits into loop.final_skip_run_edits (only when
-// the config left that empty; an explicit list in the config wins).
+// a task config. Both keys are REQUIRED and both land in the config that names
+// the gate -- Commands into verify.commands, SkipRunEdits into
+// loop.final_skip_run_edits (only when the config left that empty; an explicit
+// list in the config wins, except under -gate, which replaces both).
 type Gate struct {
 	Commands []VerifyCommand `yaml:"commands"`
 	// SkipRunEdits is the test-file shape of the language ("**/*_test.go",
