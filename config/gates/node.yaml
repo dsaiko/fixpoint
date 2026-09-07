@@ -6,13 +6,22 @@
 # the right outcome; a fresh project is implement-node.yaml's job, and that one
 # does install. See gates/go.yaml for what a gate file is.
 commands:
-  # --if-present, so a project without one of these scripts is not failed for the
-  # absence: the gate is only as strict as the project's own package.json.
+  # build keeps --if-present: plenty of Node projects have no build step, and a
+  # project with none has nothing this check could verify. test does NOT. `npm run
+  # <script> --if-present` exits 0 when the script is absent, so a test command
+  # tolerant of absence is a gate that can pass green having run nothing -- and
+  # NeverPassed cannot see a vacuous green, only a red. In pr mode the gate reads
+  # the PULL REQUEST's package.json, so one innocuous line deleting the "test"
+  # script would have disarmed the only check no model produced (review run
+  # 20260907-092433). A project with no test script now fails loudly, which the
+  # operator resolves by copying this gate and saying what to run instead.
   - name: build
     run: [npm, run, build, --if-present]
   - name: lint
     run: [npm, run, lint, --if-present]
     optional: true
   - name: test
-    run: [npm, test, --if-present]
-skip_run_edits: ["**/*.test.js", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.js", "**/*.spec.ts", "**/*.spec.tsx", "**/__tests__/**"]
+    run: [npm, test]
+# Extension-independent: .jsx, .mjs and .cjs test files are as common as the
+# three the first version listed.
+skip_run_edits: ["**/*.test.*", "**/*.spec.*", "**/__tests__/**"]

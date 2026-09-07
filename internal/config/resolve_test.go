@@ -179,22 +179,31 @@ func TestProjectRootFindsNonGitProjectBundle(t *testing.T) {
 	}
 }
 
-// Walking up is lexical, so the walk has to start from the REAL directory: `cd`
-// through a symlink leaves $PWD on the link and os.Getwd honors it, so a walk from
-// the link's own path climbs the link's parents -- which are not the project's --
-// finds no marker, and anchors the run to the linked subtree: a fraction of the
-// repository reviewed, artifacts written next to the link.
 // A project that ships ONLY its own gate is shipping policy fixpoint executes.
 // Root discovery has to stop there, or a run started from a subdirectory of a
 // non-git tree walks past it and resolves the installed gate instead -- the
-// project's chosen commands replaced by another language's, silently.
+// project's chosen commands replaced by another language's, silently. But the
+// marker is a gate FILE, not the directory: an empty or unrelated gates/ must not
+// stop the walk short of the real root.
 func TestProjectRootFindsGatesOnlyBundle(t *testing.T) {
 	root := realDir(t, t.TempDir())
-	if err := os.MkdirAll(filepath.Join(root, projectBundleDir, gatesDir), 0o755); err != nil {
+	gates := filepath.Join(root, projectBundleDir, gatesDir)
+	if err := os.MkdirAll(gates, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(root, "src", "pkg")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Empty gates/: not a marker, so the walk finds nothing and falls back to the
+	// starting directory -- anywhere but root proves the bare directory did not
+	// anchor the run there.
+	if got, err := ProjectRoot(sub); err != nil {
+		t.Fatal(err)
+	} else if got == root {
+		t.Errorf("ProjectRoot(%s) = %s with an EMPTY gates/ directory; a bare directory named gates must not mark a root", sub, got)
+	}
+	if err := os.WriteFile(filepath.Join(gates, "go"+configExt), []byte(goGate), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got, err := ProjectRoot(sub)
@@ -202,10 +211,15 @@ func TestProjectRootFindsGatesOnlyBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got != root {
-		t.Errorf("ProjectRoot(%s) = %s, want %s: a bundle holding only gates/ is still the project's bundle", sub, got, root)
+		t.Errorf("ProjectRoot(%s) = %s, want %s: a bundle holding only gates/<lang>.yaml is still the project's bundle", sub, got, root)
 	}
 }
 
+// Walking up is lexical, so the walk has to start from the REAL directory: `cd`
+// through a symlink leaves $PWD on the link and os.Getwd honors it, so a walk from
+// the link's own path climbs the link's parents -- which are not the project's --
+// finds no marker, and anchors the run to the linked subtree: a fraction of the
+// repository reviewed, artifacts written next to the link.
 func TestProjectRootResolvesSymlinkedDir(t *testing.T) {
 	root := realDir(t, t.TempDir())
 	t.Setenv("HOME", t.TempDir())

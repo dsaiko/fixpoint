@@ -296,6 +296,7 @@ release-verify: release-snapshot
 	work=$$(mktemp -d); tar xzf "$$archive" -C "$$work"; \
 	test -d "$$work/config/agents" || { echo "FAIL: bundle has no agents/"; exit 1; }; \
 	test -d "$$work/config/prompts" || { echo "FAIL: bundle has no prompts/"; exit 1; }; \
+	test -d "$$work/config/gates" || { echo "FAIL: bundle has no gates/; every fix-* config names gate: go and fails to load without it"; exit 1; }; \
 	cd $$(mktemp -d) && "$$work/fixpoint" -version && "$$work/fixpoint" --list | grep -q review-code; \
 	echo "OK: $$archive resolves its bundle and lists its configs"
 
