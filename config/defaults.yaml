@@ -199,7 +199,8 @@ loop:
   #
   # Empty HERE on purpose: the pattern is per-language, so a shipped default would
   # be wrong everywhere it is not Go -- the same reason verify.commands is empty.
-  # fix-code.yaml and fix-branch.yaml set the Go shape.
+  # The GATE supplies it: gates/go.yaml's skip_run_edits is where the fix configs
+  # get "**/*_test.go" from (see config/README.md, "The verify gate").
   #
   # This is NOT a general "do not review your own work" rule. Inside the loop that
   # review is productive: it is how a fix's own bug gets caught, and a measured run's
@@ -272,7 +273,14 @@ verify:
   #
   # No commands here on purpose: they are per-project (go build, npm test, cargo
   # check, ...), so a shipped default cannot know them, and an empty list disables
-  # verification. Define them in your project's own task config.
+  # verification. Name a gate, or define them in your project's own task config.
+  #
+  # gate: the language's toolchain, as a FILE under <bundle>/gates/ that supplies
+  #   `commands` and loop.final_skip_run_edits together. Shipped: go, rust, node,
+  #   java, python, dotnet, cpp; the fix-* configs name `go`. Mutually exclusive
+  #   with `commands` (both set is refused). `-gate <name>` on the command line
+  #   replaces whichever the config chose, so one flag points fix-branch at a Node
+  #   tree. `-check` prints the file it resolved to.
   #
   # Each command is `{name, run, optional, infra}`. `optional` records a result
   # without ever failing the round. `infra` says the command reaches something
