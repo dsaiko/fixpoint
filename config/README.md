@@ -1,11 +1,12 @@
 # fixpoint config bundle
 
-A bundle is a directory holding task configs at its root plus two
+A bundle is a directory holding task configs at its root plus three
 subdirectories, so one bare name resolves in one category:
 
     fix-code.yaml          a task config, referenced as `fix-code`
     prompts/fix.md         a prompt, referenced as `fix`
     agents/claude.yaml     an agent, referenced as `claude`
+    gates/go.yaml          a verify gate, referenced as `go` (see "The verify gate")
 
 Run one with `fixpoint <name>`; list what's available with `fixpoint --list`. A
 config's optional one-line `description:` appears in that listing and in shell
@@ -218,7 +219,7 @@ dogfood on — run on a Node project without copying anything:
 fixpoint fix-branch -gate node -trusted-target
 ```
 
-Three rules, each for a reason the gate would otherwise get wrong:
+The rules, each for a reason the gate would otherwise get wrong:
 
 - **A gate cannot name a gate.** Same one-level rule as `extends`: the effective
   gate is readable from two files, the config and the gate it names.

@@ -9,6 +9,10 @@
 commands:
   - name: build
     run: [cmake, --build, build]
+  # --no-tests=error: ctest exits 0 on a build tree that registers NO tests, which
+  # is common (gtest or Catch2 binaries run directly, never add_test'd). A green
+  # that ran nothing is invisible to the end-of-run report, which only sees reds;
+  # this makes "no tests registered" red at the baseline, where it is named.
   - name: test
-    run: [ctest, --test-dir, build, --output-on-failure]
+    run: [ctest, --test-dir, build, --output-on-failure, --no-tests=error]
 skip_run_edits: ["**/test/**", "**/tests/**", "**/*_test.cpp", "**/*_test.cc"]

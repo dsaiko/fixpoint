@@ -187,10 +187,17 @@ func isProjectRoot(dir string, homes []string) bool {
 // policy fixpoint executes, and root discovery that walked past it would resolve
 // the installed gate instead, silently.
 func isBundle(dir string) bool {
-	for _, sub := range []string{promptsDir, agentsDir, gatesDir} {
+	for _, sub := range []string{promptsDir, agentsDir} {
 		if st, err := os.Stat(filepath.Join(dir, sub)); err == nil && st.IsDir() {
 			return true
 		}
+	}
+	// gates/ counts only when it holds a gate. It is the newest marker and the
+	// most generic name of the three, so a bare directory -- some unrelated
+	// src/config/gates/ -- must not stop root discovery short of the real .git
+	// root and anchor a run to a subtree (review run 20260907-092433).
+	if m, _ := filepath.Glob(filepath.Join(dir, gatesDir, "*"+configExt)); len(m) > 0 {
+		return true
 	}
 	return false
 }

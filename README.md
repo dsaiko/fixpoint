@@ -421,7 +421,7 @@ Recall per target, which is where a model that is strong in one language and wea
 ## Configuration
 
 Configuration is a **bundle**: task configs at the root of a directory plus
-`prompts/` and `agents/` beside them, so one bare name resolves in one category.
+`prompts/`, `agents/` and `gates/` beside them, so one bare name resolves in one category.
 See [config/README.md](config/README.md) for the search path, `extends` merge
 rules, and the security model; [config/defaults.yaml](config/defaults.yaml) is
 the commented reference for the settings themselves.
@@ -581,7 +581,7 @@ internal/logstore/       per-step logs, the run journal, and the run summary
 internal/runlog/         renders the run's progress: phase blocks, color on a tty
 internal/gitenv/         the git hardening every subprocess against a target carries
 internal/testfixture/    shared test helpers
-config/                  the shipped bundle: task configs, prompts/, agents/
+config/                  the shipped bundle: task configs, prompts/, agents/, gates/
 config/defaults.yaml     the commented base every task config extends
 docs/                    the long-form documentation this README links to
 ```

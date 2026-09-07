@@ -97,6 +97,14 @@ func TestShippedGatesDecodeAndCarryUsableCommands(t *testing.T) {
 			if len(g.SkipRunEdits) == 0 {
 				t.Error("no skip_run_edits: the closing round would review the test files this run wrote, which is the measured non-convergence the key exists for")
 			}
+			// The same rule Config.Validate applies to loop.final_skip_run_edits,
+			// which these are inlined into: a blank pattern compiles to ^$ and sits
+			// in the config looking like an active rule.
+			for i, glob := range g.SkipRunEdits {
+				if strings.TrimSpace(glob) == "" {
+					t.Errorf("skip_run_edits[%d] is blank; Validate would refuse the inlined list at load time, on an operator's machine", i)
+				}
+			}
 			// The two keys are the file's whole reason to exist, and the rule they
 			// stand on -- Validate's, on the inlined result -- is applied here too.
 			v := Verify{Policy: VerifyNoRegressions, Timeout: Duration(time.Minute), Commands: g.Commands}
@@ -378,5 +386,98 @@ func TestShippedGoGateFmtCommandFailsForTheRightReasons(t *testing.T) {
 		if code, out := run(t, dir, []string{"PATH=" + t.TempDir()}); code == 0 {
 			t.Errorf("exit 0 with no gofmt on PATH -- the wrong-machine case reads as a clean tree:\n%s", out)
 		}
+	})
+}
+
+// The python gate's compile check is a small program rather than a shell one-liner
+// -- an ast.parse walk that emits no bytecode, replacing a compileall wrapper whose
+// EXIT trap could not run when Supervise SIGKILLed the process group and left a
+// bytecode mirror in $TMPDIR each time. Like the go gate's fmt command it is
+// executed here against what matters: it passes a valid tree, fails and names the
+// file on a syntax error, skips virtualenvs, and leaves neither a __pycache__ in
+// the tree nor anything in $TMPDIR.
+func TestShippedPythonGateCompileCommandFailsForTheRightReasons(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	var g Gate
+	if err := decodeInto(filepath.Join("..", "..", projectBundleDir, gatesDir, "python"+configExt), &g); err != nil {
+		t.Fatal(err)
+	}
+	var compile []string
+	for _, c := range g.Commands {
+		if c.Name == "compile" {
+			compile = c.Run
+		}
+	}
+	if len(compile) < 2 || compile[0] != "python3" {
+		t.Fatalf("python gate has no `compile` command of the shape [python3 ...]: %v", compile)
+	}
+	run := func(t *testing.T, dir, tmp string) (int, string) {
+		t.Helper()
+		cmd := exec.Command(compile[0], compile[1:]...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return 0, string(out)
+		}
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("running the compile check: %v\n%s", err, out)
+		}
+		return exit.ExitCode(), string(out)
+	}
+	noCache := func(t *testing.T, dir string) {
+		t.Helper()
+		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err == nil && d.IsDir() && d.Name() == "__pycache__" {
+				t.Errorf("the check wrote %s into the tree; a fix commit would carry it", path)
+			}
+			return nil
+		})
+	}
+	entries := func(t *testing.T, dir string) int {
+		t.Helper()
+		es, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(es)
+	}
+
+	t.Run("valid tree passes, broken venv ignored", func(t *testing.T) {
+		dir, tmp := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "ok.py"), []byte("x = 1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, ".venv"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".venv", "broken.py"), []byte("def (\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := entries(t, tmp)
+		if code, out := run(t, dir, tmp); code != 0 {
+			t.Errorf("exit %d on a valid tree (the broken file is in .venv and must be skipped):\n%s", code, out)
+		}
+		noCache(t, dir)
+		if after := entries(t, tmp); after != before {
+			t.Errorf("$TMPDIR grew from %d to %d entries; the check must leave nothing behind", before, after)
+		}
+	})
+	t.Run("syntax error in a project file fails and is named", func(t *testing.T) {
+		dir, tmp := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "bad.py"), []byte("def (\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, out := run(t, dir, tmp)
+		if code == 0 {
+			t.Fatalf("exit 0 on a tree with a syntax error:\n%s", out)
+		}
+		if !strings.Contains(out, "bad.py") {
+			t.Errorf("the failure should name the file:\n%s", out)
+		}
+		noCache(t, dir)
 	})
 }

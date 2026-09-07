@@ -10,6 +10,11 @@ commands:
   # where the cold-cache case lives.
   - name: build
     run: [mvn, -B, -ntp, -DskipTests, compile]
+  # Known gap, no clean flag for it: surefire exits 0 with zero test sources, so
+  # a project with no tests passes this check having run none, and the end-of-run
+  # report cannot see a vacuous green (-DfailIfNoTests applies only with -Dtest=).
+  # A project that wants "no tests is red" copies this gate and adds a test count
+  # assertion of its own.
   - name: test
     run: [mvn, -B, -ntp, test]
 skip_run_edits: ["**/src/test/**"]

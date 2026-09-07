@@ -53,8 +53,9 @@ archives:
     files:
       # The bundle, at the path the binary-adjacent search entry looks for.
       # The TREE is preserved, not flattened: a bundle IS its shape --
-      # config.isBundle looks for prompts/ or agents/ subdirectories, and
-      # resolution reads config/agents/<name>.yaml and config/prompts/<name>.md.
+      # config.isBundle looks for prompts/ or agents/ subdirectories (or a gate
+      # file under gates/), and resolution reads config/agents/<name>.yaml,
+      # config/prompts/<name>.md and config/gates/<name>.yaml.
       # A `strip_parent` here put every file in the bundle root, which made
       # `--list` offer the agent definitions as runnable task configs and left
       # no prompt resolvable at all. Caught by extracting the snapshot and

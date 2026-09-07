@@ -8,19 +8,36 @@
 # PATH -- activate the project's virtualenv before the run, or the gate tests
 # against the wrong site-packages and fails on imports the project has.
 commands:
-  # compileall is not read-only: it writes __pycache__/*.pyc beside every module
-  # it compiles, from the baseline pass on the pristine tree onward -- and the
-  # round commit stages with `git add -A`, so on a project that does not ignore
-  # __pycache__ every fix commit would carry bytecode the coder never wrote.
-  # PYTHONPYCACHEPREFIX redirects the cache out of the tree (honoured by
-  # compileall since 3.8), and the trap removes that directory again on every
-  # exit -- the gate runs at the baseline and after every fix, and a mirror of
-  # the project's bytecode left in $TMPDIR each time adds up. The -x regex keeps
-  # it out of virtualenvs and build output, which are not the project's code and
-  # would otherwise make the check slow and hostage to a syntax error in a
-  # dependency; a virtualenv under another name belongs on that list.
+  # A syntax walk, not compileall. compileall writes __pycache__ beside every
+  # module it compiles (a fix commit would carry it, via `git add -A`), and the
+  # first version redirected that into a temp directory removed by an EXIT trap --
+  # which never runs when the gate times out, because Supervise SIGKILLs the whole
+  # process group, so every timed-out attempt left a bytecode mirror in $TMPDIR.
+  # ast.parse emits nothing: no cache, no temp directory, nothing to clean up.
+  # The skip list keeps it out of virtualenvs and build output, which are not the
+  # project's code and would make the check slow and hostage to a syntax error in
+  # a dependency; a virtualenv under another name belongs on that list.
   - name: compile
-    run: [sh, -c, 'd=$(mktemp -d) || exit 1; trap ''rm -rf "$d"'' EXIT; PYTHONPYCACHEPREFIX=$d python3 -m compileall -q -x "(^|/)(\.venv|venv|\.tox|\.nox|build|dist|node_modules|\.git)/" .']
+    run:
+      - python3
+      - -c
+      - |
+        import ast, os, sys
+        skip = {'.venv', 'venv', '.tox', '.nox', 'build', 'dist', 'node_modules', '.git', '__pycache__'}
+        bad = 0
+        for root, dirs, files in os.walk('.'):
+            dirs[:] = sorted(d for d in dirs if d not in skip)
+            for name in sorted(files):
+                if not name.endswith('.py'):
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    with open(path, 'rb') as fh:
+                        ast.parse(fh.read(), path)
+                except SyntaxError as e:
+                    print(f'{path}:{e.lineno}: {e.msg}', file=sys.stderr)
+                    bad += 1
+        sys.exit(1 if bad else 0)
   - name: test
     run: [python3, -m, pytest, -q]
 skip_run_edits: ["**/test_*.py", "**/*_test.py", "**/tests/**", "**/conftest.py"]

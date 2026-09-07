@@ -6692,6 +6692,35 @@ func TestReportUnverifiedChecksNamesEveryCheckTheRunNeverSawPass(t *testing.T) {
 	})
 }
 
+// The gate file is target-suppliable policy fixpoint executes, so the run's two
+// durable records have to name it: RunSummary.Sources, and the run_started journal
+// event, which is what a reader has when the summary was never written. Both are
+// one assignment each from Source.Gate, and neither was covered -- every other
+// orchestrator test builds a Source with Gate empty, so deleting either assignment
+// left the suite green while the record went back to saying nothing (review run
+// 20260907-092433).
+func TestRunRecordsTheGateFileInItsDurableProvenance(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+	f.respond(1, reviewResponse(t)) // clean round: the shortest run that writes both records
+	const gate = "/bundle/gates/go.yaml"
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "test.yaml", Gate: gate}}, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := o.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Sources.Gate != gate {
+		t.Errorf("RunSummary.Sources.Gate = %q, want %q: the summary must name the file that supplied the gate's commands", sum.Sources.Gate, gate)
+	}
+	var started model.JournalRunStarted
+	payload(t, f.journal(), model.EvRunStarted, &started)
+	if started.Gate != gate {
+		t.Errorf("run_started journal event gate = %q, want %q: the journal has to stand alone when no summary is written", started.Gate, gate)
+	}
+}
+
 // The whole path, not the function: a real run whose gate is red at the baseline
 // and stays red, under no_regressions, must END with the "verified NOTHING" line.
 // The unit test above calls reportUnverifiedChecks directly; this pins that
