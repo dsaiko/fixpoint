@@ -185,8 +185,15 @@ qwen/qwen3.8-max
 # GPT-6 Astra -- MEASURED 2026-09-05. Both effort rungs, full 8-target grid,
 # no contract failures:
 #
-#   gpt-6-astra        (high)   265/484  2.06M tok  3267s  ~$25.27  ~$0.095/pt
-#   gpt-6-astra-xhigh  (xhigh)  270/484  2.71M tok  5617s  ~$35.97  ~$0.133/pt
+#   gpt-6-astra        (high)   265/484  0.48M tok  3267s   ~$9.42  ~$0.036/pt
+#   gpt-6-astra-xhigh  (xhigh)  270/484  0.61M tok  5617s  ~$14.94  ~$0.055/pt
+#
+# (Figures CORRECTED 2026-09-07: the first note read 2.06M/2.71M tok and
+# ~$25.27/~$35.97. codex reports cached input INSIDE input_tokens, and
+# report.py priced the two as disjoint, so every codex-route row was charged
+# its cache twice and its token count was inflated by the same amount. The
+# conclusions below survive the correction -- the ladder still buys +5 seeds
+# for +27% tokens and +72% wall clock, and xhigh is still 1.5x sol's $/pt.)
 #
 # It loses to the gpt-5.6-sol it shares a harness with (298/484) on the same
 # route, same effort, same prompts. C# is where the high run collapses --
@@ -277,19 +284,23 @@ gpt-6-astra-xhigh
 #
 # MEASURED 2026-09-07, full 8-target grid, 1 repeat, no contract failures:
 #
-#   gpt-5.6-terra (high)  221/484  23rd of 25  2.31M tok  2896s  ~$6.43  ~$0.029/pt
-#   codex / gpt-5.6-sol   298/484  10th        1.70M tok  6810s  ~$13.99 ~$0.047/pt
+#   gpt-5.6-terra (high)  221/484  23rd of 25  0.61M tok  2896s  ~$3.04  ~$0.014/pt
+#   codex / gpt-5.6-sol   298/484  10th        0.57M tok  6810s  ~$8.36  ~$0.028/pt
+#
+# (Token and dollar figures are the CORRECTED ones -- see the astra note above
+# for the cached-input double count this sweep's own review caught, run
+# 20260907-150029. The commit that added this note quoted ~$6.43 and 96 pts/Mtok.)
 #
 # The answer to the sonnet-5 question is DIFFERENT here, and worse. Sonnet kept
 # most of its score and lost the discount to token inefficiency. Terra keeps the
-# discount -- 38% cheaper per point than sol -- but loses a quarter of the score
+# discount -- half of sol's cost per point -- but loses a quarter of the score
 # to get it: 77 seeds down, the lowest of any codex-route model measured, three
-# places above the floor. It is ALSO the less token-efficient sibling (96 pts/Mtok
-# against sol's 176): it reads 36% more tokens than sol to find 26% fewer seeds,
-# and only its 5x lower rate card makes the dollar column look kind. The one
-# thing it wins outright is wall clock -- 2896s is the fastest ChatGPT-route
-# sweep, 2.4x quicker than sol -- because it gives up early, not because it is
-# quick to be right.
+# places above the floor. It is ALSO the less token-efficient sibling (361 pts/Mtok
+# against sol's 523): it reads 7% more tokens than sol to find 26% fewer seeds,
+# and its 2.5x lower rate card is the whole of the dollar saving. The one thing
+# it wins outright is wall clock -- 2896s is the fastest ChatGPT-route sweep,
+# 2.4x quicker than sol -- because it gives up early, not because it is quick
+# to be right.
 #
 # Per target it is below sol everywhere, worst in java (29/69 vs 44) and csharp
 # (27/68 vs 44), the same two targets that sank astra-high; the codex harness
