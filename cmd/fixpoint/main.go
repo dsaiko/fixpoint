@@ -28,6 +28,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/orchestrator"
 	"github.com/dsaiko/fixpoint/internal/runlog"
+	"github.com/dsaiko/fixpoint/internal/target"
 )
 
 // Version, commit and date are stamped at link time by the release build
@@ -87,7 +88,7 @@ Flags:
 	maxIter := fs.Int("max-iterations", 0, "override loop.max_iterations (0 = use config)")
 	baseRef := fs.String("base-ref", "", "override target.base_ref in git-diff mode; a trailing \"...\" means the merge base with HEAD (empty = use config)")
 	gate := fs.String("gate", "", "override verify.gate: which language's toolchain the deterministic gate runs, by name under <bundle>/gates/ (empty = use config); replaces the config's commands")
-	pr := fs.Int("pr", 0, "override target.pr in pr mode; which PR to review is per-invocation, so review-pr ships without a number (0 = use config)")
+	pr := fs.Int("pr", 0, "override target.pr in pr mode; which PR to review is per-invocation, so review-pr ships without a number (0 = use config, or the pull request of the checked-out branch when the config has none either)")
 	targetPath := fs.String("target", "", "point a directory-mode run at a file or a directory; a file is reviewed as a document, shown to the panel in full (empty = use config)")
 	outPath := fs.String("out", "", "where a create run writes its deliverable (default: DESIGN.md beside the assignment); an existing file is never overwritten")
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
@@ -206,8 +207,16 @@ Flags:
 		return 1
 	}
 
-	if err := loaded.Validate(); err != nil {
-		logf("config: %v", err)
+	// The interrupt handler is installed here rather than after startup
+	// validation, because the pull-request resolution below shells to `gh`:
+	// agent.Supervise puts a forge CLI in its own process group, so without a
+	// handler a Ctrl-C would kill fixpoint while gh kept going. Same argument as
+	// the -post-run path above. stop is idempotent, so the deferred teardown and
+	// the explicit one after the run both stay correct.
+	ctx, stop := installSignals(logf)
+	defer stop()
+
+	if !resolveTargetAndValidate(ctx, loaded, *pr, logf) {
 		return 1
 	}
 
@@ -232,9 +241,6 @@ Flags:
 		logf("startup validation: %v", err)
 		return 1
 	}
-	ctx, stop := installSignals(logf)
-	defer stop()
-
 	if *check {
 		return checkOnly(ctx, o, cfg, logf)
 	}
@@ -446,6 +452,49 @@ func absPathFlags(flags map[string]string) (map[string]string, error) {
 		out[name] = abs
 	}
 	return out, nil
+}
+
+// resolveTargetAndValidate settles the one target detail that cannot come from
+// the configuration files -- which pull request a pr-mode run with no number is
+// about -- and then validates the effective configuration. It reports both the
+// same way, so run keeps a single "this configuration cannot run" exit.
+//
+// A pr-mode run that was given no number takes the pull request of the branch
+// that is checked out. Which pull request to review is per-invocation, which is
+// why review-pr ships a placeholder rather than a number -- but on the branch the
+// work is on the number is already implied, and looking it up to retype it is the
+// step this removes. An explicit -pr wins, and so does a config that names a real
+// pull request: the resolution fills the placeholder, it does not override a
+// choice.
+//
+// The order is the point. Validate's rule is that mode pr needs a positive
+// target.pr, so the resolution has to come first -- and this is the only place it
+// can: Run stamps the number into the run summary before the checkout, and the
+// posting, triage and checks paths read it throughout, so a number resolved any
+// later would not reach them all.
+func resolveTargetAndValidate(ctx context.Context, loaded *config.Loaded, prFlag int, logf func(string, ...any)) bool {
+	cfg := loaded.Config
+	if cfg.Target.Mode == config.ModePR && prFlag == 0 && cfg.Target.PR == 0 {
+		found, err := target.ResolvePRFromBranch(ctx, cfg.Target, agent.EnvWithoutCredentials(cfg.Agents))
+		if err != nil {
+			logf("target.pr: %v", err)
+			return false
+		}
+		cfg.Target.PR = found.Number
+		// Logged with the base and the URL, always: nobody typed this number, so the
+		// line is the run's only record of what it decided to review.
+		//
+		// Escaped at the print site, like every other name that came from outside: the
+		// base ref and the URL are the forge's strings, and git's own ref rules are
+		// the only thing keeping a control character out of the branch.
+		logf("target.pr: resolved from the checked-out branch %s: pull request #%d into %s (%s)",
+			escapeTerminal(found.Branch), found.Number, escapeTerminal(found.Base), escapeTerminal(found.URL))
+	}
+	if err := loaded.Validate(); err != nil {
+		logf("config: %v", err)
+		return false
+	}
+	return true
 }
 
 // forceQuit ends the process on a second interrupt, with the interrupted run's

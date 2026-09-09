@@ -228,8 +228,9 @@ review-branch: build
 	./$(BINARY) review-branch --trusted-target
 
 ## fix-pr: review -> fix -> verify -> commit over a pull request; POST=1 also answers its conversations
-## Pass the number as PR=<n>.
+## Pass the number as PR=<n>, or omit it on the pull request's own branch.
 ##   make fix-pr PR=170
+##   make fix-pr                 # the pull request of the checked-out branch
 ##   make fix-pr PR=170 POST=1
 ## POST=1 appends -post, the flag every reply path is gated on: without it the
 ## triage still runs and the answers are written into the run directory, but
@@ -245,23 +246,23 @@ review-branch: build
 ## project-supplied policy and the run is refused without it. Those are OUR files,
 ## read before the checkout replaced the tree.
 fix-pr: build test vet
-	@test -n "$(PR)" || { echo "usage: make fix-pr PR=<number> [POST=1]"; exit 2; }
 	@test -z "$(POST)" || test "$(POST)" = 1 || { echo "POST must be 1 or unset, got '$(POST)'; replies are not sent"; exit 2; }
-	./$(BINARY) fix-pr -pr $(PR) --allow-untrusted-fix --trusted-bundle $(if $(filter 1,$(POST)),-post)
+	./$(BINARY) fix-pr $(if $(PR),-pr $(PR)) --allow-untrusted-fix --trusted-bundle $(if $(filter 1,$(POST)),-post)
 
-## review-pr: review a pull request; pass the number as PR=<n>
+## review-pr: review a pull request; pass the number as PR=<n>, or omit it on the
+## pull request's own branch and fixpoint resolves it from the checkout.
 ##   make review-pr PR=170
+##   make review-pr             # the pull request of the checked-out branch
 ## -trusted-bundle and NOT -trusted-target: the only thing this run needs to trust
 ## is fixpoint's own config/ bundle, resolved before `gh pr checkout` ran. The
 ## branch itself is externally authored, so the pr-mode refusals over what the
 ## checkout writes stay armed -- which is what makes this the target to run first
 ## on a fork's pull request.
 review-pr: build
-	@test -n "$(PR)" || { echo "usage: make review-pr PR=<number>"; exit 2; }
-	./$(BINARY) review-pr -pr $(PR) --trusted-bundle
+	./$(BINARY) review-pr $(if $(PR),-pr $(PR)) --trusted-bundle
 
 ## run: removed -- name the config you mean (make fix-code, make review-pr PR=n)
-# Exits 2, the usage-error code the PR= guards above use. `run` was the
+# Exits 2, the usage-error code the POST guard above uses. `run` was the
 # documented entry point for the whole review -> fix -> verify -> commit cycle,
 # so a wrapper or CI step still calling it must not read this explanation as a
 # completed run -- that is the same confusion the review exit codes exist to

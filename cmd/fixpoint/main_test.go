@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1829,5 +1830,147 @@ func TestAbsPathFlags(t *testing.T) {
 	}
 	if out["continue"] != "/abs/proj" {
 		t.Errorf("an absolute path is unchanged, got %q", out["continue"])
+	}
+}
+
+// stubGHForPR puts a `gh` on PATH answering the two reads the branch resolution
+// makes, and returns the file it records its argv into. PATH is prepended so git
+// stays real -- the branch half of the answer comes from the fixture repository.
+func stubGHForPR(t *testing.T, number int) string {
+	t.Helper()
+	bin, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
+	n := strconv.Itoa(number)
+	view := `{"number":` + n + `,"state":"OPEN","url":"https://example.test/pull/` + n +
+		`","baseRefName":"main","headRefName":"feat/x","headRepositoryOwner":{"login":"o"}}`
+	list := `[{"number":` + n + `,"baseRefName":"main","headRepositoryOwner":{"login":"o"}}]`
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + calls + "\n" +
+		"if [ \"$1\" = pr ] && [ \"$2\" = view ]; then printf '%s' '" + view + "'; exit 0; fi\n" +
+		"if [ \"$1\" = pr ] && [ \"$2\" = list ]; then printf '%s' '" + list + "'; exit 0; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return calls
+}
+
+func ghCalls(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// A pr-mode run given no number takes the pull request of the checked-out
+// branch. Driven through run() rather than the resolver, because the wiring is
+// what can break: the resolution has to land BEFORE Validate, whose rule is that
+// mode pr needs a positive target.pr, and the number it produces has to be the
+// one the rest of the run acts on -- which --check prints as its scope.
+func TestRunResolvesPRFromTheCheckedOutBranch(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+	calls := stubGHForPR(t, 170)
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", f.configFile("pr", "", ""), "-review-only", "-check"}, &buf, &buf); got != 0 {
+		t.Fatalf("run(pr -check with no -pr) = %d, want 0; stderr:\n%s", got, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "resolved from the checked-out branch feat/x") {
+		t.Errorf("the run does not say where the number came from; nobody typed it:\n%s", out)
+	}
+	if !strings.Contains(out, "pull request #170") {
+		t.Errorf("the resolved number is not reported:\n%s", out)
+	}
+	// --check's own scope line reads target.pr, so this proves the resolved number
+	// reached the configuration rather than only the log.
+	if !strings.Contains(out, "pr #170") {
+		t.Errorf("the resolved number did not reach the effective config:\n%s", out)
+	}
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0 (-check must not run agents)", got)
+	}
+	// Both reads have to happen: the second is what proves the branch names only
+	// one open pull request.
+	for _, want := range []string{"pr view", "pr list"} {
+		if c := ghCalls(t, calls); !strings.Contains(c, want) {
+			t.Errorf("gh was not asked to %q; calls were %q", want, c)
+		}
+	}
+}
+
+// An explicit -pr is a choice, and the resolution must not second-guess it: the
+// branch may be anything at all when the number was typed, and a `gh pr view`
+// here would be a network round trip whose answer nobody asked for.
+func TestRunExplicitPRSkipsBranchResolution(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+	calls := stubGHForPR(t, 170)
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", f.configFile("pr", "", ""), "-pr", "42", "-review-only", "-check"}, &buf, &buf); got != 0 {
+		t.Fatalf("run(-pr 42 -check) = %d, want 0; stderr:\n%s", got, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pr #42") {
+		t.Errorf("-pr 42 did not decide the target:\n%s", out)
+	}
+	if strings.Contains(out, "resolved from the checked-out branch") {
+		t.Errorf("the branch resolution ran over an explicit number:\n%s", out)
+	}
+	if c := ghCalls(t, calls); strings.Contains(c, "pr view") {
+		t.Errorf("gh was called for a number the operator supplied: %q", c)
+	}
+}
+
+// A config that names a real pull request is also a choice already made, and the
+// placeholder zero is the only hole the resolution fills.
+func TestRunConfiguredPRSkipsBranchResolution(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+	calls := stubGHForPR(t, 170)
+
+	var buf bytes.Buffer
+	cfg := f.configFile("pr", "  pr: 99\n", "")
+	if got := run([]string{"-config", cfg, "-review-only", "-check"}, &buf, &buf); got != 0 {
+		t.Fatalf("run(config pr: 99 -check) = %d, want 0; stderr:\n%s", got, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pr #99") {
+		t.Errorf("the config's own number did not decide the target:\n%s", out)
+	}
+	if c := ghCalls(t, calls); strings.Contains(c, "pr view") {
+		t.Errorf("gh was called although the config named a pull request: %q", c)
+	}
+}
+
+// The refusal has to reach the operator as a run failure, not as the validation
+// error the placeholder zero would otherwise produce -- "PR number required for
+// mode pr" says nothing about the branch it just failed to resolve from.
+func TestRunReportsAFailedBranchResolution(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho 'no pull requests found for branch \"feat/x\"' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", f.configFile("pr", "", ""), "-review-only", "-check"}, &buf, &buf); got != 1 {
+		t.Fatalf("run = %d, want 1 for a branch with no pull request; stderr:\n%s", got, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "no pull request found for branch feat/x") {
+		t.Errorf("the failure does not name the branch it could not resolve:\n%s", out)
+	}
+	if !strings.Contains(out, "-pr") {
+		t.Errorf("the failure does not tell the operator what to pass instead:\n%s", out)
 	}
 }

@@ -72,7 +72,7 @@ func TestRunTargetExitsNonZero(t *testing.T) {
 		t.Fatalf("make run succeeded (err=%v); a no-op must not report a completed run:\n%s", err, out)
 	}
 	if code := exit.ExitCode(); code != 2 {
-		t.Errorf("make run exited %d, want 2 -- the usage-error code the PR= guards use:\n%s", code, out)
+		t.Errorf("make run exited %d, want 2 -- the usage-error code the POST guard uses:\n%s", code, out)
 	}
 	// The exit status is only half of it: the operator still has to be told what
 	// to run instead, so the explanation and the target listing must survive too.
@@ -181,5 +181,34 @@ func TestFixPRPostsOnlyWhenAskedTo(t *testing.T) {
 	}
 	if hasArg(argv, "--trusted-target") {
 		t.Errorf("make fix-pr PR=170 asserts --trusted-target over an externally authored tree: %v", argv)
+	}
+}
+
+// PR= is optional now: on the pull request's own branch fixpoint resolves the
+// number from the checkout. A recipe that passed the variable unconditionally
+// would defeat that -- `-pr` with nothing after it eats the next flag, and
+// `-pr 0` is the placeholder value the flag parser accepts and treats as "use
+// config", which in mode pr is a validation failure the operator never asked for.
+func TestPRTargetsMakeTheNumberOptional(t *testing.T) {
+	for _, target := range []string{"review-pr", "fix-pr"} {
+		t.Run(target+"/no PR", func(t *testing.T) {
+			argv := fixpointCommand(t, makeDryRun(t, target))
+			if hasArg(argv, "-pr") {
+				t.Errorf("make %s passes -pr with no number behind it: %v", target, argv)
+			}
+			if hasArg(argv, "0") {
+				t.Errorf("make %s passes the placeholder 0: %v", target, argv)
+			}
+			// The trust flags are not optional, whichever way the number arrived.
+			if !hasArg(argv, "--trusted-bundle") {
+				t.Errorf("make %s dropped --trusted-bundle: %v", target, argv)
+			}
+		})
+		t.Run(target+"/PR=170", func(t *testing.T) {
+			argv := fixpointCommand(t, makeDryRun(t, target, "PR=170"))
+			if !hasArg(argv, "-pr") || !hasArg(argv, "170") {
+				t.Errorf("make %s PR=170 lost the number: %v", target, argv)
+			}
+		})
 	}
 }

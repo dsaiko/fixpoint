@@ -172,7 +172,7 @@ func TestValidate(t *testing.T) {
 			c.Review.RefuteAt, c.Review.BlockAt = "critical", "high"
 		}, ""},
 		{"unknown mode", func(c *Config) { c.Target.Mode = "svn" }, "unknown mode"},
-		{"pr mode without number", func(c *Config) { c.Target.Mode = "pr" }, "PR number required"},
+		{"pr mode without number", func(c *Config) { c.Target.Mode = "pr" }, "mode pr needs a pull request number"},
 		{"pr mode with number", func(c *Config) { c.Target.Mode = "pr"; c.Target.PR = 7 }, ""},
 		{"no review prompts", func(c *Config) { c.Roles.Review.Prompts = nil }, "at least one review lens"},
 		{"unknown strategy", func(c *Config) { c.Roles.Review.Strategy = "random" }, "unknown strategy"},

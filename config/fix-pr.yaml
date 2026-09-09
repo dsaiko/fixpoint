@@ -16,7 +16,8 @@ extends: defaults
 
 target:
   mode: pr
-  pr: 0 # placeholder: pass -pr <number> on the command line
+  pr: 0 # placeholder: pass -pr <number>, or leave it and fixpoint takes the
+        # pull request of the checked-out branch
 
 roles:
   coder: { agent: claude-coder, prompt: fix }
