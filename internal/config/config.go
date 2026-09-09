@@ -81,6 +81,13 @@ type Target struct {
 	Path    string `yaml:"path"`
 	BaseRef string `yaml:"base_ref"`
 	PR      int    `yaml:"pr"`
+	// PRFromBranch says the number is to be resolved from the checked-out branch
+	// because the invocation supplied none. It carries `yaml:"-"`, and that is
+	// deliberate: it is an assertion about how the command was TYPED (no -pr),
+	// which a file cannot make on the operator's behalf -- the same reason the
+	// trust gates are flags. See Overrides.PRFromBranch, and
+	// Orchestrator.resolvePR for where the number then comes from.
+	PRFromBranch bool `yaml:"-"`
 	// Document narrows a directory target to ONE FILE, which becomes the material
 	// itself -- shown to the panel in full rather than as a listing entry. It is how
 	// review-design reads a design document: the reviewers judge the text, and the
@@ -1668,11 +1675,15 @@ func (c *Config) Validate() error {
 	if c.Target.Document != "" && c.Target.Mode != ModeDirectory {
 		return fmt.Errorf("target.document is set but target.mode is %q: a document target reviews one file as the material, which only mode directory supports", c.Target.Mode)
 	}
-	// Zero reaches here only when the CLI's branch resolution did not run or was
-	// bypassed (a negative -pr, a library caller): the run path resolves the pull
-	// request of the checked-out branch before validating, so "no number anywhere"
-	// is already answered by then. See target.ResolvePRFromBranch.
-	if c.Target.Mode == ModePR && c.Target.PR <= 0 {
+	// A pr-mode run needs a number, but it does not need one YET when the
+	// invocation said to take the branch's own pull request: that resolution runs
+	// git and gh inside the target, so it has to wait for the target-integrity
+	// preflight, which is long after validation (Orchestrator.resolvePR).
+	//
+	// The exemption covers a MISSING number, never a bad one. A negative value was
+	// typed by somebody and is refused whatever else is set, so the two conditions
+	// stay separate rather than collapsing into "not positive".
+	if c.Target.Mode == ModePR && (c.Target.PR < 0 || (c.Target.PR == 0 && !c.Target.PRFromBranch)) {
 		return fmt.Errorf("target.pr: mode pr needs a pull request number, got %d -- pass -pr <number>, or run from the branch the pull request is on and fixpoint resolves it", c.Target.PR)
 	}
 	// An empty base_ref means "review the unstaged working changes", which a fix

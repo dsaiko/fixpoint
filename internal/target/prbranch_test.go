@@ -1,6 +1,7 @@
 package target
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,8 +61,20 @@ const branchUnderTest = "feat/x"
 
 func resolve(t *testing.T, dir string) (BranchPR, error) {
 	t.Helper()
-	return ResolvePRFromBranch(t.Context(), config.Target{Mode: config.ModePR, Path: dir},
-		agent.EnvWithoutCredentials(nil))
+	c := New(config.Target{Mode: config.ModePR, Path: dir})
+	c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+	return c.ResolvePRFromBranch(t.Context())
+}
+
+// openPR renders one `gh pr list` row.
+func openPR(number int, owner, base string) string {
+	return fmt.Sprintf(`{"number":%d,"baseRefName":%q,"headRepositoryOwner":{"login":%q}}`, number, base, owner)
+}
+
+// viewPR renders a `gh pr view` answer.
+func viewPR(number int, state, owner, head, base string) string {
+	return fmt.Sprintf(`{"number":%d,"state":%q,"url":"https://example.test/pull/%d","baseRefName":%q,"headRefName":%q,"headRepositoryOwner":{"login":%q}}`,
+		number, state, number, base, head, owner)
 }
 
 // The whole point of the feature: on the branch a pull request is open from,
@@ -202,5 +215,144 @@ func TestResolvePRFromBranchRefusesWhenTheProbeFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "-pr") {
 		t.Errorf("the refusal does not tell the operator what to do: %v", err)
+	}
+}
+
+// stubGHRecording is stubGH plus a record of every argv gh was called with. A
+// stub that ignores its arguments would keep passing if the probe asked about the
+// wrong head, the wrong state, or nothing at all (review run 20260909-213147,
+// finding i16).
+func stubGHRecording(t *testing.T, view, list string) string {
+	t.Helper()
+	resp := t.TempDir()
+	calls := filepath.Join(resp, "calls")
+	for name, content := range map[string]string{"view": view, "list": list} {
+		if err := os.WriteFile(filepath.Join(resp, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bin := t.TempDir()
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> ` + calls + `
+if [ "$1" = pr ] && [ "$2" = view ]; then cat ` + resp + `/view; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = list ]; then cat ` + resp + `/list; exit 0; fi
+echo "unexpected gh call: $*" >&2
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return calls
+}
+
+func ghArgv(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("gh was never called: %v", err)
+	}
+	return string(b)
+}
+
+// The probe has to ask about the head gh ANSWERED with, not the branch on disk:
+// gh resolves through a branch's push configuration, so the two can differ, and
+// asking about a name no pull request has would prove the uniqueness of nothing.
+func TestResolvePRFromBranchProbesTheResolvedHead(t *testing.T) {
+	dir := onBranch(t)
+	calls := stubGHRecording(t,
+		viewPR(170, "OPEN", "o", "their-name-for-it", "main"),
+		"["+openPR(170, "o", "main")+"]")
+
+	got, err := resolve(t, dir)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Number != 170 {
+		t.Errorf("resolved #%d, want #170", got.Number)
+	}
+	argv := ghArgv(t, calls)
+	if !strings.Contains(argv, "--head their-name-for-it") {
+		t.Errorf("the probe did not ask about the head gh resolved:\n%s", argv)
+	}
+	if strings.Contains(argv, "--head "+branchUnderTest) {
+		t.Errorf("the probe asked about the local branch name instead:\n%s", argv)
+	}
+	// Only OPEN pull requests are siblings; counting merged ones would refuse a
+	// perfectly unambiguous branch.
+	if !strings.Contains(argv, "--state open") {
+		t.Errorf("the probe did not restrict the listing to open pull requests:\n%s", argv)
+	}
+}
+
+// Counting alone accepted listings that could not prove anything. Every case here
+// used to pass (review run 20260909-213147, findings i17, i19, and the
+// truncation medium).
+func TestResolvePRFromBranchRefusesAnUnprovableListing(t *testing.T) {
+	many := make([]string, 0, prBranchCandidates)
+	for i := range prBranchCandidates {
+		// Another fork's same-named branch: filtered out by owner, but it still fills
+		// the limit, so a sibling of OURS could be the row that did not fit.
+		many = append(many, openPR(900+i, "someone-else", "main"))
+	}
+	cases := []struct {
+		name, list, want string
+	}{
+		{"empty", "[]", "appears 0 times"},
+		{"without the resolved PR", "[" + openPR(171, "o", "main") + "]", "appears 0 times"},
+		{"the resolved PR twice", "[" + openPR(170, "o", "main") + "," + openPR(170, "o", "release") + "]", "appears 2 times"},
+		{"truncated", "[" + strings.Join(many, ",") + "]", "truncated"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := onBranch(t)
+			stubGH(t, viewPR(170, "OPEN", "o", branchUnderTest, "main"), "", tc.list, 0)
+
+			_, err := resolve(t, dir)
+			if err == nil {
+				t.Fatal("a listing that proves nothing was accepted as proof of uniqueness")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal does not say what was wrong (want %q): %v", tc.want, err)
+			}
+			if !strings.Contains(err.Error(), "-pr") {
+				t.Errorf("the refusal does not tell the operator what to do: %v", err)
+			}
+		})
+	}
+}
+
+// The branch is read before gh is asked, and gh consults the checkout again on
+// its own, so the answer is only about this branch if the branch stayed put. The
+// stub switches it mid-resolution, which is what a concurrent fixpoint run -- or
+// the operator -- does (review run 20260909-213147, finding i10).
+func TestResolvePRFromBranchRefusesWhenTheBranchMovesUnderIt(t *testing.T) {
+	dir := onBranch(t)
+	resp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(resp, "view"),
+		[]byte(viewPR(170, "OPEN", "o", branchUnderTest, "main")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = view ]; then cat ` + resp + `/view; exit 0; fi
+if [ "$2" = list ]; then
+  git checkout -q -b somewhere-else
+  printf '%s' '[` + openPR(170, "o", "main") + `]'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err := resolve(t, dir)
+	if err == nil {
+		t.Fatal("the resolution stood on a branch nobody is on any more")
+	}
+	if !strings.Contains(err.Error(), "somewhere-else") || !strings.Contains(err.Error(), branchUnderTest) {
+		t.Errorf("the refusal does not name both branches: %v", err)
 	}
 }

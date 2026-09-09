@@ -1974,3 +1974,48 @@ func TestRunReportsAFailedBranchResolution(t *testing.T) {
 		t.Errorf("the failure does not tell the operator what to pass instead:\n%s", out)
 	}
 }
+
+// The resolution runs git and an authenticated gh INSIDE the target, so it must
+// not happen before the target-integrity preflight. That ordering matters more
+// here than in the pr mode those guards were written for: nothing of a pull
+// request's is in the tree until Prepare checks it out, whereas resolving from
+// the branch presumes the branch is ALREADY checked out -- so a PATH entry inside
+// the reviewed checkout can supply the `gh` that fixpoint would run, with the
+// forge token restored into its environment, before any guard had a chance to
+// refuse. review-pr asserts only -trusted-bundle, so the refusal is armed; it
+// simply used to fire too late (review run 20260909-213147, findings i1 and i8).
+//
+// Proved by execution, not by message: the planted gh records that it ran, and
+// the assertion is that it never did.
+func TestRunResolvesPRBehindTheTargetGuards(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+
+	// The habit this models is ordinary: a repo-local bin directory on PATH.
+	inside := filepath.Join(f.repo, "bin")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ran := filepath.Join(t.TempDir(), "planted-gh-ran")
+	script := "#!/bin/sh\ntouch " + ran + "\n" +
+		"printf '%s' '{\"number\":666,\"state\":\"OPEN\",\"url\":\"u\",\"baseRefName\":\"main\"," +
+		"\"headRefName\":\"feat/x\",\"headRepositoryOwner\":{\"login\":\"o\"}}'\n"
+	if err := os.WriteFile(filepath.Join(inside, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", inside+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var buf bytes.Buffer
+	// -check is the cheapest path that reaches the resolution, and it is gated by
+	// the no-agent variant of the same preflight.
+	code := run([]string{"-config", f.configFile("pr", "", ""), "-review-only", "-check"}, &buf, &buf)
+	if code != 1 {
+		t.Fatalf("run = %d, want 1: a gh inside the target must be refused; stderr:\n%s", code, buf.String())
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("the target's own gh was executed; the resolution ran ahead of the guard that exists to refuse it")
+	}
+	if out := buf.String(); !strings.Contains(out, "inside target") {
+		t.Errorf("the refusal is not the pinned-helper guard's:\n%s", out)
+	}
+}
