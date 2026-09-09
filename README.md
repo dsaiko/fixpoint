@@ -376,7 +376,7 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 | 14 | `deepseek-v4-pro:cloud` | ollama | 270/484 | 56% | ~$2.83 | ~$0.010 | 2551 | 0 |
 | 15 | `gpt-6-astra-xhigh` | cli | 270/484 | 56% | ~$14.94 | ~$0.055 | 5617 | 0 |
 | 16 | `claude-opus-4-8` | anthropic | 268/484 | 55% | ~$6.04 | ~$0.023 | 2912 | 0 |
-| 17 | `gpt-6-astra` | cli | 265/484 | 55% | ~$9.42 | ~$0.036 | 3267 | 0 |
+| 17 | `gpt-6-astra` | cli | 265/484 | 55% | ~$10.58 | ~$0.040 | 3600 | 0 |
 | 18 | `minimax-m3:cloud` | ollama | 251/484 | 52% | ~$4.56 | ~$0.018 | 6003 | 2 |
 | 19 | `deepseek-v4-flash:0731-cloud` | ollama | 249/484 | 51% | ~$1.19 | ~$0.005 | 6800 | 0 |
 | 20 | `claude-sonnet-5` | anthropic | 245/484 | 51% | ~$4.89 | ~$0.020 | 4313 | 0 |
