@@ -171,6 +171,18 @@ func TestValidate(t *testing.T) {
 		{"refute_at stricter than block_at without a refutation round", func(c *Config) {
 			c.Review.RefuteAt, c.Review.BlockAt = "critical", "high"
 		}, ""},
+		// A run writes its summary even when it failed, and the path was joined onto
+		// the run directory with no cleaning check -- so a target-supplied bundle
+		// could name any file in the tree it was being reviewed from.
+		{"summary_pattern climbing out of the run directory", func(c *Config) {
+			c.Logs.SummaryPattern = "../../.git/HEAD-{ext}"
+		}, "normalizes outside the run directory"},
+		{"summary_pattern collapsing to one path", func(c *Config) {
+			c.Logs.SummaryPattern = "summary-{timestamp}.txt{ext}/../out"
+		}, "same path"},
+		{"summary_pattern staying put", func(c *Config) {
+			c.Logs.SummaryPattern = "nested/summary-{timestamp}.{ext}"
+		}, ""},
 		{"unknown mode", func(c *Config) { c.Target.Mode = "svn" }, "unknown mode"},
 		{"pr mode without number", func(c *Config) { c.Target.Mode = "pr" }, "mode pr needs a pull request number"},
 		{"pr mode with number", func(c *Config) { c.Target.Mode = "pr"; c.Target.PR = 7 }, ""},

@@ -245,13 +245,7 @@ Flags:
 	}
 
 	if *checkLive {
-		logf("static validation OK; pinging agents...")
-		if err := o.Ping(ctx); err != nil {
-			logf("check-live: %v", err)
-			return 1
-		}
-		logf("check-live OK: all agents responding")
-		return 0
+		return checkLiveOnly(ctx, o, logf)
 	}
 
 	sum, err := o.Run(ctx)
@@ -460,7 +454,29 @@ func absPathFlags(flags map[string]string) (map[string]string, error) {
 	return out, nil
 }
 
-// forceQuit ends the process on a second interrupt, with the interrupted run's
+// checkLiveOnly is --check-live: static validation has passed, so this pings every
+// agent and exits.
+//
+// The target questions are settled BEFORE the ping, because a ping LAUNCHES each
+// configured agent command -- and on a fork's checkout those commands can come
+// from the pull request's own bundle. This path could reach Ping with no pull
+// request number at all once validation stopped requiring one, which is what
+// left it unauthorized (review run 20260909-224407).
+func checkLiveOnly(ctx context.Context, o *orchestrator.Orchestrator, logf func(string, ...any)) int {
+	if err := o.ResolvePR(ctx); err != nil {
+		logf("%v", err)
+		return 1
+	}
+	logf("static validation OK; pinging agents...")
+	if err := o.Ping(ctx); err != nil {
+		logf("check-live: %v", err)
+		return 1
+	}
+	logf("check-live OK: all agents responding")
+	return 0
+}
+
+// forceQuit ends the process on a second interrupt// forceQuit ends the process on a second interrupt, with the interrupted run's
 // exit status. It is a variable so the second-signal path can be tested at all:
 // an in-process os.Exit would take the test binary with it.
 var forceQuit = func() { os.Exit(1) }

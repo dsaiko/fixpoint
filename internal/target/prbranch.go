@@ -132,9 +132,36 @@ type branchPRView struct {
 // the PR of this branch" meant. The number is in the refusal, so an operator who
 // does want it can say so explicitly with -pr.
 func (c *Collector) viewBranchPR(ctx context.Context, branch string) (branchPRView, error) {
-	raw, err := c.run(ctx, "gh", "pr", "view", "--json", "number,state,url,baseRefName,headRefName,headRepositoryOwner,isCrossRepository")
+	view, err := c.viewBranchPRAny(ctx, branch)
 	if err != nil {
-		return branchPRView{}, fmt.Errorf("no pull request found for branch %s; open one, or pass -pr <number>: %w", branch, err)
+		return branchPRView{}, err
+	}
+	if !strings.EqualFold(view.State, "open") {
+		return branchPRView{}, fmt.Errorf("branch %s resolves to pull request #%d, which is %s, not open; fixpoint will not review merged or closed work by inference -- pass -pr %d if that is really the target",
+			branch, view.Number, strings.ToLower(view.State), view.Number)
+	}
+	return view, nil
+}
+
+// prViewFields is the projection both readers ask for, in one place: the fork
+// check and the number resolution must not drift apart about what they know, and
+// dropping a field here (isCrossRepository especially) would silently decode as
+// its zero value and disarm a gate. Pinned by TestResolvePRFromBranchPinsTheViewQuery.
+const prViewFields = "number,state,url,baseRefName,headRefName,headRepositoryOwner,isCrossRepository"
+
+// viewBranchPRAny is `gh pr view` for the checked-out branch WHATEVER state its
+// pull request is in. The fork check needs that: a merged pull request's content
+// sits in the tree exactly as an open one's does.
+func (c *Collector) viewBranchPRAny(ctx context.Context, branch string) (branchPRView, error) {
+	raw, err := c.run(ctx, "gh", "pr", "view", "--json", prViewFields)
+	if err != nil {
+		// Deliberately not "no pull request found": that exit status also covers a
+		// lapsed token, an unreachable network, and a checkout whose base repository
+		// gh cannot pick -- and telling an operator whose gh auth expired that their
+		// pull request does not exist invites them to open a second one (review run
+		// 20260909-224407). gh's own stderr is appended by runInput, so the cause is
+		// in the line; the wording here only stops asserting the wrong one.
+		return branchPRView{}, fmt.Errorf("could not resolve a pull request for branch %s -- if the branch has no pull request open one, otherwise check `gh auth status`; or pass -pr <number>: %w", branch, err)
 	}
 	var view branchPRView
 	if err := json.Unmarshal([]byte(raw), &view); err != nil {
@@ -143,11 +170,61 @@ func (c *Collector) viewBranchPR(ctx context.Context, branch string) (branchPRVi
 	if view.Number <= 0 {
 		return branchPRView{}, fmt.Errorf("gh pr view for branch %s named no pull request number; pass -pr <number>", branch)
 	}
-	if !strings.EqualFold(view.State, "open") {
-		return branchPRView{}, fmt.Errorf("branch %s resolves to pull request #%d, which is %s, not open; fixpoint will not review merged or closed work by inference -- pass -pr %d if that is really the target",
-			branch, view.Number, strings.ToLower(view.State), view.Number)
-	}
 	return view, nil
+}
+
+// CheckedOutFork answers the question the fork refusal is really about: is the
+// tree at target.path the content of a pull request from ANOTHER repository?
+//
+// It is separate from ResolvePRFromBranch, and that separation is the fix for a
+// real bypass. Gating the refusal on "no number was found anywhere" made it
+// skippable by supplying one: `pr:` is an ordinary config key, the bundle is
+// searched in the project's own config/ FIRST, and on a pull request's branch
+// that file is the pull request's -- so a fork could set `pr:` and turn off the
+// gate that exists to refuse it, while its `agents:` still named the commands
+// fixpoint runs. The property is about the TREE, so it is now checked for every
+// pr-mode run however the number arrived (review run 20260909-224407, one
+// critical and two highs).
+//
+// Two signals, refusing on either, because neither alone is both precise and
+// reliable:
+//
+//   - `gh pr view` with no argument is authoritative about THIS branch (it reads
+//     the branch's push configuration, so it tells a fork's `feat/x` from ours),
+//     but its failure cannot be told apart from "no pull request here".
+//   - `gh pr list --head` matches the branch NAME across every fork, so it can
+//     name a pull request that is not this branch's -- but it exits cleanly with
+//     an empty list, so a failure really is a failure.
+//
+// A listing that cannot be read is therefore an error, not a shrug: this is a
+// gate, and "could not tell" must not mean "allowed".
+func (c *Collector) CheckedOutFork(ctx context.Context) (BranchPR, bool, error) {
+	branch, err := c.currentBranch(ctx)
+	if err != nil {
+		// No branch names the checkout (detached, or an empty repository), so neither
+		// signal applies. A detached checkout of a fork's commit is not caught here;
+		// the number resolution refuses a detached HEAD outright, and with an explicit
+		// -pr the operator is naming what they are reviewing.
+		return BranchPR{}, false, nil //nolint:nilerr // "HEAD names no branch" is an answer to this question, not a failure of it
+	}
+	if view, verr := c.viewBranchPRAny(ctx, branch); verr == nil && view.CrossRepo {
+		return BranchPR{Number: view.Number, Branch: branch, Base: view.BaseRefName, URL: view.URL, CrossRepository: true}, true, nil
+	}
+	raw, err := c.run(ctx, "gh", "pr", "list", "--head", branch, "--state", "all",
+		"--limit", strconv.Itoa(prBranchCandidates), "--json", "number,isCrossRepository,headRepositoryOwner")
+	if err != nil {
+		return BranchPR{}, false, fmt.Errorf("could not determine whether branch %s is the head of a pull request from another repository, and a run whose target may be a fork's checkout is not started on a guess; pass -trusted-target if this checkout is yours: %w", branch, err)
+	}
+	var open []branchPRView
+	if err := json.Unmarshal([]byte(raw), &open); err != nil {
+		return BranchPR{}, false, fmt.Errorf("gh pr list for branch %s returned output this cannot read, so whether it is a fork's branch is unknown; pass -trusted-target if this checkout is yours: %w", branch, err)
+	}
+	for _, pr := range open {
+		if pr.CrossRepo {
+			return BranchPR{Number: pr.Number, Branch: branch, CrossRepository: true}, true, nil
+		}
+	}
+	return BranchPR{}, false, nil
 }
 
 // proveSolePR refuses the resolution unless the branch names exactly one open
