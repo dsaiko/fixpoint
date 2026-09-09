@@ -68,11 +68,13 @@ that refuse a `git`/`gh` resolved from inside the checkout, or a redirected work
 tree, run first — `review-pr` asserts only `-trusted-bundle`, which leaves every
 one of them armed.
 
-On a real run it also sits **behind the repository lock**, and the guards are
-re-probed once that lock is held, because a competing run could have switched
-branches between the two probes. `--check` and `--check-live` take no lock —
-they switch no branches and commit nothing — so there the preflight alone
-precedes it.
+It is also **serialized against other fixpoint runs**. On a real run that falls
+out of the repository lock the run already holds, and the guards are re-probed
+once it is held, because a competing run could have switched branches between
+the two probes. `--check` and `--check-live` hold no lock for their lifetime, but
+they take it for the resolution itself: the number is read from HEAD, and a
+concurrent run's `gh pr checkout` moves that. Where another run owns the
+repository, the check says so and names it.
 
 ### Resolving from the branch is for your OWN pull requests
 
