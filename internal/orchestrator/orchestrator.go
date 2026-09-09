@@ -1967,6 +1967,33 @@ func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) err
 // preflight rather than the full one, and no repository lock, because a check
 // switches no branches and commits nothing.
 func (o *Orchestrator) ResolvePR(ctx context.Context) error {
+	if o.cfg.Target.Mode != config.ModePR {
+		return nil
+	}
+	// Gates first, as everywhere: LockRepo below runs git inside the target, so it
+	// must not precede guardPinnedHelpers. Memoized, so resolvePR's own call is
+	// then free.
+	if err := o.PreflightGuardsNoAgent(ctx); err != nil {
+		return err
+	}
+	// A check commits nothing, but the resolution READS something another run
+	// mutates: a concurrent run's `gh pr checkout` switches the worktree, and this
+	// would then print that run's pull request as this check's scope -- a number
+	// the operator never named, from the command documented as the cheap thing to
+	// run first -- or fail with a moved-branch refusal whose real cause is nowhere
+	// in the message. So the lock is held for the READ, and released immediately:
+	// the flock is non-blocking and names the competing run, which is the accurate
+	// error (review run 20260909-224407).
+	//
+	// Taken here rather than inside resolvePR because the run path already holds
+	// it, from claimRepo, for the whole run: flock conflicts with itself across two
+	// descriptors in one process, so asking twice would deadlock the thing it
+	// protects.
+	release, err := o.collector.LockRepo(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return o.resolvePR(ctx, nil)
 }
 
