@@ -16,6 +16,9 @@ this is the reference behind them.
 #    nothing leaves this machine.
 ./fixpoint review-pr -pr 170
 
+#    On the pull request's own branch, drop the number entirely:
+./fixpoint review-pr
+
 # 3. Read that file. Then publish THOSE bytes as a comment -- no approval, no
 #    block, no second review, and no agent invoked:
 ./fixpoint -post-run .fixpoint/<run-timestamp>
@@ -24,6 +27,35 @@ this is the reference behind them.
 #    changes:
 ./fixpoint -post-run .fixpoint/<run-timestamp> -post-verdict
 ```
+
+### Which pull request
+
+`-pr 170` says which one. Without it, and with no number in the config either,
+fixpoint takes **the pull request of the branch that is checked out** — the answer
+`gh pr view` gives, which is the same branch-to-PR resolution `gh pr checkout`
+acts on, so the number and the tree the run reviews cannot disagree. The resolved
+number is logged with its base and URL before anything else happens: nobody typed
+it, so that line is the run's only record of what it decided to review, and
+`--check` prints it as the scope.
+
+An explicit `-pr` wins, and so does a config that names a real pull request. The
+resolution fills the placeholder zero, it does not override a choice.
+
+It refuses rather than guess:
+
+- **No pull request for the branch.** Open one, or pass the number.
+- **More than one.** A head branch can have several open pull requests, differing
+  only in base, and `gh` picks one of them silently. Both numbers are in the
+  refusal. A same-named branch on *another* fork is not ambiguity — the head owner
+  tells them apart, which is what makes this work on a fork's branch.
+- **A merged or closed pull request.** `gh` answers with one when that is all the
+  branch has. Reviewing merged work by inference is never what the command meant,
+  and a fix run would commit onto it. The number is in the refusal, so `-pr 170`
+  still gets you there.
+- **A detached HEAD**, which names no branch at all.
+
+`make review-pr` and `make fix-pr` take `PR=<n>` the same way, and omitting it now
+works instead of failing the usage guard.
 
 Step 3 is `-post-run` and not a second `review-pr -pr 170 -post` because the two
 are not the same act. `-post` publishes the review the run in front of it just

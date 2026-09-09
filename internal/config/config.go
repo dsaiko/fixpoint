@@ -1668,8 +1668,12 @@ func (c *Config) Validate() error {
 	if c.Target.Document != "" && c.Target.Mode != ModeDirectory {
 		return fmt.Errorf("target.document is set but target.mode is %q: a document target reviews one file as the material, which only mode directory supports", c.Target.Mode)
 	}
+	// Zero reaches here only when the CLI's branch resolution did not run or was
+	// bypassed (a negative -pr, a library caller): the run path resolves the pull
+	// request of the checked-out branch before validating, so "no number anywhere"
+	// is already answered by then. See target.ResolvePRFromBranch.
 	if c.Target.Mode == ModePR && c.Target.PR <= 0 {
-		return errors.New("target.pr: PR number required for mode pr")
+		return fmt.Errorf("target.pr: mode pr needs a pull request number, got %d -- pass -pr <number>, or run from the branch the pull request is on and fixpoint resolves it", c.Target.PR)
 	}
 	// An empty base_ref means "review the unstaged working changes", which a fix
 	// run can never see: it requires a clean working tree at start and commits
