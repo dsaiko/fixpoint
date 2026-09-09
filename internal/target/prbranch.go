@@ -3,7 +3,9 @@ package target
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -105,10 +107,29 @@ func (c *Collector) ResolvePRFromBranch(ctx context.Context) (BranchPR, error) {
 func (c *Collector) currentBranch(ctx context.Context) (string, error) {
 	out, err := c.git(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
 	branch := strings.TrimSpace(out)
-	if err != nil || branch == "" {
-		return "", fmt.Errorf("HEAD is not on a branch in %s (a detached checkout, or a repository with no commits), so there is no branch to resolve a pull request from; pass -pr <number>", c.cfg.Path)
+	if err == nil && branch != "" {
+		return branch, nil
 	}
-	return branch, nil
+	// Only --quiet's own "HEAD is not symbolic" exit means detached. A timeout, a
+	// cancellation, a corrupt repository or a permission failure exit differently,
+	// and reporting those as a detached checkout sends the operator to -pr, which
+	// addresses none of them (review run 20260909-224407).
+	if err != nil && !detachedHEAD(err) {
+		return "", fmt.Errorf("read the checked-out branch of %s: %w", c.cfg.Path, err)
+	}
+	return "", fmt.Errorf("HEAD is not on a branch in %s (a detached checkout, or a repository with no commits), so there is no branch to resolve a pull request from; pass -pr <number>", c.cfg.Path)
+}
+
+// detachedHEAD reports whether a `symbolic-ref --quiet` failure is the answer
+// "HEAD does not name a ref" rather than a failure to ask. With --quiet that is
+// exit 1 and no output; git's other failures use 128, and a canceled or
+// timed-out command is not an exit status at all.
+func detachedHEAD(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 1
 }
 
 // branchPRView is the part of `gh pr view` this resolution reads.
