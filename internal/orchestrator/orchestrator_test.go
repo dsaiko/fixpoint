@@ -18,6 +18,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/forge"
+	"github.com/dsaiko/fixpoint/internal/gitenv"
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
@@ -10261,5 +10262,172 @@ func TestAReviewOnlyRunAnnouncesOneRound(t *testing.T) {
 	}
 	if strings.Contains(logs(), "round 1/5") {
 		t.Errorf("banner promises rounds a review-only run cannot have:\n%s", logs())
+	}
+}
+
+// stubBranchPRGH puts a `gh` on PATH that answers every call the branch
+// resolution and Prepare make for pull request 170 on the checked-out branch.
+// baseSHA is the commit Prepare pins as the PR's base.
+//
+// It pins the tools itself, and that is not optional: gitenv.Tool prefers a
+// pinned path over PATH, so once any test in this binary has called PinTools the
+// real gh wins over a stub that only edits PATH.
+func stubBranchPRGH(t *testing.T, branch, baseSHA string, crossRepo bool) {
+	t.Helper()
+	dir := t.TempDir()
+	view := fmt.Sprintf(`{"number":170,"state":"OPEN","url":"https://example.test/pull/170",`+
+		`"baseRefName":"main","headRefName":%q,"headRepositoryOwner":{"login":"o"},"isCrossRepository":%t}`,
+		branch, crossRepo)
+	list := `[{"number":170,"baseRefName":"main","headRepositoryOwner":{"login":"o"}}]`
+	// $3 is what tells the calls apart: the resolution's view passes --json first,
+	// while Prepare's passes the number.
+	stub := "#!/bin/sh\n" +
+		`case "$1 $2 $3" in` + "\n" +
+		`"pr view --json") printf '%s' '` + view + `' ;;` + "\n" +
+		`"pr list --head") printf '%s' '` + list + `' ;;` + "\n" +
+		`"pr checkout 170") ;;` + "\n" +
+		`"pr view 170") echo ` + baseSHA + " ;;\n" +
+		`*) echo "unexpected gh call: $@" >&2; exit 1 ;;` + "\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Registered before the PATH change so cleanups (LIFO) restore PATH first and
+	// re-pin against the real one.
+	t.Cleanup(gitenv.PinTools)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gitenv.PinTools()
+}
+
+// The resolution executes git and an authenticated gh inside the target, so it
+// must not happen before the target-integrity gates. --check's ordering is pinned
+// in cmd/fixpoint; this is the RUN path -- the one that checks out, spends tokens,
+// pings agents and can publish a verdict -- and it was the untested half (review
+// run 20260909-220223, three findings).
+//
+// Proved by execution: the planted gh records that it ran, and the assertion is
+// that it never did.
+func TestRunResolvesPRBehindTheTargetGuards(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PRFromBranch = true
+	// The fixture asserts trust by default, which is exactly what disarms the guard
+	// under test: a branch-resolved run is the case where the tree is the pull
+	// request's, and review-pr passes only -trusted-bundle.
+	f.cfg.Loop.TrustedTarget = false
+
+	// The habit this models is ordinary: a repo-local bin directory on PATH. The
+	// file is COMMITTED, because that is how it would arrive -- in the pull
+	// request's own tree -- and because an uncommitted one would trip the clean-tree
+	// check instead of the guard under test.
+	inside := filepath.Join(f.repo, "bin")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ran := filepath.Join(t.TempDir(), "planted-gh-ran")
+	planted := "#!/bin/sh\ntouch " + ran + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(inside, "gh"), []byte(planted), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repo, "add", "bin/gh")
+	gitRun(t, f.repo, "commit", "-qm", "the PR ships its own gh")
+	// The re-pin is registered BEFORE the PATH change, so cleanups (LIFO) restore
+	// PATH first and re-pin against the real one: the other order leaves this
+	// test's planted gh pinned for every test that follows.
+	t.Cleanup(gitenv.PinTools)
+	t.Setenv("PATH", inside+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// The pins are what the guard reads, and only a run boundary sets them.
+	gitenv.PinTools()
+
+	_, err := f.orchestrator().Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "inside target") {
+		t.Fatalf("Run() err = %v, want the pinned-helper refusal", err)
+	}
+	if _, serr := os.Stat(ran); serr == nil {
+		t.Error("the target's own gh was executed; the resolution ran ahead of the guard that exists to refuse it")
+	}
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0", got)
+	}
+}
+
+// A fork's pull request, checked out locally, is the shape the resolution refuses:
+// its content is already in the tree, so the make target that started the run and
+// any config/ bundle resolved from the target are the PR author's code running as
+// the operator -- and fixpoint cannot retroactively guard what make already ran
+// (review run 20260909-220223, both criticals).
+func TestRunRefusesABranchResolvedForkPR(t *testing.T) {
+	newForkFixture := func(t *testing.T) *fixture {
+		t.Helper()
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.reviewOnly("mock")
+		f.cfg.Target.Mode = config.ModePR
+		f.cfg.Target.PRFromBranch = true
+		f.cfg.Loop.TrustedTarget = false
+		gitRun(t, f.repo, "branch", "-M", "main")
+		baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+		gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+		stubBranchPRGH(t, "feature", baseSHA, true)
+		return f
+	}
+
+	t.Run("refused", func(t *testing.T) {
+		f := newForkFixture(t)
+		_, err := f.orchestrator().Run(t.Context())
+		if err == nil {
+			t.Fatal("a fork's pull request was resolved from its own checked-out branch")
+		}
+		for _, want := range []string{"#170", "ANOTHER repository", "-pr 170", "-trusted-target"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not mention %q: %v", want, err)
+			}
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0 (refuse before spending tokens)", got)
+		}
+	})
+
+	// -trusted-target is the operator saying the checkout is theirs, which is the
+	// same assertion every other target-content gate takes.
+	t.Run("cleared by -trusted-target", func(t *testing.T) {
+		f := newForkFixture(t)
+		f.cfg.Loop.TrustedTarget = true
+		f.respond(1, reviewResponse(t))
+		sum, err := f.orchestrator().Run(t.Context())
+		if err != nil {
+			t.Fatalf("Run() err = %v", err)
+		}
+		if sum.PR != 170 {
+			t.Errorf("summary PR = %d, want 170", sum.PR)
+		}
+	})
+}
+
+// The resolved number has to reach the run summary, which is what -post-run reads
+// to decide which pull request a finished review belongs to. The summary is
+// stamped before the resolution happens, so this is not automatic -- and --check,
+// the only end-to-end coverage until now, passes no summary at all (review run
+// 20260909-220223, reported by two reviewers).
+func TestRunRecordsTheResolvedPRInTheSummary(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.reviewOnly("mock")
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PRFromBranch = true
+
+	gitRun(t, f.repo, "branch", "-M", "main")
+	baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+	stubBranchPRGH(t, "feature", baseSHA, false)
+
+	f.respond(1, reviewResponse(t))
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	if sum.PR != 170 {
+		t.Errorf("summary PR = %d, want the resolved 170 -- -post-run would publish to the wrong pull request, or none", sum.PR)
+	}
+	if sum.Mode != string(config.ModePR) {
+		t.Errorf("summary mode = %q", sum.Mode)
 	}
 }
