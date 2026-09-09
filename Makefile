@@ -228,10 +228,16 @@ review-branch: build
 	./$(BINARY) review-branch --trusted-target
 
 ## fix-pr: review -> fix -> verify -> commit over a pull request; POST=1 also answers its conversations
-## Pass the number as PR=<n>, or omit it on the pull request's own branch.
+## Pass the number as PR=<n>, or omit it on your OWN pull request's branch.
 ##   make fix-pr PR=170
 ##   make fix-pr                 # the pull request of the checked-out branch
 ##   make fix-pr PR=170 POST=1
+## Omitting PR= is for a branch of THIS repository. Standing on a fork's branch
+## means make has already parsed the pull request's Makefile and run its build,
+## test and vet recipes before fixpoint existed -- so a branch-resolved run
+## refuses a cross-repository pull request, and PR=<n> from your own checkout is
+## how you review a fork: fixpoint then does the checkout itself, behind its
+## guards, with this bundle read before the tree changed.
 ## POST=1 appends -post, the flag every reply path is gated on: without it the
 ## triage still runs and the answers are written into the run directory, but
 ## nothing reaches the pull request. Replies go out under your identity, so
@@ -249,10 +255,14 @@ fix-pr: build test vet
 	@test -z "$(POST)" || test "$(POST)" = 1 || { echo "POST must be 1 or unset, got '$(POST)'; replies are not sent"; exit 2; }
 	./$(BINARY) fix-pr $(if $(PR),-pr $(PR)) --allow-untrusted-fix --trusted-bundle $(if $(filter 1,$(POST)),-post)
 
-## review-pr: review a pull request; pass the number as PR=<n>, or omit it on the
-## pull request's own branch and fixpoint resolves it from the checkout.
+## review-pr: review a pull request; pass the number as PR=<n>, or omit it on your
+## OWN pull request's branch and fixpoint resolves it from the checkout.
 ##   make review-pr PR=170
 ##   make review-pr             # the pull request of the checked-out branch
+## Same caveat as fix-pr above: omitting PR= is for a branch of this repository.
+## A fork's pull request is reviewed with PR=<n> from your own checkout, which is
+## also the only shape in which the --trusted-bundle below is the narrow claim it
+## says it is -- these files are ours only while the tree is still ours.
 ## -trusted-bundle and NOT -trusted-target: the only thing this run needs to trust
 ## is fixpoint's own config/ bundle, resolved before `gh pr checkout` ran. The
 ## branch itself is externally authored, so the pr-mode refusals over what the

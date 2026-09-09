@@ -1891,9 +1891,41 @@ func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) err
 	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR != 0 || !o.cfg.Target.PRFromBranch {
 		return nil
 	}
+	// The gates are asked for HERE, not merely assumed to have run: a security
+	// property that lives in the order of two statements stops holding the first
+	// time somebody moves one of them, with the whole suite still green -- and this
+	// ordering has already been wrong once (review run 20260909-213147). The probe
+	// is memoized, so at both existing call sites this is a no-op that returns the
+	// answer the caller already got, and it cannot weaken run()'s stronger,
+	// agent-invoking variant: preflightGuards re-probes a weak answer when a strong
+	// question follows, never the reverse (review run 20260909-220223).
+	if err := o.PreflightGuardsNoAgent(ctx); err != nil {
+		return err
+	}
 	found, err := o.collector.ResolvePRFromBranch(ctx)
 	if err != nil {
 		return fmt.Errorf("target.pr: %w", err)
+	}
+	// A fork's pull request, checked out locally, is the one shape this resolution
+	// must not quietly accept. Resolving from the branch means the tree ALREADY
+	// holds the pull request's content -- that is the feature's premise -- so
+	// everything an operator does from that directory is running someone else's
+	// code: `make review-pr` has make parse the PR's own Makefile and run its
+	// build/test recipes before fixpoint exists at all, and a config/ bundle
+	// resolved from the target is the PR's too, which is exactly the assumption
+	// -trusted-bundle was written under and no longer holds here. fixpoint cannot
+	// retroactively guard what make already ran, so it refuses to be the next step
+	// (review run 20260909-220223, both criticals).
+	//
+	// Same-repository branches are allowed: pushing one already requires write
+	// access to the repository whose review this is, which is not a boundary this
+	// gate can meaningfully defend. -trusted-target is the operator saying the
+	// checkout is theirs -- the same assertion every other target-content gate
+	// takes -- and passing -pr <number> from a trusted checkout avoids the question
+	// entirely, because then fixpoint does the checkout itself, behind these gates.
+	if found.CrossRepository && !o.cfg.Loop.TrustedTarget {
+		return fmt.Errorf("target.pr: branch %s is the head of pull request #%d, which comes from ANOTHER repository (a fork), and resolving it from the branch means its content is already in %s -- so anything run from there, including the make target that started this and any config/ bundle resolved from it, is the pull request author's code running as you. Review it with -pr %d from a checkout of your own, where fixpoint does the checkout itself behind its guards; or pass -trusted-target to assert this tree is yours",
+			found.Branch, found.Number, o.cfg.Target.Path, found.Number)
 	}
 	// The collector recorded the number itself (see ResolvePRFromBranch); this is
 	// the other half, for everything that reads the configuration -- the summary,
@@ -1932,6 +1964,18 @@ func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 	}
 	release, err := o.collector.LockRepo(ctx)
 	if err != nil {
+		return nil, err
+	}
+	// The preflight ran BEFORE the lock, so its answer describes a checkout a
+	// competing run could still have switched: it can hold the lock on branch A
+	// while this run probes A, move to B, and release before this run claims it.
+	// Everything from here on -- the clean check just below, the pull-request
+	// resolution, the ping, Prepare -- would then be working from A's answer on B's
+	// tree, where branch-conditional git config or a worktree redirect may be
+	// active. Re-probe now that the branch cannot move; same recheck the
+	// post-checkout path does, for the same reason (review run 20260909-220223).
+	if err := o.recheckPreflightGuards(ctx); err != nil {
+		release()
 		return nil, err
 	}
 	if err := o.ensureCleanTree(ctx, "working tree is dirty; commit or stash your changes first so the review sees only the intended target (and, in a fix run, round commits contain only the coder's fixes)"); err != nil {

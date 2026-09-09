@@ -37,7 +37,7 @@ Nothing is modified. The panel reads, the findings land in
 make review-code                      # the whole project
 make review-branch                    # only what this branch changed
 make review-pr PR=170                 # a GitHub pull request
-make review-pr                        # …or the PR of the branch you are on
+make review-pr                        # …or your own PR, from its branch
 make review-design TARGET=docs/DESIGN.md   # a design document, or an architecture
 ```
 
@@ -63,7 +63,7 @@ naming the issue it closed, and **every commit has passed your gate**.
 make fix-code                         # the whole project
 make fix-branch                       # only this branch's changes
 make fix-pr PR=170                    # a pull request, conversations included
-make fix-pr                           # …or the PR of the branch you are on
+make fix-pr                           # …or your own PR, from its branch
 ```
 
 These edit your working tree with an agent whose permission checks are
@@ -520,7 +520,7 @@ explained: each one acts under your identity on somebody else's branch.
 | `-gate name` | Override `verify.gate`: which language's toolchain the deterministic gate runs, by name under `<bundle>/gates/` (`go`, `rust`, `node`, `java`, `python`, `dotnet`, `cpp`). The shipped `fix-*` configs name `go`; on another project: `fixpoint fix-branch -gate node -trusted-target`. Replaces the config's commands. |
 | `-target path` | Point a directory-mode run at a file or a directory. A file is reviewed as a **document**, shown to the panel in full; a directory is collected as a listing. How `review-design` is aimed. |
 | `-out path` | Where a create run writes its deliverable (default: `DESIGN.md` beside the assignment). An existing file is never overwritten. |
-| `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. Omit it on the pull request's own branch and fixpoint resolves the number from the checkout, refusing rather than guessing when the branch has no pull request, several open ones, or only a merged one — see [Pull requests](docs/pull-requests.md#which-pull-request). |
+| `-pr n` | Override `target.pr` in pr mode. `review-pr` ships with no number, so this is how you say which PR: `fixpoint review-pr -pr 1234`. Omit it on your own pull request's branch and fixpoint resolves the number from the checkout, refusing rather than guessing when the branch has no pull request, several open ones, only a merged one, or one from a fork — see [Pull requests](docs/pull-requests.md#which-pull-request). |
 | `-trusted-target` | Assert a directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without it). |
 | `-trusted-bundle` | Assert **only** that the bundle files resolved from inside the target may be executed and sent to agents. Permits no fix round and trusts no other target content — this is the flag to use when the config is yours but the code is not, as `review-pr` on a fork's branch is. |
 | `-allow-untrusted-fix` | Permit fix rounds in `pr` mode (PR content is untrusted; see [Security model](docs/security.md)). |
