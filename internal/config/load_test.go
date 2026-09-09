@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The shipped fix configs take their language-shaped keys from gates/go.yaml and
@@ -480,4 +482,26 @@ func TestShippedPythonGateCompileCommandFailsForTheRightReasons(t *testing.T) {
 		}
 		noCache(t, dir)
 	})
+}
+
+// PRFromBranch is the invocation saying no -pr was typed, and a config must not
+// be able to say it: the fork refusal and the branch resolution both hang off it,
+// and the bundle may be the reviewed repository's own. The yaml:"-" tag is what
+// enforces that, and a tag is exactly the kind of thing a refactor drops.
+func TestPRFromBranchCannotComeFromYAML(t *testing.T) {
+	var c Config
+	if err := yaml.Unmarshal([]byte("target:\n  mode: pr\n  pr_from_branch: true\n  prfrombranch: true\n  PRFromBranch: true\n"), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if c.Target.PRFromBranch {
+		t.Error("a config file set target.PRFromBranch; it is an assertion about how the command was typed and only the flag layer may make it")
+	}
+	if c.Target.Mode != ModePR {
+		t.Fatalf("mode = %q, want pr -- the fixture must otherwise parse, or this proves nothing", c.Target.Mode)
+	}
+	// The flag layer can, and that is the only way in.
+	Overrides{PRFromBranch: true}.apply(&c)
+	if !c.Target.PRFromBranch {
+		t.Error("the override did not reach the config")
+	}
 }

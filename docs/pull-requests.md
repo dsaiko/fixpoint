@@ -57,18 +57,22 @@ It refuses rather than guess:
 - **A detached HEAD**, which names no branch at all.
 - **A branch that moved while the answer was being computed** — a concurrent
   fixpoint run, or you switching branches by hand.
+- **A pull request from a fork**, whatever the number came from. See below.
 
-- **A pull request from a fork.** See below.
+The resolution happens **after the target-integrity preflight**, not while the
+flags are being read, and it asks for those gates itself rather than trusting its
+caller to have run them. It executes `git` and an authenticated `gh` inside the
+target, and this is the one pr-mode path where the pull request's content is in
+the tree *before* fixpoint starts: you are standing on its branch. So the guards
+that refuse a `git`/`gh` resolved from inside the checkout, or a redirected work
+tree, run first — `review-pr` asserts only `-trusted-bundle`, which leaves every
+one of them armed.
 
-The resolution happens **after the target-integrity preflight and behind the
-repository lock**, not while the flags are being read. It runs `git` and an
-authenticated `gh` inside the target, and this is the one pr-mode path where the
-pull request's content is in the tree *before* fixpoint starts: you are standing
-on its branch. So the guards that refuse a `git`/`gh` resolved from inside the
-checkout, or a redirected work tree, run first — `review-pr` asserts only
-`-trusted-bundle`, which leaves every one of them armed. The guards run again
-once the repository lock is held, because a competing run could have switched
-branches between the two.
+On a real run it also sits **behind the repository lock**, and the guards are
+re-probed once that lock is held, because a competing run could have switched
+branches between the two probes. `--check` and `--check-live` take no lock —
+they switch no branches and commit nothing — so there the preflight alone
+precedes it.
 
 ### Resolving from the branch is for your OWN pull requests
 
@@ -84,12 +88,25 @@ the target is the pull request's too, which is exactly the assumption
 checkout replaced the tree*) and it does not hold here. fixpoint cannot
 retroactively guard what make already ran.
 
-So a branch-resolved run **refuses a cross-repository pull request** and says to
-use `-pr <number>` from a checkout of your own — where fixpoint does the checkout
-itself, behind its guards, with the bundle read before the tree changed. That is
-what `make review-pr PR=170` has always done, and it stays the way to review a
-fork. `-trusted-target` overrides the refusal, and means what it says everywhere
-else: this checkout is mine.
+So **any** pr-mode run refuses a cross-repository pull request whose head is the
+checked-out branch, and says to use `-pr <number>` from a checkout that is **not
+on that branch** — `git switch` to your trunk, or a separate clone. There
+fixpoint does the checkout itself, behind its guards, with the bundle read before
+the tree changed. That is what `make review-pr PR=170` from your trunk has always
+done, and it stays the way to review a fork.
+
+The refusal is not conditional on how the number arrived, and that matters twice
+over. A pull request's own `config/` can set `target.pr`, and the bundle search
+looks in the project's `config/` first — so gating the refusal on "no number was
+found" would let the pull request switch it off. And typing `-pr 170` in the
+directory where the refusal just fired would otherwise reproduce every condition
+the refusal named.
+
+`-trusted-target` overrides it, and means what it says everywhere else: this
+checkout is mine. Whether the checkout is a fork's is decided from two signals
+and fails **closed**: `gh pr view` for this branch, and a `gh pr list --head`
+that exits cleanly on an empty result. If neither can be obtained, the run does
+not start.
 
 `make review-pr` and `make fix-pr` take `PR=<n>` the same way, and omitting it now
 works instead of failing the usage guard.

@@ -73,8 +73,15 @@ func openPR(number int, owner, base string) string {
 
 // viewPR renders a `gh pr view` answer.
 func viewPR(number int, state, owner, head, base string) string {
-	return fmt.Sprintf(`{"number":%d,"state":%q,"url":"https://example.test/pull/%d","baseRefName":%q,"headRefName":%q,"headRepositoryOwner":{"login":%q}}`,
+	return fmt.Sprintf(`{"number":%d,"state":%q,"url":"https://example.test/pull/%d","baseRefName":%q,"headRefName":%q,`+
+		`"headRepositoryOwner":{"login":%q},"isCrossRepository":false}`,
 		number, state, number, base, head, owner)
+}
+
+// viewPRFork is viewPR for a head that lives in another repository.
+func viewPRFork(number int, state, owner, head, base string) string {
+	return strings.Replace(viewPR(number, state, owner, head, base),
+		`"isCrossRepository":false`, `"isCrossRepository":true`, 1)
 }
 
 // The whole point of the feature: on the branch a pull request is open from,
@@ -355,4 +362,173 @@ exit 1
 	if !strings.Contains(err.Error(), "somewhere-else") || !strings.Contains(err.Error(), branchUnderTest) {
 		t.Errorf("the refusal does not name both branches: %v", err)
 	}
+}
+
+// The fork gate decides on isCrossRepository, so the query that asks for it is
+// security-critical: dropping the field would decode as false and disarm the gate
+// with every test still green. The stub answers only the exact invocation, and
+// the absence of a positional selector matters too -- a number or branch argument
+// would make gh answer about something other than this checkout (review run
+// 20260909-224407).
+func TestResolvePRFromBranchPinsTheViewQuery(t *testing.T) {
+	dir := onBranch(t)
+	calls := stubGHRecording(t,
+		viewPR(170, "OPEN", "o", branchUnderTest, "main"),
+		"["+openPR(170, "o", "main")+"]")
+
+	if _, err := resolve(t, dir); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	argv := ghArgv(t, calls)
+	want := "pr view --json " + prViewFields
+	if !strings.Contains(argv, want) {
+		t.Errorf("the view query is not %q:\n%s", want, argv)
+	}
+	for _, field := range []string{"isCrossRepository", "state", "headRefName", "headRepositoryOwner"} {
+		if !strings.Contains(prViewFields, field) {
+			t.Errorf("the projection dropped %q, which decodes as its zero value", field)
+		}
+	}
+	// `gh pr view <n>` or `gh pr view <branch>` would answer about something other
+	// than the checkout in front of us.
+	for _, line := range strings.Split(strings.TrimSpace(argv), "\n") {
+		if strings.HasPrefix(line, "pr view") && line != want {
+			t.Errorf("the view call carries a positional selector: %q", line)
+		}
+	}
+}
+
+// isCrossRepository has to reach the caller, which is the whole point of asking.
+func TestResolvePRFromBranchReportsAFork(t *testing.T) {
+	dir := onBranch(t)
+	stubGH(t, viewPRFork(170, "OPEN", "fork-owner", branchUnderTest, "main"),
+		"", "["+openPR(170, "fork-owner", "main")+"]", 0)
+
+	got, err := resolve(t, dir)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !got.CrossRepository {
+		t.Error("a fork's pull request was reported as same-repository; the refusal that reads this would never fire")
+	}
+}
+
+// The truncation refusal depends on the listing being capped where the code
+// thinks it is, so the request has to be pinned and the boundary covered: 49 rows
+// is a complete listing, 50 is one that may have dropped a sibling.
+func TestResolvePRFromBranchPinsTheListLimit(t *testing.T) {
+	rows := func(n int) string {
+		out := make([]string, 0, n)
+		out = append(out, openPR(170, "o", "main"))
+		for i := 1; i < n; i++ {
+			out = append(out, openPR(900+i, "someone-else", "main"))
+		}
+		return "[" + strings.Join(out, ",") + "]"
+	}
+
+	t.Run("the limit is requested", func(t *testing.T) {
+		dir := onBranch(t)
+		calls := stubGHRecording(t, viewPR(170, "OPEN", "o", branchUnderTest, "main"), rows(1))
+		if _, err := resolve(t, dir); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if argv := ghArgv(t, calls); !strings.Contains(argv, "--limit "+strconv.Itoa(prBranchCandidates)) {
+			t.Errorf("the listing was not capped at %d, so a shorter page would look complete:\n%s", prBranchCandidates, argv)
+		}
+	})
+	t.Run("one row below the cap is a complete listing", func(t *testing.T) {
+		dir := onBranch(t)
+		stubGH(t, viewPR(170, "OPEN", "o", branchUnderTest, "main"), "", rows(prBranchCandidates-1), 0)
+		got, err := resolve(t, dir)
+		if err != nil {
+			t.Fatalf("a listing that fit under the cap was refused: %v", err)
+		}
+		if got.Number != 170 {
+			t.Errorf("resolved #%d, want #170", got.Number)
+		}
+	})
+	t.Run("at the cap it proves nothing", func(t *testing.T) {
+		dir := onBranch(t)
+		stubGH(t, viewPR(170, "OPEN", "o", branchUnderTest, "main"), "", rows(prBranchCandidates), 0)
+		if _, err := resolve(t, dir); err == nil || !strings.Contains(err.Error(), "truncated") {
+			t.Errorf("a listing at the cap gave %v, want the truncation refusal", err)
+		}
+	})
+}
+
+// CheckedOutFork is the gate's own question, and it must not answer "not a fork"
+// because it could not ask: gh pr list exits cleanly on an empty result, so a
+// non-zero exit or unreadable output is a refusal.
+func TestCheckedOutForkFailsClosed(t *testing.T) {
+	fork := func(number int) string {
+		return fmt.Sprintf(`{"number":%d,"isCrossRepository":true,"headRepositoryOwner":{"login":"them"}}`, number)
+	}
+	cases := []struct {
+		name, view, list string
+		viewStatus       int
+		wantFork         bool
+		wantErr          string
+	}{
+		// gh knows this branch's pull request and says it is a fork's.
+		{name: "view names a fork", view: `{"number":7,"state":"OPEN","isCrossRepository":true,"headRefName":"feat/x","headRepositoryOwner":{"login":"them"}}`, list: "[]", wantFork: true},
+		// view cannot answer (no pull request, or a lapsed token): the listing decides.
+		{name: "listing names a fork", view: "", viewStatus: 1, list: "[" + fork(9) + "]", wantFork: true},
+		{name: "listing is empty", view: "", viewStatus: 1, list: "[]"},
+		{name: "listing has only our own", view: "", viewStatus: 1,
+			list: `[{"number":9,"isCrossRepository":false,"headRepositoryOwner":{"login":"us"}}]`},
+		// Neither signal could be obtained. "Could not tell" is not "allowed".
+		{name: "listing fails", view: "", viewStatus: 1, list: "", wantErr: "not started on a guess"},
+		{name: "listing unreadable", view: "", viewStatus: 1, list: "not json", wantErr: "cannot read"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := onBranch(t)
+			// An empty list body with a zero exit is how a failure is spelled here: the
+			// stub returns nothing and exits 1 for `pr list` when list is "".
+			list := tc.list
+			status := 0
+			if list == "" {
+				list, status = "", 1
+			}
+			stubGHListStatus(t, tc.view, list, tc.viewStatus, status)
+
+			c := New(config.Target{Mode: config.ModePR, Path: dir})
+			c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+			got, isFork, err := c.CheckedOutFork(t.Context())
+			switch {
+			case tc.wantErr != "":
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+				}
+				if isFork {
+					t.Error("a failed probe must not also claim a fork was found")
+				}
+			case err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case isFork != tc.wantFork:
+				t.Errorf("isFork = %t, want %t (%+v)", isFork, tc.wantFork, got)
+			}
+		})
+	}
+}
+
+// stubGHListStatus is stubGH with an exit status for `pr list` too, so a probe
+// that fails can be told apart from one that answers "nothing".
+func stubGHListStatus(t *testing.T, view, list string, viewStatus, listStatus int) {
+	t.Helper()
+	resp := t.TempDir()
+	for name, content := range map[string]string{"view": view, "list": list} {
+		if err := os.WriteFile(filepath.Join(resp, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = view ]; then cat " + resp + "/view; exit " + strconv.Itoa(viewStatus) + "; fi\n" +
+		"if [ \"$2\" = list ]; then cat " + resp + "/list; exit " + strconv.Itoa(listStatus) + "; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

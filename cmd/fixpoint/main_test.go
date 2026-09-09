@@ -1923,8 +1923,11 @@ func TestRunExplicitPRSkipsBranchResolution(t *testing.T) {
 	if strings.Contains(out, "resolved from the checked-out branch") {
 		t.Errorf("the branch resolution ran over an explicit number:\n%s", out)
 	}
-	if c := ghCalls(t, calls); strings.Contains(c, "pr view") {
-		t.Errorf("gh was called for a number the operator supplied: %q", c)
+	// The fork question is about the TREE and is asked however the number arrived,
+	// so gh IS called; what must not happen is the number resolution, whose
+	// listing is the one restricted to open pull requests.
+	if c := ghCalls(t, calls); strings.Contains(c, "--state open") {
+		t.Errorf("the uniqueness probe ran for a number the operator supplied: %q", c)
 	}
 }
 
@@ -1944,8 +1947,8 @@ func TestRunConfiguredPRSkipsBranchResolution(t *testing.T) {
 	if !strings.Contains(out, "pr #99") {
 		t.Errorf("the config's own number did not decide the target:\n%s", out)
 	}
-	if c := ghCalls(t, calls); strings.Contains(c, "pr view") {
-		t.Errorf("gh was called although the config named a pull request: %q", c)
+	if c := ghCalls(t, calls); strings.Contains(c, "--state open") {
+		t.Errorf("the uniqueness probe ran although the config named a pull request: %q", c)
 	}
 }
 
@@ -1956,7 +1959,13 @@ func TestRunReportsAFailedBranchResolution(t *testing.T) {
 	f := newFixture(t)
 	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
 	bin := t.TempDir()
-	script := "#!/bin/sh\necho 'no pull requests found for branch \"feat/x\"' >&2\nexit 1\n"
+	// gh works: its listing exits cleanly and empty, which is how "no pull request
+	// here" is spelled, while `pr view` fails the way gh fails for a branch that
+	// has none. A gh that failed EVERY call would be the broken-tooling case, and
+	// the fork gate refuses that one first (see TestCheckedOutForkFailsClosed).
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = list ]; then printf '%s' '[]'; exit 0; fi\n" +
+		"echo 'no pull requests found for branch \"feat/x\"' >&2\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1967,8 +1976,13 @@ func TestRunReportsAFailedBranchResolution(t *testing.T) {
 		t.Fatalf("run = %d, want 1 for a branch with no pull request; stderr:\n%s", got, buf.String())
 	}
 	out := buf.String()
-	if !strings.Contains(out, "no pull request found for branch feat/x") {
+	if !strings.Contains(out, "could not resolve a pull request for branch feat/x") {
 		t.Errorf("the failure does not name the branch it could not resolve:\n%s", out)
+	}
+	// Not "no pull request found": that exit status also covers a lapsed token, and
+	// telling an operator their pull request does not exist invites a duplicate.
+	if !strings.Contains(out, "gh auth status") {
+		t.Errorf("the failure asserts a cause it cannot know instead of naming both:\n%s", out)
 	}
 	if !strings.Contains(out, "-pr") {
 		t.Errorf("the failure does not tell the operator what to pass instead:\n%s", out)
@@ -2017,5 +2031,39 @@ func TestRunResolvesPRBehindTheTargetGuards(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, "inside target") {
 		t.Errorf("the refusal is not the pinned-helper guard's:\n%s", out)
+	}
+}
+
+// --check-live LAUNCHES every configured agent command, and the relaxed
+// validation (a pr-mode config may now reach it with no number) is what let this
+// path skip the target questions entirely -- including whether the checkout is a
+// fork's pull request, whose own bundle would be naming those commands (review
+// run 20260909-224407).
+func TestCheckLiveResolvesBeforePinging(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+	// A gh that reports the branch as a FORK's pull request head.
+	bin := t.TempDir()
+	view := `{"number":170,"state":"OPEN","url":"u","baseRefName":"main","headRefName":"feat/x",` +
+		`"headRepositoryOwner":{"login":"them"},"isCrossRepository":true}`
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = view ]; then printf '%s' '" + view + "'; exit 0; fi\n" +
+		"if [ \"$2\" = list ]; then printf '%s' '[]'; exit 0; fi\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var buf bytes.Buffer
+	code := run([]string{"-config", f.configFile("pr", "", ""), "-review-only", "-check-live"}, &buf, &buf)
+	if code != 1 {
+		t.Fatalf("run(-check-live) = %d, want 1 on a fork's checkout; stderr:\n%s", code, buf.String())
+	}
+	if out := buf.String(); !strings.Contains(out, "ANOTHER repository") {
+		t.Errorf("the fork refusal did not reach --check-live:\n%s", out)
+	}
+	// The point of the ordering: no agent was launched.
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0 -- the ping ran before the target was authorized", got)
 	}
 }

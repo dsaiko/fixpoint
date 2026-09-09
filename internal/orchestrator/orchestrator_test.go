@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -2084,6 +2085,11 @@ func TestRunRechecksConfigGuardAfterPRCheckout(t *testing.T) {
 		`case "$1 $2" in` + "\n" +
 		`"pr checkout") git checkout -q feature ;;` + "\n" +
 		`"pr view") echo ` + mainSHA + " ;;\n" +
+		// The fork gate asks this for every pr-mode run whose target is not
+		// asserted trusted, and it fails CLOSED, so a stub that refused the call
+		// would refuse the run before this test's subject was reached. An empty
+		// listing is a same-repository branch, which is what this fixture is.
+		`"pr list") printf '%s' '[]' ;;` + "\n" +
 		`*) echo "unexpected gh call: $@" >&2; exit 1 ;;` + "\n" +
 		"esac\n"
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(stub), 0o700); err != nil {
@@ -2105,8 +2111,13 @@ func TestRunRechecksConfigGuardAfterPRCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Fields(strings.TrimSpace(string(calls))); len(got) != 2 || got[1] != "checkout" {
-		t.Errorf("gh calls = %q, want the checkout alone: the recheck must refuse before the rest of Prepare runs git", got)
+	// The fork gate reads gh BEFORE Prepare (see the stub), so what this asserts is
+	// that nothing follows the checkout: the recheck has to refuse before the rest
+	// of Prepare runs git, whose base fetch would fire an activated credential
+	// helper or ssh command.
+	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+	if last := lines[len(lines)-1]; last != "pr checkout" {
+		t.Errorf("gh calls = %q, want the checkout LAST: the recheck must refuse before the rest of Prepare runs git", lines)
 	}
 	if got := f.invocations(); got != 0 {
 		t.Errorf("agent invocations = %d, want 0 (must refuse before any agent runs in the checked-out tree)", got)
@@ -10272,8 +10283,9 @@ func TestAReviewOnlyRunAnnouncesOneRound(t *testing.T) {
 // It pins the tools itself, and that is not optional: gitenv.Tool prefers a
 // pinned path over PATH, so once any test in this binary has called PinTools the
 // real gh wins over a stub that only edits PATH.
-func stubBranchPRGH(t *testing.T, branch, baseSHA string, crossRepo bool) {
+func stubBranchPRGH(t *testing.T, baseSHA string, crossRepo bool) {
 	t.Helper()
+	const branch = "feature" // the branch every caller checks out
 	dir := t.TempDir()
 	view := fmt.Sprintf(`{"number":170,"state":"OPEN","url":"https://example.test/pull/170",`+
 		`"baseRefName":"main","headRefName":%q,"headRepositoryOwner":{"login":"o"},"isCrossRepository":%t}`,
@@ -10367,7 +10379,7 @@ func TestRunRefusesABranchResolvedForkPR(t *testing.T) {
 		gitRun(t, f.repo, "branch", "-M", "main")
 		baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
 		gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
-		stubBranchPRGH(t, "feature", baseSHA, true)
+		stubBranchPRGH(t, baseSHA, true)
 		return f
 	}
 
@@ -10417,7 +10429,7 @@ func TestRunRecordsTheResolvedPRInTheSummary(t *testing.T) {
 	gitRun(t, f.repo, "branch", "-M", "main")
 	baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
 	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
-	stubBranchPRGH(t, "feature", baseSHA, false)
+	stubBranchPRGH(t, baseSHA, false)
 
 	f.respond(1, reviewResponse(t))
 	sum, err := f.orchestrator().Run(t.Context())
@@ -10430,4 +10442,200 @@ func TestRunRecordsTheResolvedPRInTheSummary(t *testing.T) {
 	if sum.Mode != string(config.ModePR) {
 		t.Errorf("summary mode = %q", sum.Mode)
 	}
+}
+
+// resolvePR calls PreflightGuardsNoAgent itself, so that the safety of running
+// git and an authenticated gh inside the target does not depend on which caller
+// got there first. Both ordering tests reach it through a path that already
+// preflighted, so deleting that inner call leaves them green -- this one calls
+// ResolvePR directly, with no outer gate, and is the only thing that pins the
+// invariant (review run 20260909-224407, reported by two reviewers).
+func TestResolvePRAsksForTheGuardsItself(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PRFromBranch = true
+	f.cfg.Loop.TrustedTarget = false
+
+	inside := filepath.Join(f.repo, "bin")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ran := filepath.Join(t.TempDir(), "planted-gh-ran")
+	if err := os.WriteFile(filepath.Join(inside, "gh"),
+		[]byte("#!/bin/sh\ntouch "+ran+"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gitenv.PinTools)
+	t.Setenv("PATH", inside+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gitenv.PinTools()
+
+	// No PreflightGuards call before this, deliberately.
+	err := f.orchestrator().ResolvePR(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "inside target") {
+		t.Fatalf("ResolvePR() err = %v, want the pinned-helper refusal", err)
+	}
+	if _, serr := os.Stat(ran); serr == nil {
+		t.Error("the target's own gh ran; resolvePR trusted its caller to have gated it")
+	}
+}
+
+// The fork question is about the TREE, so it is asked however the number
+// arrived. Gating it on "no number was found" made it skippable by supplying
+// one -- which the pull request's own config/ bundle can do, and which the
+// refusal's own advice (`-pr <n>`) did too (review run 20260909-224407, one
+// critical and two highs).
+func TestRunRefusesAForkCheckoutWithAnExplicitNumber(t *testing.T) {
+	setup := func(t *testing.T) *fixture {
+		t.Helper()
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.reviewOnly("mock")
+		f.cfg.Target.Mode = config.ModePR
+		// The number is typed or configured, NOT resolved from the branch.
+		f.cfg.Target.PR = 170
+		f.cfg.Target.PRFromBranch = false
+		f.cfg.Loop.TrustedTarget = false
+		gitRun(t, f.repo, "branch", "-M", "main")
+		baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+		gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+		stubBranchPRGH(t, baseSHA, true)
+		return f
+	}
+
+	t.Run("refused", func(t *testing.T) {
+		f := setup(t)
+		_, err := f.orchestrator().Run(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "ANOTHER repository") {
+			t.Fatalf("Run() err = %v, want the fork refusal", err)
+		}
+		// The advice has to be reachable: not "from a checkout of your own", which is
+		// satisfiable right here, but off this branch.
+		if !strings.Contains(err.Error(), "NOT on this branch") {
+			t.Errorf("the refusal's advice does not say to leave the branch: %v", err)
+		}
+		if got := f.invocations(); got != 0 {
+			t.Errorf("agent invocations = %d, want 0", got)
+		}
+	})
+
+	// A same-repository branch is not the boundary this defends: pushing one
+	// already required write access to the repository being reviewed.
+	t.Run("same-repository head is allowed", func(t *testing.T) {
+		f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+		f.reviewOnly("mock")
+		f.cfg.Target.Mode = config.ModePR
+		f.cfg.Target.PR = 170
+		f.cfg.Loop.TrustedTarget = false
+		gitRun(t, f.repo, "branch", "-M", "main")
+		baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+		gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+		stubBranchPRGH(t, baseSHA, false)
+		f.respond(1, reviewResponse(t))
+		if _, err := f.orchestrator().Run(t.Context()); err != nil {
+			t.Fatalf("Run() err = %v", err)
+		}
+	})
+}
+
+// The preflight is memoized BEFORE the repository lock, so its answer describes a
+// checkout a competing run could still have switched: hold the lock on branch A
+// while this run probes A, move to B, release. Every stage after would work from
+// A's answer on B's tree. claimRepo therefore re-probes once the lock is held,
+// and this pins it -- along with the release() that keeps a failed re-probe from
+// leaking the lock (review run 20260909-224407, reported by two reviewers).
+//
+// The branch switch is driven by a pinned `git` wrapper OUTSIDE the target: it
+// counts the config listings and moves the checkout before the second one, which
+// is what a competing run does in that window.
+func TestClaimRepoReprobesGuardsAfterTakingTheLock(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.cfg.Loop.TrustedTarget = false
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	gitRun(t, f.repo, "branch", "-M", "main")
+	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+	gitRun(t, f.repo, "checkout", "-q", "main")
+
+	// A clean filter that exists only while `feature` is checked out. Written into
+	// .git, which a pull request cannot reach -- this stands for a crafted checkout
+	// -- and selected by no .gitattributes, so it never actually runs.
+	evil := filepath.Join(f.repo, ".git", "evil-config")
+	if err := os.WriteFile(evil, []byte("[filter \"evil\"]\n\tclean = sh -c 'id'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(f.repo, ".git", "config")
+	existing, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath,
+		append(existing, []byte("[includeIf \"onbranch:feature\"]\n\tpath = evil-config\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Inert from main, so a pass here cannot come from the pre-lock probe.
+	if keys, kerr := target.New(f.cfg.Target).UnsafeConfig(t.Context()); kerr != nil || len(keys) != 0 {
+		t.Fatalf("UnsafeConfig() = %v, %v on main, want none (an onbranch include is inert there)", keys, kerr)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	binDir := t.TempDir()
+	counter := filepath.Join(t.TempDir(), "config-listings")
+	ghCalls := filepath.Join(t.TempDir(), "gh-calls")
+	// Delegates every call to the real git, and switches the checkout to `feature`
+	// once the first config listing is behind us.
+	wrapper := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"*'config --list'*)\n" +
+		"  n=$(cat " + counter + " 2>/dev/null || echo 0)\n" +
+		"  n=$((n+1)); echo $n > " + counter + "\n" +
+		"  if [ \"$n\" -ge 2 ]; then " + realGit + " -C " + f.repo + " checkout -q feature; fi\n" +
+		"  ;;\n" +
+		"esac\n" +
+		"exec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// gh must never be reached: Prepare comes after the lock.
+	if err := os.WriteFile(filepath.Join(binDir, "gh"),
+		[]byte("#!/bin/sh\necho \"$1 $2\" >> "+ghCalls+"\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gitenv.PinTools)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gitenv.PinTools()
+
+	_, runErr := f.orchestrator().Run(t.Context())
+	if runErr == nil || !strings.Contains(runErr.Error(), "repo-controlled programs") {
+		t.Fatalf("Run() err = %v, want the repo-config guard's refusal from the post-lock re-probe", runErr)
+	}
+	if n := ghCalls; fileExists(n) {
+		t.Errorf("gh was reached; the refusal must happen before Prepare: %s", readFile(t, n))
+	}
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0", got)
+	}
+	// The lock must not leak when the re-probe refuses: taking it again succeeds
+	// only if claimRepo released it on the way out.
+	release, lerr := target.New(f.cfg.Target).LockRepo(t.Context())
+	if lerr != nil {
+		t.Fatalf("the repository is still locked after a failed re-probe: %v", lerr)
+	}
+	release()
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func readFile(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

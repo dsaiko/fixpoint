@@ -2127,8 +2127,8 @@ func (c *Config) Validate() error {
 			seenPath[full] = id
 		}
 	}
-	if c.Logs.SummaryPattern != "" && !strings.Contains(c.Logs.SummaryPattern, "{ext}") {
-		return fmt.Errorf("logs.summary_pattern %q must contain {ext}, else the JSON summary overwrites the Markdown one (and its path is returned as the Markdown path)", c.Logs.SummaryPattern)
+	if err := c.validateSummaryPattern(); err != nil {
+		return err
 	}
 	// The extra redaction patterns are compiled here, at startup, rather than on
 	// first use: a pattern that does not compile would otherwise be discovered by
@@ -2212,6 +2212,43 @@ func (c *Config) logIdentities() [][3]string {
 // paths actually produced.
 func (c *Config) renderLogPattern(id [3]string) string {
 	return c.Logs.StepPath(id[0], id[1], id[2], 1, "", "")
+}
+
+// validateSummaryPattern holds logs.summary_pattern to the same two rules
+// logs.pattern is held to: the writes must land on distinct paths, and they must
+// land BENEATH the run directory.
+//
+// The confinement half was missing, and the asymmetry was the bug: the summary
+// path is filepath.Join(runDir, pattern) with no cleaning check, so a pattern of
+// "../../.git/HEAD-{ext}" wrote wherever it liked. A run writes its summary
+// even when it FAILED -- that is the contract of Run -- so a refusal is not
+// protection, and a target-supplied bundle accepted with -trusted-bundle (which
+// on a pull request's own branch is the pull request's bundle) could overwrite a
+// file in the repository it is being reviewed from (review run 20260909-224407).
+func (c *Config) validateSummaryPattern() error {
+	if c.Logs.SummaryPattern == "" {
+		return nil
+	}
+	if !strings.Contains(c.Logs.SummaryPattern, "{ext}") {
+		return fmt.Errorf("logs.summary_pattern %q must contain {ext}, else the JSON summary overwrites the Markdown one (and its path is returned as the Markdown path)", c.Logs.SummaryPattern)
+	}
+	// The same renderer the logstore uses, with the placeholders a whole run has.
+	// A fixed timestamp: the two extensions are written by one run, so it is equal
+	// for both, and a pattern that separates them only by {timestamp} separates
+	// them not at all.
+	rendered := map[string]string{}
+	for _, ext := range []string{"md", "json"} {
+		p := strings.NewReplacer("{timestamp}", "20060102-150405", "{ext}", ext).Replace(c.Logs.SummaryPattern)
+		full := filepath.Clean(filepath.Join(logProbeRoot, p))
+		if !strings.HasPrefix(full, logProbeRoot+string(filepath.Separator)) {
+			return fmt.Errorf("logs.summary_pattern %q renders the %s summary to %q, which normalizes outside the run directory; a run summary is written even when the run fails, so a pattern that climbs out overwrites whatever it lands on -- remove the .. segments", c.Logs.SummaryPattern, ext, p)
+		}
+		if prev, dup := rendered[full]; dup {
+			return fmt.Errorf("logs.summary_pattern %q renders the %s and %s summaries to the same path %q; one would overwrite the other, and the Markdown path is what the run reports", c.Logs.SummaryPattern, prev, ext, p)
+		}
+		rendered[full] = ext
+	}
+	return nil
 }
 
 // logProbeRoot stands in for the round directory when validation normalizes a

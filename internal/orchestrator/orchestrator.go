@@ -1827,26 +1827,6 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 	return false, nil
 }
 
-// claimRepo takes the repository for a run that will write to it and returns the
-// function that gives it back. Three preflight steps, in this order because each
-// is cheaper than the next is meaningful without it:
-//
-//   - The repository ROOT is required. The clean check and staging are scoped to
-//     target.path ("." pathspec), but a fix round's commit writes the whole
-//     repository index and a PR review runs a repo-wide diff over a repo-wide
-//     checkout. A subdirectory target would miss dirt elsewhere in the repo from
-//     its target-relative clean check yet still fold those changes into the round
-//     commit (fix) or the reviewed diff (pr).
-//   - The whole repository is LOCKED for the run, before the clean check and held
-//     past the last commit. Every mutating decision the loop makes is derived from
-//     a snapshot of the worktree, and a second concurrent fixpoint invalidates all
-//     of them silently -- see Collector.LockRepo.
-//   - The tree must be CLEAN, so every round commit contains exactly the coder's
-//     changes and nothing of the operator's. PR review needs it even review-only:
-//     gh pr checkout can preserve unrelated tracked edits and untracked files,
-//     which Collect would otherwise fold into the PR diff and misattribute the
-//     resulting findings to the PR.
-//
 // requireGitRepoForFix refuses a fix run whose target is not a git repository:
 // fix rounds commit each round, so git is not optional there. A review-only run
 // is exempt -- it reads and never writes.
@@ -1869,9 +1849,51 @@ func (o *Orchestrator) requireGitRepoForFix(ctx context.Context) error {
 	return nil
 }
 
-// resolvePR settles which pull request a pr-mode run given no number is about:
-// the one open on the checked-out branch. It returns the number so the caller can
-// record it, and 0 when there was nothing to resolve.
+// refuseForkCheckout refuses a pr-mode run whose target already holds a FORK's
+// pull request, unless -trusted-target says the checkout is the operator's.
+//
+// A pull request checked out locally is content from outside, and everything the
+// operator does from that directory runs it: `make review-pr` has make parse the
+// pull request's own Makefile and run its build/test/vet recipes before fixpoint
+// exists at all, and a config/ bundle resolved from the target is the pull
+// request's too -- searched ahead of the bundle beside the binary, and accepted
+// because the make recipes pass -trusted-bundle, whose justification ("our
+// files, read before the checkout replaced the tree") is exactly what a
+// checked-out pull request invalidates. fixpoint cannot retroactively guard what
+// make already ran, so it refuses to be the next step.
+//
+// It is asked for EVERY pr-mode run, not only a branch-resolved one. Gating it on
+// "no number was found" made it skippable by supplying one, which the pull
+// request's own config could do (review run 20260909-224407) -- and it also made
+// the refusal's own advice wrong, since `-pr <n>` typed in the same directory
+// short-circuited the check and reproduced every condition the refusal
+// enumerated.
+//
+// Same-repository branches are allowed: pushing one already required write access
+// to the repository being reviewed, which is not a boundary this can defend.
+func (o *Orchestrator) refuseForkCheckout(ctx context.Context) error {
+	if o.cfg.Loop.TrustedTarget {
+		return nil
+	}
+	fork, isFork, err := o.collector.CheckedOutFork(ctx)
+	if err != nil {
+		return fmt.Errorf("target.pr: %w", err)
+	}
+	if !isFork {
+		return nil
+	}
+	return fmt.Errorf("target.pr: branch %s in %s is the head of pull request #%d, which comes from ANOTHER repository (a fork) -- so that checkout holds the pull request author's content, and anything run from there, including the make target that started this and any config/ bundle resolved from it, is their code running as you. Review it with -pr %d from a checkout that is NOT on this branch (git switch to your trunk, or use a separate clone), where fixpoint does the checkout itself behind its guards; or pass -trusted-target to assert this tree is yours",
+		fork.Branch, o.cfg.Target.Path, fork.Number, fork.Number)
+}
+
+// resolvePR settles which pull request a pr-mode run is about, and whether it may
+// run at all. It sets o.cfg.Target.PR and, when sum is non-nil, sum.PR -- the
+// number is recorded by side effect rather than returned, and a nil summary
+// silently drops the value -post-run depends on, so the run path must pass one.
+//
+// Two questions, and only the first is about the number. Whether the target is a
+// fork's checkout is asked for every pr-mode run (refuseForkCheckout); which pull
+// request the branch is, only when no number was typed or configured.
 //
 // WHERE this is called is the security property. The resolution runs git and an
 // authenticated gh inside the target, so it must sit behind the same
@@ -1888,7 +1910,12 @@ func (o *Orchestrator) requireGitRepoForFix(ctx context.Context) error {
 // cannot switch branches between reading HEAD and resolving; the collector
 // re-reads HEAD afterwards regardless, for the operator doing it by hand.
 func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) error {
-	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR != 0 || !o.cfg.Target.PRFromBranch {
+	if o.cfg.Target.Mode != config.ModePR {
+		return nil
+	}
+	// Nothing to ask when the checkout is asserted to be the operator's: the fork
+	// refusal below would not fire, and the number is already known.
+	if o.cfg.Loop.TrustedTarget && o.cfg.Target.PR != 0 {
 		return nil
 	}
 	// The gates are asked for HERE, not merely assumed to have run: a security
@@ -1902,30 +1929,17 @@ func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) err
 	if err := o.PreflightGuardsNoAgent(ctx); err != nil {
 		return err
 	}
+	if err := o.refuseForkCheckout(ctx); err != nil {
+		return err
+	}
+	// The number came from -pr or from the configuration; only the question about
+	// the TREE had to be asked.
+	if o.cfg.Target.PR != 0 {
+		return nil
+	}
 	found, err := o.collector.ResolvePRFromBranch(ctx)
 	if err != nil {
 		return fmt.Errorf("target.pr: %w", err)
-	}
-	// A fork's pull request, checked out locally, is the one shape this resolution
-	// must not quietly accept. Resolving from the branch means the tree ALREADY
-	// holds the pull request's content -- that is the feature's premise -- so
-	// everything an operator does from that directory is running someone else's
-	// code: `make review-pr` has make parse the PR's own Makefile and run its
-	// build/test recipes before fixpoint exists at all, and a config/ bundle
-	// resolved from the target is the PR's too, which is exactly the assumption
-	// -trusted-bundle was written under and no longer holds here. fixpoint cannot
-	// retroactively guard what make already ran, so it refuses to be the next step
-	// (review run 20260909-220223, both criticals).
-	//
-	// Same-repository branches are allowed: pushing one already requires write
-	// access to the repository whose review this is, which is not a boundary this
-	// gate can meaningfully defend. -trusted-target is the operator saying the
-	// checkout is theirs -- the same assertion every other target-content gate
-	// takes -- and passing -pr <number> from a trusted checkout avoids the question
-	// entirely, because then fixpoint does the checkout itself, behind these gates.
-	if found.CrossRepository && !o.cfg.Loop.TrustedTarget {
-		return fmt.Errorf("target.pr: branch %s is the head of pull request #%d, which comes from ANOTHER repository (a fork), and resolving it from the branch means its content is already in %s -- so anything run from there, including the make target that started this and any config/ bundle resolved from it, is the pull request author's code running as you. Review it with -pr %d from a checkout of your own, where fixpoint does the checkout itself behind its guards; or pass -trusted-target to assert this tree is yours",
-			found.Branch, found.Number, o.cfg.Target.Path, found.Number)
 	}
 	// The collector recorded the number itself (see ResolvePRFromBranch); this is
 	// the other half, for everything that reads the configuration -- the summary,
@@ -1956,6 +1970,29 @@ func (o *Orchestrator) ResolvePR(ctx context.Context) error {
 	return o.resolvePR(ctx, nil)
 }
 
+// claimRepo takes the repository for a run that will write to it and returns the
+// function that gives it back. Three preflight steps, in this order because each
+// is cheaper than the next is meaningful without it:
+//
+//   - The repository ROOT is required. The clean check and staging are scoped to
+//     target.path ("." pathspec), but a fix round's commit writes the whole
+//     repository index and a PR review runs a repo-wide diff over a repo-wide
+//     checkout. A subdirectory target would miss dirt elsewhere in the repo from
+//     its target-relative clean check yet still fold those changes into the round
+//     commit (fix) or the reviewed diff (pr).
+//   - The whole repository is LOCKED for the run, before the clean check and held
+//     past the last commit. Every mutating decision the loop makes is derived from
+//     a snapshot of the worktree, and a second concurrent fixpoint invalidates all
+//     of them silently -- see Collector.LockRepo.
+//   - The tree must be CLEAN, so every round commit contains exactly the coder's
+//     changes and nothing of the operator's. PR review needs it even review-only:
+//     gh pr checkout can preserve unrelated tracked edits and untracked files,
+//     which Collect would otherwise fold into the PR diff and misattribute the
+//     resulting findings to the PR.
+//
+// A fourth step joined the three above: the preflight is re-probed once the lock
+// is held, because its earlier answer described a checkout a competing run could
+// still have switched. See the comment at that call.
 func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 	if atRoot, err := o.collector.AtRepoRoot(ctx); err != nil {
 		return nil, err
