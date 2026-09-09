@@ -28,7 +28,7 @@
  },
  "totals": {
   "candidates": 25,
-  "sessions": 584,
+  "sessions": 587,
   "targets": 8,
   "contract_failures": 3
  },
@@ -1100,17 +1100,17 @@
    "points": 265,
    "possible": 484,
    "incomplete": false,
-   "tokens": 478240,
-   "points_per_mtok": 554.1,
-   "cost_usd": 9.42,
-   "cost_per_point_usd": 0.036,
+   "tokens": 533834,
+   "points_per_mtok": 496.4,
+   "cost_usd": 10.58,
+   "cost_per_point_usd": 0.04,
    "notional": true,
-   "seconds": 3267,
-   "sessions": 23,
+   "seconds": 3600,
+   "sessions": 26,
    "errors": 0,
    "measured": {
     "first": "2026-09-05",
-    "last": "2026-09-05"
+    "last": "2026-09-07"
    },
    "by_target": {
     "go": {
