@@ -700,16 +700,8 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 	// which Collect would otherwise fold into the PR diff and misattribute the
 	// resulting findings to the PR.
 	requireCleanTree := !o.cfg.Loop.ReviewOnly || o.cfg.Target.Mode == config.ModePR
-	if !o.cfg.Loop.ReviewOnly {
-		// A probe that could not answer is not an answer: surface it rather than
-		// reporting a repository as missing because git was canceled or wedged.
-		isRepo, err := o.collector.IsGitRepo(ctx)
-		if err != nil {
-			return err
-		}
-		if !isRepo {
-			return fmt.Errorf("target.path %s is not a git repository; fix rounds commit each round and require git (use review_only for a report-only run)", o.cfg.Target.Path)
-		}
+	if err := o.requireGitRepoForFix(ctx); err != nil {
+		return err
 	}
 	// A run that writes claims the repository: root check, whole-repository lock,
 	// clean tree. Review-only directory runs read and never write, so they skip all
@@ -720,6 +712,13 @@ func (o *Orchestrator) run(ctx context.Context, sum *model.RunSummary) error {
 			return err
 		}
 		defer release()
+	}
+
+	// Which pull request, when nobody said. Behind the guards and the lock above,
+	// and ahead of everything that reads the number -- the summary here, and later
+	// the checkout, the posting and the triage.
+	if err := o.resolvePR(ctx, sum); err != nil {
+		return err
 	}
 
 	// Then ping (spends a little on each agent), then Prepare (may mutate
@@ -1847,6 +1846,84 @@ func (o *Orchestrator) runFinalPass(ctx context.Context, sum *model.RunSummary, 
 //     gh pr checkout can preserve unrelated tracked edits and untracked files,
 //     which Collect would otherwise fold into the PR diff and misattribute the
 //     resulting findings to the PR.
+//
+// requireGitRepoForFix refuses a fix run whose target is not a git repository:
+// fix rounds commit each round, so git is not optional there. A review-only run
+// is exempt -- it reads and never writes.
+//
+// A method rather than an inline block so run() stays a flat list of startup
+// steps, each of which fails before the next spends anything.
+func (o *Orchestrator) requireGitRepoForFix(ctx context.Context) error {
+	if o.cfg.Loop.ReviewOnly {
+		return nil
+	}
+	// A probe that could not answer is not an answer: surface it rather than
+	// reporting a repository as missing because git was canceled or wedged.
+	isRepo, err := o.collector.IsGitRepo(ctx)
+	if err != nil {
+		return err
+	}
+	if !isRepo {
+		return fmt.Errorf("target.path %s is not a git repository; fix rounds commit each round and require git (use review_only for a report-only run)", o.cfg.Target.Path)
+	}
+	return nil
+}
+
+// resolvePR settles which pull request a pr-mode run given no number is about:
+// the one open on the checked-out branch. It returns the number so the caller can
+// record it, and 0 when there was nothing to resolve.
+//
+// WHERE this is called is the security property. The resolution runs git and an
+// authenticated gh inside the target, so it must sit behind the same
+// target-integrity gates every other git command does -- guardPinnedHelpers
+// first of all, whose own contract is that everything after it runs through a git
+// this repository did not supply. That ordering matters more here than in the pr
+// mode these guards were written for: there, nothing of the pull request's is in
+// the tree until Prepare checks it out, while this feature's whole premise is
+// that the branch is already checked out when fixpoint starts. review-pr asserts
+// only -trusted-bundle, so the refusals are armed -- they just have to run first
+// (review run 20260909-213147, findings i1 and i8).
+//
+// The run path additionally calls it behind claimRepo, so a concurrent fixpoint
+// cannot switch branches between reading HEAD and resolving; the collector
+// re-reads HEAD afterwards regardless, for the operator doing it by hand.
+func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) error {
+	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR != 0 || !o.cfg.Target.PRFromBranch {
+		return nil
+	}
+	found, err := o.collector.ResolvePRFromBranch(ctx)
+	if err != nil {
+		return fmt.Errorf("target.pr: %w", err)
+	}
+	// The collector recorded the number itself (see ResolvePRFromBranch); this is
+	// the other half, for everything that reads the configuration -- the summary,
+	// the posting paths, the triage.
+	o.cfg.Target.PR = found.Number
+	// The summary is stamped before the run reaches here, so it carries a zero it
+	// would otherwise keep -- and -post-run reads sum.PR to decide which pull
+	// request a finished review belongs to.
+	if sum != nil {
+		sum.PR = found.Number
+	}
+	// Logged with the base and the URL, always, and escaped like every other name
+	// that came from outside: nobody typed this number, so this line is the run's
+	// only record of what it decided to review.
+	o.logf("target.pr: resolved from the checked-out branch %s: pull request #%d into %s (%s)",
+		agent.EscapeTerminal(found.Branch), found.Number,
+		agent.EscapeTerminal(found.Base), agent.EscapeTerminal(found.URL))
+	return nil
+}
+
+// ResolvePR is resolvePR for the --check path: --check prints the scope, and in
+// pr mode the scope IS the pull request number, so a check that skipped the
+// resolution would report "pr #0" for a run that would have reviewed a real one.
+// What differs from the run path is only what has to come first -- the no-agent
+// preflight rather than the full one, and no repository lock, because a check
+// switches no branches and commits nothing.
+func (o *Orchestrator) ResolvePR(ctx context.Context) error {
+	return o.resolvePR(ctx, nil)
+}
+
 func (o *Orchestrator) claimRepo(ctx context.Context) (func(), error) {
 	if atRoot, err := o.collector.AtRepoRoot(ctx); err != nil {
 		return nil, err

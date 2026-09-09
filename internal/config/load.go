@@ -79,6 +79,13 @@ type Overrides struct {
 	// bundled review-pr config carries no usable number and would otherwise have to
 	// be copied and edited once per PR.
 	PR int
+	// PRFromBranch means no -pr was typed, so a pr-mode run with no number in its
+	// config takes the pull request of the checked-out branch. It is a separate
+	// field rather than "PR == 0" because only the caller knows the difference
+	// between a flag left off and a flag given the placeholder value, and because
+	// the resolution cannot happen here: it runs git and gh inside the target and
+	// must wait for the target-integrity preflight (Orchestrator.resolvePR).
+	PRFromBranch bool
 	// Target points a directory-mode run at a file or a directory, as an ABSOLUTE
 	// path (the caller resolves it against its own working directory -- this layer
 	// cannot know where the flag was typed). A directory becomes target.path; a
@@ -173,6 +180,12 @@ func (o Overrides) apply(c *Config) {
 	// config carries.
 	if o.PR != 0 {
 		c.Target.PR = o.PR
+	}
+	// Recorded even when the mode is not pr: this layer folds overrides in before
+	// anything reads the mode, and the flag simply says a number was not typed.
+	// Only a pr-mode run with no configured number acts on it.
+	if o.PRFromBranch {
+		c.Target.PRFromBranch = true
 	}
 	if o.Out != "" {
 		c.Create.Out = o.Out
