@@ -34,9 +34,8 @@ this is the reference behind them.
 fixpoint takes **the pull request of the branch that is checked out** — the answer
 `gh pr view` gives, which is the same branch-to-PR resolution `gh pr checkout`
 acts on, so the number and the tree the run reviews cannot disagree. The resolved
-number is logged with its base and URL before anything else happens: nobody typed
-it, so that line is the run's only record of what it decided to review, and
-`--check` prints it as the scope.
+number is logged with its base and URL: nobody typed it, so that line is the run's
+only record of what it decided to review, and `--check` prints it as the scope.
 
 An explicit `-pr` wins, and so does a config that names a real pull request. The
 resolution fills the placeholder zero, it does not override a choice.
@@ -48,11 +47,24 @@ It refuses rather than guess:
   only in base, and `gh` picks one of them silently. Both numbers are in the
   refusal. A same-named branch on *another* fork is not ambiguity — the head owner
   tells them apart, which is what makes this work on a fork's branch.
+- **A listing that cannot prove uniqueness**: one that comes back empty, that does
+  not contain the pull request `gh` just named, or that hit the 50-row limit before
+  the head-owner filter could run. "Could not tell" is not "unique".
 - **A merged or closed pull request.** `gh` answers with one when that is all the
   branch has. Reviewing merged work by inference is never what the command meant,
   and a fix run would commit onto it. The number is in the refusal, so `-pr 170`
   still gets you there.
 - **A detached HEAD**, which names no branch at all.
+- **A branch that moved while the answer was being computed** — a concurrent
+  fixpoint run, or you switching branches by hand.
+
+The resolution happens **after the target-integrity preflight and behind the
+repository lock**, not while the flags are being read. It runs `git` and an
+authenticated `gh` inside the target, and this is the one pr-mode path where the
+pull request's content is in the tree *before* fixpoint starts: you are standing
+on its branch. So the guards that refuse a `git`/`gh` resolved from inside the
+checkout, or a redirected work tree, run first — `review-pr` asserts only
+`-trusted-bundle`, which leaves every one of them armed.
 
 `make review-pr` and `make fix-pr` take `PR=<n>` the same way, and omitting it now
 works instead of failing the usage guard.

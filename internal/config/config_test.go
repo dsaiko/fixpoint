@@ -174,6 +174,17 @@ func TestValidate(t *testing.T) {
 		{"unknown mode", func(c *Config) { c.Target.Mode = "svn" }, "unknown mode"},
 		{"pr mode without number", func(c *Config) { c.Target.Mode = "pr" }, "mode pr needs a pull request number"},
 		{"pr mode with number", func(c *Config) { c.Target.Mode = "pr"; c.Target.PR = 7 }, ""},
+		// The number is allowed to be missing HERE when the invocation said to take
+		// the branch's own pull request: that resolution runs git and gh inside the
+		// target, so it waits for the target-integrity preflight, long after this.
+		{"pr mode resolving from the branch", func(c *Config) {
+			c.Target.Mode, c.Target.PRFromBranch = "pr", true
+		}, ""},
+		// A negative -pr is bad input, not a missing number, and must not borrow the
+		// exemption: PRFromBranch is set only when no -pr was typed at all.
+		{"pr mode with a negative number", func(c *Config) {
+			c.Target.Mode, c.Target.PR, c.Target.PRFromBranch = "pr", -1, true
+		}, "mode pr needs a pull request number"},
 		{"no review prompts", func(c *Config) { c.Roles.Review.Prompts = nil }, "at least one review lens"},
 		{"unknown strategy", func(c *Config) { c.Roles.Review.Strategy = "random" }, "unknown strategy"},
 		{"fixed strategy without pinned agent", func(c *Config) { c.Roles.Review.Strategy = "fixed" }, "requires every lens to pin"},

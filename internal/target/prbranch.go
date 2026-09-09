@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/dsaiko/fixpoint/internal/config"
 )
 
 // BranchPR is the pull request a checked-out branch resolved to, and the branch
@@ -43,15 +41,21 @@ const prBranchCandidates = 50
 // separately, and a branch that names more than one open pull request is
 // refused with the numbers, rather than resolved to whichever gh listed first.
 //
-// env is the environment fixpoint's own git/gh commands run with; callers pass
-// agent.EnvWithoutCredentials(cfg.Agents), the same filter the verify gate gets.
-// The forge CLI still gets its own token back (see runInput) -- resolving a pull
-// request is an authenticated call.
-func ResolvePRFromBranch(ctx context.Context, cfg config.Target, env []string) (BranchPR, error) {
-	c := New(cfg)
-	c.UseGitEnv(env)
+// It is a method rather than a free function so it runs the commands through the
+// collector the caller already owns -- its pinned tools, its hardened
+// environment, its credential filter. The forge CLI still gets its own token
+// back (see runInput): resolving a pull request is an authenticated call.
+//
+// It must not run before the target-integrity preflight. Four commands here
+// execute git and an authenticated gh inside the target, and this feature's own
+// premise is that the PR's branch is ALREADY checked out -- so the content those
+// guards exist for is in the tree, unlike the pr mode they were written for,
+// where nothing arrives until Prepare's checkout. The orchestrator therefore
+// calls this after PreflightGuards and behind the repository lock; see
+// Orchestrator.resolvePR (review run 20260909-213147, findings i1 and i8).
+func (c *Collector) ResolvePRFromBranch(ctx context.Context) (BranchPR, error) {
 	if _, err := c.git(ctx, "rev-parse", "--git-dir"); err != nil {
-		return BranchPR{}, fmt.Errorf("target.path %s is not a git repository, so no branch can name a pull request (mode pr): %w", cfg.Path, err)
+		return BranchPR{}, fmt.Errorf("target.path %s is not a git repository, so no branch can name a pull request (mode pr): %w", c.cfg.Path, err)
 	}
 	branch, err := c.currentBranch(ctx)
 	if err != nil {
@@ -64,6 +68,29 @@ func ResolvePRFromBranch(ctx context.Context, cfg config.Target, env []string) (
 	if err := c.proveSolePR(ctx, branch, view); err != nil {
 		return BranchPR{}, err
 	}
+	// The branch is read once at the start and gh consults the checkout again on
+	// its own, so the answer is only about THIS branch if the branch did not move
+	// in between. It can: another fixpoint run switching branches under the same
+	// repository, or the operator doing it by hand. The number is pinned from here
+	// on and `gh pr checkout` is deterministic, so all that is needed is to notice
+	// -- a run that resolved from a branch nobody is standing on any more must not
+	// review, and certainly not post to, the pull request it happened to catch
+	// (review run 20260909-213147, finding i10).
+	after, err := c.currentBranch(ctx)
+	if err != nil {
+		return BranchPR{}, fmt.Errorf("branch %s resolved to pull request #%d, but the checkout no longer names a branch: %w", branch, view.Number, err)
+	}
+	if after != branch {
+		return BranchPR{}, fmt.Errorf("the checkout moved from branch %s to %s while its pull request was being resolved, so #%d is the answer to a question about a branch nobody is on any more; re-run, or pass -pr <number>",
+			branch, after, view.Number)
+	}
+	// The collector keeps its own copy of the target description, taken when it was
+	// built, so it has to learn the number here: the caller updating the
+	// configuration alone would leave Prepare checking out pull request 0 and Scope
+	// reporting it (caught by the --check scope assertion in
+	// TestRunResolvesPRFromTheCheckedOutBranch). One resolution, one number, both
+	// halves holding it.
+	c.cfg.PR = view.Number
 	return BranchPR{Number: view.Number, Branch: branch, Base: view.BaseRefName, URL: view.URL}, nil
 }
 
@@ -119,8 +146,8 @@ func (c *Collector) viewBranchPR(ctx context.Context, branch string) (branchPRVi
 }
 
 // proveSolePR refuses the resolution unless the branch names exactly one open
-// pull request. See ResolvePRFromBranch for why gh's own answer is not enough on
-// its own.
+// pull request, and that one is the pull request gh answered with. See
+// ResolvePRFromBranch for why gh's own answer is not enough on its own.
 //
 // Candidates are counted per HEAD OWNER, not per branch name. `--head` matches
 // the name alone, so in a fork workflow two forks' `feat/x` both come back;
@@ -130,7 +157,17 @@ func (c *Collector) viewBranchPR(ctx context.Context, branch string) (branchPRVi
 // matters.
 //
 // A failed probe is a refusal, not a shrug: this is the step that decides the
-// number is safe to act on, and "could not tell" is not "unique".
+// number is safe to act on, and "could not tell" is not "unique". Three ways it
+// can fail to tell, each of which used to pass by counting alone (review run
+// 20260909-213147, findings i17, i19 and the truncation medium):
+//
+//   - The listing does not contain the viewed number. Then it is a listing of
+//     something else -- a different base repository, a race, an inconsistent API
+//     answer -- and it proves nothing about #N.
+//   - The listing came back empty. Same thing, in its starkest form: the head gh
+//     answered with must have at least gh's own pull request on it.
+//   - The listing hit the limit. The cap applies BEFORE the head-owner filter, so
+//     other forks' same-named branches can fill it and hide a sibling of ours.
 func (c *Collector) proveSolePR(ctx context.Context, branch string, view branchPRView) error {
 	// The head gh ANSWERED with, not the local branch name, when the two differ:
 	// gh can resolve through a branch's push configuration, and asking about a name
@@ -149,13 +186,26 @@ func (c *Collector) proveSolePR(ctx context.Context, branch string, view branchP
 	if err := json.Unmarshal([]byte(raw), &open); err != nil {
 		return fmt.Errorf("gh pr list for branch %s returned output this cannot read; pass -pr <number>: %w", branch, err)
 	}
+	if len(open) >= prBranchCandidates {
+		return fmt.Errorf("branch %s (head %s) has at least %d open pull requests, so the listing that would prove #%d is the only one from this head is truncated and proves nothing; pass -pr <number>",
+			branch, head, prBranchCandidates, view.Number)
+	}
 	var same []branchPRView
+	found := 0
 	for _, pr := range open {
-		if pr.HeadOwner.Login == view.HeadOwner.Login {
-			same = append(same, pr)
+		if pr.HeadOwner.Login != view.HeadOwner.Login {
+			continue
+		}
+		same = append(same, pr)
+		if pr.Number == view.Number {
+			found++
 		}
 	}
-	if len(same) <= 1 {
+	if found != 1 {
+		return fmt.Errorf("listing the open pull requests on head %s returned %d of them, and pull request #%d -- the one gh resolved for branch %s -- appears %d times among those from the same owner; the listing therefore cannot prove #%d is the only one, so it is not acted on. Pass -pr <number>",
+			head, len(open), view.Number, branch, found, view.Number)
+	}
+	if len(same) == 1 {
 		return nil
 	}
 	var parts []string
