@@ -17,6 +17,10 @@ type BranchPR struct {
 	Branch string
 	Base   string
 	URL    string
+	// CrossRepository is true when the head is a FORK's branch rather than one in
+	// the repository being reviewed. It decides a refusal rather than a log line;
+	// see Orchestrator.resolvePR.
+	CrossRepository bool
 }
 
 // prBranchCandidates bounds the ambiguity probe below. A head branch with more
@@ -91,7 +95,7 @@ func (c *Collector) ResolvePRFromBranch(ctx context.Context) (BranchPR, error) {
 	// TestRunResolvesPRFromTheCheckedOutBranch). One resolution, one number, both
 	// halves holding it.
 	c.cfg.PR = view.Number
-	return BranchPR{Number: view.Number, Branch: branch, Base: view.BaseRefName, URL: view.URL}, nil
+	return BranchPR{Number: view.Number, Branch: branch, Base: view.BaseRefName, URL: view.URL, CrossRepository: view.CrossRepo}, nil
 }
 
 // currentBranch is the branch name HEAD points at, or an error naming what to do
@@ -114,6 +118,7 @@ type branchPRView struct {
 	URL         string `json:"url"`
 	BaseRefName string `json:"baseRefName"`
 	HeadRefName string `json:"headRefName"`
+	CrossRepo   bool   `json:"isCrossRepository"`
 	HeadOwner   struct {
 		Login string `json:"login"`
 	} `json:"headRepositoryOwner"`
@@ -127,7 +132,7 @@ type branchPRView struct {
 // the PR of this branch" meant. The number is in the refusal, so an operator who
 // does want it can say so explicitly with -pr.
 func (c *Collector) viewBranchPR(ctx context.Context, branch string) (branchPRView, error) {
-	raw, err := c.run(ctx, "gh", "pr", "view", "--json", "number,state,url,baseRefName,headRefName,headRepositoryOwner")
+	raw, err := c.run(ctx, "gh", "pr", "view", "--json", "number,state,url,baseRefName,headRefName,headRepositoryOwner,isCrossRepository")
 	if err != nil {
 		return branchPRView{}, fmt.Errorf("no pull request found for branch %s; open one, or pass -pr <number>: %w", branch, err)
 	}

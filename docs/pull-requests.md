@@ -58,13 +58,38 @@ It refuses rather than guess:
 - **A branch that moved while the answer was being computed** — a concurrent
   fixpoint run, or you switching branches by hand.
 
+- **A pull request from a fork.** See below.
+
 The resolution happens **after the target-integrity preflight and behind the
 repository lock**, not while the flags are being read. It runs `git` and an
 authenticated `gh` inside the target, and this is the one pr-mode path where the
 pull request's content is in the tree *before* fixpoint starts: you are standing
 on its branch. So the guards that refuse a `git`/`gh` resolved from inside the
 checkout, or a redirected work tree, run first — `review-pr` asserts only
-`-trusted-bundle`, which leaves every one of them armed.
+`-trusted-bundle`, which leaves every one of them armed. The guards run again
+once the repository lock is held, because a competing run could have switched
+branches between the two.
+
+### Resolving from the branch is for your OWN pull requests
+
+Everything above is safe for a branch in this repository, where pushing already
+required write access. It is **not** how you review a contributor's fork.
+
+Standing on a fork's branch means its content is your working directory, and
+whatever you run there is somebody else's code running as you — starting *before*
+fixpoint exists. `make review-pr` has make parse the pull request's own Makefile
+and run its `build`, `test` and `vet` recipes; a `config/` bundle resolved from
+the target is the pull request's too, which is exactly the assumption
+`-trusted-bundle` was written under (*those are OUR files, read before the
+checkout replaced the tree*) and it does not hold here. fixpoint cannot
+retroactively guard what make already ran.
+
+So a branch-resolved run **refuses a cross-repository pull request** and says to
+use `-pr <number>` from a checkout of your own — where fixpoint does the checkout
+itself, behind its guards, with the bundle read before the tree changed. That is
+what `make review-pr PR=170` has always done, and it stays the way to review a
+fork. `-trusted-target` overrides the refusal, and means what it says everywhere
+else: this checkout is mine.
 
 `make review-pr` and `make fix-pr` take `PR=<n>` the same way, and omitting it now
 works instead of failing the usage guard.
