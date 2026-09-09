@@ -10305,7 +10305,10 @@ func stubBranchPRGH(t *testing.T, baseSHA string, crossRepo bool) {
 		t.Fatal(err)
 	}
 	// Registered before the PATH change so cleanups (LIFO) restore PATH first and
-	// re-pin against the real one.
+	// re-pin against the real one. Note that the pins stay POPULATED afterwards --
+	// gitenv has no unpin -- so a later test in this package that stubs git or gh
+	// through PATH alone must pin them too, or gitenv.Tool will hand it the real
+	// binary.
 	t.Cleanup(gitenv.PinTools)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	gitenv.PinTools()
@@ -10469,8 +10472,11 @@ func TestResolvePRAsksForTheGuardsItself(t *testing.T) {
 	t.Setenv("PATH", inside+string(os.PathListSeparator)+os.Getenv("PATH"))
 	gitenv.PinTools()
 
-	// No PreflightGuards call before this, deliberately.
-	err := f.orchestrator().ResolvePR(t.Context())
+	// The unexported step, deliberately: ResolvePR wraps it with a preflight of its
+	// own, so calling that would prove nothing about the call INSIDE resolvePR --
+	// which is the invariant, since the run path reaches it through yet another
+	// route. No gate has run when this is entered.
+	err := f.orchestrator().resolvePR(t.Context(), nil)
 	if err == nil || !strings.Contains(err.Error(), "inside target") {
 		t.Fatalf("ResolvePR() err = %v, want the pinned-helper refusal", err)
 	}
@@ -10638,4 +10644,35 @@ func readFile(t *testing.T, p string) string {
 		return ""
 	}
 	return string(b)
+}
+
+// --check takes no lock for its lifetime, but the resolution reads HEAD, which a
+// concurrent run's `gh pr checkout` moves. Unserialized, the check prints that
+// run's pull request as its own scope, or fails with a moved-branch refusal whose
+// real cause is missing. Holding the lock for the read turns both into the
+// accurate error (review run 20260909-224407).
+func TestResolvePROnTheCheckPathSerializesAgainstARun(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PRFromBranch = true
+
+	gitRun(t, f.repo, "branch", "-M", "main")
+	baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+	stubBranchPRGH(t, baseSHA, false)
+
+	// Stand in for the competing run that owns the repository.
+	release, err := target.New(f.cfg.Target).LockRepo(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	err = f.orchestrator().ResolvePR(t.Context())
+	if err == nil {
+		t.Fatal("the check resolved a pull request from a checkout another run owns")
+	}
+	if !strings.Contains(err.Error(), "already working on") {
+		t.Errorf("the failure does not name the competing run: %v", err)
+	}
 }

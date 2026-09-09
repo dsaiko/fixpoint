@@ -532,3 +532,42 @@ func stubGHListStatus(t *testing.T, view, list string, viewStatus, listStatus in
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
+
+// A detached HEAD is an answer; a git that could not answer is not. Reporting
+// the second as the first sends the operator to -pr, which fixes neither a
+// timeout nor a corrupt repository (review run 20260909-224407).
+func TestCurrentBranchSeparatesDetachedFromBroken(t *testing.T) {
+	t.Run("detached", func(t *testing.T) {
+		dir := onBranch(t)
+		testfixture.GitRun(t, dir, "checkout", "-q", "--detach")
+		c := New(config.Target{Mode: config.ModePR, Path: dir})
+		c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+		if _, err := c.currentBranch(t.Context()); err == nil || !strings.Contains(err.Error(), "not on a branch") {
+			t.Errorf("err = %v, want the detached-HEAD answer", err)
+		}
+	})
+	t.Run("git fails for another reason", func(t *testing.T) {
+		// A git that exits 128, the way it does for a corrupt or unreadable
+		// repository -- pinned so the collector runs the stub rather than the real one.
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, "git"),
+			[]byte("#!/bin/sh\necho 'fatal: not a git repository' >&2\nexit 128\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// PATH alone, deliberately: nothing in this package pins the tools, so
+		// gitenv.Tool resolves live -- and calling PinTools here would leave every
+		// later test in the package pinned to the real git, silently ignoring their
+		// own stubs.
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		c := New(config.Target{Mode: config.ModePR, Path: t.TempDir()})
+		c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+		_, err := c.currentBranch(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "read the checked-out branch") {
+			t.Fatalf("err = %v, want the operational failure surfaced", err)
+		}
+		if strings.Contains(err.Error(), "detached") {
+			t.Errorf("a git failure was reported as a detached checkout: %v", err)
+		}
+	})
+}
