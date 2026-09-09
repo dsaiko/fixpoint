@@ -11,7 +11,8 @@ extends: defaults
 
 target:
   mode: pr
-  pr: 0 # placeholder: pass -pr <number> on the command line, or edit here
+  pr: 0 # placeholder: pass -pr <number>, edit here, or leave it and fixpoint
+        # takes the pull request of the checked-out branch
 
 roles:
   # The judge: the last filter before a review is published, and read-only by
