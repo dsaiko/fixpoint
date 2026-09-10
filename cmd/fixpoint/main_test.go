@@ -1836,8 +1836,9 @@ func TestAbsPathFlags(t *testing.T) {
 // stubGHForPR puts a `gh` on PATH answering the two reads the branch resolution
 // makes, and returns the file it records its argv into. PATH is prepended so git
 // stays real -- the branch half of the answer comes from the fixture repository.
-func stubGHForPR(t *testing.T, number int) string {
+func stubGHForPR(t *testing.T) string {
 	t.Helper()
+	const number = 170 // the pull request every caller resolves to
 	bin, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
 	n := strconv.Itoa(number)
 	view := `{"number":` + n + `,"state":"OPEN","url":"https://example.test/pull/` + n +
@@ -1874,7 +1875,7 @@ func ghCalls(t *testing.T, path string) string {
 func TestRunResolvesPRFromTheCheckedOutBranch(t *testing.T) {
 	f := newFixture(t)
 	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
-	calls := stubGHForPR(t, 170)
+	calls := stubGHForPR(t)
 
 	var buf bytes.Buffer
 	if got := run([]string{"-config", f.configFile("pr", "", ""), "-review-only", "-check"}, &buf, &buf); got != 0 {
@@ -1910,7 +1911,7 @@ func TestRunResolvesPRFromTheCheckedOutBranch(t *testing.T) {
 func TestRunExplicitPRSkipsBranchResolution(t *testing.T) {
 	f := newFixture(t)
 	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
-	calls := stubGHForPR(t, 170)
+	calls := stubGHForPR(t)
 
 	var buf bytes.Buffer
 	if got := run([]string{"-config", f.configFile("pr", "", ""), "-pr", "42", "-review-only", "-check"}, &buf, &buf); got != 0 {
@@ -1936,7 +1937,7 @@ func TestRunExplicitPRSkipsBranchResolution(t *testing.T) {
 func TestRunConfiguredPRSkipsBranchResolution(t *testing.T) {
 	f := newFixture(t)
 	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
-	calls := stubGHForPR(t, 170)
+	calls := stubGHForPR(t)
 
 	var buf bytes.Buffer
 	cfg := f.configFile("pr", "  pr: 99\n", "")
@@ -2065,5 +2066,26 @@ func TestCheckLiveResolvesBeforePinging(t *testing.T) {
 	// The point of the ordering: no agent was launched.
 	if got := f.invocations(); got != 0 {
 		t.Errorf("agent invocations = %d, want 0 -- the ping ran before the target was authorized", got)
+	}
+}
+
+// `-pr 0` is a number somebody supplied -- a script whose lookup came back empty
+// -- and reading it as "no flag" scoped the run to whatever pull request the
+// checkout happened to be on. It falls to validation instead (review run
+// 20260910-071016).
+func TestExplicitZeroPRIsRefusedRatherThanResolved(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+	calls := stubGHForPR(t)
+
+	var buf bytes.Buffer
+	if code := run([]string{"-config", f.configFile("pr", "", ""), "-pr", "0", "-review-only", "-check"}, &buf, &buf); code != 1 {
+		t.Fatalf("run(-pr 0) = %d, want 1; stderr:\n%s", code, buf.String())
+	}
+	if out := buf.String(); !strings.Contains(out, "mode pr needs a pull request number") {
+		t.Errorf("the refusal is not validation's:\n%s", out)
+	}
+	if c := ghCalls(t, calls); c != "" {
+		t.Errorf("gh was called for a run that should have failed validation: %q", c)
 	}
 }

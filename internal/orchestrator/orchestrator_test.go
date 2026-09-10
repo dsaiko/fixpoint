@@ -10676,3 +10676,85 @@ func TestResolvePROnTheCheckPathSerializesAgainstARun(t *testing.T) {
 		t.Errorf("the failure does not name the competing run: %v", err)
 	}
 }
+
+// --check-live must not let go of the repository between authorizing the
+// checkout and launching agents into it: in that gap a concurrent run can check
+// out a fork's branch and start rewriting the worktree, and the ping would then
+// start every configured agent in it (review run 20260910-071016).
+func TestResolveAndPingHoldsTheRepositoryAcrossBoth(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.reviewOnly("mock")
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PRFromBranch = true
+	ping := true
+	f.cfg.PingAgents = &ping
+
+	gitRun(t, f.repo, "branch", "-M", "main")
+	baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
+	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+	stubBranchPRGH(t, baseSHA, false)
+
+	// A competing run owns the repository for the whole call.
+	release, err := target.New(f.cfg.Target).LockRepo(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if err := f.orchestrator().ResolveAndPing(t.Context()); err == nil {
+		t.Fatal("check-live proceeded while another run owned the repository")
+	} else if !strings.Contains(err.Error(), "already working on") {
+		t.Errorf("the failure does not name the competing run: %v", err)
+	}
+	// The point of holding the lock: no agent was started.
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0", got)
+	}
+}
+
+// The fork check and the number resolution are two live reads, so a branch
+// switch between them can hand back a cross-repository pull request the first
+// read never saw. The resolution's own answer carries that verdict, and ignoring
+// it accepted the fork (review run 20260910-071016).
+func TestRunRefusesAForkTheResolutionItselfFound(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.reviewOnly("mock")
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PRFromBranch = true
+	f.cfg.Loop.TrustedTarget = false
+
+	gitRun(t, f.repo, "branch", "-M", "main")
+	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+
+	// The fork check sees a same-repository answer; the resolution that follows
+	// sees a fork. That is the switch, without having to win a race for it.
+	bin := t.TempDir()
+	ours := `{"number":170,"state":"OPEN","url":"u","baseRefName":"main","headRefName":"feature",` +
+		`"headRepositoryOwner":{"login":"us"},"isCrossRepository":false}`
+	theirs := `{"number":170,"state":"OPEN","url":"u","baseRefName":"main","headRefName":"feature",` +
+		`"headRepositoryOwner":{"login":"them"},"isCrossRepository":true}`
+	seen := filepath.Join(t.TempDir(), "views")
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = view ]; then\n" +
+		"  n=$(cat " + seen + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + seen + "\n" +
+		"  if [ \"$n\" = 1 ]; then printf '%s' '" + ours + "'; else printf '%s' '" + theirs + "'; fi\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$2\" = list ]; then printf '%s' '[{\"number\":170,\"baseRefName\":\"main\"," +
+		"\"headRepositoryOwner\":{\"login\":\"them\"},\"isCrossRepository\":true}]'; exit 0; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gitenv.PinTools)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gitenv.PinTools()
+
+	_, err := f.orchestrator().Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "ANOTHER repository") {
+		t.Fatalf("Run() err = %v, want the fork refusal from the resolution's own answer", err)
+	}
+	if got := f.invocations(); got != 0 {
+		t.Errorf("agent invocations = %d, want 0", got)
+	}
+}

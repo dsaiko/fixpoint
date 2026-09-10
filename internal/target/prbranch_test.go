@@ -253,6 +253,31 @@ exit 1
 	return calls
 }
 
+// stubGHRecordingStatus is stubGHRecording with an exit status for `pr view`, so
+// the fallback path -- which only runs when the view could not answer -- can be
+// exercised while still recording argv.
+func stubGHRecordingStatus(t *testing.T, view, list string, viewStatus int) string {
+	t.Helper()
+	resp := t.TempDir()
+	calls := filepath.Join(resp, "calls")
+	for name, content := range map[string]string{"view": view, "list": list} {
+		if err := os.WriteFile(filepath.Join(resp, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> " + calls + "\n" +
+		"if [ \"$2\" = view ]; then cat " + resp + "/view; exit " + strconv.Itoa(viewStatus) + "; fi\n" +
+		"if [ \"$2\" = list ]; then cat " + resp + "/list; exit 0; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return calls
+}
+
 func ghArgv(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -456,41 +481,54 @@ func TestResolvePRFromBranchPinsTheListLimit(t *testing.T) {
 	})
 }
 
-// CheckedOutFork is the gate's own question, and it must not answer "not a fork"
-// because it could not ask: gh pr list exits cleanly on an empty result, so a
-// non-zero exit or unreadable output is a refusal.
-func TestCheckedOutForkFailsClosed(t *testing.T) {
-	fork := func(number int) string {
-		return fmt.Sprintf(`{"number":%d,"isCrossRepository":true,"headRepositoryOwner":{"login":"them"}}`, number)
-	}
+// CheckedOutFork's two signals and their ORDER. `gh pr view` is authoritative
+// about this branch in BOTH directions; the listing is a fallback that matches a
+// branch NAME across every fork, so a row is evidence about this checkout only
+// once its head owner is correlated with the owner the branch tracks. Getting
+// that wrong refused the documented fork-review workflow (review run
+// 20260910-071016).
+func TestCheckedOutFork(t *testing.T) {
+	otherFork := `[{"number":900,"isCrossRepository":true,"headRepositoryOwner":{"login":"someone-else"}}]`
 	cases := []struct {
-		name, view, list string
-		viewStatus       int
-		wantFork         bool
-		wantErr          string
+		name       string
+		view       string
+		viewStatus int
+		list       string
+		listStatus int
+		upstream   string // owner of the remote the branch tracks; "" = no upstream
+		wantFork   bool
+		wantNumber int
+		wantErr    string
 	}{
-		// gh knows this branch's pull request and says it is a fork's.
-		{name: "view names a fork", view: `{"number":7,"state":"OPEN","isCrossRepository":true,"headRefName":"feat/x","headRepositoryOwner":{"login":"them"}}`, list: "[]", wantFork: true},
-		// view cannot answer (no pull request, or a lapsed token): the listing decides.
-		{name: "listing names a fork", view: "", viewStatus: 1, list: "[" + fork(9) + "]", wantFork: true},
-		{name: "listing is empty", view: "", viewStatus: 1, list: "[]"},
-		{name: "listing has only our own", view: "", viewStatus: 1,
+		// The view answers: that is the result, and nothing else is consulted.
+		{name: "view names a fork", view: viewPRFork(7, "OPEN", "them", branchUnderTest, "main"), wantFork: true, wantNumber: 7},
+		// This is the case that broke `-pr <n>` from your trunk: a stranger's fork
+		// pull request on a branch of the same name must not override a view that
+		// already said this checkout is ours.
+		{name: "view says ours, listing names another fork", view: viewPR(7, "OPEN", "us", branchUnderTest, "main"), list: otherFork},
+		// The view could not answer, so the listing decides -- correlated by owner.
+		{name: "listing names a fork this branch tracks", viewStatus: 1, upstream: "them",
+			list: `[{"number":9,"isCrossRepository":true,"headRepositoryOwner":{"login":"them"}}]`, wantFork: true, wantNumber: 9},
+		{name: "listing names another fork's same-named branch", viewStatus: 1, upstream: "us", list: otherFork},
+		{name: "listing is empty", viewStatus: 1, list: "[]"},
+		{name: "listing has only same-repository rows", viewStatus: 1,
 			list: `[{"number":9,"isCrossRepository":false,"headRepositoryOwner":{"login":"us"}}]`},
-		// Neither signal could be obtained. "Could not tell" is not "allowed".
-		{name: "listing fails", view: "", viewStatus: 1, list: "", wantErr: "not started on a guess"},
-		{name: "listing unreadable", view: "", viewStatus: 1, list: "not json", wantErr: "cannot read"},
+		// Fork rows exist and there is no way to tell whether one of them is this
+		// checkout. "Could not tell" is not "allowed".
+		{name: "fork rows but no upstream to correlate", viewStatus: 1, list: otherFork, upstream: "",
+			wantErr: "tracks no remote"},
+		{name: "listing fails", viewStatus: 1, listStatus: 1, list: "", wantErr: "not started on a guess"},
+		{name: "listing unreadable", viewStatus: 1, list: "not json", wantErr: "cannot read"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := onBranch(t)
-			// An empty list body with a zero exit is how a failure is spelled here: the
-			// stub returns nothing and exits 1 for `pr list` when list is "".
-			list := tc.list
-			status := 0
-			if list == "" {
-				list, status = "", 1
+			if tc.upstream != "" {
+				testfixture.GitRun(t, dir, "remote", "add", "theirs",
+					"https://github.com/"+tc.upstream+"/r.git")
+				testfixture.GitRun(t, dir, "config", "branch."+branchUnderTest+".remote", "theirs")
 			}
-			stubGHListStatus(t, tc.view, list, tc.viewStatus, status)
+			stubGHListStatus(t, tc.view, tc.list, tc.viewStatus, tc.listStatus)
 
 			c := New(config.Target{Mode: config.ModePR, Path: dir})
 			c.UseGitEnv(agent.EnvWithoutCredentials(nil))
@@ -506,9 +544,120 @@ func TestCheckedOutForkFailsClosed(t *testing.T) {
 			case err != nil:
 				t.Fatalf("unexpected error: %v", err)
 			case isFork != tc.wantFork:
-				t.Errorf("isFork = %t, want %t (%+v)", isFork, tc.wantFork, got)
+				t.Fatalf("isFork = %t, want %t (%+v)", isFork, tc.wantFork, got)
+			case tc.wantFork && got.Number != tc.wantNumber:
+				t.Errorf("fork pull request = #%d, want #%d", got.Number, tc.wantNumber)
 			}
 		})
+	}
+}
+
+// A detached checkout is not proof of innocence: `gh pr checkout --detach` is an
+// ordinary shape, and with an explicit -pr the resolution's own detached-HEAD
+// refusal never runs, so this was the way a fork's tree went unnoticed (review
+// run 20260910-071016, the critical).
+func TestCheckedOutForkRefusesADetachedCheckout(t *testing.T) {
+	dir := onBranch(t)
+	testfixture.GitRun(t, dir, "checkout", "-q", "--detach")
+	stubGHListStatus(t, viewPRFork(7, "OPEN", "them", branchUnderTest, "main"), "[]", 0, 0)
+
+	c := New(config.Target{Mode: config.ModePR, Path: dir})
+	c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+	_, isFork, err := c.CheckedOutFork(t.Context())
+	if err == nil {
+		t.Fatal("a detached checkout was accepted as proof that the tree is not a fork's")
+	}
+	if isFork {
+		t.Error("a refusal must not also claim a fork was identified")
+	}
+	for _, want := range []string{"cannot tell whose content", "-trusted-target"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// The same for an operational git failure: the direct currentBranch test stayed
+// green while this caller turned every such error into "not a fork".
+func TestCheckedOutForkRefusesWhenGitFails(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"),
+		[]byte("#!/bin/sh\necho 'fatal: unable to read' >&2\nexit 128\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "gh"),
+		[]byte("#!/bin/sh\nprintf '%s' '[]'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	c := New(config.Target{Mode: config.ModePR, Path: t.TempDir()})
+	c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+	_, isFork, err := c.CheckedOutFork(t.Context())
+	if err == nil || isFork {
+		t.Fatalf("CheckedOutFork() = %t, %v; a git that could not answer must refuse", isFork, err)
+	}
+	if !strings.Contains(err.Error(), "read the checked-out branch") {
+		t.Errorf("the operational failure was not surfaced: %v", err)
+	}
+}
+
+// The fallback listing is capped, and the cap applies before anything is
+// filtered, so a page full of unrelated pull requests can hide the row that
+// matters. Only a listing with NO fork rows can be trusted when it is short.
+func TestCheckedOutForkRefusesATruncatedListing(t *testing.T) {
+	rows := func(n int, cross bool) string {
+		out := make([]string, 0, n)
+		for i := range n {
+			out = append(out, fmt.Sprintf(`{"number":%d,"isCrossRepository":%t,"headRepositoryOwner":{"login":"stranger"}}`,
+				900+i, cross))
+		}
+		return "[" + strings.Join(out, ",") + "]"
+	}
+	t.Run("one below the cap is conclusive", func(t *testing.T) {
+		dir := onBranch(t)
+		stubGHListStatus(t, "", rows(prBranchCandidates-1, false), 1, 0)
+		c := New(config.Target{Mode: config.ModePR, Path: dir})
+		c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+		if _, isFork, err := c.CheckedOutFork(t.Context()); err != nil || isFork {
+			t.Errorf("CheckedOutFork() = %t, %v; a complete listing with no fork rows is an answer", isFork, err)
+		}
+	})
+	t.Run("at the cap it proves nothing", func(t *testing.T) {
+		dir := onBranch(t)
+		stubGHListStatus(t, "", rows(prBranchCandidates, false), 1, 0)
+		c := New(config.Target{Mode: config.ModePR, Path: dir})
+		c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+		_, isFork, err := c.CheckedOutFork(t.Context())
+		if err == nil || isFork {
+			t.Fatalf("CheckedOutFork() = %t, %v; a truncated listing must refuse", isFork, err)
+		}
+		if !strings.Contains(err.Error(), "truncated") {
+			t.Errorf("the refusal does not say the listing was truncated: %v", err)
+		}
+	})
+}
+
+// The fallback probe's query is security-critical for the same reason the view's
+// is: without isCrossRepository the field decodes as false, and without
+// headRepositoryOwner no row can be told from a stranger's.
+func TestCheckedOutForkPinsTheListingQuery(t *testing.T) {
+	dir := onBranch(t)
+	calls := stubGHRecordingStatus(t, "", "[]", 1)
+	c := New(config.Target{Mode: config.ModePR, Path: dir})
+	c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+	if _, _, err := c.CheckedOutFork(t.Context()); err != nil {
+		t.Fatalf("CheckedOutFork: %v", err)
+	}
+	want := "pr list --head " + branchUnderTest + " --state all --limit " +
+		strconv.Itoa(prBranchCandidates) + " --json " + prListForkFields
+	if argv := ghArgv(t, calls); !strings.Contains(argv, want) {
+		t.Errorf("the fallback probe is not %q:\n%s", want, argv)
+	}
+	for _, field := range []string{"isCrossRepository", "headRepositoryOwner"} {
+		if !strings.Contains(prListForkFields, field) {
+			t.Errorf("the projection dropped %q", field)
+		}
 	}
 }
 

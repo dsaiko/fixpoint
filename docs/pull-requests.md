@@ -105,10 +105,23 @@ directory where the refusal just fired would otherwise reproduce every condition
 the refusal named.
 
 `-trusted-target` overrides it, and means what it says everywhere else: this
-checkout is mine. Whether the checkout is a fork's is decided from two signals
-and fails **closed**: `gh pr view` for this branch, and a `gh pr list --head`
-that exits cleanly on an empty result. If neither can be obtained, the run does
-not start.
+checkout is mine.
+
+Whether the checkout is a fork's is decided from two signals, in this order:
+
+1. **`gh pr view` for this branch** reads the branch's push configuration, so it
+   tells a fork's `feat/x` from yours. When it answers, that is the answer —
+   in both directions.
+2. **`gh pr list --head`** is the fallback for when the view could not answer at
+   all. It matches the branch *name* across every fork, so a row counts only once
+   its head owner matches the owner your branch actually tracks. Otherwise a
+   contributor's pull request from `them/r:main` would refuse every run you launch
+   from your own `main`.
+
+It fails **closed**. A detached HEAD, a `git` that cannot say what is checked
+out, a listing that cannot be read or that came back truncated, or fork rows that
+cannot be correlated with your branch: none of them mean "allowed", and the run
+does not start.
 
 `make review-pr` and `make fix-pr` take `PR=<n>` the same way, and omitting it now
 works instead of failing the usage guard.

@@ -188,7 +188,14 @@ Flags:
 		// the pull request of the checked-out branch. Resolved later, from inside the
 		// orchestrator, because it runs git and gh in the target and must wait for the
 		// target-integrity preflight -- see Orchestrator.resolvePR.
-		PRFromBranch:      *pr == 0,
+		//
+		// Asked of the FLAG SET, not of the value: `-pr 0` is a number somebody
+		// supplied -- a script whose `gh pr view -q .number` came back empty, say --
+		// and reading it as "no flag" would scope the run to whatever pull request the
+		// checkout happens to be on, publishing a review under the operator's identity
+		// on a pull request nobody named. It falls to Validate's refusal instead
+		// (review run 20260910-071016).
+		PRFromBranch:      flagUnset(fs, "pr"),
 		Target:            paths["target"],
 		Out:               paths["out"],
 		AllowUntrustedFix: *allowUntrustedFix,
@@ -463,12 +470,10 @@ func absPathFlags(flags map[string]string) (map[string]string, error) {
 // request number at all once validation stopped requiring one, which is what
 // left it unauthorized (review run 20260909-224407).
 func checkLiveOnly(ctx context.Context, o *orchestrator.Orchestrator, logf func(string, ...any)) int {
-	if err := o.ResolvePR(ctx); err != nil {
-		logf("%v", err)
-		return 1
-	}
 	logf("static validation OK; pinging agents...")
-	if err := o.Ping(ctx); err != nil {
+	// One call, because the repository must not be let go between authorizing the
+	// checkout and launching agents into it.
+	if err := o.ResolveAndPing(ctx); err != nil {
 		logf("check-live: %v", err)
 		return 1
 	}
@@ -476,7 +481,19 @@ func checkLiveOnly(ctx context.Context, o *orchestrator.Orchestrator, logf func(
 	return 0
 }
 
-// forceQuit ends the process on a second interrupt// forceQuit ends the process on a second interrupt, with the interrupted run's
+// flagUnset reports whether the named flag was left off the command line, which
+// a zero value cannot tell apart from a default somebody typed.
+func flagUnset(fs *flag.FlagSet, name string) bool {
+	supplied := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			supplied = true
+		}
+	})
+	return !supplied
+}
+
+// forceQuit ends the process on a second interrupt, with the interrupted run's
 // exit status. It is a variable so the second-signal path can be tested at all:
 // an in-process os.Exit would take the test binary with it.
 var forceQuit = func() { os.Exit(1) }

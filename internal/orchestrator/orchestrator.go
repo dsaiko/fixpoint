@@ -1941,6 +1941,16 @@ func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) err
 	if err != nil {
 		return fmt.Errorf("target.pr: %w", err)
 	}
+	// The fork check above and this resolution are two live reads, so a branch
+	// switch between them (an IDE, another process, a person) can hand back a
+	// cross-repository pull request that the earlier check never saw -- the
+	// resolution's own before/after branch check passes, because it sees the new
+	// branch consistently. Its answer carries the verdict, so act on it rather than
+	// discarding the field (review run 20260910-071016).
+	if found.CrossRepository && !o.cfg.Loop.TrustedTarget {
+		return fmt.Errorf("target.pr: branch %s resolved to pull request #%d, which comes from ANOTHER repository (a fork) -- the checkout changed under this run, or the earlier check could not see it. Review it with -pr %d from a checkout that is NOT on this branch, or pass -trusted-target to assert this tree is yours",
+			found.Branch, found.Number, found.Number)
+	}
 	// The collector recorded the number itself (see ResolvePRFromBranch); this is
 	// the other half, for everything that reads the configuration -- the summary,
 	// the posting paths, the triage.
@@ -1960,12 +1970,14 @@ func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) err
 	return nil
 }
 
-// ResolvePR is resolvePR for the --check path: --check prints the scope, and in
+// ResolvePR is resolvePR for the --check paths: --check prints the scope, and in
 // pr mode the scope IS the pull request number, so a check that skipped the
 // resolution would report "pr #0" for a run that would have reviewed a real one.
-// What differs from the run path is only what has to come first -- the no-agent
-// preflight rather than the full one, and no repository lock, because a check
-// switches no branches and commits nothing.
+//
+// What differs from the run path is the strength of the preflight (the no-agent
+// variant) and the LIFETIME of the repository lock: a run holds it from claimRepo
+// until it ends, while a check takes it for the read alone. It does take it --
+// the reason is spelled out below.
 func (o *Orchestrator) ResolvePR(ctx context.Context) error {
 	if o.cfg.Target.Mode != config.ModePR {
 		return nil
@@ -1994,7 +2006,57 @@ func (o *Orchestrator) ResolvePR(ctx context.Context) error {
 		return err
 	}
 	defer release()
+	// The guards above ran BEFORE the lock, so their memoized verdict describes a
+	// checkout a competing run could still have switched -- the same TOCTOU
+	// claimRepo re-probes for. Re-probe here too, or resolvePR's own (memoized)
+	// call would read the pre-lock answer and run git and gh against a tree nobody
+	// checked (review run 20260910-071016).
+	if err := o.recheckPreflightGuardsNoAgent(ctx); err != nil {
+		return err
+	}
 	return o.resolvePR(ctx, nil)
+}
+
+// ResolveAndPing is --check-live: it resolves the pull request, authorizes the
+// checkout, and pings every agent WITHOUT letting go of the repository in
+// between.
+//
+// One lock across both, because releasing it between them was a hole: a
+// concurrent run could take the repository, `gh pr checkout` a fork's branch,
+// and start rewriting the worktree, and the ping would then launch every
+// configured agent into that tree -- past the fork refusal that had just passed
+// (review run 20260910-071016).
+func (o *Orchestrator) ResolveAndPing(ctx context.Context) error {
+	if o.cfg.Target.Mode != config.ModePR {
+		return o.Ping(ctx)
+	}
+	if err := o.PreflightGuardsNoAgent(ctx); err != nil {
+		return err
+	}
+	release, err := o.collector.LockRepo(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := o.recheckPreflightGuardsNoAgent(ctx); err != nil {
+		return err
+	}
+	if err := o.resolvePR(ctx, nil); err != nil {
+		return err
+	}
+	return o.Ping(ctx)
+}
+
+// recheckPreflightGuardsNoAgent is recheckPreflightGuards for a caller that
+// launches nothing inside the target: it discards the memoized verdict and asks
+// again. Separate from its agent-invoking sibling so a check path cannot be
+// refused by the wider gate a run needs -- and cannot silently satisfy it either,
+// since preflightGuards re-probes when a strong question follows a weak answer.
+func (o *Orchestrator) recheckPreflightGuardsNoAgent(ctx context.Context) error {
+	o.preflightMu.Lock()
+	o.preflightDone, o.preflightAgents, o.preflightErr = false, false, nil
+	o.preflightMu.Unlock()
+	return o.PreflightGuardsNoAgent(ctx)
 }
 
 // claimRepo takes the repository for a run that will write to it and returns the

@@ -183,6 +183,23 @@ func TestValidate(t *testing.T) {
 		{"summary_pattern staying put", func(c *Config) {
 			c.Logs.SummaryPattern = "nested/summary-{timestamp}.{ext}"
 		}, ""},
+		// time.Format passes a layout with no reference tokens through verbatim, so
+		// the timestamp was a way to write path separators into every log path -- the
+		// run directory included -- and both pattern confinements rendered their own
+		// stand-in instead of this, so neither noticed.
+		{"timestamp_format carrying a path separator", func(c *Config) {
+			c.Logs.TimestampFormat = "../../../../CLAUDE."
+		}, "contains a path separator"},
+		{"timestamp_format rendering to a directory", func(c *Config) {
+			c.Logs.TimestampFormat = ".."
+		}, "names a directory"},
+		{"timestamp_format rendering to nothing", func(c *Config) {
+			c.Logs.TimestampFormat = ""
+			c.Logs.Pattern = "{role}-{agent}-{prompt}.{ext}"
+		}, ""}, // empty means "use the default", set by applyDefaults
+		{"timestamp_format that is a real layout", func(c *Config) {
+			c.Logs.TimestampFormat = "2006-01-02T15-04-05"
+		}, ""},
 		{"unknown mode", func(c *Config) { c.Target.Mode = "svn" }, "unknown mode"},
 		{"pr mode without number", func(c *Config) { c.Target.Mode = "pr" }, "mode pr needs a pull request number"},
 		{"pr mode with number", func(c *Config) { c.Target.Mode = "pr"; c.Target.PR = 7 }, ""},

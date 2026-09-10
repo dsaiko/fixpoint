@@ -204,48 +204,139 @@ func (c *Collector) viewBranchPRAny(ctx context.Context, branch string) (branchP
 // that file is the pull request's -- so a fork could set `pr:` and turn off the
 // gate that exists to refuse it, while its `agents:` still named the commands
 // fixpoint runs. The property is about the TREE, so it is now checked for every
-// pr-mode run however the number arrived (review run 20260909-224407, one
-// critical and two highs).
+// pr-mode run however the number arrived (review run 20260909-224407).
 //
-// Two signals, refusing on either, because neither alone is both precise and
-// reliable:
+// Two signals, and their ORDER is the whole correctness argument (review run
+// 20260910-071016, one high for each half):
 //
-//   - `gh pr view` with no argument is authoritative about THIS branch (it reads
-//     the branch's push configuration, so it tells a fork's `feat/x` from ours),
-//     but its failure cannot be told apart from "no pull request here".
-//   - `gh pr list --head` matches the branch NAME across every fork, so it can
-//     name a pull request that is not this branch's -- but it exits cleanly with
-//     an empty list, so a failure really is a failure.
+//   - `gh pr view` with no argument is authoritative about THIS branch: it reads
+//     the branch's push configuration, so it tells a fork's `feat/x` from ours.
+//     When it answers, that answer is the result -- in BOTH directions. Treating
+//     "not a fork" as inconclusive and asking further refused trusted checkouts.
+//   - `gh pr list --head` is only a FALLBACK, for when the view could not answer,
+//     and it matches the branch NAME across every fork. A row is therefore not
+//     evidence about this checkout until its head owner is correlated with the
+//     owner this branch actually tracks. Without that correlation the gate
+//     refused the documented fork-review workflow: a contributor's pull request
+//     from `them/r:main` made every `-pr <n>` run launched from your own `main`
+//     refuse, with advice that could not be satisfied.
 //
-// A listing that cannot be read is therefore an error, not a shrug: this is a
-// gate, and "could not tell" must not mean "allowed".
+// A listing that cannot be read, cannot be correlated, or came back truncated is
+// an error, not a shrug: this is a gate, and "could not tell" must not mean
+// "allowed".
 func (c *Collector) CheckedOutFork(ctx context.Context) (BranchPR, bool, error) {
 	branch, err := c.currentBranch(ctx)
 	if err != nil {
-		// No branch names the checkout (detached, or an empty repository), so neither
-		// signal applies. A detached checkout of a fork's commit is not caught here;
-		// the number resolution refuses a detached HEAD outright, and with an explicit
-		// -pr the operator is naming what they are reviewing.
-		return BranchPR{}, false, nil //nolint:nilerr // "HEAD names no branch" is an answer to this question, not a failure of it
+		// A detached checkout is NOT proof of innocence, which is how this read
+		// before: `gh pr checkout --detach` is an ordinary shape, and with an explicit
+		// -pr the resolution's own detached-HEAD refusal never runs, so a fork's tree
+		// went unnoticed. Naming a pull request selects a target; it does not say the
+		// bundle already loaded from that tree is trustworthy (review run
+		// 20260910-071016, the critical). Operational failures propagate as
+		// themselves -- currentBranch separates the two.
+		return BranchPR{}, false, fmt.Errorf("cannot tell whose content the checkout at %s holds, so a pr-mode run is not started on a guess -- check out the branch under review, or pass -trusted-target if this tree is yours: %w", c.cfg.Path, err)
 	}
-	if view, verr := c.viewBranchPRAny(ctx, branch); verr == nil && view.CrossRepo {
+	// The authoritative signal, in both directions.
+	if view, verr := c.viewBranchPRAny(ctx, branch); verr == nil {
+		if !view.CrossRepo {
+			return BranchPR{}, false, nil
+		}
 		return BranchPR{Number: view.Number, Branch: branch, Base: view.BaseRefName, URL: view.URL, CrossRepository: true}, true, nil
 	}
+	return c.forkFromListing(ctx, branch)
+}
+
+// forkFromListing is the fallback: gh could not say what this branch's pull
+// request is, so the question becomes whether any pull request on a branch of
+// this NAME is both cross-repository and actually this checkout's.
+func (c *Collector) forkFromListing(ctx context.Context, branch string) (BranchPR, bool, error) {
 	raw, err := c.run(ctx, "gh", "pr", "list", "--head", branch, "--state", "all",
-		"--limit", strconv.Itoa(prBranchCandidates), "--json", "number,isCrossRepository,headRepositoryOwner")
+		"--limit", strconv.Itoa(prBranchCandidates), "--json", prListForkFields)
 	if err != nil {
 		return BranchPR{}, false, fmt.Errorf("could not determine whether branch %s is the head of a pull request from another repository, and a run whose target may be a fork's checkout is not started on a guess; pass -trusted-target if this checkout is yours: %w", branch, err)
 	}
-	var open []branchPRView
-	if err := json.Unmarshal([]byte(raw), &open); err != nil {
+	var rows []branchPRView
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
 		return BranchPR{}, false, fmt.Errorf("gh pr list for branch %s returned output this cannot read, so whether it is a fork's branch is unknown; pass -trusted-target if this checkout is yours: %w", branch, err)
 	}
-	for _, pr := range open {
+	var cross []branchPRView
+	for _, pr := range rows {
 		if pr.CrossRepo {
+			cross = append(cross, pr)
+		}
+	}
+	if len(cross) == 0 {
+		// Nothing on this branch name comes from another repository, so there is
+		// nothing this checkout could be. A truncated page is only a problem when it
+		// might have HIDDEN such a row.
+		if len(rows) >= prBranchCandidates {
+			return BranchPR{}, false, fmt.Errorf("branch %s has at least %d pull requests across every fork, so the listing that would show whether one of them is this checkout's is truncated and proves nothing; pass -trusted-target if this checkout is yours", branch, prBranchCandidates)
+		}
+		return BranchPR{}, false, nil
+	}
+	// There ARE fork pull requests on a branch of this name. Whether one of them is
+	// the tree in front of us is decided by who this branch tracks.
+	owner, err := c.branchRemoteOwner(ctx, branch)
+	if err != nil {
+		return BranchPR{}, false, err
+	}
+	if owner == "" {
+		return BranchPR{}, false, fmt.Errorf("branch %s matches %d pull request(s) from another repository (e.g. #%d) but tracks no remote, so whether this checkout is one of them cannot be told; set the branch's upstream, or pass -trusted-target if this tree is yours", branch, len(cross), cross[0].Number)
+	}
+	for _, pr := range cross {
+		if strings.EqualFold(pr.HeadOwner.Login, owner) {
 			return BranchPR{Number: pr.Number, Branch: branch, CrossRepository: true}, true, nil
 		}
 	}
 	return BranchPR{}, false, nil
+}
+
+// prListForkFields is the fallback probe's projection. Named for the same reason
+// prViewFields is: dropping isCrossRepository would decode as false and disarm
+// the gate, and headRepositoryOwner is what makes a row about THIS checkout
+// rather than about a stranger's branch of the same name.
+const prListForkFields = "number,isCrossRepository,headRepositoryOwner"
+
+// branchRemoteOwner is the owner of the repository this branch tracks -- the
+// fork's login for a branch fetched from a fork, the upstream's for one of ours.
+// Empty (with no error) when the branch tracks nothing.
+func (c *Collector) branchRemoteOwner(ctx context.Context, branch string) (string, error) {
+	// --end-of-options: the branch name reaches git as a positional argument, and a
+	// ref cannot begin with "-", but the terminator keeps that from being the thing
+	// standing between a crafted checkout and an option.
+	remote, err := c.git(ctx, "config", "--get", "--end-of-options", "branch."+branch+".remote")
+	if err != nil {
+		// A branch with no upstream is an answer, not a failure: `config --get` exits 1
+		// for a missing key. Anything else is a failure to ask.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("read the remote branch %s tracks, to tell whether this checkout is a fork's: %w", branch, err)
+	}
+	name := strings.TrimSpace(remote)
+	if name == "" {
+		return "", nil
+	}
+	// A remote can be a URL rather than a name (branch.<n>.remote accepts both).
+	url := name
+	if !strings.Contains(name, ":") && !strings.Contains(name, "/") {
+		out, uerr := c.git(ctx, "remote", "get-url", "--end-of-options", name)
+		if uerr != nil {
+			return "", fmt.Errorf("read the URL of remote %s, which branch %s tracks: %w", name, branch, uerr)
+		}
+		url = strings.TrimSpace(out)
+	}
+	id := remoteIdentity(url)
+	if id == "" {
+		return "", nil
+	}
+	// host/owner/repo -- the middle field is the owner.
+	parts := strings.Split(id, "/")
+	if len(parts) != 3 {
+		return "", nil
+	}
+	return parts[1], nil
 }
 
 // proveSolePR refuses the resolution unless the branch names exactly one open
