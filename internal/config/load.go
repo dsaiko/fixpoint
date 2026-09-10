@@ -85,6 +85,10 @@ type Overrides struct {
 	// between a flag left off and a flag given the placeholder value, and because
 	// the resolution cannot happen here: it runs git and gh inside the target and
 	// must wait for the target-integrity preflight (Orchestrator.resolvePR).
+	//
+	// It is also read the other way round, in apply: a caller that did NOT set it
+	// is taken to have typed its PR value, so a typed zero reaches Validate's
+	// refusal instead of being swallowed.
 	PRFromBranch bool
 	// Target points a directory-mode run at a file or a directory, as an ABSOLUTE
 	// path (the caller resolves it against its own working directory -- this layer
@@ -174,11 +178,16 @@ func (o Overrides) apply(c *Config) {
 	if o.BaseRef != "" {
 		c.Target.BaseRef = o.BaseRef
 	}
-	// Same rule as MaxIterations: any nonzero value applies, so an explicit -pr -1
-	// is rejected by Validate rather than swallowed as "no flag supplied". Zero
-	// stays "use config", which is also the placeholder the bundled review-pr
-	// config carries.
-	if o.PR != 0 {
+	// A TYPED number always lands, including zero. Dropping a zero as "no flag
+	// supplied" was right for the shipped placeholder and wrong for everything
+	// else: with a config carrying a real number -- review-pr.yaml's own comment
+	// invites editing `pr:` in place -- a `-pr 0` from a script whose lookup came
+	// back empty was silently discarded and the run scoped to the configured pull
+	// request, publishing on a pull request nobody named (review run
+	// 20260910-122834). PRFromBranch is what says the flag was absent, so it is
+	// what decides here; a caller of this package that does not type -pr must set
+	// it, as the CLI does.
+	if o.PR != 0 || !o.PRFromBranch {
 		c.Target.PR = o.PR
 	}
 	// Recorded even when the mode is not pr: this layer folds overrides in before

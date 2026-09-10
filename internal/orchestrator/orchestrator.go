@@ -92,6 +92,10 @@ type Orchestrator struct {
 	// there that never once went green was never verified by this run at all, and
 	// under no_regressions nothing else in the loop would have said so.
 	verifyEverPassed map[string]bool
+	// forkProbeAdvisory downgrades an UNANSWERABLE fork probe to a warning. Set
+	// only by ResolvePR (the --check path), where nothing from the target executes
+	// and no agent starts; a definite fork answer refuses on every path.
+	forkProbeAdvisory bool
 	// verifyEnv is the environment the gate's commands run with: fixpoint's, minus
 	// the agents' credentials. Verify commands are argv the TARGET can supply, so
 	// running them with everything the agents deliberately do not see is the one
@@ -1849,6 +1853,25 @@ func (o *Orchestrator) requireGitRepoForFix(ctx context.Context) error {
 	return nil
 }
 
+// hasTargetQuestions reports whether this run has anything to ask about the
+// target before it starts: which pull request it is about, or whether the tree is
+// a fork's checkout.
+//
+// Exported callers test it BEFORE taking the repository lock. Without that, a
+// check with both an explicit number and an asserted-trusted target serialized
+// against every other fixpoint run for a read it never performed -- so
+// `review-pr -pr 170 -trusted-target --check` failed with "another fixpoint run
+// is already working on ..." instead of printing the scope, which is the opposite
+// of what --check is for (review run 20260910-122834).
+func (o *Orchestrator) hasTargetQuestions() bool {
+	if o.cfg.Target.Mode != config.ModePR {
+		return false
+	}
+	// A trusted target answers the fork question by assertion, and an explicit
+	// number answers the other one.
+	return !o.cfg.Loop.TrustedTarget || o.cfg.Target.PR == 0
+}
+
 // refuseForkCheckout refuses a pr-mode run whose target already holds a FORK's
 // pull request, unless -trusted-target says the checkout is the operator's.
 //
@@ -1871,12 +1894,21 @@ func (o *Orchestrator) requireGitRepoForFix(ctx context.Context) error {
 //
 // Same-repository branches are allowed: pushing one already required write access
 // to the repository being reviewed, which is not a boundary this can defend.
-func (o *Orchestrator) refuseForkCheckout(ctx context.Context) error {
+func (o *Orchestrator) refuseForkCheckout(ctx context.Context, tolerateUnanswerable bool) error {
 	if o.cfg.Loop.TrustedTarget {
 		return nil
 	}
 	fork, isFork, err := o.collector.CheckedOutFork(ctx)
 	if err != nil {
+		// --check executes nothing from the target beyond the git its preflight
+		// already ran, and launches no agent, so a probe that cannot reach gh must
+		// not turn offline config validation into a failure -- which it did, for
+		// `review-pr -pr 170 --check` (review run 20260910-122834). A definite fork
+		// answer still refuses here; only "could not ask" degrades, and it says so.
+		if tolerateUnanswerable {
+			o.logf("WARNING: target.pr: %v", agent.EscapeTerminal(err.Error()))
+			return nil
+		}
 		return fmt.Errorf("target.pr: %w", err)
 	}
 	if !isFork {
@@ -1910,12 +1942,7 @@ func (o *Orchestrator) refuseForkCheckout(ctx context.Context) error {
 // cannot switch branches between reading HEAD and resolving; the collector
 // re-reads HEAD afterwards regardless, for the operator doing it by hand.
 func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) error {
-	if o.cfg.Target.Mode != config.ModePR {
-		return nil
-	}
-	// Nothing to ask when the checkout is asserted to be the operator's: the fork
-	// refusal below would not fire, and the number is already known.
-	if o.cfg.Loop.TrustedTarget && o.cfg.Target.PR != 0 {
+	if !o.hasTargetQuestions() {
 		return nil
 	}
 	// The gates are asked for HERE, not merely assumed to have run: a security
@@ -1929,7 +1956,7 @@ func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) err
 	if err := o.PreflightGuardsNoAgent(ctx); err != nil {
 		return err
 	}
-	if err := o.refuseForkCheckout(ctx); err != nil {
+	if err := o.refuseForkCheckout(ctx, o.forkProbeAdvisory); err != nil {
 		return err
 	}
 	// The number came from -pr or from the configuration; only the question about
@@ -1979,9 +2006,13 @@ func (o *Orchestrator) resolvePR(ctx context.Context, sum *model.RunSummary) err
 // until it ends, while a check takes it for the read alone. It does take it --
 // the reason is spelled out below.
 func (o *Orchestrator) ResolvePR(ctx context.Context) error {
-	if o.cfg.Target.Mode != config.ModePR {
+	if !o.hasTargetQuestions() {
 		return nil
 	}
+	// --check runs nothing from the target and starts no agent, so an unreachable
+	// gh is a warning here rather than a refusal; see refuseForkCheckout.
+	o.forkProbeAdvisory = true
+	defer func() { o.forkProbeAdvisory = false }()
 	// Gates first, as everywhere: LockRepo below runs git inside the target, so it
 	// must not precede guardPinnedHelpers. Memoized, so resolvePR's own call is
 	// then free.
@@ -2027,7 +2058,7 @@ func (o *Orchestrator) ResolvePR(ctx context.Context) error {
 // configured agent into that tree -- past the fork refusal that had just passed
 // (review run 20260910-071016).
 func (o *Orchestrator) ResolveAndPing(ctx context.Context) error {
-	if o.cfg.Target.Mode != config.ModePR {
+	if !o.hasTargetQuestions() {
 		return o.Ping(ctx)
 	}
 	if err := o.PreflightGuardsNoAgent(ctx); err != nil {
