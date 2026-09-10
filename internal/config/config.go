@@ -2093,6 +2093,12 @@ func (c *Config) Validate() error {
 	// role/agent/prompt in a round: under strategy all one agent runs several
 	// lenses whose reviewer goroutines write concurrently, so dropping {prompt}
 	// (or {agent}/{role}) races them onto one path and silently loses a record.
+	// Ahead of both pattern checks: each renders this value, so a format that is
+	// not a single path segment must be refused first -- or the operator who set
+	// the format is told about a pattern they never touched.
+	if err := c.validateTimestampFormat(); err != nil {
+		return err
+	}
 	if c.Logs.Pattern != "" {
 		if !strings.Contains(c.Logs.Pattern, "{ext}") {
 			return fmt.Errorf("logs.pattern %q must contain {ext}, else the md/json/raw and prompt writes overwrite one file", c.Logs.Pattern)
@@ -2211,7 +2217,11 @@ func (c *Config) logIdentities() [][3]string {
 // Logs.StepPath the logstore writes with, so validation cannot drift from the
 // paths actually produced.
 func (c *Config) renderLogPattern(id [3]string) string {
-	return c.Logs.StepPath(id[0], id[1], id[2], 1, "", "")
+	// The timestamp is RENDERED, not left empty: the writer substitutes
+	// logs.timestamp_format here, and an empty stand-in let a format carrying path
+	// separators slip past this very check (review run 20260910-071016). Held to
+	// one segment by validateTimestampFormat, which runs first.
+	return c.Logs.StepPath(id[0], id[1], id[2], 1, "", c.renderedTimestamp())
 }
 
 // validateSummaryPattern holds logs.summary_pattern to the same two rules
@@ -2232,13 +2242,17 @@ func (c *Config) validateSummaryPattern() error {
 	if !strings.Contains(c.Logs.SummaryPattern, "{ext}") {
 		return fmt.Errorf("logs.summary_pattern %q must contain {ext}, else the JSON summary overwrites the Markdown one (and its path is returned as the Markdown path)", c.Logs.SummaryPattern)
 	}
-	// The same renderer the logstore uses, with the placeholders a whole run has.
-	// A fixed timestamp: the two extensions are written by one run, so it is equal
-	// for both, and a pattern that separates them only by {timestamp} separates
-	// them not at all.
+	// The same renderer the logstore uses, with the placeholders a whole run has,
+	// and with the timestamp RENDERED rather than a literal stand-in: the writer
+	// substitutes logs.timestamp_format through time.Format, and validating a
+	// different string than the writer builds proved a property about nothing (see
+	// validateTimestampFormat).
+	//
+	// One timestamp for both extensions, because one run writes both -- a pattern
+	// that separates them only by {timestamp} separates them not at all.
 	rendered := map[string]string{}
 	for _, ext := range []string{"md", "json"} {
-		p := strings.NewReplacer("{timestamp}", "20060102-150405", "{ext}", ext).Replace(c.Logs.SummaryPattern)
+		p := strings.NewReplacer("{timestamp}", c.renderedTimestamp(), "{ext}", ext).Replace(c.Logs.SummaryPattern)
 		full := filepath.Clean(filepath.Join(logProbeRoot, p))
 		if !strings.HasPrefix(full, logProbeRoot+string(filepath.Separator)) {
 			return fmt.Errorf("logs.summary_pattern %q renders the %s summary to %q, which normalizes outside the run directory; a run summary is written even when the run fails, so a pattern that climbs out overwrites whatever it lands on -- remove the .. segments", c.Logs.SummaryPattern, ext, p)
@@ -2247,6 +2261,47 @@ func (c *Config) validateSummaryPattern() error {
 			return fmt.Errorf("logs.summary_pattern %q renders the %s and %s summaries to the same path %q; one would overwrite the other, and the Markdown path is what the run reports", c.Logs.SummaryPattern, prev, ext, p)
 		}
 		rendered[full] = ext
+	}
+	return nil
+}
+
+// probeTime is the instant every path-confinement check renders its timestamp
+// at. Any fixed instant does: the checks ask what the rendered string LOOKS
+// like, not what time it is.
+var probeTime = time.Date(2026, 1, 2, 15, 4, 5, 0, time.UTC)
+
+// renderedTimestamp is what the logstore will substitute for {timestamp}.
+func (c *Config) renderedTimestamp() string { return probeTime.Format(c.Logs.TimestampFormat) }
+
+// validateTimestampFormat holds logs.timestamp_format to being one path segment.
+//
+// It is interpolated into the run directory, the step log paths and the summary
+// path, and time.Format passes a layout containing no reference tokens through
+// VERBATIM -- so a value of "../../../../CLAUDE." renders as itself, separators
+// and all. That defeated both pattern confinements at once, because each rendered
+// its own literal stand-in for the timestamp instead of this, and it moved the
+// run directory too. The summary is written even when a run fails and its body
+// embeds agent-authored text, so the file landed on was partly attacker-chosen
+// AND partly attacker-filled -- on an AGENTS.md or CLAUDE.md that is instruction
+// injection into every later agent run on the machine (review run
+// 20260910-071016).
+//
+// Refused rather than sanitized: an operator who wrote a separator into a
+// timestamp meant something, and silently rewriting their path is worse than
+// telling them.
+func (c *Config) validateTimestampFormat() error {
+	if c.Logs.TimestampFormat == "" {
+		return nil
+	}
+	got := c.renderedTimestamp()
+	if got == "" {
+		return fmt.Errorf("logs.timestamp_format %q renders to nothing, so every {timestamp} in a log path collapses and distinct runs share one directory", c.Logs.TimestampFormat)
+	}
+	if strings.ContainsRune(got, '/') || strings.ContainsRune(got, filepath.Separator) {
+		return fmt.Errorf("logs.timestamp_format %q renders to %q, which contains a path separator; the timestamp is interpolated into the run directory and every log path, so it must be a single segment", c.Logs.TimestampFormat, got)
+	}
+	if got == ".." || got == "." {
+		return fmt.Errorf("logs.timestamp_format %q renders to %q, which names a directory rather than a run", c.Logs.TimestampFormat, got)
 	}
 	return nil
 }
