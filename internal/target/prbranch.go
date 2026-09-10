@@ -265,28 +265,30 @@ func (c *Collector) forkFromListing(ctx context.Context, branch string) (BranchP
 			cross = append(cross, pr)
 		}
 	}
-	if len(cross) == 0 {
-		// Nothing on this branch name comes from another repository, so there is
-		// nothing this checkout could be. A truncated page is only a problem when it
-		// might have HIDDEN such a row.
-		if len(rows) >= prBranchCandidates {
-			return BranchPR{}, false, fmt.Errorf("branch %s has at least %d pull requests across every fork, so the listing that would show whether one of them is this checkout's is truncated and proves nothing; pass -trusted-target if this checkout is yours", branch, prBranchCandidates)
-		}
-		return BranchPR{}, false, nil
-	}
-	// There ARE fork pull requests on a branch of this name. Whether one of them is
+	// Any fork pull requests on a branch of this NAME? Then whether one of them is
 	// the tree in front of us is decided by who this branch tracks.
-	owner, err := c.branchRemoteOwner(ctx, branch)
-	if err != nil {
-		return BranchPR{}, false, err
-	}
-	if owner == "" {
-		return BranchPR{}, false, fmt.Errorf("branch %s matches %d pull request(s) from another repository (e.g. #%d) but tracks no remote, so whether this checkout is one of them cannot be told; set the branch's upstream, or pass -trusted-target if this tree is yours", branch, len(cross), cross[0].Number)
-	}
-	for _, pr := range cross {
-		if strings.EqualFold(pr.HeadOwner.Login, owner) {
-			return BranchPR{Number: pr.Number, Branch: branch, CrossRepository: true}, true, nil
+	if len(cross) > 0 {
+		owner, err := c.branchRemoteOwner(ctx, branch)
+		if err != nil {
+			return BranchPR{}, false, err
 		}
+		if owner == "" {
+			return BranchPR{}, false, fmt.Errorf("branch %s matches %d pull request(s) from another repository (e.g. #%d) but tracks no remote, so whether this checkout is one of them cannot be told; set the branch's upstream, or pass -trusted-target if this tree is yours", branch, len(cross), cross[0].Number)
+		}
+		for _, pr := range cross {
+			if strings.EqualFold(pr.HeadOwner.Login, owner) {
+				return BranchPR{Number: pr.Number, Branch: branch, CrossRepository: true}, true, nil
+			}
+		}
+	}
+	// Nothing here is ours -- but "nothing in the page" is only an ANSWER if the
+	// page held everything. The cap applies BEFORE any filtering, so a listing at
+	// the limit can have hidden a fork row, and equally the one fork row that
+	// matches our owner while fifty strangers' fill the page. The first version of
+	// this rule only covered the empty case, which left exactly that second shape
+	// passing as safe (review run 20260910-122834, reported by two reviewers).
+	if len(rows) >= prBranchCandidates {
+		return BranchPR{}, false, fmt.Errorf("branch %s matches at least %d pull requests across every fork, and none of the first %d is this checkout's -- so the listing is truncated and cannot prove the next one is not either; pass -trusted-target if this checkout is yours", branch, prBranchCandidates, prBranchCandidates)
 	}
 	return BranchPR{}, false, nil
 }

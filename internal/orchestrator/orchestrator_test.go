@@ -10542,6 +10542,71 @@ func TestRunRefusesAForkCheckoutWithAnExplicitNumber(t *testing.T) {
 	})
 }
 
+// switchBranchBetweenConfigProbes pins a `git` outside the target that delegates
+// to the real one and, once the FIRST repo-config listing is behind it, switches
+// the checkout to branch. That is what a competing run does in the window between
+// a pre-lock preflight and the lock, so it is how every post-lock re-probe is
+// tested. It also pins a `gh` that records its calls and returns the path of that
+// record, since "no gh call followed" is what proves the refusal came first.
+//
+// The caller must have created branch and be standing somewhere else, and branch
+// must carry whatever the guard is expected to catch.
+func switchBranchBetweenConfigProbes(t *testing.T, repo, branch string) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	binDir := t.TempDir()
+	counter := filepath.Join(t.TempDir(), "config-listings")
+	ghCalls := filepath.Join(t.TempDir(), "gh-calls")
+	wrapper := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"*'config --list'*)\n" +
+		"  n=$(cat " + counter + " 2>/dev/null || echo 0)\n" +
+		"  n=$((n+1)); echo $n > " + counter + "\n" +
+		"  if [ \"$n\" -ge 2 ]; then " + realGit + " -C " + repo + " checkout -q " + branch + "; fi\n" +
+		"  ;;\n" +
+		"esac\n" +
+		"exec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gh"),
+		[]byte("#!/bin/sh\necho \"$1 $2\" >> "+ghCalls+"\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gitenv.PinTools)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gitenv.PinTools()
+	return ghCalls
+}
+
+// plantBranchConditionalFilter gives repo a clean filter that exists only while
+// branch is checked out: written into .git, which a pull request cannot reach --
+// this stands for a crafted checkout -- and selected by no .gitattributes, so it
+// never actually runs. It fails the test if the payload is visible from where the
+// caller is standing now, since a guard that fires early would prove nothing.
+func plantBranchConditionalFilter(t *testing.T, tgt config.Target, branch string) {
+	t.Helper()
+	evil := filepath.Join(tgt.Path, ".git", "evil-config")
+	if err := os.WriteFile(evil, []byte("[filter \"evil\"]\n\tclean = sh -c 'id'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(tgt.Path, ".git", "config")
+	existing, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath,
+		append(existing, []byte("[includeIf \"onbranch:"+branch+"\"]\n\tpath = evil-config\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if keys, kerr := target.New(tgt).UnsafeConfig(t.Context()); kerr != nil || len(keys) != 0 {
+		t.Fatalf("UnsafeConfig() = %v, %v before the switch, want none (an onbranch include is inert off that branch)", keys, kerr)
+	}
+}
+
 // The preflight is memoized BEFORE the repository lock, so its answer describes a
 // checkout a competing run could still have switched: hold the lock on branch A
 // while this run probes A, move to B, release. Every stage after would work from
@@ -10562,56 +10627,9 @@ func TestClaimRepoReprobesGuardsAfterTakingTheLock(t *testing.T) {
 	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
 	gitRun(t, f.repo, "checkout", "-q", "main")
 
-	// A clean filter that exists only while `feature` is checked out. Written into
-	// .git, which a pull request cannot reach -- this stands for a crafted checkout
-	// -- and selected by no .gitattributes, so it never actually runs.
-	evil := filepath.Join(f.repo, ".git", "evil-config")
-	if err := os.WriteFile(evil, []byte("[filter \"evil\"]\n\tclean = sh -c 'id'\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfgPath := filepath.Join(f.repo, ".git", "config")
-	existing, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath,
-		append(existing, []byte("[includeIf \"onbranch:feature\"]\n\tpath = evil-config\n")...), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Inert from main, so a pass here cannot come from the pre-lock probe.
-	if keys, kerr := target.New(f.cfg.Target).UnsafeConfig(t.Context()); kerr != nil || len(keys) != 0 {
-		t.Fatalf("UnsafeConfig() = %v, %v on main, want none (an onbranch include is inert there)", keys, kerr)
-	}
+	plantBranchConditionalFilter(t, f.cfg.Target, "feature")
 
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not on PATH")
-	}
-	binDir := t.TempDir()
-	counter := filepath.Join(t.TempDir(), "config-listings")
-	ghCalls := filepath.Join(t.TempDir(), "gh-calls")
-	// Delegates every call to the real git, and switches the checkout to `feature`
-	// once the first config listing is behind us.
-	wrapper := "#!/bin/sh\n" +
-		"case \"$*\" in\n" +
-		"*'config --list'*)\n" +
-		"  n=$(cat " + counter + " 2>/dev/null || echo 0)\n" +
-		"  n=$((n+1)); echo $n > " + counter + "\n" +
-		"  if [ \"$n\" -ge 2 ]; then " + realGit + " -C " + f.repo + " checkout -q feature; fi\n" +
-		"  ;;\n" +
-		"esac\n" +
-		"exec " + realGit + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// gh must never be reached: Prepare comes after the lock.
-	if err := os.WriteFile(filepath.Join(binDir, "gh"),
-		[]byte("#!/bin/sh\necho \"$1 $2\" >> "+ghCalls+"\nexit 0\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(gitenv.PinTools)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	gitenv.PinTools()
+	ghCalls := switchBranchBetweenConfigProbes(t, f.repo, "feature")
 
 	_, runErr := f.orchestrator().Run(t.Context())
 	if runErr == nil || !strings.Contains(runErr.Error(), "repo-controlled programs") {
@@ -10680,8 +10698,19 @@ func TestResolvePROnTheCheckPathSerializesAgainstARun(t *testing.T) {
 // --check-live must not let go of the repository between authorizing the
 // checkout and launching agents into it: in that gap a concurrent run can check
 // out a fork's branch and start rewriting the worktree, and the ping would then
-// start every configured agent in it (review run 20260910-071016).
+// start every configured agent in it.
+//
+// The first version of this test pre-acquired the lock, so ResolveAndPing exited
+// at its own LockRepo and the assertion proved only that it TRIES to lock -- it
+// would still have passed had the lock been released before the resolution or
+// before the ping, which is the property that matters (review run
+// 20260910-122834). So the lock is probed from INSIDE both phases instead, by a
+// child process, which is what a competing run is.
 func TestResolveAndPingHoldsTheRepositoryAcrossBoth(t *testing.T) {
+	probe, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available to probe the lock from another process")
+	}
 	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
 	f.reviewOnly("mock")
 	f.cfg.Target.Mode = config.ModePR
@@ -10692,24 +10721,79 @@ func TestResolveAndPingHoldsTheRepositoryAcrossBoth(t *testing.T) {
 	gitRun(t, f.repo, "branch", "-M", "main")
 	baseSHA := strings.TrimSpace(gitRun(t, f.repo, "rev-parse", "HEAD"))
 	gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
-	stubBranchPRGH(t, baseSHA, false)
 
-	// A competing run owns the repository for the whole call.
-	release, err := target.New(f.cfg.Target).LockRepo(t.Context())
-	if err != nil {
+	// A flock attempt from another process: "held" means this run owns the
+	// repository at that moment, which is what both phases must see.
+	work := t.TempDir()
+	script := filepath.Join(work, "probe.py")
+	if err := os.WriteFile(script, []byte(
+		"import fcntl, sys\n"+
+			"lock, out = sys.argv[1], sys.argv[2]\n"+
+			"try:\n"+
+			"    f = open(lock, 'a+')\n"+
+			"    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"+
+			"    state = 'free'\n"+
+			"except Exception:\n"+
+			"    state = 'held'\n"+
+			"open(out, 'a').write(state + '\\n')\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	defer release()
+	lock := filepath.Join(f.repo, ".git", "fixpoint.lock")
+	duringResolve := filepath.Join(work, "resolve")
+	duringPing := filepath.Join(work, "ping")
+	probeCmd := func(out string) string {
+		return probe + " " + script + " " + lock + " " + out + "\n"
+	}
 
-	if err := f.orchestrator().ResolveAndPing(t.Context()); err == nil {
-		t.Fatal("check-live proceeded while another run owned the repository")
-	} else if !strings.Contains(err.Error(), "already working on") {
-		t.Errorf("the failure does not name the competing run: %v", err)
+	// gh answers the resolution, and probes the lock while doing it.
+	binDir := t.TempDir()
+	view := `{"number":170,"state":"OPEN","url":"u","baseRefName":"main","headRefName":"feature",` +
+		`"headRepositoryOwner":{"login":"us"},"isCrossRepository":false}`
+	gh := "#!/bin/sh\n" + probeCmd(duringResolve) +
+		"if [ \"$2\" = view ]; then printf '%s' '" + view + "'; exit 0; fi\n" +
+		"if [ \"$2\" = list ]; then printf '%s' '[{\"number\":170,\"baseRefName\":\"main\"," +
+		"\"headRepositoryOwner\":{\"login\":\"us\"},\"isCrossRepository\":false}]'; exit 0; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	// The point of holding the lock: no agent was started.
-	if got := f.invocations(); got != 0 {
-		t.Errorf("agent invocations = %d, want 0", got)
+	t.Cleanup(gitenv.PinTools)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gitenv.PinTools()
+	_ = baseSHA
+
+	// The agent probes it too: a ping is the moment agents start, which is what the
+	// lock is being held across.
+	agentScript := filepath.Join(work, "agent.sh")
+	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\n"+probeCmd(duringPing)+"echo pong\n"), 0o700); err != nil {
+		t.Fatal(err)
 	}
+	a := f.cfg.Agents["mock"]
+	a.Command = []string{agentScript}
+	f.cfg.Agents["mock"] = a
+
+	if err := f.orchestrator().ResolveAndPing(t.Context()); err != nil {
+		t.Fatalf("ResolveAndPing() = %v", err)
+	}
+	for name, path := range map[string]string{"resolution": duringResolve, "ping": duringPing} {
+		got := strings.TrimSpace(readFile(t, path))
+		if got == "" {
+			t.Errorf("the %s phase never ran, so it proves nothing about the lock", name)
+			continue
+		}
+		for _, line := range strings.Split(got, "\n") {
+			if line != "held" {
+				t.Errorf("during the %s phase the repository was %q, want held throughout", name, line)
+			}
+		}
+	}
+	// And released when it is over: a check does not own the repository for longer
+	// than the reads it serializes.
+	release, lerr := target.New(f.cfg.Target).LockRepo(t.Context())
+	if lerr != nil {
+		t.Fatalf("the repository is still locked after ResolveAndPing returned: %v", lerr)
+	}
+	release()
 }
 
 // The fork check and the number resolution are two live reads, so a branch
@@ -10756,5 +10840,80 @@ func TestRunRefusesAForkTheResolutionItselfFound(t *testing.T) {
 	}
 	if got := f.invocations(); got != 0 {
 		t.Errorf("agent invocations = %d, want 0", got)
+	}
+}
+
+// The check paths re-probe the guards after taking the lock, for the same reason
+// claimRepo does: the earlier verdict describes a checkout a competing run could
+// still have switched. Both of the tests written for these entry points held the
+// lock from a competing run, so they failed AT LockRepo and never reached the
+// re-probe -- deleting either call left the suite green, which is the mutation
+// the twin control was checked against (review run 20260910-122834, reported by
+// two reviewers).
+func TestCheckPathsReprobeGuardsAfterTakingTheLock(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Orchestrator, context.Context) error
+	}{
+		{"ResolvePR", (*Orchestrator).ResolvePR},
+		{"ResolveAndPing", (*Orchestrator).ResolveAndPing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+			f.reviewOnly("mock")
+			f.cfg.Loop.TrustedTarget = false
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PRFromBranch = true
+
+			gitRun(t, f.repo, "branch", "-M", "main")
+			gitRun(t, f.repo, "checkout", "-q", "-b", "feature")
+			gitRun(t, f.repo, "checkout", "-q", "main")
+			plantBranchConditionalFilter(t, f.cfg.Target, "feature")
+			ghCalls := switchBranchBetweenConfigProbes(t, f.repo, "feature")
+
+			err := tc.call(f.orchestrator(), t.Context())
+			if err == nil || !strings.Contains(err.Error(), "repo-controlled programs") {
+				t.Fatalf("%s() err = %v, want the config guard's refusal from the post-lock re-probe", tc.name, err)
+			}
+			if fileExists(ghCalls) {
+				t.Errorf("gh was reached; the re-probe must refuse before any forge read: %s", readFile(t, ghCalls))
+			}
+			if got := f.invocations(); got != 0 {
+				t.Errorf("agent invocations = %d, want 0", got)
+			}
+			// A failed re-probe must not leak the lock either.
+			release, lerr := target.New(f.cfg.Target).LockRepo(t.Context())
+			if lerr != nil {
+				t.Fatalf("the repository is still locked after a failed re-probe: %v", lerr)
+			}
+			release()
+		})
+	}
+}
+
+// A check with both an explicit number and an asserted-trusted target has nothing
+// to resolve and nothing to refuse, so it must not serialize against other runs
+// for a read it never performs: `review-pr -pr 170 -trusted-target --check` used
+// to fail with "another fixpoint run is already working on ..." while a fix run
+// held the repository, instead of printing the scope (review run 20260910-122834).
+func TestResolvePRTakesNoLockWhenThereIsNothingToAsk(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 170
+	f.cfg.Loop.TrustedTarget = true // the fixture's default, stated for the record
+
+	// Another run owns the repository for the duration.
+	release, err := target.New(f.cfg.Target).LockRepo(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if err := f.orchestrator().ResolvePR(t.Context()); err != nil {
+		t.Fatalf("ResolvePR() = %v; with nothing to ask it must not wait on the repository", err)
+	}
+	// And the run path is unaffected: it holds claimRepo's lock either way.
+	if f.cfg.Target.PR != 170 {
+		t.Errorf("target.pr = %d, want the explicit 170 untouched", f.cfg.Target.PR)
 	}
 }

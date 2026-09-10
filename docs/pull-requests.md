@@ -119,9 +119,15 @@ Whether the checkout is a fork's is decided from two signals, in this order:
    from your own `main`.
 
 It fails **closed**. A detached HEAD, a `git` that cannot say what is checked
-out, a listing that cannot be read or that came back truncated, or fork rows that
-cannot be correlated with your branch: none of them mean "allowed", and the run
-does not start.
+out, a listing that cannot be read, a page that came back full (the row limit
+applies before anything is filtered, so a full page can hide the row that
+matters), or fork rows that cannot be correlated with your branch: none of them
+mean "allowed", and the run does not start.
+
+The one exception is `--check`, which executes nothing from the target and starts
+no agent: there an *unanswerable* probe is a warning, so validating a config
+still works with no network or an expired token. A definite fork answer refuses
+on every path, `--check` included.
 
 `make review-pr` and `make fix-pr` take `PR=<n>` the same way, and omitting it now
 works instead of failing the usage guard.
