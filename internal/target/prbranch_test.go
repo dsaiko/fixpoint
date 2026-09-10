@@ -209,9 +209,29 @@ func TestResolvePRFromBranchRefusesANonRepository(t *testing.T) {
 }
 
 // The probe is what proves the number is safe to act on, so "could not tell" is
-// not "unique": a failed listing refuses, and names the number it could not
-// prove so the operator can pass it.
-func TestResolvePRFromBranchRefusesWhenTheProbeFails(t *testing.T) {
+// not "unique". Two ways it can fail to answer, and until now only the second was
+// exercised -- the branch that handles a failed COMMAND was dead code as far as
+// the suite was concerned (review run 20260910-122834).
+func TestResolvePRFromBranchRefusesWhenTheProbeCannotRun(t *testing.T) {
+	dir := onBranch(t)
+	// `gh pr list` exits non-zero: an outage, a revoked token, a rate limit.
+	stubGHListStatus(t, viewPR(170, "OPEN", "o", branchUnderTest, "main"), "", 0, 1)
+
+	_, err := resolve(t, dir)
+	if err == nil {
+		t.Fatal("an unproven number was acted on after the listing failed to run")
+	}
+	// The number is in the refusal, so an operator who does mean it can say so.
+	if !strings.Contains(err.Error(), "#170") || !strings.Contains(err.Error(), "-pr") {
+		t.Errorf("the refusal names neither the number nor the flag: %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed") {
+		t.Errorf("the refusal does not say the listing failed: %v", err)
+	}
+}
+
+// The other half: the command ran and its output cannot be read.
+func TestResolvePRFromBranchRefusesUnreadableProbeOutput(t *testing.T) {
 	dir := onBranch(t)
 	stubGH(t, `{"number":170,"state":"OPEN","url":"u","baseRefName":"main","headRefName":"feat/x","headRepositoryOwner":{"login":"o"}}`,
 		"", "not json at all", 0)
@@ -631,6 +651,27 @@ func TestCheckedOutForkRefusesATruncatedListing(t *testing.T) {
 		_, isFork, err := c.CheckedOutFork(t.Context())
 		if err == nil || isFork {
 			t.Fatalf("CheckedOutFork() = %t, %v; a truncated listing must refuse", isFork, err)
+		}
+		if !strings.Contains(err.Error(), "truncated") {
+			t.Errorf("the refusal does not say the listing was truncated: %v", err)
+		}
+	})
+	// The shape the first version of the rule let through: the page IS full of fork
+	// rows, none of them ours, so the loop found no match and returned "not a
+	// fork" -- while the row that matches our owner could be number 51. The cap
+	// applies before any filtering, so a full page is never an answer (review run
+	// 20260910-122834, reported by two reviewers).
+	t.Run("a full page of other forks hides ours", func(t *testing.T) {
+		dir := onBranch(t)
+		testfixture.GitRun(t, dir, "remote", "add", "ours", "https://github.com/us/r.git")
+		testfixture.GitRun(t, dir, "config", "branch."+branchUnderTest+".remote", "ours")
+		stubGHListStatus(t, "", rows(prBranchCandidates, true), 1, 0)
+
+		c := New(config.Target{Mode: config.ModePR, Path: dir})
+		c.UseGitEnv(agent.EnvWithoutCredentials(nil))
+		_, isFork, err := c.CheckedOutFork(t.Context())
+		if err == nil {
+			t.Fatalf("CheckedOutFork() = %t, nil; a full page with no match of ours proves nothing", isFork)
 		}
 		if !strings.Contains(err.Error(), "truncated") {
 			t.Errorf("the refusal does not say the listing was truncated: %v", err)

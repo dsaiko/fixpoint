@@ -1962,8 +1962,8 @@ func TestRunReportsAFailedBranchResolution(t *testing.T) {
 	bin := t.TempDir()
 	// gh works: its listing exits cleanly and empty, which is how "no pull request
 	// here" is spelled, while `pr view` fails the way gh fails for a branch that
-	// has none. A gh that failed EVERY call would be the broken-tooling case, and
-	// the fork gate refuses that one first (see TestCheckedOutForkFailsClosed).
+	// has none. A gh that failed EVERY call is the broken-tooling case, covered by
+	// the "listing fails" row of internal/target's TestCheckedOutFork.
 	script := "#!/bin/sh\n" +
 		"if [ \"$2\" = list ]; then printf '%s' '[]'; exit 0; fi\n" +
 		"echo 'no pull requests found for branch \"feat/x\"' >&2\nexit 1\n"
@@ -2087,5 +2087,60 @@ func TestExplicitZeroPRIsRefusedRatherThanResolved(t *testing.T) {
 	}
 	if c := ghCalls(t, calls); c != "" {
 		t.Errorf("gh was called for a run that should have failed validation: %q", c)
+	}
+}
+
+// `-pr 0` against a config that names a real pull request used to be swallowed
+// twice over: the flag layer stopped reading it as "no flag", but apply still
+// dropped the value, so the run scoped to the CONFIGURED number (review run
+// 20260910-122834).
+func TestExplicitZeroPRDoesNotFallBackToTheConfig(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+	calls := stubGHForPR(t)
+
+	var buf bytes.Buffer
+	cfg := f.configFile("pr", "  pr: 99\n", "")
+	if code := run([]string{"-config", cfg, "-pr", "0", "-review-only", "-check"}, &buf, &buf); code != 1 {
+		t.Fatalf("run(-pr 0 over a configured 99) = %d, want 1; stderr:\n%s", code, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "mode pr needs a pull request number") {
+		t.Errorf("the refusal is not validation's:\n%s", out)
+	}
+	if strings.Contains(out, "pr #99") {
+		t.Errorf("a typed zero was discarded and the config's number reviewed instead:\n%s", out)
+	}
+	if c := ghCalls(t, calls); c != "" {
+		t.Errorf("gh was called for a run that should have failed validation: %q", c)
+	}
+}
+
+// --check runs nothing from the target and starts no agent, so it must stay the
+// cheap thing you can run first: an unreachable gh is a warning, not a failure.
+// A definite fork answer still refuses (TestRunRefusesAForkCheckoutWithAnExplicitNumber
+// covers that) -- only "could not ask" degrades (review run 20260910-122834).
+func TestCheckToleratesAnUnreachableForkProbe(t *testing.T) {
+	f := newFixture(t)
+	testfixture.GitRun(t, f.repo, "checkout", "-q", "-b", "feat/x")
+	bin := t.TempDir()
+	// gh is present but answers nothing: no network, no token.
+	if err := os.WriteFile(filepath.Join(bin, "gh"),
+		[]byte("#!/bin/sh\necho 'error connecting to api.github.com' >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var buf bytes.Buffer
+	code := run([]string{"-config", f.configFile("pr", "  pr: 170\n", ""), "-review-only", "-check"}, &buf, &buf)
+	out := buf.String()
+	if code != 0 {
+		t.Fatalf("run(--check offline) = %d, want 0: config validation must not need the network; stderr:\n%s", code, out)
+	}
+	if !strings.Contains(out, "WARNING") {
+		t.Errorf("the degraded probe is silent; the operator must be told it could not be asked:\n%s", out)
+	}
+	if !strings.Contains(out, "pr #170") {
+		t.Errorf("--check did not report its scope:\n%s", out)
 	}
 }
