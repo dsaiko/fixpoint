@@ -360,34 +360,34 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 
 26 candidates, scored on 8 targets (go, design, cpp, csharp, java, python, rust, typescript).
 
-| # | candidate | route | score | recall | total $ | per point | wall s | fails |
-|--:|---|---|--:|--:|--:|--:|--:|--:|
-| 1 | `claude` | cli | 376/484 | 78% | ~$8.61 | ~$0.023 | 3958 | 0 |
-| 2 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$8.84 | ~$0.024 | 4152 | 0 |
-| 3 | `claude-fable-5-1` | anthropic | 365/484 | 75% | ~$13.65 | ~$0.037 | 3504 | 0 |
-| 4 | `qwen/qwen3.8-max` | openrouter | 331/484 | 68% | $6.35 | $0.019 | 11266 | 0 |
-| 5 | `kimi-k3:cloud` | ollama | 319/484 | 66% | ~$7.58 | ~$0.024 | 2179 | 0 |
-| 6 | `qwen/qwen3.8-27b` | openrouter | 314/484 | 65% | $2.48 | $0.008 | 12930 | 0 |
-| 7 | `glm-5.3:cloud` | ollama | 313/484 | 65% | ~$7.31 | ~$0.023 | 2540 | 0 |
-| 8 | `deepseek-v4.1-flash:cloud` | ollama | 312/484 | 64% | ~$0.35 | ~$0.001 | 2487 | 0 |
-| 9 | `nemotron-3-ultra:cloud` | ollama | 310/484 | 64% | ~$1.66 | ~$0.005 | 20316 | 1 |
-| 10 | `glm-5.3-flash:cloud` | ollama | 304/484 | 63% | ~$0.78 | ~$0.003 | 2209 | 0 |
-| 11 | `codex` | cli | 298/484 | 62% | ~$8.36 | ~$0.028 | 6810 | 0 |
-| 12 | `glm-5.2:cloud` | ollama | 278/484 | 57% | ~$5.72 | ~$0.021 | 3948 | 0 |
-| 13 | `claude-fable-5` | anthropic | 277/484 | 57% | ~$13.39 | ~$0.048 | 3653 | 0 |
-| 14 | `x-ai/grok-4.6` | openrouter | 277/484 | 57% | $6.00 | $0.022 | 7955 | 0 |
-| 15 | `deepseek-v4-pro:cloud` | ollama | 270/484 | 56% | ~$2.83 | ~$0.010 | 2551 | 0 |
-| 16 | `gpt-6-astra-xhigh` | cli | 270/484 | 56% | ~$14.94 | ~$0.055 | 5617 | 0 |
-| 17 | `claude-opus-4-8` | anthropic | 268/484 | 55% | ~$6.04 | ~$0.023 | 2912 | 0 |
-| 18 | `gpt-6-astra` | cli | 265/484 | 55% | ~$10.58 | ~$0.040 | 3600 | 0 |
-| 19 | `minimax-m3:cloud` | ollama | 251/484 | 52% | ~$4.56 | ~$0.018 | 6003 | 2 |
-| 20 | `deepseek-v4-flash:0731-cloud` | ollama | 249/484 | 51% | ~$1.19 | ~$0.005 | 6800 | 0 |
-| 21 | `claude-sonnet-5` | anthropic | 245/484 | 51% | ~$4.89 | ~$0.020 | 4313 | 0 |
-| 22 | `kimi-k2.7-code:cloud` | ollama | 242/484 | 50% | ~$2.54 | ~$0.010 | 2876 | 0 |
-| 23 | `gpt-oss:120b-cloud` | ollama | 236/484 | 49% | ~$1.41 | ~$0.006 | 3533 | 0 |
-| 24 | `gpt-5.6-terra` | cli | 221/484 | 46% | ~$3.04 | ~$0.014 | 2896 | 0 |
-| 25 | `qwen3.5:397b-cloud` | ollama | 186/484 | 38% | ~$1.66 | ~$0.009 | 1187 | 0 |
-| 26 | `gemma4:31b-cloud` | ollama | 156/484 | 32% | ~$0.66 | ~$0.004 | 1598 | 0 |
+| # | candidate | route | score | recall | total $ | per point | cached | per point (uncached-eq) | wall s | fails |
+|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| 1 | `claude` | cli | 376/484 | 78% | ~$8.61 | ~$0.023 | 97% | ~$0.043 | 3958 | 0 |
+| 2 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$8.84 | ~$0.024 | 97% | ~$0.044 | 4152 | 0 |
+| 3 | `claude-fable-5-1` | anthropic | 365/484 | 75% | ~$13.65 | ~$0.037 | 96% | ~$0.066 | 3504 | 0 |
+| 4 | `qwen/qwen3.8-max` | openrouter | 331/484 | 68% | $6.35 | $0.019 | 98% | $0.019 | 11266 | 0 |
+| 5 | `kimi-k3:cloud` | ollama | 319/484 | 66% | ~$7.58 | ~$0.024 | - | ~$0.024 | 2179 | 0 |
+| 6 | `qwen/qwen3.8-27b` | openrouter | 314/484 | 65% | $2.48 | $0.008 | 54% | $0.010 | 12930 | 0 |
+| 7 | `glm-5.3:cloud` | ollama | 313/484 | 65% | ~$7.31 | ~$0.023 | - | ~$0.023 | 2540 | 0 |
+| 8 | `deepseek-v4.1-flash:cloud` | ollama | 312/484 | 64% | ~$0.35 | ~$0.001 | 84% | ~$0.003 | 2487 | 0 |
+| 9 | `nemotron-3-ultra:cloud` | ollama | 310/484 | 64% | ~$1.66 | ~$0.005 | - | ~$0.005 | 20316 | 1 |
+| 10 | `glm-5.3-flash:cloud` | ollama | 304/484 | 63% | ~$0.78 | ~$0.003 | - | ~$0.003 | 2209 | 0 |
+| 11 | `codex` | cli | 298/484 | 62% | ~$8.36 | ~$0.028 | 75% | ~$0.045 | 6810 | 0 |
+| 12 | `glm-5.2:cloud` | ollama | 278/484 | 57% | ~$5.72 | ~$0.021 | - | ~$0.021 | 3948 | 0 |
+| 13 | `claude-fable-5` | anthropic | 277/484 | 57% | ~$13.39 | ~$0.048 | 94% | ~$0.085 | 3653 | 0 |
+| 14 | `x-ai/grok-4.6` | openrouter | 277/484 | 57% | $6.00 | $0.022 | 41% | $0.022 | 7955 | 0 |
+| 15 | `deepseek-v4-pro:cloud` | ollama | 270/484 | 56% | ~$2.83 | ~$0.010 | - | ~$0.010 | 2551 | 0 |
+| 16 | `gpt-6-astra-xhigh` | cli | 270/484 | 56% | ~$14.94 | ~$0.055 | 83% | ~$0.125 | 5617 | 0 |
+| 17 | `claude-opus-4-8` | anthropic | 268/484 | 55% | ~$6.04 | ~$0.023 | 96% | ~$0.042 | 2912 | 0 |
+| 18 | `gpt-6-astra` | cli | 265/484 | 55% | ~$10.58 | ~$0.040 | 80% | ~$0.100 | 3600 | 0 |
+| 19 | `minimax-m3:cloud` | ollama | 251/484 | 52% | ~$4.56 | ~$0.018 | - | ~$0.018 | 6003 | 2 |
+| 20 | `deepseek-v4-flash:0731-cloud` | ollama | 249/484 | 51% | ~$1.19 | ~$0.005 | - | ~$0.005 | 6800 | 0 |
+| 21 | `claude-sonnet-5` | anthropic | 245/484 | 51% | ~$4.89 | ~$0.020 | 99% | ~$0.049 | 4313 | 0 |
+| 22 | `kimi-k2.7-code:cloud` | ollama | 242/484 | 50% | ~$2.54 | ~$0.010 | - | ~$0.010 | 2876 | 0 |
+| 23 | `gpt-oss:120b-cloud` | ollama | 236/484 | 49% | ~$1.41 | ~$0.006 | - | ~$0.006 | 3533 | 0 |
+| 24 | `gpt-5.6-terra` | cli | 221/484 | 46% | ~$3.04 | ~$0.014 | 78% | ~$0.028 | 2896 | 0 |
+| 25 | `qwen3.5:397b-cloud` | ollama | 186/484 | 38% | ~$1.66 | ~$0.009 | - | ~$0.009 | 1187 | 0 |
+| 26 | `gemma4:31b-cloud` | ollama | 156/484 | 32% | ~$0.66 | ~$0.004 | - | ~$0.004 | 1598 | 0 |
 
 Recall per target, which is where a model that is strong in one language and weak in another shows up:
 
