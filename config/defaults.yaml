@@ -170,8 +170,28 @@ roles:
   # Restore deepseek by putting the line back to [claude, codex, deepseek-ollama],
   # or seat both at [claude, codex, deepseek-ollama, minimax-ollama] for 86/100
   # once the weekly quota has room for two ollama agents and quorum 3.
+  #
+  # THE OLLAMA SEAT MOVED FROM minimax-m3 TO glm-5.3-flash, 2026-09-14, on the
+  # full 8-target grid rather than the 100-seed bench the paragraphs above argue
+  # from. The swap deliberately GIVES UP coverage: the panel reads 409/484 with
+  # glm-5.3-flash against 413 with minimax, and -4 is inside the bench's measured
+  # noise floor. It buys the two things that decide a ROUND instead of a score --
+  # wall clock 2209s against 6003s (a round runs at its slowest reviewer's pace,
+  # so this is the panel's latency), and 0 contract failures against minimax's 2,
+  # which is the disqualifier and the thing that can strand a verdict on
+  # INCONCLUSIVE. Reasoning and the caveat in glm-5.3-flash-ollama.yaml.
+  #
+  # The probation this seat inherits is minimax's own, and it is unresolved
+  # either way: the bench measures single-round seeded recall, while the metric
+  # that cost kimi and gemma4 their seats is live multi-round NOVEL yield, which
+  # nothing here reports. If the judge rejects most of what this seat says,
+  # minimax-ollama is one word away on the line below.
+  #
+  # deepseek-v4.1-flash was considered for this seat the same day and declined:
+  # it reads 405 here, and its headline cheapness is routing luck on a route
+  # whose cache hits are not guaranteed (bench/report.py, ROUTE_CACHING).
   review:
-    agents: [claude, codex, minimax-ollama]
+    agents: [claude, codex, glm-5.3-flash-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
