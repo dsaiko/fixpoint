@@ -314,3 +314,65 @@ gpt-6-astra-xhigh
 # second sweep: astra already showed the ladder is real and not worth buying on
 # this route.
 gpt-5.6-terra
+
+# deepseek-v4.1-flash, measured 2026-09-13, the day after it appeared in the
+# library. A THIRD deepseek tier beside the flash/pro pair already here, and
+# architecturally not a sibling of either: `ollama show` reports a new
+# architecture id (deepseek_v41), 763B parameters, 1M context, FP8, and the
+# capability line adds VISION and THINKING to v4-flash's completion+tools. The
+# model page credits a Causal Encoder-Decoder design that leaves only 8B
+# parameters active per token during prefill and 16B during decode.
+#
+# Full 8-target grid, 1 repeat, 0 errors, 0 contract failures:
+#   312/484, 8th of 26 -- above codex (298) and every ollama model except
+#   kimi-k3 (319) and glm-5.3 (313), and 63 seeds above the v4-flash tier it
+#   replaces (249), 42 above v4-pro (270). 2487s, the 4th fastest sweep.
+#   go 35/56  design 16/34  cpp 45/64  csharp 41/68
+#   java 49/69  python 42/66  rust 38/64  typescript 46/63
+# It beats BOTH older deepseek tiers on all eight targets. java 49/69 is the
+# standout: that target sank astra-high (29) and terra (27), and this row is
+# level with glm-5.3 and five above codex on it. go 35/56 is its weakest
+# column relative to the field -- it ranks 8th overall but ~15th on go.
+#
+# NOT A SEAT, and the arithmetic is not close:
+#   shipped panel [claude, codex, minimax]      413/484
+#   + this model as a 4th seat                  417   (+4)
+#   swapped INTO the minimax/ollama seat        405   (-8)
+#   swapped INTO the codex seat                 404   (-9)
+#   marginal over claude+codex                  +7  (v4-pro +7, grok +7, sonnet-5 +7)
+# It finds 97 seeds minimax misses -- but claude and codex already cover almost
+# all of them, which is the whole reason solo rank is the wrong lens. Among
+# ollama candidates for that one seat it is not even the best: glm-5.3-flash
+# still reads 409 in the same swap, kimi-k3 407, glm-5.3 408. And a 4th seat
+# would be a SECOND ollama payer, which the one-seat-per-payer rule forbids.
+#
+# *** READ ITS COST COLUMN WITH THE CACHING CAVEAT ***
+# The generated table gives it ~$0.35 for the sweep and ~$0.001/point -- 3x
+# cheaper than anything within 50 seeds of it, and the single best $/pt in the
+# grid. That number is REAL but NOT comparable to the ollama rows above it,
+# because THE OLLAMA ROUTE STARTED HONOURING PROMPT CACHING between 2026-09-02
+# and 2026-09-13. Every earlier ollama row in results.csv has cache_read=0 and
+# paid its full input fresh on every turn; this row read 3.84M cached tokens
+# against 0.75M fresh, and cached input is priced at $0.003/MTok against $0.15.
+# Verified directly, not inferred (two identical back-to-back calls per model,
+# second call's cacheReadInputTokens): deepseek-v4-flash 0 -> 46413,
+# glm-5.3-flash 0 -> 40320, minimax-m3 421 -> 45393. So this is route-wide and
+# retroactive in effect: re-measuring any ollama row today would cut its dollar
+# figure too.
+# Like-for-like, counting its cached reads as fresh input the way the older
+# rows had to: ~$0.92 for the sweep and ~63 pts/Mtok, against glm-5.3-flash's
+# ~$0.78 / 64.4. So it is NOT a cost breakthrough -- it is an ordinary-cost,
+# high-score model measured after the route got cheaper. The 276 pts/Mtok in
+# the table is a route artifact: report.py's token column counts non-cached
+# tokens only, which was the same thing for ollama until this sweep.
+# `route()`'s docstring in report.py and the cache note in
+# config/agents/deepseek-ollama.yaml both asserted ollama discards
+# cache_control; both were corrected in this commit.
+#
+# Only a floating `:cloud` tag exists -- no dated variant -- so this row is
+# pinned solely by the `ollama show` fingerprint run.sh recorded (architecture
+# deepseek_v41, 763205315794 parameters). Re-check it before quoting the number.
+# Its library page carries no extra-credit note, so it draws the ordinary
+# weekly quota rather than kimi-k3's separate credits. Sweep ran 20:21 UTC
+# Sunday = STANDARD deepseek pricing; a weekday-afternoon re-run bills 2x.
+deepseek-v4.1-flash:cloud
