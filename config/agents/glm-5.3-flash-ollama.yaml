@@ -1,0 +1,110 @@
+# GLM-5.3-Flash via ollama, same claude-harness wrapping as minimax-ollama.
+# ON THE PANEL since 2026-09-14, in the seat minimax-m3 held.
+#
+# NOT the same model as glm-ollama.yaml, which is glm-5.2 and stays off the
+# panel. Zhipu's flash tier: 320B total / 18B active, 1M context, FP8,
+# architecture glm5_next. One `:cloud` tag and no dated variant, which is the
+# repeatability weakness deepseek-ollama.yaml explains at length -- the bench row
+# is pinned only by the `ollama show` fingerprint run.sh recorded. Re-bench when
+# a dated tag appears.
+#
+# WHY IT TAKES THE SEAT, and it is not because it is the better reviewer -- it
+# is not. Solo it scores 304/484 against minimax's 251, but solo rank is not what
+# a seat is bought with. The panel numbers (bench/results.csv, full 8-target grid):
+#
+#   shipped [claude, codex, minimax]        413/484
+#   this model in that seat                 409/484   (-4)
+#   deepseek-v4.1-flash in that seat        405/484   (-8)
+#
+# So the swap COSTS 4 seeds of coverage, which is inside the bench's own measured
+# noise floor (1.0 seeds mean deviation per code target, 4 on design, from running
+# one model twice). What it buys is the two things that decide rounds rather than
+# scores:
+#
+#   wall clock       2209s against minimax's 6003s -- 2.7x. A round runs at the
+#                    pace of its SLOWEST reviewer, so this is the whole panel's
+#                    latency, not one seat's.
+#   contract failures 0 against minimax's 2. This is the disqualifier, and it
+#                    compounds: a failed or dead ollama seat writes nothing for
+#                    its full 30m timeout, and quorum counts only agents whose
+#                    every lens succeeded. Two silent seats land a 4-seat panel
+#                    on INCONCLUSIVE regardless of what claude and codex found.
+#
+# This is the same recommendation made on 2026-09-02 and not taken then; it is
+# taken now on the operator's call, with a second grid behind it.
+#
+# WHAT THE BENCH CANNOT SEE, stated because it is exactly what cost gemma4 its
+# seat: this measures single-round seeded RECALL. Minimax's seat rests partly on
+# live multi-round NOVEL yield, which no bench row here reports. A -4 that is
+# noise on seeded recall could be a real loss live, and the reverse is equally
+# possible. If the judge starts rejecting most of what this seat says, minimax-m3
+# (minimax-ollama.yaml) is one line away in defaults.yaml.
+#
+# DO NOT READ ITS CHEAP BENCH COST AS A REASON FOR THIS SEAT. The ollama route
+# gained prompt caching in September 2026 and a cache HIT is not guaranteed --
+# probed 2026-09-13, this very model hit once (0 -> 40320) and then missed three
+# times running within the hour. Its dollar column is routing luck as much as
+# efficiency; see ROUTE_CACHING in bench/report.py. The seat is bought with wall
+# clock and reliability, both of which are stable.
+#
+# Capabilities per `ollama show`: completion, tools, thinking. No vision, which
+# is not a loss for a reviewer reading source (see deepseek-ollama.yaml on why
+# the vision-language tiers were disqualified).
+model: glm-5.3-flash:cloud
+# No `effort`, deliberately: it is Anthropic's setting, and ollama drops the
+# thinking budget the harness translates it into. This family is the clearest
+# case -- glm-5.3's effort ladder is real on Z.ai's own endpoint and dead on this
+# route. Setting it would validate, run, and lie. See "effort (claude)" in
+# _README.md.
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude.yaml
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged (which miss the whole agentic session in
+# between -- see config/README.md). modelUsage is keyed by model id and aggregates
+# the WHOLE session; the top-level `usage` object is only the final turn.
+#
+# NO cost_usd: ollama-served models are not billed by Anthropic, but the wrapped
+# claude harness applies Anthropic's rate card anyway and labels them provider
+# "firstParty" -- measured overstating a real bill by ~93x elsewhere. The
+# scoreboard shows "-" rather than money nobody was charged.
+#
+# The cache_* paths DO carry real numbers on this route as of September 2026 --
+# they read 0 in every row measured through 2026-09-02, because ollama discarded
+# cache_control until then. They are not reliable per run: see the caching note
+# above.
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
+
+prompt_via: stdin
+timeout: 30m # cloud-served models are slower; matched to the panel (see claude.yaml)
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+    # ollama needs to find its server; the wrapped claude harness needs nothing more.
+    - OLLAMA_HOST
+
+# 400 kB, matching the other ollama agents: same route, same failure mode --
+# `exit status 1: Prompt is too long`, returned after a full round of wall clock
+# has already been spent.
+prompt_budget: 400000
