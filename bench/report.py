@@ -146,6 +146,13 @@ RATES = {
 # off-peak pricing "for more models will be available soon", so this note may
 # grow into a general mechanism; it is not one yet.
 OLLAMA_RATES = {
+    # deepseek-v4.1-flash, added 2026-09-13 the day it was benched. A THIRD
+    # deepseek tier, cheaper than v4-flash on every column and 7x cheaper on
+    # cached input -- the model page credits its Causal Encoder-Decoder design,
+    # which cuts the global KV cache to ~1/4 of v4-flash. Peak (12:00-18:00 UTC
+    # Mon-Fri) is 0.30 / 1.20 / 0.006, the same 2x the other two deepseek rows
+    # carry; the sweep that measured it ran Sunday 20:xx UTC, i.e. standard.
+    "deepseek-v4.1-flash": (0.15, 0.60, 0.003),
     "deepseek-v4-flash": (0.22, 0.66, 0.007),
     "deepseek-v4-pro":   (0.66, 1.98, 0.022),
     "gemma4":            (0.14, 0.40, 0.05),
@@ -223,10 +230,22 @@ def resolve(model):
 def route(model):
     """Which harness and provider the bench used, mirroring bench/run.sh.
 
-    It matters for reading the token column: the ollama route does not cache, so
-    its input is paid fresh every session, while the claude and OpenRouter
-    routes bill a cached prompt at a fraction. Two rows with the same token
-    count are not the same spend.
+    It matters for reading the token column, which counts NON-CACHED tokens: a
+    route that caches shows a smaller number for the same work, so two rows with
+    the same token count are not the same spend.
+
+    THE OLLAMA ROUTE USED TO BE THE SIMPLE CASE AND NO LONGER IS. Every ollama
+    row measured through 2026-09-02 has cache_read=0 -- the route discarded
+    cache_control, so its input was paid fresh every session. That stopped being
+    true by 2026-09-13: probed with two identical back-to-back calls per model,
+    the second call's cacheReadInputTokens read 46413 for deepseek-v4-flash,
+    40320 for glm-5.3-flash and 45393 for minimax-m3, all of which have 0 in
+    their recorded rows. So the ollama rows now split into two eras, and the
+    older ones overstate what the same sweep would cost today -- deepseek-v4.1-
+    flash's ~$0.35 against glm-5.3-flash's ~$0.78 is mostly that, not the model.
+    Making them comparable needs a real mechanism (a per-run route-capability
+    flag, like the peak/off-peak one deepseek already wants); until then the
+    caveat lives here and in bench/models.txt.
     """
     if (AGENTS / f"{model}.yaml").exists():
         return "cli"
@@ -801,6 +820,18 @@ def write_html(ranked, all_targets, out_path):
     and its paid &ldquo;Extra usage&rdquo; is a separate balance that starts empty. A sweep
     there spends quota, not money. Every route in this table is priced in the same unit;
     only one of them is an invoice.</p>
+    <p><b>The ollama rows span two pricing eras, and the dollar column does not say
+    so.</b> Every ollama row measured through 2026-09-02 paid its input fresh on
+    every turn &mdash; the route discarded prompt caching, and those rows record zero
+    cached tokens. By 2026-09-13 it cached, which we confirmed by calling three
+    already-measured models twice each and watching the second call read its
+    prefix from cache. Cached input on that route is priced at roughly 2% of fresh
+    input, so <code>deepseek-v4.1-flash</code>&rsquo;s ~$0.35 sweep is not three
+    times cheaper than <code>glm-5.3-flash</code>&rsquo;s ~$0.78 in the way the
+    column implies: counted the way the older rows had to count, it is ~$0.92.
+    Its <em>score</em> is unaffected &mdash; caching changes what a run costs, not
+    what it finds &mdash; and so is every non-ollama row. Compare scores freely;
+    compare ollama dollars only within an era.</p>
     <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
     returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
     Both models that failed here have failed before.</p>
