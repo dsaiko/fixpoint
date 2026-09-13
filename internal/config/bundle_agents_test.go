@@ -91,14 +91,17 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 	// A rename or an extension change must not turn this into a test that
 	// silently inspects nothing.
 	//
-	// 10: claude, claude-coder, five ollama-routed reviewers (minimax, deepseek,
-	// kimi, glm, gemma4) and three OpenRouter-routed ones (kimi, glm, qwen). The
+	// 11: claude, claude-coder, six ollama-routed reviewers (minimax, deepseek,
+	// kimi, glm-5.2, glm-5.3-flash, gemma4) and three OpenRouter-routed ones
+	// (kimi, glm, qwen). glm-5.3-flash-ollama took the panel's ollama seat from
+	// minimax on 2026-09-14 and is a SEPARATE file from glm-ollama, which is
+	// glm-5.2 and stays off the panel -- two tiers of one family, not a rename. The
 	// same model appearing under two routes is deliberate -- the route changes
 	// caching and reasoning behavior that no other field records -- and both
 	// routes drive the claude CLI, so both must carry --setting-sources. Agents
 	// that lost their panel seat stay in the bundle: the seat is decided in
 	// defaults.yaml, and a measured alternative is worth keeping ready.
-	if want := 10; checked != want {
+	if want := 11; checked != want {
 		t.Errorf("checked %d claude-backed agents, want %d -- update this test if the bundle gained or lost one", checked, want)
 	}
 }
@@ -142,9 +145,12 @@ func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 		"glm-ollama":        remote,
 		"kimi-ollama":       remote,
 		"minimax-ollama":    remote,
-		"glm-openrouter":    remote,
-		"kimi-openrouter":   remote,
-		"qwen-openrouter":   remote,
+		// The panel's ollama seat since 2026-09-14; same route and same failure
+		// mode as the others, so the same budget.
+		"glm-5.3-flash-ollama": remote,
+		"glm-openrouter":       remote,
+		"kimi-openrouter":      remote,
+		"qwen-openrouter":      remote,
 	}
 	agents := shippedAgents(t)
 	for name, a := range agents {
@@ -206,9 +212,12 @@ func TestShippedAgentsPinTheirEnvironment(t *testing.T) {
 		"glm-ollama":        {pass: ollama},
 		"kimi-ollama":       {pass: ollama},
 		"minimax-ollama":    {pass: ollama},
-		"glm-openrouter":    {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
-		"kimi-openrouter":   {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
-		"qwen-openrouter":   {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+		// The panel's ollama seat since 2026-09-14. Sees OLLAMA_HOST and nothing
+		// else, exactly like every other agent on this route.
+		"glm-5.3-flash-ollama": {pass: ollama},
+		"glm-openrouter":       {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+		"kimi-openrouter":      {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
+		"qwen-openrouter":      {pass: []string{"ANTHROPIC_AUTH_TOKEN"}, set: map[string]string{"ANTHROPIC_BASE_URL": openRouter}},
 	}
 	for name, a := range shippedAgents(t) {
 		w, ok := want[name]
