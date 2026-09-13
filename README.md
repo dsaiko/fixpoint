@@ -360,7 +360,7 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 
 26 candidates, scored on 8 targets (go, design, cpp, csharp, java, python, rust, typescript).
 
-| # | candidate | route | score | recall | total $ | per point | cached | per point (uncached-eq) | wall s | fails |
+| # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | fails |
 |--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|
 | 1 | `claude` | cli | 376/484 | 78% | ~$8.61 | ~$0.023 | 97% | ~$0.043 | 3958 | 0 |
 | 2 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$8.84 | ~$0.024 | 97% | ~$0.044 | 4152 | 0 |

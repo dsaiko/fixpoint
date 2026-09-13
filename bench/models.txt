@@ -354,11 +354,29 @@ gpt-5.6-terra
 # and 2026-09-13. Every earlier ollama row in results.csv has cache_read=0 and
 # paid its full input fresh on every turn; this row read 3.84M cached tokens
 # against 0.75M fresh, and cached input is priced at $0.003/MTok against $0.15.
-# Verified directly, not inferred (two identical back-to-back calls per model,
+# Verified directly, not inferred (identical back-to-back calls per model,
 # second call's cacheReadInputTokens): deepseek-v4-flash 0 -> 46413,
-# glm-5.3-flash 0 -> 40320, minimax-m3 421 -> 45393. So this is route-wide and
-# retroactive in effect: re-measuring any ollama row today would cut its dollar
-# figure too.
+# glm-5.3-flash 0 -> 40320, minimax-m3 421 -> 45393 -- all three already in the
+# grid with 0 in their recorded rows, so the ROUTE changed and no candidate's
+# own behaviour explains it.
+#
+# CORRECTED the same evening, after probing all thirteen ollama models: the
+# first version of this note said "route-wide", which overstated it. Caching is
+# AVAILABLE route-wide; a HIT IS NOT GUARANTEED and is not a property of the
+# model. Round 1 (2 calls each): six collapsed their second call into a cache
+# read (deepseek-v4-flash 48371 -> 804, deepseek-v4-pro 48368 -> 804, gemma4
+# 45676 -> 12, glm-5.3 46978 -> 758, gpt-oss:120b 38558 -> 46, minimax-m3
+# 45723 -> 1) and seven missed entirely. Round 2 minutes later flipped
+# nemotron-3-ultra from two misses (51215, cache 0) to two hits (cache 43200),
+# while glm-5.3-flash -- which HAD hit earlier the same day -- missed three
+# times running, and kimi-k3 read 0, 0, 871. The hit rate varies between calls
+# to ONE model within minutes, which fits a per-instance cache behind a fleet
+# the caller does not choose.
+#
+# So deepseek-v4.1-flash's own 84% cached is a fact about THAT SWEEP's routing
+# luck, not about the model -- it missed the cross-session cache in all five
+# single-shot probes it was given. Do not seat it, or anything else here, on a
+# caching argument.
 # Like-for-like, counting its cached reads as fresh input the way the older
 # rows had to: ~$0.92 for the sweep and ~63 pts/Mtok, against glm-5.3-flash's
 # ~$0.78 / 64.4. So it is NOT a cost breakthrough -- it is an ordinary-cost,

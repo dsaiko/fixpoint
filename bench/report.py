@@ -175,30 +175,49 @@ OLLAMA_RATES = {
 }
 
 
-# WHEN EACH ROUTE STARTED HONOURING PROMPT CACHING.
+# WHEN PROMPT CACHING BECAME AVAILABLE ON EACH ROUTE.
 #
-# A route's caching is not a constant, and a bench row has to be read by what
-# the route did ON THE DAY IT WAS MEASURED. Cached input is priced at a small
-# fraction of fresh input -- 2% on ollama's deepseek rows -- so the same sweep
-# billed differently before and after the switch, and the dollar columns of two
-# rows from opposite sides of it are not comparable.
+# AVAILABLE is the word that matters, and it is NOT the same as "this run was
+# cached". The era says what the route could do on the day a row was measured;
+# whether a particular session actually read from cache is a separate question
+# with a separate answer (see cached_share, and the warning in
+# check_caching_eras). Getting these two confused is what the 2026-09-13
+# probing round corrected.
 #
-# Each entry is (last date OBSERVED uncached, first date OBSERVED cached), as
-# YYYYMMDD. The window between them is deliberately left UNKNOWN rather than
-# split at a guessed date: nothing was measured in it, and inventing a cutoff
-# would put a false era label on any row that later lands there.
+# What the era IS good for: cached input is priced at a small fraction of fresh
+# input -- 2% on ollama's deepseek rows -- so a route that could not cache at
+# all billed every sweep at the fresh rate, and a dollar column from before the
+# switch cannot be compared with one from after it.
+#
+# Each entry is (last date OBSERVED without caching available, first date
+# OBSERVED with it), as YYYYMMDD. The window between them is deliberately left
+# UNKNOWN rather than split at a guessed date: nothing was measured in it, and
+# inventing a cutoff would put a false era label on any row that later lands
+# there.
 #
 # ollama: every row measured through 2026-09-02 records cache_read=0 across all
-# eight targets, and the route discarded cache_control (the claim then in
-# config/agents/deepseek-ollama.yaml). By 2026-09-13 it cached: probed with two
-# identical back-to-back calls per model, the second call's cacheReadInputTokens
-# read 46413 for deepseek-v4-flash (input 47217 -> 804), 40320 for
-# glm-5.3-flash and 45393 for minimax-m3 -- all three already in the grid with 0
-# in their recorded rows, so this is the route changing, not the new candidate
-# behaving differently.
+# eight targets and every session, and the route discarded cache_control (the
+# claim then in config/agents/deepseek-ollama.yaml). By 2026-09-13 caching was
+# available -- probed with identical back-to-back calls, six of the thirteen
+# models already in the grid collapsed their second call's input into a cache
+# read (deepseek-v4-flash 48371 -> 804, deepseek-v4-pro 48368 -> 804, gemma4
+# 45676 -> 12, glm-5.3 46978 -> 758, gpt-oss:120b 38558 -> 46, minimax-m3
+# 45723 -> 1). Those models have 0 in their recorded rows, so the ROUTE changed;
+# no candidate's own behaviour explains it.
+#
+# BUT A CACHE HIT IS NOT GUARANTEED, AND IS NOT A PROPERTY OF THE MODEL. The
+# other seven models missed entirely in that round, and a second round minutes
+# later flipped nemotron-3-ultra from two clean misses (51215, cache 0) to two
+# clean hits (in 7278/8015, cache 43200 both times), while glm-5.3-flash --
+# which HAD cached in an earlier round the same day, 0 -> 40320 -- missed three
+# times running. kimi-k3 read 0, 0, then 871. So the hit rate varies between
+# calls to one model within minutes, which fits a per-instance cache behind a
+# fleet the caller does not choose. Treat cache_read as a property of the RUN,
+# never of the candidate, and rank cost across rows by the uncached-equivalent
+# column, which does not depend on how the routing fell.
 #
 # The claude, anthropic and openrouter routes have cached for as long as this
-# bench has existed; they get no entry and are treated as always-cached.
+# bench has existed; they get no entry and are treated as always-available.
 ROUTE_CACHING = {
     "ollama": ("20260902", "20260913"),
 }
@@ -221,14 +240,13 @@ def caching_era(harness, dates):
 
 
 def check_caching_eras(rows):
-    """Fail loudly when a measured row contradicts ROUTE_CACHING.
+    """Fail when a measured row contradicts ROUTE_CACHING; warn where it only might.
 
-    This is the whole point of keeping the table rather than a comment: a route
-    that changes again shows up as a row whose cached tokens disagree with its
-    era, and the bench says so instead of quietly publishing an uncomparable
-    dollar figure. A cached-era row with no cache reads is NOT an error -- a
-    short run can miss the cache -- but an uncached-era row with cache reads
-    means the table's date is wrong.
+    Only ONE direction is decidable. An uncached-era row that recorded cached
+    tokens is a contradiction -- caching was not available then, so the table's
+    date is wrong -- and that is fatal. The reverse is not: a cached-era sweep
+    that read nothing may simply never have hit a warm instance, because hits
+    are not guaranteed (see ROUTE_CACHING), so it only warns.
     """
     bad = []
     per_model = {}
@@ -245,18 +263,23 @@ def check_caching_eras(rows):
         acc["dates"].add(date)
         acc["cache"] += int(r["cache_read"])
         acc["sessions"] += int(r["sessions"])
-    # The symmetric error, and the one a careless edit to the table above
-    # actually produces: a candidate labelled cached-era whose WHOLE sweep read
-    # nothing from cache. One short run can legitimately miss the cache; a full
-    # sweep of a dozen-plus sessions cannot, so this means either the table's
-    # date is too early or the route stopped caching. Both publish a cost column
-    # that is not what it claims, which is what this whole mechanism exists to
-    # prevent.
+    # A candidate labelled cached-era whose WHOLE sweep read nothing from cache.
+    # This was a hard error in the first version of this function and is now only
+    # a warning, because the assumption under it turned out to be false: a cache
+    # hit is not guaranteed even when caching is available (see ROUTE_CACHING).
+    # glm-5.3-flash missed three times running on a day it had hit, so a sweep
+    # CAN legitimately come back all-zero and failing the report over it would be
+    # a false alarm. It is still worth saying out loud -- it is equally what a
+    # too-early date in the table looks like, and the two are told apart by
+    # re-probing the route, not by reading this file.
     for model, acc in sorted(per_model.items()):
         if (caching_era(acc["harness"], sorted(acc["dates"])) == "cached"
                 and acc["cache"] == 0 and acc["sessions"] >= 8):
-            bad.append(f"  {model}: {acc['sessions']} sessions in the cached era "
-                       f"read 0 cached tokens")
+            print(f"report.py: note: {model} ran {acc['sessions']} sessions with "
+                  f"caching available on {acc['harness']} and read 0 cached tokens. "
+                  f"Expected if the routing simply never hit; also what a "
+                  f"too-early ROUTE_CACHING date looks like. Re-probe to tell "
+                  f"them apart.", file=sys.stderr)
     if bad:
         sys.exit("report.py: measured rows contradict ROUTE_CACHING. Its dates are "
                  "wrong, or the route changed again -- fix the table rather than "
@@ -464,11 +487,19 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
 
 
 def cached_cell(e):
-    """The cached-input share, marked when the route could not cache at all.
+    """How much of THIS SWEEP's input came from cache. A run fact, not a model fact.
 
-    `-` is not 0%: a row from before its route cached had no cache to miss,
-    which is why its dollar column is not comparable with a later one. `?`
-    marks a sweep that straddled the switch.
+    Do not read this column as a property of the candidate. Measured 2026-09-13
+    on the ollama route: cache hits vary between back-to-back calls to one model
+    within minutes -- nemotron-3-ultra missed twice and then hit twice at 43200,
+    glm-5.3-flash hit once and missed three times the same day -- which fits a
+    per-instance cache behind a fleet the caller does not choose. Two sweeps of
+    the same model can therefore show very different numbers here, and neither
+    is wrong. Rank cost by the uncached-equivalent column instead.
+
+    `-` is not 0%: a row from before its route had caching available had no
+    cache to miss, which is why its dollar column is not comparable with a later
+    one. `?` marks a sweep that straddled the switch.
     """
     if e["era"] == "uncached":
         return "-"
@@ -935,7 +966,7 @@ def write_html(ranked, all_targets, out_path):
           <th scope="col">Pts / Mtok</th>
           <th scope="col">Total $</th>
           <th scope="col">Per point</th>
-          <th scope="col">Cached</th>
+          <th scope="col">Cached (this run)</th>
           <th scope="col">Per point (uncached-eq)</th>
           <th scope="col">Wall (s)</th>
           <th scope="col">Err</th>
@@ -960,19 +991,25 @@ def write_html(ranked, all_targets, out_path):
     and its paid &ldquo;Extra usage&rdquo; is a separate balance that starts empty. A sweep
     there spends quota, not money. Every route in this table is priced in the same unit;
     only one of them is an invoice.</p>
-    <p><b>Cached</b> is the share of a sweep&rsquo;s input served from cache, and a
-    <code>&ndash;</code> there is not zero: it marks a run measured before its route
-    cached at all, which had no cache to miss. That distinction is why the two cost
-    columns exist. <b>Per point</b> is what the sweep cost as billed on the day it
-    ran; <b>per point (uncached-eq)</b> prices every input token fresh, which is what
-    an uncached-era row already paid and the counterfactual for a cached one &mdash;
-    so it is the column to compare across the switch. The ollama route began caching
-    between 2026-09-02 and 2026-09-13, confirmed by calling three already-measured
-    models twice each and watching the second call read its prefix from cache; cached
-    input there costs about 2% of fresh. That is the whole of why one ollama row can
-    show a third of another&rsquo;s cost at a similar score, and the uncached-eq
-    column shows them level. <em>Scores are not affected</em> &mdash; caching changes
-    what a run costs, not what it finds.</p>
+    <p><b>Cached (this run)</b> is a fact about the sweep, not about the model.
+    Prompt caching became available on the ollama route between 2026-09-02 and
+    2026-09-13, and cached input there costs about 2% of fresh &mdash; but a hit is
+    not guaranteed. Probing thirteen models the same day, six collapsed a repeated
+    call into a cache read and seven did not, and minutes later nemotron-3-ultra had
+    flipped from missing to hitting while glm-5.3-flash, which had hit earlier that
+    day, missed three times running. That fits a per-instance cache behind a fleet
+    the caller does not choose. So two sweeps of one model can show very different
+    numbers in this column and neither is wrong, and a <code>&ndash;</code> is not
+    zero: it marks a run from before caching existed on that route, which had no
+    cache to miss.</p>
+    <p>Which is why there are two cost columns. <b>Per point</b> is what the sweep
+    cost as billed on the day it ran, routing luck included. <b>Per point
+    (uncached-eq)</b> prices every input token fresh: what a pre-caching row already
+    paid, the counterfactual for a later one, and the only figure here that does not
+    move with how the routing fell &mdash; so it is the column to rank cost by. It is
+    also what separates a real saving from an artefact: the ollama rows that look
+    three times cheaper than their neighbours read level on it. <em>Scores are not
+    affected</em> &mdash; caching changes what a run costs, not what it finds.</p>
     <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
     returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
     Both models that failed here have failed before.</p>
@@ -1198,7 +1235,7 @@ def write_markdown(ranked, all_targets, out_path):
     lines.append(f"{len(ranked)} candidates, scored on {len(all_targets)} targets "
                  f"({', '.join(all_targets)}).")
     lines.append("")
-    lines.append("| # | candidate | route | score | recall | total $ | per point | cached | per point (uncached-eq) | wall s | fails |")
+    lines.append("| # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | fails |")
     lines.append("|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|")
     for i, (model, entries) in enumerate(ranked, 1):
         e = entries[0]
@@ -1398,7 +1435,7 @@ def main():
 
     print(f"{'candidate':30s} {'model measured':22s} {'route':11s} {'pays':13s} "
           f"{'score':>9s} {'tok':>9s} {'pts/Mtok':>9s} {'total $':>9s} "
-          f"{'per point':>10s} {'cached':>7s} {'/pt unca':>9s} "
+          f"{'per point':>10s} {'cached*':>7s} {'/pt unca':>9s} "
           f"{'sec':>6s} {'err':>4s} {'measured on':>17s}")
     print("-" * 196)
     for model, entries in ranked:
