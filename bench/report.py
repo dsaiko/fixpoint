@@ -175,6 +175,112 @@ OLLAMA_RATES = {
 }
 
 
+# WHEN EACH ROUTE STARTED HONOURING PROMPT CACHING.
+#
+# A route's caching is not a constant, and a bench row has to be read by what
+# the route did ON THE DAY IT WAS MEASURED. Cached input is priced at a small
+# fraction of fresh input -- 2% on ollama's deepseek rows -- so the same sweep
+# billed differently before and after the switch, and the dollar columns of two
+# rows from opposite sides of it are not comparable.
+#
+# Each entry is (last date OBSERVED uncached, first date OBSERVED cached), as
+# YYYYMMDD. The window between them is deliberately left UNKNOWN rather than
+# split at a guessed date: nothing was measured in it, and inventing a cutoff
+# would put a false era label on any row that later lands there.
+#
+# ollama: every row measured through 2026-09-02 records cache_read=0 across all
+# eight targets, and the route discarded cache_control (the claim then in
+# config/agents/deepseek-ollama.yaml). By 2026-09-13 it cached: probed with two
+# identical back-to-back calls per model, the second call's cacheReadInputTokens
+# read 46413 for deepseek-v4-flash (input 47217 -> 804), 40320 for
+# glm-5.3-flash and 45393 for minimax-m3 -- all three already in the grid with 0
+# in their recorded rows, so this is the route changing, not the new candidate
+# behaving differently.
+#
+# The claude, anthropic and openrouter routes have cached for as long as this
+# bench has existed; they get no entry and are treated as always-cached.
+ROUTE_CACHING = {
+    "ollama": ("20260902", "20260913"),
+}
+
+
+def caching_era(harness, dates):
+    """"cached", "uncached" or "unknown" for a row, from the dates it was run.
+
+    `dates` is every YYYYMMDD a candidate's runs carry. A sweep that straddles
+    the switch is "unknown" too: its rows were not all billed the same way, so
+    no single label is true of the total.
+    """
+    window = ROUTE_CACHING.get(harness)
+    if window is None:
+        return "cached"
+    last_uncached, first_cached = window
+    eras = {("uncached" if d <= last_uncached else
+             "cached" if d >= first_cached else "unknown") for d in dates}
+    return eras.pop() if len(eras) == 1 else "unknown"
+
+
+def check_caching_eras(rows):
+    """Fail loudly when a measured row contradicts ROUTE_CACHING.
+
+    This is the whole point of keeping the table rather than a comment: a route
+    that changes again shows up as a row whose cached tokens disagree with its
+    era, and the bench says so instead of quietly publishing an uncomparable
+    dollar figure. A cached-era row with no cache reads is NOT an error -- a
+    short run can miss the cache -- but an uncached-era row with cache reads
+    means the table's date is wrong.
+    """
+    bad = []
+    per_model = {}
+    for r in rows:
+        harness = route(r["model"])
+        if harness not in ROUTE_CACHING:
+            continue
+        date = r["run"].split("-")[0]
+        if caching_era(harness, [date]) == "uncached" and int(r["cache_read"]):
+            bad.append(f"  {r['run']} {r['model']} {r.get('target', r['task'])}: "
+                       f"cache_read={r['cache_read']} in the uncached era")
+        acc = per_model.setdefault(r["model"], {"dates": set(), "cache": 0, "sessions": 0,
+                                                "harness": harness})
+        acc["dates"].add(date)
+        acc["cache"] += int(r["cache_read"])
+        acc["sessions"] += int(r["sessions"])
+    # The symmetric error, and the one a careless edit to the table above
+    # actually produces: a candidate labelled cached-era whose WHOLE sweep read
+    # nothing from cache. One short run can legitimately miss the cache; a full
+    # sweep of a dozen-plus sessions cannot, so this means either the table's
+    # date is too early or the route stopped caching. Both publish a cost column
+    # that is not what it claims, which is what this whole mechanism exists to
+    # prevent.
+    for model, acc in sorted(per_model.items()):
+        if (caching_era(acc["harness"], sorted(acc["dates"])) == "cached"
+                and acc["cache"] == 0 and acc["sessions"] >= 8):
+            bad.append(f"  {model}: {acc['sessions']} sessions in the cached era "
+                       f"read 0 cached tokens")
+    if bad:
+        sys.exit("report.py: measured rows contradict ROUTE_CACHING. Its dates are "
+                 "wrong, or the route changed again -- fix the table rather than "
+                 "the rows, and re-probe the route before trusting a cost column:\n"
+                 + "\n".join(bad))
+
+
+def cached_share(tok_in, cache_read):
+    """Share of a sweep's INPUT that was served from cache, 0.0-1.0."""
+    total = tok_in + cache_read
+    return (cache_read / total) if total else 0.0
+
+
+def run_cost_uncached(model, harness, tok_in, tok_out, cache_read):
+    """What the sweep would have cost with every input token billed fresh.
+
+    The era-NEUTRAL figure: it is what an uncached-era row already paid, and the
+    counterfactual for a cached-era one, so the two can be compared directly.
+    Use it to rank cost across the switch; use run_cost() for what a sweep
+    actually costs today.
+    """
+    return run_cost(model, harness, tok_in + cache_read, tok_out, 0)
+
+
 # The run id shape bench/run.sh records: fixpoint's run directory name.
 RUN_ID = re.compile(r"[0-9]{8}-[0-9]{6}")
 
@@ -355,6 +461,36 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
     # Same rule as money(): bare only where a card is charged per token.
     prefix = "" if harness.startswith("openrouter") else "~"
     return f"{prefix}${usd / points:.3f}"
+
+
+def cached_cell(e):
+    """The cached-input share, marked when the route could not cache at all.
+
+    `-` is not 0%: a row from before its route cached had no cache to miss,
+    which is why its dollar column is not comparable with a later one. `?`
+    marks a sweep that straddled the switch.
+    """
+    if e["era"] == "uncached":
+        return "-"
+    if e["era"] == "unknown":
+        return "?"
+    return f"{e['cached_share'] * 100:.0f}%"
+
+
+def per_point_uncached(model, harness, e):
+    """Cost per point with every input token billed fresh: comparable across eras.
+
+    Identical to the per-point column for an uncached-era row, and the
+    counterfactual for a cached one, so this is the column to rank cost by when
+    the field spans a route change.
+    """
+    if not e["points"]:
+        return "-"
+    usd = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"])
+    if usd is None:
+        return "-"
+    prefix = "" if harness.startswith("openrouter") else "~"
+    return f"{prefix}${usd / e['points']:.3f}"
 
 
 def _cost_key(model, harness, e):
@@ -700,6 +836,8 @@ def write_html(ranked, all_targets, out_path):
         <td data-sort="{eff:.4f}">{eff:.0f}</td>
         <td data-sort="{run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read']) or -1:.4f}">{_esc(money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'])))}</td>
         <td data-sort="{_cost_key(model, harness, e)}">{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']))}</td>
+        <td class="{'zero' if e['era'] != 'cached' else ''}" data-sort="{-1 if e['era'] != 'cached' else e['cached_share']}">{_esc(cached_cell(e))}</td>
+        <td data-sort="{(run_cost_uncached(model, harness, e['tok_in'], e['tok_out'], e['cache_read']) or 0) / (e['points'] or 1)}">{_esc(per_point_uncached(model, harness, e))}</td>
         <td data-sort="{e['seconds']}">{e['seconds']:,}</td>
         <td class="{'err' if e['errors'] else 'zero'}" data-sort="{e['errors']}">{e['errors']}</td>
         <td class="sub" data-sort="{max(e['dates']) if e['dates'] else ''}">{measured_on(e['dates'])}</td>
@@ -797,6 +935,8 @@ def write_html(ranked, all_targets, out_path):
           <th scope="col">Pts / Mtok</th>
           <th scope="col">Total $</th>
           <th scope="col">Per point</th>
+          <th scope="col">Cached</th>
+          <th scope="col">Per point (uncached-eq)</th>
           <th scope="col">Wall (s)</th>
           <th scope="col">Err</th>
           <th scope="col">Measured</th>
@@ -820,18 +960,19 @@ def write_html(ranked, all_targets, out_path):
     and its paid &ldquo;Extra usage&rdquo; is a separate balance that starts empty. A sweep
     there spends quota, not money. Every route in this table is priced in the same unit;
     only one of them is an invoice.</p>
-    <p><b>The ollama rows span two pricing eras, and the dollar column does not say
-    so.</b> Every ollama row measured through 2026-09-02 paid its input fresh on
-    every turn &mdash; the route discarded prompt caching, and those rows record zero
-    cached tokens. By 2026-09-13 it cached, which we confirmed by calling three
-    already-measured models twice each and watching the second call read its
-    prefix from cache. Cached input on that route is priced at roughly 2% of fresh
-    input, so <code>deepseek-v4.1-flash</code>&rsquo;s ~$0.35 sweep is not three
-    times cheaper than <code>glm-5.3-flash</code>&rsquo;s ~$0.78 in the way the
-    column implies: counted the way the older rows had to count, it is ~$0.92.
-    Its <em>score</em> is unaffected &mdash; caching changes what a run costs, not
-    what it finds &mdash; and so is every non-ollama row. Compare scores freely;
-    compare ollama dollars only within an era.</p>
+    <p><b>Cached</b> is the share of a sweep&rsquo;s input served from cache, and a
+    <code>&ndash;</code> there is not zero: it marks a run measured before its route
+    cached at all, which had no cache to miss. That distinction is why the two cost
+    columns exist. <b>Per point</b> is what the sweep cost as billed on the day it
+    ran; <b>per point (uncached-eq)</b> prices every input token fresh, which is what
+    an uncached-era row already paid and the counterfactual for a cached one &mdash;
+    so it is the column to compare across the switch. The ollama route began caching
+    between 2026-09-02 and 2026-09-13, confirmed by calling three already-measured
+    models twice each and watching the second call read its prefix from cache; cached
+    input there costs about 2% of fresh. That is the whole of why one ollama row can
+    show a third of another&rsquo;s cost at a similar score, and the uncached-eq
+    column shows them level. <em>Scores are not affected</em> &mdash; caching changes
+    what a run costs, not what it finds.</p>
     <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
     returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
     Both models that failed here have failed before.</p>
@@ -967,6 +1108,7 @@ def write_json(ranked, all_targets, out_path):
         harness = route(model)
         name, effort = agent_model(model)
         usd = run_cost(model, harness, e["tok_in"], e["tok_out"], e["cache_read"])
+        uncached = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"])
         mtok = e["tokens"] / 1e6
         for t, got in e["by_target"].items():
             pool.setdefault(t, got[1])
@@ -988,6 +1130,19 @@ def write_json(ranked, all_targets, out_path):
             "cost_per_point_usd": (None if usd is None or not e["points"]
                                    else round(usd / e["points"], 3)),
             "notional": not harness.startswith("openrouter"),
+            # Which prompt-caching era the cost fields belong to. "uncached"
+            # rows paid every input token fresh because their route did not
+            # cache yet, so their cost_usd is NOT comparable with a "cached"
+            # row's. cost_per_point_uncached_usd is the era-neutral figure --
+            # identical to cost_per_point_usd for an uncached row, the
+            # counterfactual for a cached one -- and is what a consumer of this
+            # file should rank cost by.
+            "caching_era": e["era"],
+            "cached_input_share": (None if e["era"] != "cached"
+                                   else round(e["cached_share"], 3)),
+            "cost_per_point_uncached_usd": (
+                None if uncached is None or not e["points"]
+                else round(uncached / e["points"], 3)),
             "seconds": e["seconds"],
             "sessions": e["sessions"],
             "errors": e["errors"],
@@ -1043,8 +1198,8 @@ def write_markdown(ranked, all_targets, out_path):
     lines.append(f"{len(ranked)} candidates, scored on {len(all_targets)} targets "
                  f"({', '.join(all_targets)}).")
     lines.append("")
-    lines.append("| # | candidate | route | score | recall | total $ | per point | wall s | fails |")
-    lines.append("|--:|---|---|--:|--:|--:|--:|--:|--:|")
+    lines.append("| # | candidate | route | score | recall | total $ | per point | cached | per point (uncached-eq) | wall s | fails |")
+    lines.append("|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|")
     for i, (model, entries) in enumerate(ranked, 1):
         e = entries[0]
         harness = route(model)
@@ -1055,6 +1210,7 @@ def write_markdown(ranked, all_targets, out_path):
             f"| {pct:.0f}% "
             f"| {money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read']))} "
             f"| {cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'])} "
+            f"| {cached_cell(e)} | {per_point_uncached(model, harness, e)} "
             f"| {e['seconds']} | {e['errors']} |")
     lines.append("")
     lines.append("Recall per target, which is where a model that is strong in one "
@@ -1138,6 +1294,11 @@ def main():
         if cached_is_subset(r["model"]):
             r["tokens_in"] = str(max(int(r["tokens_in"]) - int(r["cache_read"]), 0))
 
+    # Before anything is aggregated or published: if a route started caching
+    # earlier than ROUTE_CACHING claims, say so here rather than emit dollar
+    # columns that silently mix two pricing eras.
+    check_caching_eras(rows)
+
     # Rows are grouped per (model, target) across repeats, and a target's
     # representative run is chosen CLEAN-FIRST.
     #
@@ -1192,6 +1353,14 @@ def main():
             "seconds": sum(int(t["duration_s"]) for t in tasks.values()),
             "sessions": sum(int(t["sessions"]) for t in tasks.values()),
             "dates": sorted({d for t in tasks.values() for d in t["_dates"]}),
+            # Which pricing era this candidate's dollar columns belong to, and
+            # how much of its input actually came from cache. The era is what
+            # the route did when it ran; the share is what its own rows record.
+            "era": caching_era(route(model),
+                               sorted({d for t in tasks.values() for d in t["_dates"]})),
+            "cached_share": cached_share(
+                sum(int(t["tokens_in"]) for t in tasks.values()),
+                sum(int(t["cache_read"]) for t in tasks.values())),
             "missing": sorted(set(SCORED_TARGETS) - set(scored)),
             # recall per target, for the by-target matrix
             # errors per target too: a run that lost a LENS to a contract
@@ -1229,8 +1398,9 @@ def main():
 
     print(f"{'candidate':30s} {'model measured':22s} {'route':11s} {'pays':13s} "
           f"{'score':>9s} {'tok':>9s} {'pts/Mtok':>9s} {'total $':>9s} "
-          f"{'per point':>10s} {'sec':>6s} {'err':>4s} {'measured on':>17s}")
-    print("-" * 169)
+          f"{'per point':>10s} {'cached':>7s} {'/pt unca':>9s} "
+          f"{'sec':>6s} {'err':>4s} {'measured on':>17s}")
+    print("-" * 196)
     for model, entries in ranked:
         median = statistics.median(e["points"] for e in entries)
         for e in entries:
@@ -1247,6 +1417,8 @@ def main():
                   f"{e['points']:>4d}/{e['possible']:<4d} {e['tokens']:>9d} {eff:>9.1f} "
                   f"{money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'])):>9s} "
                   f"{cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']):>10s} "
+                  f"{cached_cell(e):>7s} "
+                  f"{per_point_uncached(model, harness, e):>9s} "
                   f"{e['seconds']:>6d} {e['errors']:>4d} "
                   f"{measured_on(e['dates']):>17s}{flag}")
         if len(entries) > 1:
