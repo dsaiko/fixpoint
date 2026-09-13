@@ -59,8 +59,15 @@ command:
 # claude harness applies Anthropic's rate card anyway and labels them provider
 # "firstParty" -- measured overstating a real bill by ~93x elsewhere. The
 # scoreboard shows "-" rather than money nobody was charged. Tokens ARE real and
-# still counted, and the cache_* paths will read 0 here: ollama discards
-# cache_control, which is a property of the route, not of this model.
+# still counted.
+#
+# The cache_* paths USED TO read 0 here -- ollama discarded cache_control, which
+# was a property of the route, not of this model. That changed between
+# 2026-09-02 and 2026-09-13: probed with two identical back-to-back calls, this
+# model's second call reported 46413 cacheReadInputTokens (input 47217 -> 804),
+# and glm-5.3-flash and minimax-m3 behave the same way. Keep the paths; they now
+# carry real numbers. The consequence for reading old measurements is in
+# bench/report.py's route() docstring.
 usage:
   format: json
   text: result
