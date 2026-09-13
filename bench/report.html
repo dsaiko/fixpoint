@@ -234,7 +234,7 @@ code {
           <th scope="col">Pts / Mtok</th>
           <th scope="col">Total $</th>
           <th scope="col">Per point</th>
-          <th scope="col">Cached</th>
+          <th scope="col">Cached (this run)</th>
           <th scope="col">Per point (uncached-eq)</th>
           <th scope="col">Wall (s)</th>
           <th scope="col">Err</th>
@@ -869,19 +869,25 @@ code {
     and its paid &ldquo;Extra usage&rdquo; is a separate balance that starts empty. A sweep
     there spends quota, not money. Every route in this table is priced in the same unit;
     only one of them is an invoice.</p>
-    <p><b>Cached</b> is the share of a sweep&rsquo;s input served from cache, and a
-    <code>&ndash;</code> there is not zero: it marks a run measured before its route
-    cached at all, which had no cache to miss. That distinction is why the two cost
-    columns exist. <b>Per point</b> is what the sweep cost as billed on the day it
-    ran; <b>per point (uncached-eq)</b> prices every input token fresh, which is what
-    an uncached-era row already paid and the counterfactual for a cached one &mdash;
-    so it is the column to compare across the switch. The ollama route began caching
-    between 2026-09-02 and 2026-09-13, confirmed by calling three already-measured
-    models twice each and watching the second call read its prefix from cache; cached
-    input there costs about 2% of fresh. That is the whole of why one ollama row can
-    show a third of another&rsquo;s cost at a similar score, and the uncached-eq
-    column shows them level. <em>Scores are not affected</em> &mdash; caching changes
-    what a run costs, not what it finds.</p>
+    <p><b>Cached (this run)</b> is a fact about the sweep, not about the model.
+    Prompt caching became available on the ollama route between 2026-09-02 and
+    2026-09-13, and cached input there costs about 2% of fresh &mdash; but a hit is
+    not guaranteed. Probing thirteen models the same day, six collapsed a repeated
+    call into a cache read and seven did not, and minutes later nemotron-3-ultra had
+    flipped from missing to hitting while glm-5.3-flash, which had hit earlier that
+    day, missed three times running. That fits a per-instance cache behind a fleet
+    the caller does not choose. So two sweeps of one model can show very different
+    numbers in this column and neither is wrong, and a <code>&ndash;</code> is not
+    zero: it marks a run from before caching existed on that route, which had no
+    cache to miss.</p>
+    <p>Which is why there are two cost columns. <b>Per point</b> is what the sweep
+    cost as billed on the day it ran, routing luck included. <b>Per point
+    (uncached-eq)</b> prices every input token fresh: what a pre-caching row already
+    paid, the counterfactual for a later one, and the only figure here that does not
+    move with how the routing fell &mdash; so it is the column to rank cost by. It is
+    also what separates a real saving from an artefact: the ollama rows that look
+    three times cheaper than their neighbours read level on it. <em>Scores are not
+    affected</em> &mdash; caching changes what a run costs, not what it finds.</p>
     <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
     returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
     Both models that failed here have failed before.</p>
