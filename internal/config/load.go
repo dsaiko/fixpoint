@@ -376,6 +376,10 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loa
 	if err := ov.applyTarget(cfg); err != nil {
 		return nil, err
 	}
+	// After the overrides, because -target decides what {{target}} expands to, and
+	// before Validate (the caller runs it), so the agent-command checks see the
+	// wrapper that will actually be exec'd rather than the bare CLI behind it.
+	cfg.applySandbox()
 	l := &Loaded{Config: cfg, Source: src, ProjectRoot: projectRoot, Overrides: ov, ownInlineAgents: ownInline}
 	// Refused while the configuration is compiled rather than left to the caller's
 	// trust gate: no flag rescues it (see rejectProjectSuppliedInheritAll), so making

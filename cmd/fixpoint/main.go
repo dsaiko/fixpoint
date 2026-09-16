@@ -27,6 +27,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/orchestrator"
+	"github.com/dsaiko/fixpoint/internal/replay"
 	"github.com/dsaiko/fixpoint/internal/runlog"
 )
 
@@ -76,6 +77,7 @@ Usage:
   fixpoint <config> [flags]     run a named config from the bundle search path
   fixpoint ./some.yaml [flags]  run a config by path
   fixpoint --list               list the configs available here
+  fixpoint stats [dir]          what every agent has cost and found, across runs
   fixpoint completion <shell>   print a completion script (bash | zsh | fish)
 
 Flags:
@@ -103,6 +105,7 @@ Flags:
 	planFile := fs.String("plan", "", "implement: run this validated plan instead of a planner session; it must carry provenance.design_sha256 matching -target")
 	planOnly := fs.Bool("plan-only", false, "implement: plan and validate, write the plan into the run's artifacts, and stop -- no directory is claimed and no coder session is spent")
 	noCoverageCheck := fs.Bool("no-coverage-check", false, "implement: proceed with a design whose outline the coverage rule cannot read; every report then says coverage: unchecked")
+	replayDir := fs.String("replay", "", "re-run a FINISHED run from its .fixpoint/<run> recording: every agent reply is served from replay.jsonl, no agent is invoked and no quota is spent; requires -review-only")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
 	checkLive := fs.Bool("check-live", false, "validate the configuration, ping every agent, and exit without running")
 	positionals, err := parseArgs(fs, args)
@@ -173,6 +176,7 @@ Flags:
 	// validation must therefore see the post-override value.
 	paths, err := absPathFlags(map[string]string{
 		"target": *targetPath, "out": *outPath, "plan": *planFile, "continue": *continueDir,
+		"replay": *replayDir,
 	})
 	if err != nil {
 		logf("%v", err)
@@ -244,6 +248,12 @@ Flags:
 		logf("startup validation: %v", err)
 		return 1
 	}
+
+	// Attach the recording after startup validation, so a replay of a config that
+	// does not even load fails for the reason it would have failed live.
+	if !attachReplay(o, cfg, paths["replay"], logf) {
+		return 1
+	}
 	ctx, stop := installSignals(logf)
 	defer stop()
 
@@ -272,12 +282,87 @@ Flags:
 	if sum != nil {
 		logRaw("\n" + agent.RedactSecrets(logstore.RenderRunTable(sum)))
 	}
+	// Ahead of the failure return: a replay that FAILED is exactly when the
+	// divergence matters, because the usual cause is the recording having no reply
+	// for an invocation this build makes -- and that is a sentence, not a stack.
+	reportDivergence(o, logf)
 	if err != nil {
 		logf("run failed: %v", err)
 		return 1
 	}
 	logOutcome(sum, logf)
 	return model.ExitCodeFor(sum)
+}
+
+// attachReplay points the run at a finished run's recording and reports whether
+// it may proceed.
+//
+// The two refusals are not ceremony. A replay can restore what an agent SAID and
+// nothing it DID, so the roles that earn their keep by editing the target -- the
+// coder in a fix round, the planner and coder of an implement run -- would be
+// replayed into a tree that has none of their edits: the gate would then check
+// unedited code, the round would commit nothing, and the summary would describe a
+// fix that exists only in prose. That is a fabricated run, not a degraded one, so
+// it is refused here at startup rather than discovered per-step. internal/replay
+// keeps the same rule as defense in depth, for a caller that does not come
+// through this path.
+func attachReplay(o *orchestrator.Orchestrator, cfg *config.Config, dir string, logf func(string, ...any)) bool {
+	// No -replay is the ordinary live run, and answering that here rather than at
+	// the call site keeps run() a readable sequence of steps.
+	if dir == "" {
+		return true
+	}
+	if cfg.IsImplement() {
+		logf("refusing to run: -replay cannot drive an implement run. Its planner and coder BUILD a project, and the recording holds what they said, not the files they wrote -- replaying it would report a project that was never built.")
+		return false
+	}
+	if !cfg.Loop.ReviewOnly && !cfg.IsCreate() {
+		logf("refusing to run: -replay needs -review-only. A fix round edits the target and the recording holds the coder's reply but not its edits, so the gate would check an unedited tree and the round would commit nothing while the summary claimed a fix. Add -review-only to replay this run's review rounds.")
+		return false
+	}
+	src, err := replay.Load(dir)
+	if err != nil {
+		logf("replay: %v", err)
+		return false
+	}
+	o.WithReplay(src)
+	logf("replay: serving %d recorded agent invocation(s) from %s -- no agent runs and no quota is spent", src.Steps(), dir)
+	return true
+}
+
+// reportDivergence says how the replayed run differed from the one it was
+// recorded from. It prints nothing for a live run, and nothing for a replay that
+// lined up exactly.
+//
+// It exists because both kinds of divergence are INVISIBLE in the summary. A
+// replay that used fewer steps than were recorded produces a perfectly ordinary
+// scoreboard -- the run converged, nothing failed -- and the fact that two
+// reviewers were never consulted is the most interesting thing that happened. The
+// same goes for a prompt that no longer hashes to the recorded one: the reply is
+// then an answer to a question this build does not ask, and every conclusion drawn
+// from the run rests on that.
+func reportDivergence(o *orchestrator.Orchestrator, logf func(string, ...any)) {
+	src := o.Replaying()
+	if src == nil {
+		return
+	}
+	d := src.Divergence()
+	if !d.Any() {
+		logf("replay: matched the recording exactly")
+		return
+	}
+	if n := len(d.PromptChanged); n > 0 {
+		logf("replay: %d invocation(s) were served a reply recorded against a DIFFERENT prompt -- this build renders the prompt differently than the recorded run did, so those replies answer a question it no longer asks:", n)
+		for _, k := range d.PromptChanged {
+			logf("  %s", k)
+		}
+	}
+	if n := len(d.Unserved); n > 0 {
+		logf("replay: %d recorded invocation(s) were never asked for -- the replayed run took a shorter path than the recorded one:", n)
+		for _, k := range d.Unserved {
+			logf("  %s", k)
+		}
+	}
 }
 
 // logOutcome prints the one-line, timestamped, greppable outcome that goes
@@ -470,6 +555,13 @@ func absPathFlags(flags map[string]string) (map[string]string, error) {
 // request number at all once validation stopped requiring one, which is what
 // left it unauthorized (review run 20260909-224407).
 func checkLiveOnly(ctx context.Context, o *orchestrator.Orchestrator, logf func(string, ...any)) int {
+	// -check-live IS the ping, and a replay suppresses pinging. Reporting "all
+	// agents responding" without having asked any of them would be the one answer
+	// this command must never give.
+	if o.Replaying() != nil {
+		logf("refusing to run: -check-live and -replay contradict each other. -check-live exists to invoke every agent; -replay exists to invoke none. Drop one.")
+		return 1
+	}
 	logf("static validation OK; pinging agents...")
 	// One call, because the repository must not be let go between authorizing the
 	// checkout and launching agents into it.
@@ -879,11 +971,19 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 }
 
 // earlyExit handles the modes that print and exit without resolving a config:
-// listing, its machine-readable form, and the completion subcommand. Split out of
-// run so the run path itself stays a readable sequence.
+// listing, its machine-readable form, and the `completion` and `stats`
+// subcommands. Split out of run so the run path itself stays a readable sequence.
 //
-// `completion` is intercepted here because the argument parser treats bare words
-// as the config to run, so it would otherwise be looked up as a config name.
+// Both subcommands are intercepted here because the argument parser treats bare
+// words as the config to run, so either would otherwise be looked up as a config
+// name. The cost is that a bundle config called `completion` or `stats` can no
+// longer be run positionally -- `-config stats` still reaches it -- which is the
+// trade every subcommand in a tool whose main argument is a bare name makes.
+//
+// `stats` resolves no config deliberately: it aggregates runs made under
+// DIFFERENT configs, so resolving one to find the others would make the answer
+// depend on which one was named. It needs the project root only to locate the
+// default logs directory. See logstore.LoadStats.
 func earlyExit(r *config.Resolver, projectRoot string, positionals []string, list, porcelain, showVersion bool, stdout, stderr io.Writer) (int, bool) {
 	// -version answers before any bundle is resolved, because the first thing
 	// someone does with a fresh install is ask what it is -- from wherever they
@@ -894,6 +994,9 @@ func earlyExit(r *config.Resolver, projectRoot string, positionals []string, lis
 	}
 	if len(positionals) > 0 && positionals[0] == "completion" {
 		return writeCompletion(positionals[1:], stdout, stderr), true
+	}
+	if len(positionals) > 0 && positionals[0] == "stats" {
+		return writeStats(projectRoot, positionals[1:], stdout, stderr), true
 	}
 	if list {
 		if porcelain {
