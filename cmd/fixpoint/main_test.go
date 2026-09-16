@@ -74,6 +74,14 @@ func newFixture(t *testing.T) *fixture {
 // and loop body (the last two may be empty) and returns its path.
 func (f *fixture) configFile(mode, targetExtra, loop string) string {
 	f.t.Helper()
+	return f.configFileWithLogs(mode, targetExtra, loop, "")
+}
+
+// configFileWithLogs is configFile with extra lines appended to the logs block,
+// for the settings that are not part of every test's config. logsExtra is
+// pre-indented YAML ("  replay: true\n").
+func (f *fixture) configFileWithLogs(mode, targetExtra, loop, logsExtra string) string {
+	f.t.Helper()
 	if loop == "" {
 		loop = "  max_iterations: 3"
 	}
@@ -103,8 +111,8 @@ loop:
 %s
 logs:
   dir: %q
-ping_agents: false
-`, mode, f.repo, targetExtra, f.fixPrompt, f.reviewPrompt, f.script, f.script, loop, f.logsDir)
+%sping_agents: false
+`, mode, f.repo, targetExtra, f.fixPrompt, f.reviewPrompt, f.script, f.script, loop, f.logsDir, logsExtra)
 	p := filepath.Join(f.t.TempDir(), "fixpoint.yaml")
 	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
 		f.t.Fatal(err)

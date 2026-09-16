@@ -35,6 +35,11 @@ type Store struct {
 	// concurrent appends serialize here rather than relying on O_APPEND ordering.
 	journalMu  sync.Mutex
 	journalSeq int
+	// replaySeq orders replay.jsonl. It shares journalMu rather than taking a lock
+	// of its own: both files are appended from the same parallel reviewer
+	// goroutines, and one mutex is what keeps a record's sequence number and its
+	// position in the file agreeing.
+	replaySeq int
 }
 
 // New prepares a store for one run by rendering the run-level part of the

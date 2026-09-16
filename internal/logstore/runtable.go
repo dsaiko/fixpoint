@@ -79,6 +79,23 @@ func RenderRunTable(sum *model.RunSummary) string {
 	return b.String()
 }
 
+// Column headings shared by more than one table. They are constants because the
+// per-run scoreboard, the severity block and the cross-run table have to agree on
+// them: a reader moving between the three reads a column of the same name as the
+// same quantity, and it is.
+const (
+	colIssues   = "issues"
+	colFixed    = "fixed"
+	colRejected = "rejected"
+	colDeferred = "deferred"
+	colAdvisory = "advisory"
+	colErrors   = "errors"
+	colTokens   = "tokens"
+	colCache    = "cache"
+	colCost     = "cost"
+	colTime     = "time"
+)
+
 // contributor is one reviewer's or one lens's share of the run, counted in
 // distinct issues rather than raw reports.
 type contributor struct {
@@ -271,7 +288,7 @@ func (st *runStats) absorbVerify(r model.RoundRecord) {
 // writeContributorTable renders one attribution table. totals adds the TOTAL row,
 // which is the DISTINCT issue count rather than the column sum; pass nil to omit it.
 func writeContributorTable(b *strings.Builder, heading string, order []string, m map[string]*contributor, verdicts map[string]string, st *runStats) {
-	head := []string{heading, "issues", "fixed", "rejected", "deferred", "advisory", "errors", "tokens", "cache", "cost", "time"}
+	head := []string{heading, colIssues, colFixed, colRejected, colDeferred, colAdvisory, colErrors, colTokens, colCache, colCost, colTime}
 	rows := [][]string{head}
 	for _, name := range order {
 		c := m[name]
@@ -381,7 +398,7 @@ func writeSeverityTable(b *strings.Builder, st *runStats) {
 		return order[i] < order[j]
 	})
 
-	rows := [][]string{{"SEVERITY", "issues", "fixed", "rejected", "deferred", "open", "last round"}}
+	rows := [][]string{{"SEVERITY", colIssues, colFixed, colRejected, colDeferred, "open", "last round"}}
 	var tot bucket
 	for _, sev := range order {
 		bk := buckets[sev]

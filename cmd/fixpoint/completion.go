@@ -34,7 +34,7 @@ var completionScripts = map[string]string{"bash": bashCompletion, "zsh": zshComp
 // kind of wrong than a list a reader can see and check.
 const completionFlags = "--list --porcelain --config --review-only --max-iterations --base-ref --gate --pr --target --out " +
 	"--trusted-target --trusted-bundle --allow-untrusted-fix --post --post-verdict --post-run --check --check-live " +
-	"--no-coverage-check --plan-only --plan --continue --version"
+	"--no-coverage-check --plan-only --plan --continue --replay --version"
 
 const bashCompletion = `# fixpoint completion for bash. Install with:
 #   fixpoint completion bash > /etc/bash_completion.d/fixpoint
@@ -132,6 +132,7 @@ const zshFlagPairs = `'--list:list the configs available here' ` +
 	`'--plan-only:implement: plan and validate, then stop without building' ` +
 	`'--plan:implement: run this validated plan instead of a planner session' ` +
 	`'--continue:implement: resume a project fixpoint built' ` +
+	`'--replay:re-run a finished run from its recording; invokes no agent' ` +
 	`'--version:print the version, commit and build date, and exit'`
 
 const fishCompletion = `# fixpoint completion for fish. Install with:
@@ -170,5 +171,6 @@ complete -c fixpoint -l no-coverage-check -d 'implement: run without the coverag
 complete -c fixpoint -l plan-only -d 'implement: plan and validate, then stop without building'
 complete -c fixpoint -l plan -r -d 'implement: run this validated plan instead of a planner session'
 complete -c fixpoint -l continue -r -d 'implement: resume a project fixpoint built'
+complete -c fixpoint -l replay -r -d 're-run a finished run from its recording; invokes no agent'
 complete -c fixpoint -l version -d 'print the version, commit and build date, and exit'
 `

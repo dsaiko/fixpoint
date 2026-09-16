@@ -1,6 +1,7 @@
 # Logs and artifacts
 
-What a run writes to disk, the end-of-run table, and the run journal.
+What a run writes to disk, the end-of-run table, the run journal, the replay
+recording, and `fixpoint stats`.
 
 [← back to the README](../README.md)
 
@@ -218,3 +219,117 @@ It reads well with `jq`:
 jq -c 'select(.type=="verify_finished") | {round, a:.data.attempt, b:.data.blocking}' \
   .fixpoint/*/journal.jsonl
 ```
+
+### The replay recording
+
+`replay.jsonl` records every agent invocation — one JSON object per reply — so a
+finished run can be re-run with **no agent and no quota**:
+
+```sh
+fixpoint review-code -review-only -replay .fixpoint/20260916-081500
+```
+
+It exists because everything in fixpoint worth regression-testing sits *between*
+the agent turns: contract extraction, the finding matcher, issue identity across
+rounds, the verify gate, the verdict rule, the review body. Changing any of them
+costs a live round today — real quota, thirty minutes of wall clock, and an answer
+that is a sample rather than a measurement, because the same reviewer on an
+unchanged target finds different things on consecutive runs. Against a recording
+they are ordinary tests.
+
+Each record carries `v`, `seq`, `at`, the invocation's identity
+(`role`/`agent`/`prompt`/`round`), the reply (`stdout`, `stderr`, `err`,
+`duration_ms`, `usage`), and `prompt_sha256` — the digest of the prompt the reply
+answered. The prompt itself is **not** recorded: it embeds the reviewed material,
+and the `.prompt` artifact already holds it.
+
+Recording is on by default (`logs.replay: true`). It costs one more on-disk copy of
+each reply, which the `raw` format already keeps, and carries the same secret
+hazard as every other artifact — set `replay: false` to drop it.
+
+#### What a replay is faithful to
+
+Everything downstream of an agent's **reply**. The bytes the orchestrator consumed
+are the bytes it consumes again.
+
+#### What it is not
+
+- **Side effects.** The coder's edits lived in the working tree and were never in
+  any artifact, so replaying a fix round would pair a coder claiming edits with a
+  tree that has none — the gate would then check unedited code while the summary
+  described a fix. `-replay` therefore requires `-review-only`, and refuses an
+  implement run outright.
+- **Bytes.** What is replayed is the *redacted* reply. Nothing in the pipeline
+  reads a credential, so this is invisible to everything a replay tests — but it
+  is why the recording is not an exact capture.
+- **Cost.** A replayed step reports the duration and usage the live one did, so a
+  replayed summary stays comparable to the one it came from. Nothing was spent.
+
+#### Divergence
+
+A replay that took a different path is reported at the end, because both kinds of
+divergence are invisible in the summary:
+
+```
+replay: 2 recorded invocation(s) were never asked for -- the replayed run took a
+        shorter path than the recorded one:
+  round 2 review/codex via bugs (1 unserved)
+```
+
+and, when the prompt templates have changed since the recording was made:
+
+```
+replay: 1 invocation(s) were served a reply recorded against a DIFFERENT prompt
+```
+
+That one is not an error — changing a prompt is among the things a replay exists
+to test — but every conclusion drawn from the run rests on knowing it. An
+invocation the recording has *no* reply for fails the step rather than inventing
+one: an empty review reads downstream as a clean review.
+
+## `fixpoint stats`
+
+The end-of-run table prices **one** run. `fixpoint stats` prices every run
+recorded under a logs root:
+
+```sh
+fixpoint stats                 # .fixpoint under the project root
+fixpoint stats /path/to/logs   # anywhere else
+```
+
+```
+──────────────────────────────────────────────────────────────────────────────
+ fixpoint · 16 run(s) · .fixpoint · 2026-08-28 to 2026-09-16
+──────────────────────────────────────────────────────────────────────────────
+ AGENT      runs  steps  errors  issues  fixed  rejected  rej%  advisory  in    out   cache  cost   time
+ claude       16     48       1      91     74        12   13%        22  1.2M   88k   3.1M  $4.18  2h51m
+ codex        16     46       0      63     51         6   10%        14  2.4M   71k      -  $0.00  1h44m
+ ...
+
+ outcomes     converged 11, max-iterations 3, all-rejected 2
+ tokens       as each CLI reported them; in/out/cache are NOT summed — some
+              routes count a cache read inside input_tokens and adding them
+              would double-count those rows
+ cost         only from CLIs that report one; a subscription-authenticated route
+              has no per-request price and shows none
+```
+
+It answers the question one run cannot: **which seat earns its tokens.** A panel
+seat is decided on rejection rate, error rate and cost across a history, and
+assembling that by hand from a dozen summaries is how it was done before.
+
+Three things about it are deliberate:
+
+- **It resolves no configuration.** The question spans runs made under different
+  configs, so resolving one config to find the others would make the answer depend
+  on which config was named. Same reasoning as `-post-run`.
+- **Summaries are found by content, not filename.** `logs.summary_pattern` is
+  configurable, and a reader that globbed the default name would report nothing for
+  an operator who changed it — which looks exactly like having run nothing.
+- **There is no summed `tokens` column.** On some routes a cache read is reported
+  *inside* `input_tokens` and on others beside it, so one total silently
+  double-counts a subset of the panel — in a table whose whole purpose is comparing
+  rows to each other.
+
+Nothing here phones anywhere and nothing is recorded that a run did not already
+record: `stats` reads the artifacts on your disk.
