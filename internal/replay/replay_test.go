@@ -243,3 +243,31 @@ func TestLoadReadsALongReply(t *testing.T) {
 		t.Errorf("reply truncated: got %d bytes, want %d", len(res.Stdout), len(long))
 	}
 }
+
+// REGRESSION (review run 20260916-085129, finding i4). A key the recording has no
+// records for never appears in `queued`, so it could not show up in the unserved
+// tally -- and a replay that consumed everything it DID have while being refused
+// something else reported "matched the recording exactly" over a run that plainly
+// diverged.
+func TestDivergenceReportsARefusedInvocation(t *testing.T) {
+	dir := write(t, rec(1, "review", "claude", "bugs", "P", "x"))
+	src, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Consume the whole recording, so Unserved is empty...
+	if _, err := src.Serve("review", "claude", "bugs", 1, "P"); err != nil {
+		t.Fatal(err)
+	}
+	// ...then ask for something it never held.
+	if _, err := src.Serve("review", "codex", "bugs", 1, "P"); err == nil {
+		t.Fatal("precondition: the second Serve should have been refused")
+	}
+	d := src.Divergence()
+	if !d.Any() {
+		t.Fatal("a replay that was refused an invocation reported a clean match")
+	}
+	if len(d.Refused) != 1 || !strings.Contains(d.Refused[0], "codex") {
+		t.Errorf("Refused = %v, want the codex invocation", d.Refused)
+	}
+}

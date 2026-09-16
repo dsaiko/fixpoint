@@ -267,9 +267,8 @@ func alreadyPosted(runDir string, pr int) string {
 	return fmt.Sprintf("%s was %s; posting it again would put a second review on pull request %d. If the forge does not have it, delete %s and try again.", runDir, what, pr, path)
 }
 
-// committedRun says why a run directory must not be trusted to name its own
-// destination, or "" when nothing marks it as content that came in with a
-// checkout.
+// trackedRunFile returns the first file in runDir that git reports as TRACKED, or
+// "" when nothing marks the directory as content that came in with a checkout.
 //
 // A run directory cannot be authenticated -- it is only files, and every field a
 // real one holds can be typed into a fake one. But the shape that carries the
@@ -294,7 +293,7 @@ func alreadyPosted(runDir string, pr int) string {
 // ever read.
 const maxProvenanceOutput = 1 << 20
 
-func committedRun(ctx context.Context, runDir string) string {
+func trackedRunFile(ctx context.Context, runDir string) string {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	// The same config pins every other git command fixpoint runs against a checkout
@@ -324,7 +323,29 @@ func committedRun(ctx context.Context, runDir string) string {
 	if i := strings.IndexByte(tracked, 0); i >= 0 {
 		tracked = tracked[:i]
 	}
+	return tracked
+}
+
+// committedRun says why a run directory must not be trusted to name its own
+// destination for PUBLISHING, or "" when nothing marks it as checked-in content.
+// The consequence is spelled out per caller -- see replayFromCommittedRun -- because
+// what a planted directory buys an attacker differs by what is about to read it.
+func committedRun(ctx context.Context, runDir string) string {
+	tracked := trackedRunFile(ctx, runDir)
+	if tracked == "" {
+		return ""
+	}
 	return fmt.Sprintf("%s is tracked by git (%s is committed), so it came in with a repository's content rather than from a run on this machine. Its summary -- not review-body.md -- chooses the pull request, the verdict and the inline comments that would be published under your identity, so it is refused. Publish your own run's directory, or move this one outside the work tree if it really is yours.", runDir, tracked)
+}
+
+// replayFromCommittedRun is the same rule for -replay, where a planted directory
+// buys something different: not a destination, but the reviewers' ANSWERS.
+func replayFromCommittedRun(ctx context.Context, runDir string) string {
+	tracked := trackedRunFile(ctx, runDir)
+	if tracked == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s is tracked by git (%s is committed), so it came in with a repository's content rather than from a run on this machine. A recording supplies every reviewer's reply, so replaying this one would let whoever wrote those files author the findings, the verdict and the review body of a run that looks like yours. Replay a directory your own run produced, or move this one outside the work tree if it really is yours.", runDir, tracked)
 }
 
 // wrongRepository says why the checkout the submission would go through is not the
@@ -375,6 +396,15 @@ func wrongRepository(ctx context.Context, sum *model.RunSummary) string {
 // cannot be confused from the outside.
 func unreplayable(dir string, sum *model.RunSummary) string {
 	switch {
+	// A replayed run's verdict was authored by a recording, not by a panel that
+	// read this code: no reviewer ran, and the replies came from wherever the
+	// recording came from. Publishing it would put a review nobody produced on
+	// somebody's pull request under the operator's identity -- and a replay is the
+	// one way to obtain a FRESH, untracked run directory holding replies from
+	// elsewhere, which is precisely what committedRun above cannot see (review run
+	// 20260916-085129, finding i10).
+	case sum.ReplayedFrom != "":
+		return fmt.Sprintf("%s is a replay of %s: every reviewer reply came from that recording, so no panel read this code and its verdict is not a review anybody produced. Publish the run the recording came from, or review again.", dir, sum.ReplayedFrom)
 	case sum.Verdict == nil:
 		return dir + " holds no review verdict -- a fix run has nothing to publish"
 	case sum.Mode != "pr":

@@ -188,3 +188,79 @@ func TestRenderStatsSaysSoWhenThereIsNothing(t *testing.T) {
 		t.Errorf("an empty root renders no explanation:\n%s", out)
 	}
 }
+
+// A replayed run's usage is the RECORDED usage, already billed against the run it
+// came from. Counting it again inflates exactly the per-agent economics this table
+// exists to report (review run 20260916-085129, finding i3).
+func TestLoadStatsExcludesReplayedRuns(t *testing.T) {
+	root := t.TempDir()
+	live := reviewRun(time.Now(), map[string]string{"claude": model.VerdictFixed})
+	writeSummary(t, root, "run1", live)
+	replayed := reviewRun(time.Now(), map[string]string{"claude": model.VerdictFixed})
+	replayed.ReplayedFrom = filepath.Join(root, "run1")
+	writeSummary(t, root, "run2", replayed)
+
+	s, err := LoadStats(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Runs != 1 {
+		t.Fatalf("Runs = %d, want 1 -- the replay must not be counted", s.Runs)
+	}
+	if s.Replayed != 1 {
+		t.Errorf("Replayed = %d, want 1; a skipped run has to be reported, not silently dropped", s.Replayed)
+	}
+	if got := s.Agents[0].Usage.InputTokens; got != 100 {
+		t.Errorf("input tokens = %d, want 100 (the live run's alone)", got)
+	}
+	if !strings.Contains(RenderStats(s), "were replays and are excluded") {
+		t.Error("the rendering does not say runs were skipped")
+	}
+}
+
+// The coder's failed invocations reach the errors column. computeRunStats credits
+// errors from ReviewErrors, which is reviewer-only, so a coder that died mid-fix
+// showed a clean row however often it happened (finding i6).
+func TestLoadStatsCountsCoderFailures(t *testing.T) {
+	root := t.TempDir()
+	sum := reviewRun(time.Now(), map[string]string{"claude": model.VerdictFixed})
+	sum.Coder = "claude-coder"
+	sum.Rounds[0].Steps = append(sum.Rounds[0].Steps, model.StepStat{
+		Role: "fix", Agent: "claude-coder", DurationMS: 5000, Failed: true,
+		Usage: model.Usage{InputTokens: 10},
+	})
+	writeSummary(t, root, "run1", sum)
+
+	s, err := LoadStats(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var coder AgentStat
+	for _, a := range s.Agents {
+		if a.Name == "claude-coder" {
+			coder = a
+		}
+	}
+	if coder.Name == "" {
+		t.Fatalf("the coder is missing from the table: %+v", s.Agents)
+	}
+	if coder.Errors != 1 {
+		t.Errorf("coder errors = %d, want 1 -- the most expensive kind of failure must not read as clean", coder.Errors)
+	}
+}
+
+// A termination string comes off disk, from a summary a repository can ship, and
+// is printed under a table whose columns it could otherwise redraw (finding i11).
+func TestRenderStatsEscapesTheTerminationLabel(t *testing.T) {
+	root := t.TempDir()
+	sum := reviewRun(time.Now(), map[string]string{"claude": model.VerdictFixed})
+	sum.Termination = "converged\x1b[2J"
+	writeSummary(t, root, "run1", sum)
+	s, err := LoadStats(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(RenderStats(s), "\x1b") {
+		t.Error("an escape sequence from a summary reached the rendered table verbatim")
+	}
+}

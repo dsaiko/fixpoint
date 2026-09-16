@@ -697,7 +697,8 @@ agent's name. Mount the target and the one credential directory the CLI needs an
 nothing else, and the read surface two paragraphs up closes: the reviewer cannot
 quote `~/.ssh` because `~/.ssh` is not there. fixpoint implements no sandbox
 itself — which primitive fits and which paths must be mounted are properties of
-your machine. Full detail, including what it cannot close, is in
+your machine. It is refused for create and implement runs, whose agents work
+outside `target.path`. Full detail, including what it cannot close, is in
 [Security model](../docs/security.md#confining-agents-with-sandboxcommand).
 
 **fixpoint removes credential-shaped paths from collection unconditionally**, in

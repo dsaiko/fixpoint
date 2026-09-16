@@ -265,6 +265,26 @@ are the bytes it consumes again.
 - **Cost.** A replayed step reports the duration and usage the live one did, so a
   replayed summary stays comparable to the one it came from. Nothing was spent.
 
+#### A recording is untrusted input
+
+`-replay` refuses a run directory whose files are **tracked by git**, the same rule
+`-post-run` applies and for a sharper reason. A recording cannot be authenticated —
+it is only files — and a pull request that commits `.fixpoint/<ts>/replay.jsonl`
+has it written into the worktree by `gh pr checkout` whatever `.gitignore` says.
+Replaying it would let whoever wrote those files author the findings, the verdict
+and the review body of a run that looks like yours.
+
+A replayed run is also **marked as one** in its summary (`replayed_from`), which
+two consumers act on:
+
+- `fixpoint stats` excludes it. Its tokens and wall clock are the *recorded* ones,
+  already counted against the run they came from, so counting them again would
+  inflate the per-agent economics by however often you regression-test.
+- Publishing refuses it. Its verdict was authored by a recording, not by a panel
+  that read the code — and a replay is the one way to get a fresh, untracked run
+  directory holding replies from somewhere else, which is exactly what the
+  publishing provenance gate cannot see on its own.
+
 #### Divergence
 
 A replay that took a different path is reported at the end, because both kinds of
@@ -285,7 +305,9 @@ replay: 1 invocation(s) were served a reply recorded against a DIFFERENT prompt
 That one is not an error — changing a prompt is among the things a replay exists
 to test — but every conclusion drawn from the run rests on knowing it. An
 invocation the recording has *no* reply for fails the step rather than inventing
-one: an empty review reads downstream as a clean review.
+one (an empty review reads downstream as a clean review) and is reported here too,
+so a replay that was refused anything can never print `matched the recording
+exactly`.
 
 ## `fixpoint stats`
 
