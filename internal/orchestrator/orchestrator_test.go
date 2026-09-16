@@ -5683,13 +5683,13 @@ func TestPerFixCommitCannotLinkAnIssueForAutoClose(t *testing.T) {
 	// location that does not exist.
 	f.respond(1, reviewResponse(t,
 		model.ReviewFinding{Category: "bugs", Severity: "high", File: "docs/issues/1-intro.md", Line: 12,
-			Title: "off by one, closes GH-43 and https://github.com/oddin/fixpoint/issues/45"},
+			Title: "off by one, closes GH-43 and https://github.com/acme-co/fixpoint/issues/45"},
 	))
 	f.editRepoOn(2)
 	f.respond(2, fixResponse(t, model.FixResult{
 		ID: "i1", Verdict: "fixed",
-		Detail: "Closes #42, resolves oddin/fixpoint#44, fixes https://github.com/oddin/fixpoint/pull/46, " +
-			"https://api.github.com/repos/oddin/fixpoint/pulls/48 and https://gitlab.com/oddin/fixpoint/-/merge_requests/47",
+		Detail: "Closes #42, resolves acme-co/fixpoint#44, fixes https://github.com/acme-co/fixpoint/pull/46, " +
+			"https://api.github.com/repos/acme-co/fixpoint/pulls/48 and https://gitlab.com/acme-co/fixpoint/-/merge_requests/47",
 	}))
 	f.respond(3, reviewResponse(t))
 
@@ -5701,18 +5701,18 @@ func TestPerFixCommitCannotLinkAnIssueForAutoClose(t *testing.T) {
 	// less reachable by an injection than a bare `#42`, and no less linkable. Every
 	// spelling the grammar accepts is here, GitLab's included.
 	for _, linkable := range []string{"#42", "#44", "GH-43",
-		"https://github.com/oddin/fixpoint/issues/45", "https://github.com/oddin/fixpoint/pull/46",
-		"https://api.github.com/repos/oddin/fixpoint/pulls/48",
-		"https://gitlab.com/oddin/fixpoint/-/merge_requests/47"} {
+		"https://github.com/acme-co/fixpoint/issues/45", "https://github.com/acme-co/fixpoint/pull/46",
+		"https://api.github.com/repos/acme-co/fixpoint/pulls/48",
+		"https://gitlab.com/acme-co/fixpoint/-/merge_requests/47"} {
 		if strings.Contains(msg, linkable) {
 			t.Errorf("commit message carries %q in linkable form -- a push would close that issue:\n%s", linkable, msg)
 		}
 	}
 	// Defanged, not dropped: the commit still records the numbers the agents named.
 	for _, want := range []string{"# 42", "# 44", "GH- 43",
-		"https://github.com/oddin/fixpoint/issues/ 45", "https://github.com/oddin/fixpoint/pull/ 46",
-		"https://api.github.com/repos/oddin/fixpoint/pulls/ 48",
-		"https://gitlab.com/oddin/fixpoint/-/merge_requests/ 47"} {
+		"https://github.com/acme-co/fixpoint/issues/ 45", "https://github.com/acme-co/fixpoint/pull/ 46",
+		"https://api.github.com/repos/acme-co/fixpoint/pulls/ 48",
+		"https://gitlab.com/acme-co/fixpoint/-/merge_requests/ 47"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("commit message is missing %q:\n%s", want, msg)
 		}

@@ -23,9 +23,9 @@ func TestSanitizeTextNeutralizesForgeActions(t *testing.T) {
 		},
 		{
 			name:       "owner/repo shorthand",
-			in:         "Same as oddin-gg/fujin#170.",
+			in:         "Same as acme-co/fujin#170.",
 			wantGone:   []string{"fujin#170"},
-			wantStayed: []string{"oddin-gg/fujin", "170"},
+			wantStayed: []string{"acme-co/fujin", "170"},
 		},
 		{
 			name:       "GH- spelling",
