@@ -334,3 +334,26 @@ func TestSandboxIsAcceptedForAReviewRun(t *testing.T) {
 		t.Fatalf("a review run with a sandbox was refused: %v", err)
 	}
 }
+
+// A wrapper token whose placeholder is empty must drop WHOLE, the way an agent
+// command token does. Dropping only the value leaves a dangling flag that
+// swallows the next argument -- in a wrapper, the next mount or the agent command
+// itself (review run 20260916-085129, finding i13).
+func TestSandboxDropsAWholeTokenWhenItsPlaceholderIsEmpty(t *testing.T) {
+	c := &Config{
+		// No target.path, so {{target}} expands to empty.
+		Target:  Target{Mode: ModeDirectory},
+		Sandbox: Sandbox{Command: []string{"/bin/sh", "--bind {{target}}", "--keep", "--"}},
+		Agents:  map[string]Agent{"rev": {Command: []string{"claude"}}},
+	}
+	c.applySandbox()
+	got := c.Agents["rev"].Sandbox
+	for _, tok := range got {
+		if tok == "--bind" {
+			t.Fatalf("a dangling --bind survived its empty value: %v", got)
+		}
+	}
+	if len(got) != 3 || got[1] != "--keep" {
+		t.Errorf("wrapper = %v, want the --bind token dropped whole and the rest intact", got)
+	}
+}
