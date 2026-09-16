@@ -2,12 +2,17 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
+	"github.com/dsaiko/fixpoint/internal/replay"
 )
 
 // runDirOf returns the single run directory the fixture's logs template produced.
@@ -216,5 +221,98 @@ func TestReplayAndCheckLiveAreRefusedTogether(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "all agents responding") {
 		t.Errorf("check-live claimed a green it never measured:\n%s", buf.String())
+	}
+}
+
+// REGRESSION (review run 20260916-085129, finding i9). A recording cannot be
+// authenticated -- it is only files -- and a pull request that commits
+// .fixpoint/<ts>/replay.jsonl has it written into the worktree by
+// `gh pr checkout` whatever .gitignore says. Replaying it would let the PR author
+// write its own findings, verdict and review body; and because the replayed run
+// writes a FRESH untracked directory, a later -post-run over that one passes the
+// publishing provenance gate and posts the author's verdict under the operator's
+// identity. The same rule -post-run applies therefore has to apply here.
+func TestReplayRefusesARecordingCommittedIntoTheRepository(t *testing.T) {
+	f := newFixture(t)
+	f.respond(1, reviewResponse(t))
+	cfg := f.configFileWithLogs("directory", "", "  review_only: true", "  replay: true\n")
+	var rec bytes.Buffer
+	if got := run([]string{"-config", cfg}, &rec, &rec); got != 0 {
+		t.Fatalf("recording run = %d; stderr:\n%s", got, rec.String())
+	}
+	ownRun := runDirOf(t, f)
+
+	// Plant that same recording inside the repository under review and COMMIT it,
+	// which is the one property a directory fixpoint wrote never has.
+	planted := filepath.Join(f.repo, "planted-run")
+	if err := os.MkdirAll(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(ownRun, model.ReplayName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planted, model.ReplayName), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "add", "planted-run")
+	gitIn(t, f.repo, "commit", "-m", "a pull request ships its own recording")
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", cfg, "-review-only", "-replay", planted}, &buf, &buf); got != 1 {
+		t.Fatalf("run() = %d, want 1 (refusal); stderr:\n%s", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), "tracked by git") {
+		t.Errorf("the refusal does not say why the recording is untrusted:\n%s", buf.String())
+	}
+	// And the operator's own, untracked, recording still replays.
+	var ok bytes.Buffer
+	if got := run([]string{"-config", cfg, "-review-only", "-replay", ownRun}, &ok, &ok); got != 0 {
+		t.Fatalf("the operator's own recording was refused: %d\n%s", got, ok.String())
+	}
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// The shipped default is a behavior: every run made from the shipped bundle
+// records one, and nothing else in the suite would notice it being flipped off
+// (review run 20260916-085129, finding i22).
+func TestShippedBundleRecordsAReplay(t *testing.T) {
+	l, err := config.LoadBundle(&config.Resolver{Bundles: []string{"../../config"}}, "review-code", "", config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.Config.Logs.Replay {
+		t.Error("the shipped bundle does not record a replay; a finished run cannot then be re-run without quota")
+	}
+}
+
+// The implement refusal and the side-effect roles the recording cannot restore
+// (review run 20260916-085129, finding i23). attachReplay refuses the pipeline;
+// internal/replay refuses the roles for a caller that does not come through it.
+func TestReplayRefusesEverySideEffectRole(t *testing.T) {
+	for _, role := range []string{"fix", "task", "plan"} {
+		t.Run(role, func(t *testing.T) {
+			dir := t.TempDir()
+			line := fmt.Sprintf(`{"v":%d,"seq":1,"at":"2026-09-16T08:00:00Z","role":%q,"agent":"a","prompt":"p","round":1,"prompt_sha256":"x","stdout":"y"}`+"\n",
+				model.ReplayVersion, role)
+			if err := os.WriteFile(filepath.Join(dir, model.ReplayName), []byte(line), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			src, err := replay.Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := src.Serve(role, "a", "p", 1, "prompt"); !errors.Is(err, replay.ErrNotReviewOnly) {
+				t.Fatalf("role %q was served from a recording that cannot hold its side effects: %v", role, err)
+			}
+		})
 	}
 }

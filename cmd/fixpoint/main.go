@@ -249,13 +249,16 @@ Flags:
 		return 1
 	}
 
-	// Attach the recording after startup validation, so a replay of a config that
-	// does not even load fails for the reason it would have failed live.
-	if !attachReplay(o, cfg, paths["replay"], logf) {
-		return 1
-	}
 	ctx, stop := installSignals(logf)
 	defer stop()
+
+	// Attach the recording after startup validation, so a replay of a config that
+	// does not even load fails for the reason it would have failed live -- and
+	// under the interrupt handler, because the provenance probe below runs git
+	// inside a directory whose provenance is the thing in question.
+	if !attachReplay(ctx, o, cfg, paths["replay"], logf) {
+		return 1
+	}
 
 	if *check {
 		return checkOnly(ctx, o, cfg, logf)
@@ -306,11 +309,26 @@ Flags:
 // it is refused here at startup rather than discovered per-step. internal/replay
 // keeps the same rule as defense in depth, for a caller that does not come
 // through this path.
-func attachReplay(o *orchestrator.Orchestrator, cfg *config.Config, dir string, logf func(string, ...any)) bool {
+func attachReplay(ctx context.Context, o *orchestrator.Orchestrator, cfg *config.Config, dir string, logf func(string, ...any)) bool {
 	// No -replay is the ordinary live run, and answering that here rather than at
 	// the call site keeps run() a readable sequence of steps.
 	if dir == "" {
 		return true
+	}
+	// The same provenance rule -post-run applies to a run directory, and for a
+	// sharper reason. A recording cannot be authenticated -- it is only files -- and
+	// a pull request that commits .fixpoint/<ts>/replay.jsonl gets it written into
+	// the worktree by `gh pr checkout` whatever .gitignore says. Replay it and the
+	// PR author's own text is served into contract extraction, the matcher, the
+	// verdict rule and the review body: the author has written its own review. The
+	// prompt-digest mismatch is the only tell, and it is reported AFTER the run has
+	// produced that verdict. Worse, the replayed run writes a fresh, untracked run
+	// directory of its own, so a later -post-run over it passes committedRun and
+	// publishes the author's verdict and line comments under the operator's
+	// identity. Refused here, before a single reply is served.
+	if why := replayFromCommittedRun(ctx, dir); why != "" {
+		logf("refusing to run: %s", why)
+		return false
 	}
 	if cfg.IsImplement() {
 		logf("refusing to run: -replay cannot drive an implement run. Its planner and coder BUILD a project, and the recording holds what they said, not the files they wrote -- replaying it would report a project that was never built.")
@@ -354,6 +372,12 @@ func reportDivergence(o *orchestrator.Orchestrator, logf func(string, ...any)) {
 	if n := len(d.PromptChanged); n > 0 {
 		logf("replay: %d invocation(s) were served a reply recorded against a DIFFERENT prompt -- this build renders the prompt differently than the recorded run did, so those replies answer a question it no longer asks:", n)
 		for _, k := range d.PromptChanged {
+			logf("  %s", k)
+		}
+	}
+	if n := len(d.Refused); n > 0 {
+		logf("replay: %d invocation(s) had no reply in the recording, and failed as steps -- the replayed run is asking for something the recorded one never did:", n)
+		for _, k := range d.Refused {
 			logf("  %s", k)
 		}
 	}

@@ -399,6 +399,16 @@ func (o *Orchestrator) WithReplay(src *replay.Source) *Orchestrator {
 // caller can report the divergence afterwards.
 func (o *Orchestrator) Replaying() *replay.Source { return o.replay }
 
+// replayDir is the recording this run is being served from, or "" for a live run.
+// It goes into the summary so a replayed run can never be mistaken for one that
+// spent what it reports -- see model.RunSummary.ReplayedFrom.
+func (o *Orchestrator) replayDir() string {
+	if o.replay == nil {
+		return ""
+	}
+	return o.replay.Dir()
+}
+
 // rule, phase, endPhase and progress are the four structural log calls. Each
 // falls back to an ordinary line when no sink is installed, so the orchestrator
 // never has to ask whether one is -- and a test reading the log still sees every
@@ -572,6 +582,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*model.RunSummary, error) {
 		CommitPolicy:        o.cfg.Loop.CommitPolicy,
 		Coder:               o.cfg.Roles.Coder.Agent,
 		Create:              o.cfg.IsCreate(),
+		ReplayedFrom:        o.replayDir(),
 	}
 	err := o.run(ctx, sum)
 	sum.FinishedAt = time.Now()
