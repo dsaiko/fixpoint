@@ -326,6 +326,45 @@ verify:
   timeout: 10m
   commands: []
 
+# Launch every agent through a wrapper command, so the agent CLI runs inside
+# whatever confinement this platform provides. Empty (the default) runs agents
+# directly, which is what every release before this one did.
+#
+# It exists because the reviewers are third-party CLIs holding YOUR credentials.
+# Their read-only flags deny edits, not reads: a reviewer fed a malicious pull
+# request can be prompt-injected into reading ~/.ssh or ~/.aws/credentials and
+# quoting it into a finding, and a descendant that calls setsid escapes the
+# process-group kill. docs/security.md documents both, and its remedy — "run
+# fixpoint inside a container/VM" — is what this key makes executable.
+#
+# fixpoint implements no sandbox and does not try to: which primitive to use
+# (bubblewrap, podman/docker, sandbox-exec, a systemd scope) and which paths must
+# be mounted are properties of your machine. What fixpoint knows and your wrapper
+# does not is which target is under review and whether this agent may write to
+# it, so that is what it passes:
+#
+#   {{target}}       absolute path of the directory under review
+#   {{target_mode}}  "rw" for an agent with can_edit, "ro" otherwise
+#   {{agent}}        the agent's name, for per-agent profiles
+#
+# The wrapper is prepended to the agent's argv, so it is exec'd and the CLI is its
+# argument. It applies to AGENTS only — verify commands are your own argv and git
+# is fixpoint's, and confining either would change what the gate measures.
+#
+# What it buys: host filesystem confinement (mount the target and the one
+# credential directory the CLI needs, and the reviewer cannot read your other
+# secrets at all) and, on a platform whose sandbox has it, containment of the
+# descendants setsid would otherwise free.
+#
+# What it does NOT buy: isolating the credential from the AGENT. The CLI
+# authenticates as you, so its token has to be inside with it.
+#
+#   sandbox:
+#     command: [/usr/local/bin/fixpoint-sandbox, "{{target}}", "{{target_mode}}"]
+#
+sandbox:
+  command: []
+
 logs:
   # Path template, resolved against the project root.
   #   {timestamp}  the RUN's start time — one value for the whole run
@@ -349,6 +388,15 @@ logs:
   pattern: "{role}-{agent}-{prompt}-{timestamp}.{ext}"
   summary_pattern: "summary-{timestamp}.{ext}"
   timestamp_format: "20060102-150405" # Go layout (ref: Mon Jan 2 15:04:05 2006)
+
+  # Record every agent reply to replay.jsonl at the run root, so the run can be
+  # re-run with no agent and no quota: `fixpoint <config> -replay <run dir>`.
+  # That is what makes a change to contract extraction, the finding matcher, the
+  # verify gate or the review body a deterministic test instead of a live round.
+  # It costs one more copy of each reply on disk (the raw format already keeps
+  # one) and carries the same secret hazard as every other artifact. Set false to
+  # drop it.
+  replay: true
 
   # Extra Go regular expressions masked in every artifact and log line, on top of
   # the built-in credential shapes (sk-ant-…, ghp_…, JWTs, key/secret/password

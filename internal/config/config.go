@@ -38,6 +38,9 @@ type Config struct {
 	Logs   Logs             `yaml:"logs"`
 	Verify Verify           `yaml:"verify"`
 	Create Create           `yaml:"create"`
+	// Sandbox launches every agent through a wrapper command. Empty by default;
+	// see sandbox.go for what it closes and what it cannot.
+	Sandbox Sandbox `yaml:"sandbox"`
 	// Implement configures the implement-design pipeline; inert (and refused)
 	// unless roles.planner is set. See docs/design/DESIGN.md.
 	Implement Implement `yaml:"implement"`
@@ -542,6 +545,16 @@ type Agent struct {
 	// Usage tells fixpoint how to read what this invocation actually cost, from
 	// the CLI's own machine-readable output.
 	Usage AgentUsage `yaml:"usage"`
+
+	// Sandbox is the wrapper argv this agent is launched through, already
+	// placeholder-expanded for it. Argv prepends it to the command.
+	//
+	// It is DERIVED, never written: applySandbox fills it from the top-level
+	// sandbox block once the target path is final. The yaml tag is "-" so an agent
+	// file cannot set it directly -- a per-agent wrapper would let one entry in a
+	// pool opt itself out of the confinement the operator configured for the panel,
+	// and the agent files are exactly the bundle files a repository can ship.
+	Sandbox []string `yaml:"-"`
 }
 
 // AgentUsage describes where a CLI reports its token usage and cost, so fixpoint
@@ -700,7 +713,14 @@ func (a Agent) placeholderValues() map[string]string {
 // being the only thing between a config field and the argument list.
 func (a Agent) Argv() []string {
 	values := a.placeholderValues()
-	var argv []string
+	// The wrapper first, so what fixpoint execs is the sandbox and the agent CLI is
+	// its argument. Everything that inspects an agent command -- the LookPath check,
+	// the pr-mode target-supplied-executable refusal, the .raw log header -- reads
+	// this one function, so the wrapper is covered by all of them without any of
+	// them knowing it exists. It is already expanded (see applySandbox); no
+	// placeholder substitution is applied to it here, because its values are
+	// fixpoint's own and not this agent's model/effort.
+	argv := append([]string(nil), a.Sandbox...)
 	for _, tok := range a.Command {
 		fields := strings.Fields(tok)
 		subs := make([]string, 0, len(fields))
@@ -1343,6 +1363,24 @@ type Logs struct {
 	// keeps group 1 and masks the rest of the match, which is how a site-specific
 	// key gets masked while the surrounding line stays readable.
 	Redact []string `yaml:"redact"`
+
+	// Replay enables replay.jsonl: one JSON record per agent invocation at the run
+	// root, holding the reply the orchestrator consumed. It is what makes a finished
+	// run re-runnable without an agent -- see internal/replay and the -replay flag.
+	//
+	// It is a separate switch from formats rather than a fourth entry in it because
+	// the two are different kinds of artifact: a format names a per-step file whose
+	// path logs.pattern decides, while this is one fixed-name file spanning the whole
+	// run. Folding it into formats would put it through StepPath and the pattern
+	// collision validator, neither of which has anything to say about it.
+	//
+	// The cost is one more on-disk copy of every agent reply, which the .raw format
+	// already keeps. It carries the same hazard as every other artifact -- a reviewer
+	// can quote a discovered secret into its reply -- so it is written through the
+	// same redaction pass and the same owner-only permissions, and the same guidance
+	// applies: the directory permissions are the real control. Turn it off with
+	// `replay: false` where that copy is not wanted.
+	Replay bool `yaml:"replay"`
 }
 
 // RedactPatterns compiles logs.redact. Validate rejects a config whose patterns
@@ -1668,6 +1706,12 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("target.mode: unknown mode %q (want git-diff | pr | directory)", c.Target.Mode)
 	}
+	// Early, because a broken wrapper makes every agent-command error below a
+	// misleading one: the binary the LookPath check cannot find would be the
+	// sandbox, reported under the name of the agent behind it.
+	if err := c.validateSandbox(); err != nil {
+		return err
+	}
 	// A document is only meaningful where the material would otherwise be a
 	// listing. In the git modes the material is a diff, and a silently inert
 	// `document:` key would sit in the config looking like a narrowing that never
@@ -1824,6 +1868,13 @@ func (c *Config) Validate() error {
 		}
 		if err := validCommandValue(name, "effort", a.Effort); err != nil {
 			return err
+		}
+		// The agent's OWN command, checked before the composed argv: with a sandbox
+		// configured, Argv is non-empty for an agent that declares no command at all,
+		// so testing the composed form would accept a config whose "agent" is nothing
+		// but the wrapper.
+		if len(a.Command) == 0 {
+			return fmt.Errorf("agents.%s: empty command", name)
 		}
 		argv := a.Argv()
 		if len(argv) == 0 {

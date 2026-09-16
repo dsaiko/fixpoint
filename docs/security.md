@@ -80,8 +80,9 @@ Read this before pointing the tool at code you did not write.
   flags block edits but do not confine reads: a reviewer fed untrusted content
   can be prompt-injected into reading a host secret (`~/.ssh`,
   `~/.aws/credentials`, `.env`) and quoting it into a finding. Point reviewers
-  at untrusted content only on a host without sensitive files, or run
-  fixpoint inside a container/VM.
+  at untrusted content only on a host without sensitive files, or launch them
+  through [`sandbox.command`](#confining-agents-with-sandboxcommand) — which is
+  this advice made executable rather than left to the operator.
 - **The process-group kill is the only containment, and a descendant can escape
   it.** Every agent, verify command and git subprocess runs as a process-group
   leader, and fixpoint SIGKILLs the whole group the moment the leader exits — so an
@@ -95,8 +96,9 @@ Read this before pointing the tool at code you did not write.
   closes its own descriptors first leaves no trace. Nothing underneath enforces
   termination — containing a deliberately daemonizing process needs an OS-level
   mechanism (a transient cgroup, a job object, a supervising container) that is not
-  implemented. Run agent CLIs you do not trust inside a container/VM, and do not
-  grant one `env.inherit_all`.
+  implemented *by fixpoint* — [`sandbox.command`](#confining-agents-with-sandboxcommand)
+  is how you supply one. Run agent CLIs you do not trust inside a container/VM, and
+  do not grant one `env.inherit_all`.
 - **Logs can contain secrets.** The reviewed material, raw agent output, and
   reviewer-authored text are all persisted; redaction is heuristic, not a
   guarantee. Keep the logs directory out of any sync, backup, or commit (the
@@ -140,3 +142,72 @@ Read this before pointing the tool at code you did not write.
 - **`prompt_via: arg` exposes the prompt on the process argument list**,
   readable by other local users via `ps`/`/proc`. Prefer `stdin` on shared
   hosts; fixpoint warns at run start.
+
+## Confining agents with `sandbox.command`
+
+Everything above is the model as it stands with agents launched directly. The one
+switch that changes it is `sandbox.command`, which launches every agent through a
+wrapper of your choosing:
+
+```yaml
+sandbox:
+  command: [/usr/local/bin/fixpoint-sandbox, "--target", "{{target}}", "--mode", "{{target_mode}}", "--"]
+```
+
+The wrapper is prepended to the agent's argv, so it is what fixpoint execs and the
+agent CLI is its argument. Three placeholders are expanded, per agent:
+
+| Placeholder | Expands to |
+|---|---|
+| `{{target}}` | The absolute path of the directory under review. |
+| `{{target_mode}}` | `rw` for an agent declared `can_edit`, `ro` for every other — so a reviewer and the coder beside it get the same wrapper with different access. |
+| `{{agent}}` | The agent's name, for a wrapper that keeps per-agent profiles. |
+
+A placeholder fixpoint does not recognize is refused at startup rather than passed
+through verbatim: a typo in a mount argument would confine the wrong path. A
+wrapper that expands to nothing at all is refused for the sharper version of the
+same reason — the run would be unconfined while the configuration said otherwise.
+
+**fixpoint implements no sandbox and does not try to.** Which primitive fits
+(bubblewrap, a podman/docker container, `sandbox-exec`, a transient systemd scope)
+and which paths must be mounted are properties of your machine, not of this
+program. What fixpoint knows and your wrapper cannot is which target is under
+review and whether this agent is supposed to be able to write to it, so that is
+exactly what it passes.
+
+### What it closes
+
+- **The read surface.** Mount the target and the one credential directory the CLI
+  needs, and nothing else: the prompt-injected reviewer two bullets above cannot
+  read `~/.ssh` because `~/.ssh` is not there. The exfiltration hole this document
+  calls unavoidable becomes a mount list.
+- **The escaped descendant**, on a platform whose sandbox contains one. A
+  container or a cgroup scope kills what `setsid` escapes from the process group.
+
+### What it does not close
+
+**It does not isolate the credential from the agent.** The agent CLI
+authenticates as you, so its token has to be inside the sandbox with it. A
+reviewer can still read the credential it was given; what it can no longer read is
+every *other* secret on the host. That limit is a property of driving somebody
+else's CLI, and no wrapper can lift it.
+
+It also covers agents only. Verify commands are argv you wrote and git is
+fixpoint's own; confining either would change what the deterministic gate
+measures, so neither goes through the wrapper.
+
+### Trust
+
+Two separate rules apply, and they are about different things.
+
+`sandbox.command` is a value in a bundle file, so if the *file declaring it* was
+resolved from inside the target, it is target-supplied policy and needs
+`-trusted-bundle` like every other executable thing a bundle can carry. That rule
+is unchanged; the wrapper is simply one more argv the repository under review must
+not get to choose.
+
+Separately, the wrapper's own *path* is now `argv[0]`. Every agent-command check
+reads the composed argv, so a wrapper that resolves inside the target is refused
+in `pr` mode by the same rule that refuses a target-relative agent command — and
+for the same reason, since `gh pr checkout` rewrites that path's content after
+validation read it.

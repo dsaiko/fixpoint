@@ -638,6 +638,12 @@ it, is exactly what this file already exists to record. Measuring at fixpoint's 
 boundary is not an alternative — the bytes it exchanges miss the agentic session in
 between by orders of magnitude.
 
+The scoreboard prices **one** run, which is not enough to settle a panel seat: the
+same reviewer on an unchanged target finds different things on consecutive runs.
+`fixpoint stats` aggregates every run under a logs root — runs, errors, issues,
+rejection rate, tokens and cost per agent — which is the view a seat is actually
+decided on. See [Logs and artifacts](../docs/logs.md#fixpoint-stats).
+
 ## Security
 
 Read this before pointing fixpoint at code you didn't write.
@@ -649,7 +655,8 @@ sets only the working directory, with no filesystem sandbox. A reviewer fed
 untrusted content can be prompt-injected into reading a host secret
 (`~/.ssh/id_rsa`, `~/.aws/credentials`, a `.env`) and quoting it into a finding.
 That path has no trust gate. Point reviewers at untrusted content only on a host
-without sensitive files, or run fixpoint inside a container or VM.
+without sensitive files, or set `sandbox.command` and launch every agent inside a
+confinement of your own — see "Confining agents" below.
 
 **Agents do not load the target's agent settings.** Every shipped
 `claude`-backed agent passes `--setting-sources user`, so settings come from
@@ -672,7 +679,26 @@ quote into a finding is its own declared credentials (an agent given
 `ANTHROPIC_API_KEY` can leak that key), so the filtering bounds which secrets are
 reachable, not whether a compromised reviewer can talk. A container does not help
 with the remainder: the agents' own API tokens have to be inside it for the CLIs to
-work at all.
+work at all — which is the one thing `sandbox.command` cannot fix either.
+
+**Confining agents.** `sandbox.command` launches every agent through a wrapper of
+your choosing, which is the documented "run it in a container" advice made
+executable:
+
+```yaml
+sandbox:
+  command: [/usr/local/bin/fixpoint-sandbox, "--target", "{{target}}", "--mode", "{{target_mode}}", "--"]
+```
+
+The wrapper is prepended to the agent's argv, so fixpoint execs it and the CLI is
+its argument. `{{target}}` is the directory under review, `{{target_mode}}` is `rw`
+for an agent with `can_edit` and `ro` for every other, and `{{agent}}` is the
+agent's name. Mount the target and the one credential directory the CLI needs and
+nothing else, and the read surface two paragraphs up closes: the reviewer cannot
+quote `~/.ssh` because `~/.ssh` is not there. fixpoint implements no sandbox
+itself — which primitive fits and which paths must be mounted are properties of
+your machine. Full detail, including what it cannot close, is in
+[Security model](../docs/security.md#confining-agents-with-sandboxcommand).
 
 **fixpoint removes credential-shaped paths from collection unconditionally**, in
 code, whatever `target.exclude` says (`.env*`, `*.pem`, `*.key`, `id_rsa`,

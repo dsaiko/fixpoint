@@ -24,6 +24,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 	"github.com/dsaiko/fixpoint/internal/prompt"
+	"github.com/dsaiko/fixpoint/internal/replay"
 	"github.com/dsaiko/fixpoint/internal/review"
 	"github.com/dsaiko/fixpoint/internal/target"
 	"github.com/dsaiko/fixpoint/internal/verify"
@@ -157,6 +158,14 @@ type Orchestrator struct {
 	// already passed verification), and a filesystem cannot be relied on to fail on
 	// demand -- a read-only path still succeeds for root, which CI often is.
 	journalWrite func(typ string, round int, data any) error
+	// replay serves agent replies from a finished run's recording instead of from
+	// an agent, when -replay named one. nil is the ordinary live run.
+	//
+	// It sits here rather than behind agent.Run because the recording is keyed by
+	// the invocation's IDENTITY -- round, role, agent, lens -- and agent.Run is
+	// handed none of that: it takes a command and a prompt. runAgentIn is the one
+	// place that knows both, which is also why it is the one place that records.
+	replay *replay.Source
 }
 
 // openJournal writes the run's first record and reports where the journal lives.
@@ -378,6 +387,17 @@ func (o *Orchestrator) WithProgress(p Phaser) *Orchestrator {
 	o.progress = p
 	return o
 }
+
+// WithReplay serves this run's agent invocations from src rather than invoking
+// anything. See internal/replay for what a replay is and is not faithful to.
+func (o *Orchestrator) WithReplay(src *replay.Source) *Orchestrator {
+	o.replay = src
+	return o
+}
+
+// Replaying reports whether agents are being served from a recording, so the
+// caller can report the divergence afterwards.
+func (o *Orchestrator) Replaying() *replay.Source { return o.replay }
 
 // rule, phase, endPhase and progress are the four structural log calls. Each
 // falls back to an ordinary line when no sink is installed, so the orchestrator
@@ -3329,6 +3349,18 @@ func (o *Orchestrator) Scope(ctx context.Context) (string, error) {
 // a zero exit with non-empty stdout (models decorate output; content is not
 // checked).
 func (o *Orchestrator) Ping(ctx context.Context) error {
+	// A replay serves every reply from the recording, so pinging would launch the
+	// very CLIs the run exists to avoid launching -- spending quota on a run
+	// advertised as spending none, and failing outright on a machine where the
+	// agent CLI is not even installed, which is exactly the machine a replay is
+	// most useful on. Suppressed here rather than at the call sites so every entry
+	// point is covered by one rule; -check-live, whose whole purpose IS the ping,
+	// refuses the combination instead of silently reporting a green it never
+	// measured.
+	if o.replay != nil {
+		o.logf("replay: skipping the agent ping -- every reply comes from the recording")
+		return nil
+	}
 	// activeAgentNames includes the write-capable coder unless review-only, and
 	// pinging it launches that CLI in target.path with permission checks disabled
 	// -- where it loads repository instructions (AGENTS.md, CLAUDE.md) that an
@@ -3530,9 +3562,39 @@ func (o *Orchestrator) runAgentIn(ctx context.Context, dir, label, role, agentNa
 			o.progressf("%s still running (%s elapsed)", label, time.Since(start).Round(time.Second))
 		})
 	}()
-	res := agent.Run(ctx, o.cfg.Agents[agentName], text, dir)
+	res := o.invoke(ctx, role, agentName, lensName, round, text, dir)
 	close(done)
 	hb.Wait()
+	// Record AFTER the heartbeat is joined, so the recording is written from the
+	// same goroutine that owns the result and no half-filled Result can reach it.
+	// A recording failure is a warning, never a run failure: losing this artifact
+	// costs a future replay, while failing the step would discard a review that was
+	// already paid for -- the same rule the journal follows.
+	if o.replay == nil {
+		if err := o.logs.Replay(role, agentName, lensName, round, text, res); err != nil {
+			o.logf("WARNING: recording %s step for replay: %v", role, err)
+		}
+	}
+	return res
+}
+
+// invoke runs one agent, or serves its recorded reply when the run is a replay.
+//
+// A replay deliberately does NOT re-record: the recording it is reading is the
+// record, and writing a second one would turn a replayed run into a source other
+// replays could be built on, each further from the agent that actually answered.
+func (o *Orchestrator) invoke(ctx context.Context, role, agentName, lensName string, round int, text, dir string) agent.Result {
+	if o.replay == nil {
+		return agent.Run(ctx, o.cfg.Agents[agentName], text, dir)
+	}
+	res, err := o.replay.Serve(role, agentName, lensName, round, text)
+	if err != nil {
+		// Returned as a failed STEP rather than raised: a missing record means the
+		// replayed run diverged from the recorded one, and the pipeline already knows
+		// how to report a step that failed -- including resetting the clean streak, so
+		// a replay that lost a reviewer cannot be mistaken for a clean round.
+		return agent.Result{Err: err}
+	}
 	return res
 }
 

@@ -188,7 +188,7 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 	}
 	if err != nil {
 		// Refused rather than published-and-not-recorded: an unrecordable publish is a
-		// publish that can be replayed again tomorrow, which is what this whole file is
+		// publish that can be re-published again tomorrow, which is what this whole file is
 		// trying to prevent.
 		logf("post-run: cannot record the publication in %s (%v); refusing to publish what could then be published again", runDir, err)
 		return 1
@@ -365,10 +365,14 @@ func wrongRepository(ctx context.Context, sum *model.RunSummary) string {
 // unreplayable says why a summary cannot be published, or returns "" if it can.
 //
 // Every answer names dir and ends the same way, because they are all the same
-// answer: this run cannot be replayed faithfully, and only reviewing again
+// answer: this run cannot be re-published faithfully, and only reviewing again
 // produces one that can. Nothing here is guessed at or worked around -- a replay
 // that filled in a fact the run did not record would publish something no panel
 // reached, which is the one thing this mode must never do.
+// NOTE: "replay" here predates the -replay flag and means something different --
+// re-PUBLISHING a review a finished run already produced. The recorded-agent
+// feature is internal/replay. The messages below say "re-published" so the two
+// cannot be confused from the outside.
 func unreplayable(dir string, sum *model.RunSummary) string {
 	switch {
 	case sum.Verdict == nil:
@@ -376,7 +380,7 @@ func unreplayable(dir string, sum *model.RunSummary) string {
 	case sum.Mode != "pr":
 		return fmt.Sprintf("%s reviewed %s, not a pull request; there is nowhere to post it", dir, sum.Mode)
 	case sum.PR <= 0:
-		return dir + " records no pull request number. Runs from before that was recorded cannot be replayed; review again to produce one that can."
+		return dir + " records no pull request number. Runs from before that was recorded cannot be re-published; review again to produce one that can."
 	// Which commit the review is ABOUT. Refused here rather than left to the poster
 	// so the operator gets the same "review again" answer as the missing PR number
 	// above: a summary that cannot say what it reviewed cannot be published against
@@ -384,7 +388,7 @@ func unreplayable(dir string, sum *model.RunSummary) string {
 	// request has moved since -- replaying a verdict onto a commit the panel never
 	// read is the reason this is checked at all.
 	case sum.ReviewedHead == "":
-		return dir + " does not record which commit it reviewed, so the review cannot be bound to one. Runs from before that was recorded cannot be replayed; review again to produce one that can."
+		return dir + " does not record which commit it reviewed, so the review cannot be bound to one. Runs from before that was recorded cannot be re-published; review again to produce one that can."
 	// WHICH REPOSITORY that commit is in. A commit does not name a destination, and
 	// everything else the replay has -- a path and a number -- describes wherever that
 	// path points at publication time. Without this there is nothing to compare the
@@ -393,7 +397,7 @@ func unreplayable(dir string, sum *model.RunSummary) string {
 	// here with the same answer as the missing head above, since it is the same
 	// situation: a fact the run did not record, which a replay must not invent.
 	case sum.ReviewedRepo == "":
-		return dir + " does not record which repository it reviewed, so the review cannot be bound to one -- only the path it was run in, which may hold a different repository by now. Runs from before that was recorded cannot be replayed; review again to produce one that can."
+		return dir + " does not record which repository it reviewed, so the review cannot be bound to one -- only the path it was run in, which may hold a different repository by now. Runs from before that was recorded cannot be re-published; review again to produce one that can."
 	// This run ALREADY published. `review-pr -post` leaves a summary that is
 	// otherwise perfectly replayable -- review-only termination, no error -- so
 	// without this the inspect-then-publish workflow applied to a run that was

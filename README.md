@@ -197,7 +197,8 @@ failed stays failed. Specification: [docs/design/DESIGN.md](docs/design/DESIGN.m
 | **[Review lenses](docs/lenses.md)** | What a lens is, how to write one, and how they are assigned to agents. |
 | **[Agents](docs/agents.md)** | Adding an agent, borrowing a harness for a model with no CLI, why the route matters, environment filtering. |
 | **[Logs and artifacts](docs/logs.md)** | What a run writes, the end-of-run table, the run journal. |
-| **[Security model](docs/security.md)** | What is trusted, what is not, and why the trust gates are flags rather than config keys. |
+| **[Security model](docs/security.md)** | What is trusted, what is not, why the trust gates are flags rather than config keys, and how `sandbox.command` confines an agent. |
+| **[Running in CI](docs/ci.md)** | Using the exit code as a merge gate, and what a CI run must and must not be allowed to do. |
 | **[Which model is worth a panel seat](#which-model-is-worth-a-panel-seat)** | The reviewer benchmark: every candidate model scored against planted defects in seven languages and a design doc. |
 | **[Configuration](#configuration)** | Bundles and the shipped configs. The reference for every setting is [config/README.md](config/README.md) and the comments in [config/defaults.yaml](config/defaults.yaml). |
 
@@ -535,6 +536,7 @@ explained: each one acts under your identity on somebody else's branch.
 | `-continue dir` | **implement**: resume a project fixpoint built, replaying finished tasks from its own commits. Mutually exclusive with `-out`, `-plan` and `-plan-only`. Still needs `-trusted-target`. |
 | `-version` | Print the version, commit, build date, platform and Go version, and exit. Answers before any bundle is resolved. |
 | `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](docs/concepts.md#choosing-a-base-in-git-diff-mode). |
+| `-replay dir` | Re-run a **finished** run from its `.fixpoint/<run>` recording: every agent reply is served from `replay.jsonl`, no agent is invoked and no quota is spent. Requires `-review-only` — a fix round's edits are in no recording. See [Logs and artifacts](docs/logs.md#the-replay-recording). |
 | `-check-live` | Validate, ping every agent, and exit. |
 
 Exit codes: `0` converged, or a review that **approved**; `2` hit
