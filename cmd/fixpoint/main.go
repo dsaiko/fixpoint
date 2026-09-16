@@ -105,7 +105,7 @@ Flags:
 	planFile := fs.String("plan", "", "implement: run this validated plan instead of a planner session; it must carry provenance.design_sha256 matching -target")
 	planOnly := fs.Bool("plan-only", false, "implement: plan and validate, write the plan into the run's artifacts, and stop -- no directory is claimed and no coder session is spent")
 	noCoverageCheck := fs.Bool("no-coverage-check", false, "implement: proceed with a design whose outline the coverage rule cannot read; every report then says coverage: unchecked")
-	replayDir := fs.String("replay", "", "re-run a FINISHED run from its .fixpoint/<run> recording: every agent reply is served from replay.jsonl, no agent is invoked and no quota is spent; requires -review-only")
+	replayDir := fs.String("replay", "", "re-run a FINISHED run from its .fixpoint/<run> recording: every agent reply is served from replay.jsonl, no agent is invoked and no quota is spent; needs -review-only for a review/fix config (a create config is replayable as it stands)")
 	check := fs.Bool("check", false, "validate the configuration and exit without running")
 	checkLive := fs.Bool("check-live", false, "validate the configuration, ping every agent, and exit without running")
 	positionals, err := parseArgs(fs, args)

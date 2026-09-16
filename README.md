@@ -536,7 +536,7 @@ explained: each one acts under your identity on somebody else's branch.
 | `-continue dir` | **implement**: resume a project fixpoint built, replaying finished tasks from its own commits. Mutually exclusive with `-out`, `-plan` and `-plan-only`. Still needs `-trusted-target`. |
 | `-version` | Print the version, commit, build date, platform and Go version, and exit. Answers before any bundle is resolved. |
 | `-check` | Validate the configuration, report how much material the run would review, and exit. No agent is invoked. See [Choosing a base](docs/concepts.md#choosing-a-base-in-git-diff-mode). |
-| `-replay dir` | Re-run a **finished** run from its `.fixpoint/<run>` recording: every agent reply is served from `replay.jsonl`, no agent is invoked and no quota is spent. Requires `-review-only` — a fix round's edits are in no recording. See [Logs and artifacts](docs/logs.md#the-replay-recording). |
+| `-replay dir` | Re-run a **finished** run from its `.fixpoint/<run>` recording: every agent reply is served from `replay.jsonl`, no agent is invoked and no quota is spent. Needs `-review-only` for a review or fix config — a fix round's edits are in no recording. A `create` config is replayable as it stands (its deliverable is derived from the editor's reply), and an `implement` run is refused outright. See [Logs and artifacts](docs/logs.md#the-replay-recording). |
 | `-check-live` | Validate, ping every agent, and exit. |
 
 Exit codes: `0` converged, or a review that **approved**; `2` hit

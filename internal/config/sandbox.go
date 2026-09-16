@@ -99,13 +99,26 @@ func (c *Config) applySandbox() {
 			// Split before substitution, for the reason Agent.Argv documents: a value is
 			// then always exactly one argv element however it is spelled, so a target path
 			// with a space in it cannot introduce an argument of its own.
-			for _, f := range strings.Fields(tok) {
+			fields := strings.Fields(tok)
+			subs := make([]string, 0, len(fields))
+			drop := false
+			for _, f := range fields {
 				sub, keep := expandToken(f, values)
 				if !keep {
-					continue
+					drop = true
+					break
 				}
-				argv = append(argv, sub)
+				subs = append(subs, sub)
 			}
+			// The WHOLE token goes, exactly as Agent.Argv drops one: "--bind {{target}}"
+			// is a flag and its value, and dropping only the value would leave a dangling
+			// --bind that swallows whatever argument follows it -- in a sandbox wrapper,
+			// the next mount or the agent command itself (review run 20260916-085129,
+			// finding i13).
+			if drop {
+				continue
+			}
+			argv = append(argv, subs...)
 		}
 		a.Sandbox = argv
 		c.Agents[name] = a
