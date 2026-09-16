@@ -95,6 +95,13 @@ type Source struct {
 	// step: a prompt-template change makes EVERY key mismatch, and a warning per
 	// reviewer per round would bury the run log.
 	mismatches []string
+	// refused accumulates the invocations the recording could not answer. They are
+	// NOT visible in the unserved tally -- a key with no records at all never
+	// appears in queued, so a replay that asked for something the recording lacks
+	// and consumed everything it did have would otherwise report "matched the
+	// recording exactly" over a run that diverged (review run 20260916-085129,
+	// finding i4).
+	refused []string
 }
 
 // Load reads a run's replay.jsonl. dir is the run directory -- the one holding
@@ -166,6 +173,10 @@ func Load(dir string) (*Source, error) {
 	return src, nil
 }
 
+// Dir is the run directory this recording was loaded from, for the summary field
+// that marks a replayed run as replayed.
+func (s *Source) Dir() string { return s.dir }
+
 // Steps is how many invocations the recording holds, for the line that tells the
 // operator what they are about to replay.
 func (s *Source) Steps() int {
@@ -201,6 +212,7 @@ func (s *Source) Serve(role, agentName, promptName string, round int, prompt str
 		// from -- a different lens list, a different agent, an extra round -- and the
 		// useful answer is to say which invocation and stop, not to serve an empty
 		// review that the pipeline would read as a clean one.
+		s.refused = append(s.refused, k.String())
 		if len(recs) == 0 {
 			return agent.Result{}, fmt.Errorf("the recording has no reply for %s: the replayed run is invoking something the recorded one did not (a changed lens list, agent or round count). Replay the config the recording was made with", k)
 		}
@@ -240,10 +252,17 @@ type Divergence struct {
 	// PromptChanged are invocations whose prompt no longer hashes to the recorded
 	// one, so the reply is an answer to a different question.
 	PromptChanged []string
+	// Refused are invocations the recording had no reply for. Each one also failed
+	// its step, so the run reports them too -- but they belong here because this is
+	// the structure that decides whether the replay "matched", and a replay that was
+	// refused anything did not.
+	Refused []string
 }
 
 // Any reports whether anything is worth printing.
-func (d Divergence) Any() bool { return len(d.Unserved) > 0 || len(d.PromptChanged) > 0 }
+func (d Divergence) Any() bool {
+	return len(d.Unserved) > 0 || len(d.PromptChanged) > 0 || len(d.Refused) > 0
+}
 
 // Divergence reports what did not line up. Call it once the run is over.
 func (s *Source) Divergence() Divergence {
@@ -258,6 +277,8 @@ func (s *Source) Divergence() Divergence {
 	sort.Strings(d.Unserved)
 	d.PromptChanged = append(d.PromptChanged, s.mismatches...)
 	sort.Strings(d.PromptChanged)
+	d.Refused = append(d.Refused, s.refused...)
+	sort.Strings(d.Refused)
 	return d
 }
 

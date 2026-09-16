@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -133,6 +134,21 @@ func (c *Config) validateSandbox() error {
 			return fmt.Errorf("sandbox.command[%d] uses %s, which is not a sandbox placeholder; it would be passed to the wrapper verbatim. Available: %s",
 				i, ph, strings.Join(sandboxPlaceholderNames(), ", "))
 		}
+	}
+	// {{target}} is expanded ONCE, from target.path, but the create and implement
+	// pipelines deliberately run agents somewhere else: create in the assignment
+	// snapshot, implement's coder in the output directory. The wrapper would then
+	// bind and mode-flag a directory the agent is not in, while the agent works in
+	// one the wrapper never mounted -- a confinement that is configured, reported,
+	// and aimed at the wrong place. That is the failure mode this file's own
+	// doc says a security control must not have, so it is refused rather than
+	// approximated (review run 20260916-085129, finding i5). Making the expansion
+	// per-invocation is the real fix and is not done here.
+	switch {
+	case c.IsCreate():
+		return errors.New("sandbox.command is set, but a create run invokes its agents inside the assignment snapshot rather than target.path, so {{target}} would name a directory the agent is not working in. Run create without a sandbox, or point target.path at the snapshot")
+	case c.IsImplement():
+		return errors.New("sandbox.command is set, but an implement run invokes its coder inside the output directory rather than target.path, so {{target}} would name the design's directory while the coder writes somewhere the wrapper never mounted. Run implement without a sandbox")
 	}
 	// A wrapper whose first element expands to nothing would silently exec the
 	// agent CLI directly -- the confinement the operator configured would be absent

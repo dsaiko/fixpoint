@@ -319,7 +319,21 @@ type RunSummary struct {
 	Overrides           []string      `json:"overrides,omitempty"`
 	Coder               string        `json:"coder,omitempty"`
 	Rounds              []RoundRecord `json:"rounds"`
-	Termination         string        `json:"termination"`
+	// ReplayedFrom names the recording this run's agent replies came from, and is
+	// empty for every run that actually invoked an agent.
+	//
+	// It exists because a replayed run is otherwise INDISTINGUISHABLE from the run
+	// it was replayed from, and two consumers must be able to tell them apart. Its
+	// per-step usage and duration are the recorded ones, so `fixpoint stats` would
+	// bill the same tokens again for every replay -- silently inflating exactly the
+	// per-agent economics that table exists to report. And its verdict was authored
+	// by a recording rather than by a panel that read the code, so publishing it to
+	// a pull request would post a review no reviewer produced this time; a replay is
+	// also the one way to get a FRESH, untracked run directory holding replies that
+	// came from somewhere else, which is what the publishing provenance gate is
+	// there to catch (review run 20260916-085129, findings i3 and i10).
+	ReplayedFrom string `json:"replayed_from,omitempty"`
+	Termination  string `json:"termination"`
 	// LoopTermination preserves how the LOOP ended when the closing round then
 	// failed (Termination becomes error) or was interrupted (interrupted). The two
 	// facts are different -- the loop can genuinely have converged while the final

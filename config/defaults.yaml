@@ -359,6 +359,11 @@ verify:
 # What it does NOT buy: isolating the credential from the AGENT. The CLI
 # authenticates as you, so its token has to be inside with it.
 #
+# Not supported by create or implement runs, and refused rather than approximated:
+# those pipelines invoke agents in the assignment snapshot and the output
+# directory, so {{target}} would name a directory the agent is not working in —
+# a confinement aimed at the wrong place.
+#
 #   sandbox:
 #     command: [/usr/local/bin/fixpoint-sandbox, "{{target}}", "{{target_mode}}"]
 #

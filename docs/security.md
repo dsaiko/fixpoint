@@ -196,6 +196,20 @@ It also covers agents only. Verify commands are argv you wrote and git is
 fixpoint's own; confining either would change what the deterministic gate
 measures, so neither goes through the wrapper.
 
+And it is **refused for create and implement runs**. Those pipelines invoke their
+agents in the assignment snapshot and the output directory rather than in
+`target.path`, so `{{target}}` — expanded once, from the config — would name a
+directory the agent is not working in: the wrapper would bind one tree while the
+CLI wrote to another. A confinement aimed at the wrong place is the failure mode
+this feature exists to prevent, so it fails closed instead of approximating.
+Expanding the placeholders per invocation is the real fix and is not implemented.
+
+One deliberate exemption is worth knowing about: an argument naming the target
+**root** (`--ro-bind {{target}}`) does not count as a path the reviewed material
+supplied, because it is the checkout the run is about rather than a file the
+branch can write. Anything *deeper* inside the target still does, and is still
+refused in `pr` mode.
+
 ### Trust
 
 Two separate rules apply, and they are about different things.

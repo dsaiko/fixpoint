@@ -712,15 +712,25 @@ func (a Agent) placeholderValues() map[string]string {
 // such a value outright (see validCommandValue); this keeps the refusal from
 // being the only thing between a config field and the argument list.
 func (a Agent) Argv() []string {
-	values := a.placeholderValues()
 	// The wrapper first, so what fixpoint execs is the sandbox and the agent CLI is
-	// its argument. Everything that inspects an agent command -- the LookPath check,
-	// the pr-mode target-supplied-executable refusal, the .raw log header -- reads
-	// this one function, so the wrapper is covered by all of them without any of
-	// them knowing it exists. It is already expanded (see applySandbox); no
-	// placeholder substitution is applied to it here, because its values are
-	// fixpoint's own and not this agent's model/effort.
-	argv := append([]string(nil), a.Sandbox...)
+	// its argument. It is already expanded (see applySandbox); no placeholder
+	// substitution is applied to it here, because its values are fixpoint's own and
+	// not this agent's model/effort.
+	//
+	// NOTE for anything that INSPECTS a command: with a wrapper configured, argv[0]
+	// is the sandbox and the agent CLI is no longer at a fixed index. A check that
+	// reads argv[0] is therefore asking about the wrapper alone -- see ExecHeads,
+	// which is what the executable-provenance checks must use.
+	return append(append([]string(nil), a.Sandbox...), a.commandArgv()...)
+}
+
+// commandArgv renders the agent's OWN command template into argv, without the
+// sandbox wrapper. It is what the wrapper execs, and what every question about
+// "which agent CLI is this" has to be asked of once a wrapper can displace
+// argv[0].
+func (a Agent) commandArgv() []string {
+	values := a.placeholderValues()
+	var argv []string
 	for _, tok := range a.Command {
 		fields := strings.Fields(tok)
 		subs := make([]string, 0, len(fields))
@@ -739,6 +749,40 @@ func (a Agent) Argv() []string {
 		argv = append(argv, subs...)
 	}
 	return argv
+}
+
+// ExecHeads returns every command NAME this agent causes to be executed: what
+// fixpoint execs, and -- when a sandbox wrapper displaces argv[0] -- the agent CLI
+// the wrapper execs in turn.
+//
+// It exists because the sandbox broke a check that had read argv[0] since before
+// wrappers were possible. TargetSuppliedPATHDir asks whether a BARE command name
+// resolves through a PATH entry inside the target, which is the spelling nobody
+// writes down: the operator types `claude` and PATH silently turns it into the
+// reviewed repository's file. With a wrapper configured argv[0] became the
+// sandbox -- normally an absolute path outside the target -- so that check
+// returned immediately and the agent's own bare name was never measured at all.
+// The wrapper confines the shim; it does not stop it running with the credentials
+// the agent declares, and in the directory review-only mode the check was added
+// for (review run 20260819-104919) there is no other gate.
+//
+// Both heads are returned, deduplicated, because both are resolved at invocation
+// time and either can be the one PATH hands the repository's file to.
+func (a Agent) ExecHeads() []string {
+	var heads []string
+	seen := map[string]bool{}
+	add := func(argv []string) {
+		if len(argv) == 0 || seen[argv[0]] {
+			return
+		}
+		seen[argv[0]] = true
+		heads = append(heads, argv[0])
+	}
+	add(a.Argv())
+	// Only when a wrapper is configured does this differ from the above; without
+	// one, Argv IS the command and the dedup drops the repeat.
+	add(a.commandArgv())
+	return heads
 }
 
 // expandToken substitutes placeholders in one command token. keep is false
@@ -974,7 +1018,16 @@ func TargetSuppliedArg(argv []string, root string) string {
 			if !filepath.IsAbs(p) {
 				p = filepath.Join(root, p)
 			}
-			if within(p, root) {
+			// The target ROOT itself is exempt. It is not a file the reviewed material
+			// supplies -- it is the checkout the run is about, and every mode has it --
+			// so naming it is how a sandbox wrapper says which directory to confine
+			// (`--ro-bind {{target}}`). Without this exemption the documented
+			// sandbox.command is refused in pr mode, which is the mode a sandbox matters
+			// most in, and the refusal steers the operator to -trusted-target: dropping a
+			// trust gate in order to turn a confinement ON (review run 20260916-085129,
+			// finding i12). Anything DEEPER inside the target is still a file the branch
+			// can write, and is still reported.
+			if within(p, root) && filepath.Clean(p) != filepath.Clean(root) {
 				return tok
 			}
 			// A path that is outside the target lexically can still LAND inside it
@@ -982,7 +1035,7 @@ func TargetSuppliedArg(argv []string, root string) string {
 			// "inside" for a path it cannot canonicalize at all, so ask it only about
 			// one that exists. Otherwise an absolute argument naming no file
 			// (--config /etc/absent.toml) would be reported as PR-supplied.
-			if _, err := os.Lstat(p); err == nil && withinTree(p, root) {
+			if _, err := os.Lstat(p); err == nil && withinTree(p, root) && filepath.Clean(p) != filepath.Clean(root) {
 				return tok
 			}
 		}
@@ -1029,6 +1082,99 @@ func argPathSpellings(tok string, dataScope bool) []argSpelling {
 	return append(out, argSpelling{tok: val, dataScope: scope})
 }
 
+// validateAgentCommand proves one agent's command can actually be run, and that
+// the reviewed material did not get to choose what runs.
+//
+// Extracted from Validate's per-agent loop so the rules have a name and can be
+// asserted directly. The emptiness rule in particular could not be tested through
+// Validate at all -- reaching it needs a config that is otherwise complete -- and
+// it stopped being obvious the moment a sandbox wrapper could fill argv on behalf
+// of an agent that declares no command (review run 20260916-085129, finding i19).
+func (c *Config) validateAgentCommand(name string, a Agent) error {
+	// The agent's OWN command, checked before the composed argv: with a sandbox
+	// configured, Argv is non-empty for an agent that declares no command at all,
+	// so testing the composed form would accept a config whose "agent" is nothing
+	// but the wrapper.
+	if len(a.Command) == 0 {
+		return fmt.Errorf("agents.%s: empty command", name)
+	}
+	argv := a.Argv()
+	if len(argv) == 0 {
+		return fmt.Errorf("agents.%s: empty command", name)
+	}
+	// Every executable this agent causes to run, not just argv[0]: a sandbox
+	// wrapper displaces argv[0], and a missing agent CLI behind a present wrapper
+	// would otherwise be found at invocation time -- by the wrapper, as an exec
+	// failure inside a container, which is a far worse place to learn it.
+	for _, bin := range a.ExecHeads() {
+		if err := lookPathForTarget(bin, c.Target.Path); err != nil {
+			return fmt.Errorf("agents.%s: %w", name, err)
+		}
+	}
+	// agent.Run sets Cmd.Dir = target.path, and the OS resolves a relative
+	// executable that contains a path separator against THAT directory, not
+	// fixpoint's working directory. Validate it where it will actually run
+	// so a target-relative binary is neither wrongly rejected nor wrongly
+	// accepted because it happens to exist in the launch dir. A bare command
+	// name (no separator) is a PATH lookup and is unaffected by Cmd.Dir.
+	//
+	// Resolve to an ABSOLUTE path: filepath.Join cleans "./agent.sh" with
+	// target.path "." down to "agent.sh", which drops the separator and would
+	// send exec.LookPath back to a PATH search. Making it absolute keeps a
+	// separator so LookPath validates the file directly.
+	//
+	// Both '/' and filepath.Separator count: Windows accepts a forward slash
+	// as a separator too, so checking only the native one would leave
+	// "./agent.sh" validated against fixpoint's working directory there.
+	// (See lookPathForTarget, called above for every exec head.)
+	// SECURITY (mode pr): the LookPath check above proves the file exists NOW,
+	// on the pre-checkout tree, but agent.Run re-resolves the same relative argv
+	// against Cmd.Dir at EVERY invocation -- and in pr mode Prepare's
+	// `gh pr checkout` has replaced that tree with the PR's by the time round 1
+	// runs. A command element that lands inside target.path is therefore chosen
+	// by the code under review: the PR ships (or edits) the script at that path
+	// and fixpoint execs it as the agent process itself, with the credentials the
+	// agent declares and no sandbox at all -- a stronger primitive than the
+	// prompt injection the pr path is built to contain, and it fires even in the
+	// shipped review-only configuration, which passes no other trust gate.
+	//
+	// Refused here rather than warned about, for the same reason
+	// orchestrator.guardActivatableConfig refuses pr mode: the content that
+	// decides what runs is not on disk yet, so there is nothing for a preflight
+	// to inspect and "continue anyway" means running PR-authored code sight
+	// unseen. With trust asserted the run proceeds and
+	// orchestrator.warnTargetSuppliedCommand says what was accepted.
+	// See checkTargetSuppliedExecutable for which spelling is refused where.
+	return c.checkTargetSuppliedExecutable(name, a)
+}
+
+// lookPathForTarget proves one command name resolves to a real executable, from
+// where it will actually run.
+//
+// agent.Run sets Cmd.Dir = target.path, and the OS resolves a relative executable
+// that contains a path separator against THAT directory, not fixpoint's working
+// directory -- so a target-relative binary must be validated there or it is
+// wrongly rejected, or wrongly accepted because it happens to exist in the launch
+// dir. A bare name (no separator) is a PATH lookup and is unaffected by Cmd.Dir.
+//
+// The resolved path is made ABSOLUTE first: filepath.Join cleans "./agent.sh" with
+// target.path "." down to "agent.sh", which drops the separator and would send
+// exec.LookPath back to a PATH search.
+func lookPathForTarget(bin, targetPath string) error {
+	resolved := bin
+	if !filepath.IsAbs(resolved) && (strings.ContainsRune(resolved, '/') || strings.ContainsRune(resolved, filepath.Separator)) {
+		abs, err := filepath.Abs(filepath.Join(targetPath, resolved))
+		if err != nil {
+			return fmt.Errorf("resolving %q against target.path: %w", bin, err)
+		}
+		resolved = abs
+	}
+	if _, err := exec.LookPath(resolved); err != nil {
+		return fmt.Errorf("binary %q not found on PATH", bin)
+	}
+	return nil
+}
+
 // checkTargetSuppliedExecutable refuses an agent command the reviewed material
 // could choose, for an untrusted target.
 //
@@ -1047,20 +1193,28 @@ func argPathSpellings(tok string, dataScope bool) []argSpelling {
 //     A directory review-only run asserts no trust at all, which made it the
 //     least protected mode and the easiest to reach (review run
 //     20260819-104919).
-func (c *Config) checkTargetSuppliedExecutable(name string, argv []string) error {
+func (c *Config) checkTargetSuppliedExecutable(name string, a Agent) error {
 	if c.Loop.TrustedTarget || c.Loop.AllowUntrustedFix {
 		return nil
 	}
+	argv := a.Argv()
 	if c.Target.Mode == ModePR {
 		if tok := TargetSuppliedArg(argv, c.Target.Path); tok != "" {
 			return fmt.Errorf("agents.%s: command element %q resolves inside target %s, and in mode pr that path's content is the PR's -- `gh pr checkout` writes the branch before the first round, so fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Point the command at a binary outside the target (a bare name on PATH, or an absolute path), or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, tok, c.Target.Path)
 		}
 	}
-	if dir := TargetSuppliedPATHDir(argv[0], c.Target.Path); dir != "" {
-		if c.Target.Mode == ModePR {
-			return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, argv[0], dir, c.Target.Path)
+	// EVERY head, not argv[0]: a sandbox wrapper displaces argv[0], and the agent
+	// CLI it execs in turn is resolved through the same PATH at the same moment.
+	// See Agent.ExecHeads.
+	for _, bin := range a.ExecHeads() {
+		dir := TargetSuppliedPATHDir(bin, c.Target.Path)
+		if dir == "" {
+			continue
 		}
-		return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- the reviewed material can supply that executable, or shadow one further down PATH with a file of the same name, and fixpoint would run it as the agent process with the credentials this agent declares (env.pass/env.set). Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target if this checkout is yours", name, argv[0], dir, c.Target.Path)
+		if c.Target.Mode == ModePR {
+			return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and fixpoint would execute PR-authored code as the agent process, with the credentials this agent declares (env.pass/env.set) and before any reviewer sandbox. Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target/-allow-untrusted-fix if you trust the PR author", name, bin, dir, c.Target.Path)
+		}
+		return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside target %s -- the reviewed material can supply that executable, or shadow one further down PATH with a file of the same name, and fixpoint would run it as the agent process with the credentials this agent declares (env.pass/env.set). Give the command an absolute path outside the target, drop that entry from PATH, or pass -trusted-target if this checkout is yours", name, bin, dir, c.Target.Path)
 	}
 	return nil
 }
@@ -1869,62 +2023,7 @@ func (c *Config) Validate() error {
 		if err := validCommandValue(name, "effort", a.Effort); err != nil {
 			return err
 		}
-		// The agent's OWN command, checked before the composed argv: with a sandbox
-		// configured, Argv is non-empty for an agent that declares no command at all,
-		// so testing the composed form would accept a config whose "agent" is nothing
-		// but the wrapper.
-		if len(a.Command) == 0 {
-			return fmt.Errorf("agents.%s: empty command", name)
-		}
-		argv := a.Argv()
-		if len(argv) == 0 {
-			return fmt.Errorf("agents.%s: empty command", name)
-		}
-		bin := argv[0]
-		// agent.Run sets Cmd.Dir = target.path, and the OS resolves a relative
-		// executable that contains a path separator against THAT directory, not
-		// fixpoint's working directory. Validate it where it will actually run
-		// so a target-relative binary is neither wrongly rejected nor wrongly
-		// accepted because it happens to exist in the launch dir. A bare command
-		// name (no separator) is a PATH lookup and is unaffected by Cmd.Dir.
-		//
-		// Resolve to an ABSOLUTE path: filepath.Join cleans "./agent.sh" with
-		// target.path "." down to "agent.sh", which drops the separator and would
-		// send exec.LookPath back to a PATH search. Making it absolute keeps a
-		// separator so LookPath validates the file directly.
-		//
-		// Both '/' and filepath.Separator count: Windows accepts a forward slash
-		// as a separator too, so checking only the native one would leave
-		// "./agent.sh" validated against fixpoint's working directory there.
-		if !filepath.IsAbs(bin) && (strings.ContainsRune(bin, '/') || strings.ContainsRune(bin, filepath.Separator)) {
-			abs, err := filepath.Abs(filepath.Join(c.Target.Path, bin))
-			if err != nil {
-				return fmt.Errorf("agents.%s: resolving %q against target.path: %w", name, bin, err)
-			}
-			bin = abs
-		}
-		if _, err := exec.LookPath(bin); err != nil {
-			return fmt.Errorf("agents.%s: binary %q not found on PATH", name, argv[0])
-		}
-		// SECURITY (mode pr): the LookPath check above proves the file exists NOW,
-		// on the pre-checkout tree, but agent.Run re-resolves the same relative argv
-		// against Cmd.Dir at EVERY invocation -- and in pr mode Prepare's
-		// `gh pr checkout` has replaced that tree with the PR's by the time round 1
-		// runs. A command element that lands inside target.path is therefore chosen
-		// by the code under review: the PR ships (or edits) the script at that path
-		// and fixpoint execs it as the agent process itself, with the credentials the
-		// agent declares and no sandbox at all -- a stronger primitive than the
-		// prompt injection the pr path is built to contain, and it fires even in the
-		// shipped review-only configuration, which passes no other trust gate.
-		//
-		// Refused here rather than warned about, for the same reason
-		// orchestrator.guardActivatableConfig refuses pr mode: the content that
-		// decides what runs is not on disk yet, so there is nothing for a preflight
-		// to inspect and "continue anyway" means running PR-authored code sight
-		// unseen. With trust asserted the run proceeds and
-		// orchestrator.warnTargetSuppliedCommand says what was accepted.
-		// See checkTargetSuppliedExecutable for which spelling is refused where.
-		if err := c.checkTargetSuppliedExecutable(name, argv); err != nil {
+		if err := c.validateAgentCommand(name, a); err != nil {
 			return err
 		}
 		// A read-only claim contradicted by the command's own argv. Reviewers are
@@ -1936,7 +2035,7 @@ func (c *Config) Validate() error {
 		// remains (a --plan style flag) is the CLI's business to enforce, not
 		// something fixpoint can check or has verified.
 		if !a.CanEdit {
-			if flag := permissionBypassFlag(argv); flag != "" {
+			if flag := permissionBypassFlag(a.Argv()); flag != "" {
 				return fmt.Errorf("agents.%s: can_edit: false, but the command passes %s, which lets the agent write files without being asked; a read-only claim must be backed by the command itself (drop the flag, or use the CLI's enforced read-only sandbox such as codex --sandbox read-only), otherwise declare can_edit: true so the agent is kept out of roles.review", name, flag)
 			}
 		}

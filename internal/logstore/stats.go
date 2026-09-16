@@ -67,6 +67,13 @@ type Stats struct {
 	// a run whose cost is missing from every number above, and an operator drawing
 	// a seat decision from this table has to know the sample is short.
 	Unreadable int
+	// Replayed is how many runs were skipped because their replies came from a
+	// recording rather than from an agent. Their per-step usage and duration are the
+	// RECORDED ones, so counting them would bill the same tokens twice -- inflating
+	// the per-agent economics this table exists to report, by an amount that grows
+	// with how often the pipeline is regression-tested (review run 20260916-085129,
+	// finding i3).
+	Replayed int
 }
 
 // LoadStats aggregates every run summary under root.
@@ -106,6 +113,10 @@ func LoadStats(root string) (*Stats, error) {
 		}
 		sum, ok := readSummary(path)
 		if !ok {
+			return nil
+		}
+		if sum.ReplayedFrom != "" {
+			s.Replayed++
 			return nil
 		}
 		s.absorb(sum, agents)
@@ -197,28 +208,47 @@ func (s *Stats) absorb(sum *model.RunSummary, agents map[string]*AgentStat) {
 			}
 		}
 	}
-	// The coder is billed separately by computeRunStats (its steps never land in a
-	// reviewer row), so it has to be added by name here or the most expensive seat
-	// in the run would be missing from the table that exists to price seats.
-	if st.coderUsage.Tokens() > 0 || st.coderDur > 0 {
-		name := sum.Coder
-		if name == "" {
-			name = "(coder)"
-		}
-		a := get(name)
-		if !seen[name] {
-			a.Runs++
-			seen[name] = true
-		}
-		a.Dur += st.coderDur
-		a.Usage.Add(st.coderUsage)
-	}
+	absorbCoder(sum, st, get, seen)
 	// Steps are counted from the raw record rather than from the grouped rows:
 	// every invocation costs a slot, including the coder's and including one that
 	// produced no finding at all.
 	for _, r := range sum.Rounds {
 		for _, step := range r.Steps {
 			get(step.Agent).Steps++
+		}
+	}
+}
+
+// absorbCoder adds the coder's share of one run.
+//
+// It is separate because computeRunStats bills the coder apart from every
+// reviewer -- its steps never land in a reviewer row -- so without this the most
+// expensive seat in the run would be missing from the table that exists to price
+// seats.
+func absorbCoder(sum *model.RunSummary, st *runStats, get func(string) *AgentStat, seen map[string]bool) {
+	if st.coderUsage.Tokens() == 0 && st.coderDur == 0 {
+		return
+	}
+	name := sum.Coder
+	if name == "" {
+		name = "(coder)"
+	}
+	a := get(name)
+	if !seen[name] {
+		a.Runs++
+		seen[name] = true
+	}
+	a.Dur += st.coderDur
+	a.Usage.Add(st.coderUsage)
+	// The coder's failures too. computeRunStats credits errors from ReviewErrors,
+	// which is a reviewer-only list, so a coder that timed out or died mid-fix
+	// showed a clean errors column however often it happened -- hiding the most
+	// expensive kind of failure there is (review run 20260916-085129, finding i6).
+	for _, r := range sum.Rounds {
+		for _, step := range r.Steps {
+			if step.Role == "fix" && step.Failed {
+				a.Errors++
+			}
 		}
 	}
 }
@@ -287,7 +317,11 @@ func statsFacts(s *Stats) [][2]string {
 		for _, k := range sortedTerminations(s.Terminations) {
 			// The label is derived from the key, never substituted for it: renaming it
 			// before the lookup would count every unlabeled run as zero.
-			label := k
+			// Escaped like the agent cells above: a summary is a file on disk that a
+			// repository can ship, and a termination string carrying ESC/CSI would
+			// redraw the table it is printed under (review run 20260916-085129,
+			// finding i11).
+			label := agent.EscapeTerminal(k)
 			if label == "" {
 				label = "(none)"
 			}
@@ -301,6 +335,9 @@ func statsFacts(s *Stats) [][2]string {
 		[2]string{"tokens", "as each CLI reported them; in/out/cache are NOT summed -- some routes count a cache read inside input_tokens and adding them would double-count those rows"},
 		[2]string{colCost, "only from CLIs that report one; a subscription-authenticated route has no per-request price and shows none"},
 	)
+	if s.Replayed > 0 {
+		out = append(out, [2]string{"replays", fmt.Sprintf("%d run(s) were replays and are excluded: their tokens and wall clock are the recorded ones, already counted against the run they came from", s.Replayed)})
+	}
 	if s.Unreadable > 0 {
 		out = append(out, [2]string{"incomplete", fmt.Sprintf("%d path(s) under this root could not be read, so some runs may be missing from every number above", s.Unreadable)})
 	}
