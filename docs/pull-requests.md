@@ -26,6 +26,10 @@ this is the reference behind them.
 # 4. Or let the published review carry its verdict, approving or requesting
 #    changes:
 ./fixpoint -post-run .fixpoint/<run-timestamp> -post-verdict
+
+# 5. On your OWN pull request, where anything short of an approval is just work
+#    to do locally: publish in the same run, but only if the review approved.
+./fixpoint review-pr -post-if-approved
 ```
 
 ### Which pull request
@@ -190,6 +194,47 @@ would not notice, because the reviewed commit is public and anyone can open a pu
 request proposing it. So a run also records the repository `gh` resolved for the
 checkout, and `-post-run` refuses unless the checkout still resolves to it — or
 cannot say what it resolves to at all.
+
+### Publishing only an approval
+
+`-post-if-approved` is `-post` with one condition on it: the review is published
+when the verdict is an approval, and **nothing at all** is published when it is
+`changes_requested` or `inconclusive`. The findings are still in
+`review-body.md`, which is where they belong when the next thing to happen is you
+fixing them.
+
+It is the flag for your own pull requests, where the two outcomes are not two
+kinds of review but two different situations: an approval is worth recording on
+the branch, and a list of things to fix is worth reading in the terminal and
+acting on before anybody else sees the branch at all. Publishing that list and
+then pushing fixes over it leaves a pull request whose review history is a
+conversation with yourself.
+
+- It is **mutually exclusive with `-post`**. Both mean something definite about
+  the same act and neither precedence is defensible, so passing both is refused
+  rather than resolved.
+- It is refused on a **fix run**, because only a review-only run reaches a
+  verdict to gate on.
+- It does not imply `-post-verdict`. On its own an approved review goes out as a
+  comment; add `-post-verdict` to have it go out as an APPROVE. Note what the
+  last section of this page says about your own pull requests, though: **GitHub
+  refuses an approval from the author**, so on your own branch the comment is the
+  only thing that can land, and `-post-if-approved` alone is the combination that
+  works.
+- `-post-run` honors it too, so a two-step publish can carry the same condition
+  as a one-step one.
+- A run that publishes nothing because of the gate is a **success**, not a
+  failure: the exit code is still the verdict's own (`4` for changes requested,
+  `5` for inconclusive), so `fixpoint review-pr -post-if-approved` is directly
+  usable as a CI or shell gate.
+
+Whether anything was published is on the run's last two lines either way —
+the closing banner reads `VERDICT APPROVE · POSTED as comment` or
+`VERDICT CHANGES REQUESTED · NOT POSTED (...)`, and the scoreboard carries a
+`posted` row directly under the `verdict` row. They are two rows rather than one
+because a verdict that was reached and a verdict that was published are different
+events, and reading the first as the second is the mistake the row exists to
+prevent.
 
 `-post`/`-post-run` and `-post-verdict` are separate flags because they are
 separate acts. The first makes a machine review visible; the second approves

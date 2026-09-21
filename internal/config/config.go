@@ -1937,6 +1937,15 @@ func (c *Config) Validate() error {
 	if err := c.validateImplement(); err != nil {
 		return err
 	}
+	// -post-if-approved gates publishing on the VERDICT, and only a review-only run
+	// ever reaches one: decideVerdict runs at the end of a review round, while a fix
+	// run ends in commits and leaves Verdict nil. Refused rather than quietly
+	// degraded to -post, because the two differ exactly where it matters -- a fix
+	// run given this flag would publish its conversation replies with the gate it
+	// was asked for never consulted once.
+	if c.Review.PostIfApproved && !c.Loop.ReviewOnly {
+		return errors.New("review: -post-if-approved gates publishing on the review's verdict, and only a review-only run reaches one -- a fix run publishes as it goes. Use -post, or add -review-only")
+	}
 	if c.Review.BlockAt != "" && !model.ValidSeverity(c.Review.BlockAt) {
 		return fmt.Errorf("review.block_at: unknown severity %q (want %s)", c.Review.BlockAt, strings.Join(model.Severities, " | "))
 	}
@@ -2740,6 +2749,17 @@ type ReviewPolicy struct {
 	// keys so that error reads as the boundary it is rather than as a typo.
 	Post        bool `yaml:"-"`
 	PostVerdict bool `yaml:"-"`
+	// PostIfApproved narrows Post: publish only when the verdict is an approval,
+	// and publish nothing at all otherwise. It is the flag for reviewing your own
+	// pull request -- a run that requests changes is work to do locally, not a
+	// review to put on the branch -- and it sets Post as well, so every check that
+	// asks "was publishing requested?" keeps asking one field.
+	//
+	// `yaml:"-"` for exactly the reason Post is: it turns publishing ON, and a
+	// config the target ships must not be able to do that. That it only publishes
+	// approvals makes it MORE dangerous as a config key, not less: an approval is
+	// the outcome the repository under review would want arranged.
+	PostIfApproved bool `yaml:"-"`
 }
 
 // validateCreate is every rule about the create-design pipeline's shape.
