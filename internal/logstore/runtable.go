@@ -739,16 +739,22 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 // whose identity comes from the target's git remote.
 func postedRow(sum *model.RunSummary) string {
 	if sum.ReviewPosted != "" {
-		return fmt.Sprintf("PUBLISHED as %s on pull request %d",
-			strings.ToUpper(strings.ReplaceAll(sum.ReviewPosted, "_", " ")), sum.PR)
+		return fmt.Sprintf("PUBLISHED as %s on pull request %d", model.EventLabel(sum.ReviewPosted), sum.PR)
+	}
+	// Three states, not two. A submission that was sent and then failed may have
+	// been accepted before it failed, so it gets its own word rather than being
+	// reported as a run that published nothing -- see RunSummary.ReviewPostAttempted.
+	state := "NOT PUBLISHED"
+	if sum.ReviewPostAttempted {
+		state = "UNCONFIRMED"
 	}
 	// An older summary, written before the reason was recorded, carries neither
 	// field. Saying only "NOT PUBLISHED" there is the whole truth available and
 	// still the answer to the question the row asks.
 	if sum.ReviewPostSkipped == "" {
-		return "NOT PUBLISHED"
+		return state
 	}
-	return "NOT PUBLISHED · " + agent.EscapeTerminal(sum.ReviewPostSkipped)
+	return state + " · " + agent.EscapeTerminal(sum.ReviewPostSkipped)
 }
 
 // parseReviewError pulls the agent and lens out of a round's reviewer-error string,
