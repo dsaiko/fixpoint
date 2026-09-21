@@ -367,6 +367,18 @@ type RunSummary struct {
 	// on the pull request, and a summary that denied it would send the operator
 	// looking for a review a human has to dismiss.
 	ReviewPosted string `json:"review_posted,omitempty"`
+	// ReviewPostSkipped says why nothing reached the forge, for a review run that
+	// could have published. It is the other half of ReviewPosted: an empty
+	// ReviewPosted answers "was it published?" with no, and leaves "why not?" to be
+	// inferred from flags nobody recorded -- publishing was not asked for, the
+	// verdict did not clear the -post-if-approved gate, the run was interrupted, no
+	// forge was recognized. The scoreboard prints this beside the verdict, because a
+	// run that DECIDED approve and a run that PUBLISHED one are different events and
+	// reading the first as the second is the mistake the row exists to prevent.
+	//
+	// Set on every path out of postReview that does not publish, and left empty when
+	// one does, so exactly one of the two fields is ever filled.
+	ReviewPostSkipped string `json:"review_post_skipped,omitempty"`
 	// ReviewInline are the anchors the run computed for its findings, kept so a
 	// later publish sends exactly what this run produced rather than recomputing it
 	// against a diff that may have moved.
@@ -447,6 +459,21 @@ const (
 	VerdictChangesRequested = "changes_requested"
 	VerdictInconclusive     = "inconclusive"
 )
+
+// VerdictLabel renders an outcome for a human: APPROVE, CHANGES REQUESTED,
+// INCONCLUSIVE. One function because three places print it -- the phase banner,
+// the scoreboard, and the line explaining why a -post-if-approved run published
+// nothing -- and an operator comparing them must not have to wonder whether
+// "changes_requested" and "CHANGES REQUESTED" are the same thing.
+//
+// An empty outcome is a run that recorded no verdict at all, which is a fact
+// worth naming rather than rendering as an empty cell.
+func VerdictLabel(outcome string) string {
+	if outcome == "" {
+		return "NO VERDICT"
+	}
+	return strings.ToUpper(strings.ReplaceAll(outcome, "_", " "))
+}
 
 // Exit codes above the terminations': a review verdict is a different axis from
 // how the loop ended, so it gets its own numbers rather than overloading

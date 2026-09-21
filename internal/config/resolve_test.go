@@ -746,7 +746,7 @@ func TestImplementFlagsAreNotYAMLDecodable(t *testing.T) {
 // loader has to be right about which values are safe, and a reader of the config
 // would reasonably conclude the key works.
 func TestLoadBundleRejectsSelfGrantedPosting(t *testing.T) {
-	for _, key := range []string{"post", "post_verdict"} {
+	for _, key := range []string{"post", "post_verdict", "post_if_approved"} {
 		t.Run(key+"/direct", func(t *testing.T) {
 			root := t.TempDir()
 			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
@@ -788,12 +788,16 @@ func TestLoadBundleRejectsSelfGrantedPosting(t *testing.T) {
 // fails here rather than shipping a config-settable publish switch.
 func TestPostingFieldsAreNotYAMLDecodable(t *testing.T) {
 	var cfg Config
-	if err := yaml.Unmarshal([]byte("review:\n  post: true\n  post_verdict: true\n"), &cfg); err != nil {
+	if err := yaml.Unmarshal([]byte("review:\n  post: true\n  post_verdict: true\n  post_if_approved: true\n"), &cfg); err != nil {
 		t.Fatalf("permissive decode should not error here: %v", err)
 	}
-	if cfg.Review.Post || cfg.Review.PostVerdict {
-		t.Errorf("YAML set a publishing flag (post=%v post_verdict=%v); these must be settable only by -post / -post-verdict",
-			cfg.Review.Post, cfg.Review.PostVerdict)
+	// post_if_approved is in here for a reason that is easy to argue away: it only
+	// ever publishes an approval, so it looks like the harmless one. An approval is
+	// precisely the outcome a repository under review would want arranged on its own
+	// pull request, which makes it the worst of the three to leave settable.
+	if cfg.Review.Post || cfg.Review.PostVerdict || cfg.Review.PostIfApproved {
+		t.Errorf("YAML set a publishing flag (post=%v post_verdict=%v post_if_approved=%v); these must be settable only by -post / -post-verdict / -post-if-approved",
+			cfg.Review.Post, cfg.Review.PostVerdict, cfg.Review.PostIfApproved)
 	}
 }
 
@@ -1002,13 +1006,14 @@ func TestOverridesApplied(t *testing.T) {
 		AllowUntrustedFix: true,
 		Post:              true,
 		PostVerdict:       true,
+		PostIfApproved:    true,
 		TrustedTarget:     true,
 		NoCoverageCheck:   true,
 		PlanOnly:          true,
 		Plan:              "/p.json",
 		Continue:          "/proj",
 	}.Applied(), ", ")
-	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "post=true", "post_verdict=true", "trusted_target=true", "max_iterations=-1", "pr=1234", "no_coverage_check=true", "plan_only=true", "plan=/p.json", "continue=/proj"} {
+	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "post=true", "post_verdict=true", "post_if_approved=true", "trusted_target=true", "max_iterations=-1", "pr=1234", "no_coverage_check=true", "plan_only=true", "plan=/p.json", "continue=/proj"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Applied() = %q, missing %q", got, want)
 		}

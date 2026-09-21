@@ -698,12 +698,17 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 	// The verdict is what a review run IS, so it goes above the exit line rather
 	// than being left for the reader to infer from an exit code.
 	if v := sum.Verdict; v != nil {
-		label := strings.ToUpper(strings.ReplaceAll(v.Outcome, "_", " "))
-		out = append(out, [2]string{"verdict", label})
+		out = append(out, [2]string{"verdict", model.VerdictLabel(v.Outcome)})
 		for _, r := range v.Reasons {
 			// Escaped like every other cell: a reason can name an agent, and agent names
 			// come from a config the repository under review may own.
 			out = append(out, [2]string{"", "· " + agent.EscapeTerminal(r)})
+		}
+		// Only for a run that reviewed a pull request: everywhere else there is nothing
+		// to publish to, and a NOT PUBLISHED row under every review-branch run would be
+		// an answer to a question nobody asked.
+		if sum.PR > 0 {
+			out = append(out, [2]string{"posted", postedRow(sum)})
 		}
 	}
 	exit := fmt.Sprintf("%s (exit %d)", sum.Termination, model.ExitCodeFor(sum))
@@ -717,6 +722,33 @@ func runOutcome(sum *model.RunSummary, st *runStats) [][2]string {
 	}
 	out = append(out, [2]string{"exit", exit})
 	return out
+}
+
+// postedRow says whether the review reached the forge, in the row directly under
+// the verdict.
+//
+// It is printed for every run that reviewed a pull request, including the ones
+// that never intended to publish, because its absence is what used to be
+// ambiguous: a scoreboard whose last word was "verdict APPROVE" reads like an
+// approval was given, and under -post-if-approved the difference between an
+// approval that was published and one that was withheld is the entire reason the
+// flag was typed. Two rows, always, and neither inferred from the other.
+//
+// The reason text is fixpoint's own (see RunSummary.ReviewPostSkipped) and is
+// escaped anyway, like every neighboring cell: one of its variants names a forge
+// whose identity comes from the target's git remote.
+func postedRow(sum *model.RunSummary) string {
+	if sum.ReviewPosted != "" {
+		return fmt.Sprintf("PUBLISHED as %s on pull request %d",
+			strings.ToUpper(strings.ReplaceAll(sum.ReviewPosted, "_", " ")), sum.PR)
+	}
+	// An older summary, written before the reason was recorded, carries neither
+	// field. Saying only "NOT PUBLISHED" there is the whole truth available and
+	// still the answer to the question the row asks.
+	if sum.ReviewPostSkipped == "" {
+		return "NOT PUBLISHED"
+	}
+	return "NOT PUBLISHED · " + agent.EscapeTerminal(sum.ReviewPostSkipped)
 }
 
 // parseReviewError pulls the agent and lens out of a round's reviewer-error string,

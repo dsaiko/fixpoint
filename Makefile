@@ -270,8 +270,16 @@ fix-pr: build test vet
 ## branch itself is externally authored, so the pr-mode refusals over what the
 ## checkout writes stay armed -- which is what makes this the target to run first
 ## on a fork's pull request.
+## POST=1 adds -post-if-approved: the review is published on the pull request
+## only when the verdict is an approval, and nothing is published otherwise --
+## the findings stay in review-body.md to be fixed locally first. Guarded exactly
+## like fix-pr's POST above, and for the same reason. The gate rather than a bare
+## -post because this target's usual operator is the PR's own author: a review
+## that requests changes is work to do, not a review to put on the branch.
+## Publishing unconditionally is still available by hand, with -post.
 review-pr: build
-	./$(BINARY) review-pr $(if $(PR),-pr $(PR)) --trusted-bundle
+	@test -z "$(POST)" || test "$(POST)" = 1 || { echo "POST must be 1 or unset, got '$(POST)'; nothing is published"; exit 2; }
+	./$(BINARY) review-pr $(if $(PR),-pr $(PR)) --trusted-bundle $(if $(filter 1,$(POST)),-post-if-approved)
 
 ## run: removed -- name the config you mean (make fix-code, make review-pr PR=n)
 # Exits 2, the usage-error code the POST guard above uses. `run` was the

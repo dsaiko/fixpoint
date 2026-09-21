@@ -115,9 +115,14 @@ type Overrides struct {
 	// Flags, never config keys, for the same reason the trust gates are: publishing
 	// is an action on somebody else's pull request, and the config that would grant
 	// it may have been shipped by the repository under review. See TrustedTarget.
-	Post          bool
-	PostVerdict   bool
-	TrustedTarget bool
+	Post        bool
+	PostVerdict bool
+	// PostIfApproved is -post-if-approved: publish, but only an approval. It is
+	// the flag for a review of your OWN pull request, where a verdict that is not
+	// an approval is a list of things to fix locally rather than a review worth
+	// putting on the branch.
+	PostIfApproved bool
+	TrustedTarget  bool
 	// TrustedBundle asserts trust in the bundle alone, not in the target's content;
 	// see Loop.TrustedBundle for why the two are separate assertions.
 	TrustedBundle bool
@@ -146,6 +151,13 @@ func (o Overrides) apply(c *Config) {
 	}
 	if o.PostVerdict {
 		c.Review.PostVerdict = true
+	}
+	// Sets Post as well: the gate NARROWS publishing rather than being a second way
+	// to ask for it, so every "was publishing requested?" check keeps reading one
+	// field and cannot be updated in one place and forgotten in another.
+	if o.PostIfApproved {
+		c.Review.Post = true
+		c.Review.PostIfApproved = true
 	}
 	if o.TrustedTarget {
 		c.Loop.TrustedTarget = true
@@ -268,6 +280,12 @@ func (o Overrides) Applied() []string {
 	}
 	if o.PostVerdict {
 		out = append(out, "post_verdict=true")
+	}
+	// Recorded as itself, not as post=true, although it sets that too: the summary
+	// has to say whether the operator authorized every publication or only an
+	// approval, and those are different authorizations.
+	if o.PostIfApproved {
+		out = append(out, "post_if_approved=true")
 	}
 	if o.TrustedTarget {
 		out = append(out, "trusted_target=true")
@@ -478,6 +496,7 @@ var trustKeys = []struct {
 	{"loop", "allow_untrusted_fix", "-allow-untrusted-fix", whyNotTrust},
 	{"review", "post", "-post", whyNotPost},
 	{"review", "post_verdict", "-post-verdict", whyNotPost},
+	{"review", "post_if_approved", "-post-if-approved", whyNotPost},
 }
 
 // rejectTrustKeys fails when a task config tries to assert its own trust or turn

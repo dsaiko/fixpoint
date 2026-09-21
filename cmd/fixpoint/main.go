@@ -98,6 +98,7 @@ Flags:
 	post := fs.Bool("post", false, "publish the review on the pull request as a COMMENT: findings become visible, no verdict is acted on")
 	postRunDir := fs.String("post-run", "", "publish the review a FINISHED run already produced, from its .fixpoint/<run> directory; invokes no agent")
 	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
+	postIfApproved := fs.Bool("post-if-approved", false, "publish only if the verdict is an approval, and nothing at all otherwise; combine with -post-verdict to have that approval carry the verdict (mutually exclusive with -post)")
 	list := fs.Bool("list", false, "list the task configs on the search path with where each resolved from, and exit")
 	porcelain := fs.Bool("porcelain", false, "with --list, emit a stable tab-separated form for scripts and shell completion")
 	showVersion := fs.Bool("version", false, "print the version, commit and build date, and exit")
@@ -120,6 +121,17 @@ Flags:
 
 	runLog := newRunLogger(stderr)
 	logf, logRaw := runLog.Logf(), runLog.Raw
+
+	// Refused here rather than resolved by precedence, because both precedences are
+	// wrong. -post applied over the gate publishes a review the operator asked to
+	// have withheld; the gate applied over -post withholds one they asked to have
+	// published. The two flags are contradictory instructions about the same
+	// action, and the only honest answer is to say so -- Overrides.apply cannot,
+	// since the gate sets Post too and by then they are one field.
+	if *post && *postIfApproved {
+		logf("-post and -post-if-approved contradict each other: one publishes every review, the other only an approval. Pass exactly one")
+		return 2
+	}
 
 	// Anchor the run at the project root -- the git root, or the nearest directory
 	// holding a config bundle, found by walking up from the working directory. Every
@@ -160,7 +172,7 @@ Flags:
 		// command and been told nothing.
 		ctx, stop := installSignals(logf)
 		defer stop()
-		return postRun(ctx, *postRunDir, *postVerdict, logf)
+		return postRun(ctx, *postRunDir, postFlags{verdict: *postVerdict, ifApproved: *postIfApproved}, logf)
 	}
 
 	name, err := configName(positionals, *cfgPath)
@@ -211,6 +223,7 @@ Flags:
 		Continue:          paths["continue"],
 		Post:              *post,
 		PostVerdict:       *postVerdict,
+		PostIfApproved:    *postIfApproved,
 	})
 	if err != nil {
 		logf("config: %v", err)

@@ -49,6 +49,19 @@ var posterFor = forge.PosterFor
 // would be testing the refusal rather than the submission.
 var repoIDFor = forge.RepoID
 
+// postFlags is what the operator asserted on the command line about publishing.
+// A struct rather than two positional booleans: `postRun(ctx, dir, true, false,
+// logf)` says nothing at the call site about which assertion is which, and these
+// two decide whether somebody's pull request collects an approval.
+type postFlags struct {
+	// verdict is -post-verdict: let the published review carry the verdict rather
+	// than going out as a comment.
+	verdict bool
+	// ifApproved is -post-if-approved: publish only an approval, and nothing at all
+	// otherwise.
+	ifApproved bool
+}
+
 // postRun publishes a review a previous run already produced, without invoking a
 // single agent.
 //
@@ -68,7 +81,7 @@ var repoIDFor = forge.RepoID
 // has not read them -- which is why the directory is checked for having arrived
 // with the code under review (committedRun), and why every anchor is named in the
 // log before anything is submitted.
-func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string, ...any)) int {
+func postRun(ctx context.Context, dir string, flags postFlags, logf func(string, ...any)) int {
 	sum, runDir, err := loadRunSummary(dir)
 	if err != nil {
 		logf("post-run: %v", err)
@@ -104,6 +117,17 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 	// one shell glob or one mistaken tab-completion away.
 	if why := committedRun(ctx, runDir); why != "" {
 		logf("post-run: %s", why)
+		return 2
+	}
+
+	// The same gate the live path applies, honored here rather than ignored: a flag
+	// that means "publish only an approval" on one command and nothing at all on
+	// the other is a flag whose meaning depends on which way you reached the forge.
+	// Refused before the receipt is claimed, so the run can still be published
+	// deliberately -- without the flag -- once its findings have been read.
+	if flags.ifApproved && sum.Verdict.Outcome != model.VerdictApprove {
+		logf("post-run: -post-if-approved and %s concluded %s; nothing was published. The review is in %s",
+			dir, model.VerdictLabel(sum.Verdict.Outcome), filepath.Join(runDir, "review-body.md"))
 		return 2
 	}
 	// The body is always the file beside the resolved summary, never the path the
@@ -151,7 +175,7 @@ func postRun(ctx context.Context, dir string, postVerdict bool, logf func(string
 	// The same mapping the run itself would have used, from the same function --
 	// a replay that approved what the live path would have commented on would be a
 	// different review from the one the operator inspected.
-	event := forge.EventFor(sum.Verdict.Outcome, postVerdict)
+	event := forge.EventFor(sum.Verdict.Outcome, flags.verdict)
 	inline := make([]forge.InlineComment, 0, len(sum.ReviewInline))
 	for _, a := range sum.ReviewInline {
 		inline = append(inline, forge.InlineComment{Path: a.Path, Line: a.Line, Body: a.Body})

@@ -4829,13 +4829,39 @@ func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord
 		FilterFailed: !judged,
 	})
 	sum.Verdict = d.Summary()
-	o.phasef("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	o.phasef("VERDICT  %s", model.VerdictLabel(string(d.Outcome)))
 	for _, r := range d.Reasons {
 		o.logf("%s", r)
 	}
 	err := o.writeReviewBody(ctx, rec, sum, d)
-	o.endPhasef("VERDICT  %s", strings.ToUpper(strings.ReplaceAll(string(d.Outcome), "_", " ")))
+	// The closing banner names what happened to the review as well as what it
+	// concluded. This is the last bold line of the run, and until now it said
+	// APPROVE whether that approval had reached the pull request or was sitting in
+	// a file -- the one thing an operator running -post-if-approved is watching for.
+	//
+	// Only where there is a pull request to publish to. A review-branch or
+	// review-code run has no forge in the picture at all, and "NOT POSTED" on every
+	// one of those is a caveat about something nobody was expecting to happen, which
+	// is how a banner stops being read.
+	if o.cfg.Target.Mode == config.ModePR && o.cfg.Target.PR > 0 {
+		o.endPhasef("VERDICT  %s · %s", model.VerdictLabel(string(d.Outcome)), postState(sum))
+	} else {
+		o.endPhasef("VERDICT  %s", model.VerdictLabel(string(d.Outcome)))
+	}
 	return err
+}
+
+// postState says, in two or three words, whether the review reached the forge.
+// It is rendered into the closing banner beside the verdict, where the pair reads
+// as the run's whole answer: what was decided, and what was done about it.
+func postState(sum *model.RunSummary) string {
+	if sum.ReviewPosted != "" {
+		return "POSTED as " + strings.ToUpper(sum.ReviewPosted)
+	}
+	if sum.ReviewPostSkipped != "" {
+		return "NOT POSTED (" + sum.ReviewPostSkipped + ")"
+	}
+	return "NOT POSTED"
 }
 
 // writeReviewBody renders the review document and puts it in the run directory.
@@ -5698,15 +5724,42 @@ var checkerFor = forge.For
 // already terminates the run non-zero on its own.
 func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, body string) error {
 	if !o.cfg.Review.Post {
+		sum.ReviewPostSkipped = "publishing was not requested (-post / -post-if-approved)"
 		return nil
 	}
+	// Which of the two flags asked for this, so a refusal names the one the
+	// operator actually typed rather than one they did not pass.
+	askedBy := "-post"
+	if o.cfg.Review.PostIfApproved {
+		askedBy = "-post-if-approved"
+	}
 	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
-		o.logf("WARNING: -post was given but this run reviews no pull request; the review is in %s", sum.ReviewBody)
+		sum.ReviewPostSkipped = askedBy + " was given but this run reviews no pull request"
+		o.logf("WARNING: %s was given but this run reviews no pull request; the review is in %s", askedBy, sum.ReviewBody)
 		return nil
 	}
 	if ctx.Err() != nil {
+		sum.ReviewPostSkipped = "interrupted before posting"
 		o.logf("WARNING: interrupted before posting; the review is in %s", sum.ReviewBody)
 		return nil //nolint:nilerr // the round already records an interruption, which exits non-zero on its own
+	}
+	// The gate, before the forge is resolved and before anything is rendered for
+	// it: a run that will not publish must not depend on a remote being recognized
+	// to reach that conclusion, or -post-if-approved would fail runs it is supposed
+	// to let pass quietly.
+	//
+	// Fail-closed on a MISSING verdict as well as on an unwanted one. Nothing
+	// should reach here without one -- decideVerdict records it before this is
+	// called -- but "we could not tell what the review concluded" is not a reason
+	// to publish under a flag whose whole content is a condition on that conclusion.
+	outcome := ""
+	if sum.Verdict != nil {
+		outcome = sum.Verdict.Outcome
+	}
+	if o.cfg.Review.PostIfApproved && outcome != model.VerdictApprove {
+		sum.ReviewPostSkipped = fmt.Sprintf("-post-if-approved and the verdict is %s", model.VerdictLabel(outcome))
+		o.logf("-post-if-approved: the verdict is %s, so nothing was published; the review is in %s", model.VerdictLabel(outcome), sum.ReviewBody)
+		return nil
 	}
 	p := posterFor(ctx, o.cfg.Target.Path)
 	if p == nil {
@@ -5714,7 +5767,8 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 		// -- cmd/fixpoint/postrun.go answers the same situation with exit 1. In pr mode
 		// this means the forge remote is not the one PosterFor looks at, not that there
 		// is no forge: Prepare already reached the pull request to check it out.
-		return fmt.Errorf("-post was given but no GitHub or GitLab remote was recognized; the review is in %s", sum.ReviewBody)
+		sum.ReviewPostSkipped = "no GitHub or GitLab remote was recognized"
+		return fmt.Errorf("%s was given but no GitHub or GitLab remote was recognized; the review is in %s", askedBy, sum.ReviewBody)
 	}
 	// forge.EventFor, not a switch here: -post-run publishes the same verdicts from
 	// a finished run, and two hand-copied mappings of "which verdict approves
@@ -5722,11 +5776,8 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 	//
 	// A summary with no verdict posts as a comment. It should not happen -- the
 	// verdict is recorded before this is reached -- but the fallback a missing one
-	// deserves is the one that spends nothing.
-	outcome := ""
-	if sum.Verdict != nil {
-		outcome = sum.Verdict.Outcome
-	}
+	// deserves is the one that spends nothing. (Under -post-if-approved the gate
+	// above has already refused that case outright.)
 	event := forge.EventFor(outcome, o.cfg.Review.PostVerdict)
 	// The anchors RECORDED for this review, not a second computation of them.
 	// writeReviewBody already stored them, and recomputing here would let the posted
@@ -5758,6 +5809,9 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 		sum.ReviewPosted = string(event)
 	}
 	if err != nil {
+		if sum.ReviewPosted == "" {
+			sum.ReviewPostSkipped = fmt.Sprintf("the submission to %s failed", p.Kind())
+		}
 		return fmt.Errorf("posting the review to %s failed: %w -- it is written at %s", p.Kind(), err, sum.ReviewBody)
 	}
 	if url != "" {

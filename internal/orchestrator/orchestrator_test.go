@@ -10917,3 +10917,142 @@ func TestResolvePRTakesNoLockWhenThereIsNothingToAsk(t *testing.T) {
 		t.Errorf("target.pr = %d, want the explicit 170 untouched", f.cfg.Target.PR)
 	}
 }
+
+// -post-if-approved is the whole flag: an approval reaches the pull request and
+// anything else reaches nothing. Driven through postReview rather than asserted on
+// the config, because the gate has to sit where the submission is -- a check in
+// the caller would be one refactor away from a path that posts around it.
+//
+// The nil verdict is in the table on purpose. It should not be reachable, and it
+// is exactly the case where "publish unless we know not to" and "publish only when
+// we know to" differ: the flag says only an approval may go out, and a run that
+// recorded no conclusion has not produced one.
+func TestPostIfApprovedPublishesOnlyAnApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		verdict *model.ReviewVerdict
+		want    bool
+	}{
+		{"approve", &model.ReviewVerdict{Outcome: model.VerdictApprove}, true},
+		{"changes requested", &model.ReviewVerdict{Outcome: model.VerdictChangesRequested}, false},
+		{"inconclusive", &model.ReviewVerdict{Outcome: model.VerdictInconclusive}, false},
+		{"no verdict at all", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			f.cfg.Review.Post = true
+			f.cfg.Review.PostIfApproved = true
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 7
+
+			var posted string
+			restore := postedBodyForTest(&posted, nil)
+			defer restore()
+
+			o, logs := f.capturingOrchestrator()
+			sum := &model.RunSummary{ReviewedHead: strings.Repeat("a", 40), Verdict: tc.verdict}
+			if err := o.postReview(t.Context(), sum, "the review"); err != nil {
+				t.Fatal(err)
+			}
+			if got := posted != ""; got != tc.want {
+				t.Fatalf("published = %v for %s, want %v; logs:\n%s", got, tc.name, tc.want, logs())
+			}
+			if tc.want {
+				if sum.ReviewPosted == "" || sum.ReviewPostSkipped != "" {
+					t.Errorf("ReviewPosted = %q, ReviewPostSkipped = %q; a published review records the first and only the first",
+						sum.ReviewPosted, sum.ReviewPostSkipped)
+				}
+				return
+			}
+			if sum.ReviewPosted != "" {
+				t.Errorf("ReviewPosted = %q although nothing was published", sum.ReviewPosted)
+			}
+			// The reason, not merely its absence: the scoreboard prints this, and an
+			// operator who asked for a publication that did not happen is owed why.
+			if !strings.Contains(sum.ReviewPostSkipped, "-post-if-approved") {
+				t.Errorf("ReviewPostSkipped = %q, want it to name the flag that withheld the review", sum.ReviewPostSkipped)
+			}
+			if !strings.Contains(logs(), "nothing was published") {
+				t.Errorf("the run log does not say the review was withheld:\n%s", logs())
+			}
+		})
+	}
+}
+
+// The summary must be able to say why nothing was published even when nothing was
+// asked for. Without this the scoreboard's `posted` row could only ever report a
+// publication, and its absence would again be the thing an operator has to
+// interpret.
+func TestASummarySaysWhyNothingWasPublished(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1})
+	f.reviewOnly("mock")
+	f.cfg.Target.Mode = config.ModePR
+	f.cfg.Target.PR = 7
+
+	sum := &model.RunSummary{ReviewedHead: strings.Repeat("a", 40), Verdict: &model.ReviewVerdict{Outcome: model.VerdictApprove}}
+	if err := f.orchestrator().postReview(t.Context(), sum, "the review"); err != nil {
+		t.Fatal(err)
+	}
+	if sum.ReviewPosted != "" {
+		t.Fatalf("ReviewPosted = %q with no -post given", sum.ReviewPosted)
+	}
+	if !strings.Contains(sum.ReviewPostSkipped, "not requested") {
+		t.Errorf("ReviewPostSkipped = %q, want it to say publishing was never asked for", sum.ReviewPostSkipped)
+	}
+}
+
+// The closing banner is the last line of a review run and the one an operator
+// running -post-if-approved is actually waiting for: the flag's whole promise is
+// that some runs publish and some do not, and a banner that says only APPROVE
+// leaves which of the two happened to be worked out from the log above it.
+//
+// The non-pr case is in the table because the row is not free: "NOT POSTED" on
+// every review-branch run is a caveat about something nobody was expecting, and a
+// banner that qualifies itself every time stops being read.
+func TestTheClosingBannerSaysWhetherTheReviewWasPublished(t *testing.T) {
+	blocking := []model.Issue{{ID: "I1", Severity: "high", Title: "a blocking finding"}}
+	for _, tc := range []struct {
+		name    string
+		pr      int
+		issues  []model.Issue
+		want    string
+		notWant string
+	}{
+		{name: "approved and published", pr: 1, want: "VERDICT  APPROVE · POSTED as COMMENT"},
+		{name: "withheld by the gate", pr: 1, issues: blocking, want: "VERDICT  CHANGES REQUESTED · NOT POSTED (-post-if-approved"},
+		{name: "no pull request in the picture", pr: 0, notWant: "POSTED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			if tc.pr > 0 {
+				f.cfg.Review.Post = true
+				f.cfg.Review.PostIfApproved = true
+				f.cfg.Target.Mode = config.ModePR
+				f.cfg.Target.PR = tc.pr
+			}
+
+			var posted string
+			restore := postedBodyForTest(&posted, nil)
+			defer restore()
+
+			o, logs := f.capturingOrchestrator()
+			rec := &model.RoundRecord{
+				Round:       1,
+				Assignments: []model.Assignment{{Agent: "mock", Lens: "review"}},
+				Issues:      tc.issues,
+			}
+			sum := &model.RunSummary{ReviewedHead: strings.Repeat("a", 40)}
+			if err := o.decideVerdict(t.Context(), rec, sum, true); err != nil {
+				t.Fatal(err)
+			}
+			if tc.want != "" && !strings.Contains(logs(), tc.want) {
+				t.Errorf("the closing banner does not say %q:\n%s", tc.want, logs())
+			}
+			if tc.notWant != "" && strings.Contains(logs(), tc.notWant) {
+				t.Errorf("the log says %q for a run with no pull request to publish to:\n%s", tc.notWant, logs())
+			}
+		})
+	}
+}

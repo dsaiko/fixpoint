@@ -2152,3 +2152,20 @@ func TestCheckToleratesAnUnreachableForkProbe(t *testing.T) {
 		t.Errorf("--check did not report its scope:\n%s", out)
 	}
 }
+
+// -post and -post-if-approved are contradictory instructions about one act, and
+// the contradiction has to be caught HERE: Overrides.apply folds the gate into
+// Review.Post, so by the time a config exists the two are one field and nothing
+// downstream can tell that both were typed.
+//
+// It is checked before the -post-run branch too, because that path resolves no
+// configuration at all and would otherwise honor one flag and drop the other.
+func TestPostAndPostIfApprovedContradictEachOther(t *testing.T) {
+	var buf bytes.Buffer
+	if got := run([]string{"-post", "-post-if-approved", "-post-run", t.TempDir()}, &buf, &buf); got != 2 {
+		t.Errorf("run() = %d for -post with -post-if-approved, want the usage refusal 2; output:\n%s", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), "contradict") {
+		t.Errorf("the refusal must say the two flags contradict each other, got:\n%s", buf.String())
+	}
+}

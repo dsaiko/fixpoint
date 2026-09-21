@@ -172,7 +172,7 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs strings.Builder
 			dir := writeRun(t, tc.sum, tc.body)
-			if code := postRun(t.Context(), dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+			if code := postRun(t.Context(), dir, postFlags{verdict: false}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
 				t.Errorf("postRun(t.Context(), ) = 0, want a refusal; logs:\n%s", logs.String())
 			}
 			if !strings.Contains(logs.String(), tc.want) {
@@ -185,7 +185,7 @@ func TestPostRunRefusesWhatItCannotReplay(t *testing.T) {
 // A directory that is not a run at all must say so rather than fail obscurely.
 func TestPostRunRejectsANonRunDirectory(t *testing.T) {
 	var logs strings.Builder
-	if code := postRun(t.Context(), t.TempDir(), false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+	if code := postRun(t.Context(), t.TempDir(), postFlags{verdict: false}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
 		t.Error("postRun(t.Context(), ) = 0 for a directory holding no summary")
 	}
 	if !strings.Contains(logs.String(), "is it a run directory") {
@@ -217,7 +217,7 @@ func TestPostRunReadsTheBodyBesideTheSummary(t *testing.T) {
 			var logs strings.Builder
 			// No GitHub remote in that temp path, so this stops at the poster -- which is
 			// past the body read, which is what this test is about.
-			postRun(t.Context(), arg, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			postRun(t.Context(), arg, postFlags{verdict: false}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
 			if strings.Contains(logs.String(), "cannot read the review body") {
 				t.Errorf("the fallback to the body beside the summary did not happen:\n%s", logs.String())
 			}
@@ -251,7 +251,7 @@ func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
 		// summary: reading it would be the only way to get past this point.
 		dir := writeRun(t, base, "")
 		var logs strings.Builder
-		if code := postRun(t.Context(), dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+		if code := postRun(t.Context(), dir, postFlags{verdict: false}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
 			t.Errorf("postRun(t.Context(), ) = 0 with no review body beside the summary; logs:\n%s", logs.String())
 		}
 		if !strings.Contains(logs.String(), "cannot read the review body") {
@@ -265,7 +265,7 @@ func TestPostRunPublishesNothingButTheFileBesideTheSummary(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 		var logs strings.Builder
-		if code := postRun(t.Context(), dir, false, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+		if code := postRun(t.Context(), dir, postFlags{verdict: false}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
 			t.Errorf("postRun(t.Context(), ) = 0 for a symlinked review body; logs:\n%s", logs.String())
 		}
 		if !strings.Contains(logs.String(), "not a regular file") {
@@ -311,7 +311,7 @@ func TestPostRunRefusesARunDirectoryThatCameInWithTheCheckout(t *testing.T) {
 	p := &fakePoster{url: "https://github.com/o/r/pull/99#pullrequestreview-1"}
 	installPoster(t, p)
 	var logs strings.Builder
-	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 2 {
+	if code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 2 {
 		t.Errorf("postRun(t.Context(), ) = %d for a tracked run directory, want the refusal 2; logs:\n%s", code, logs.String())
 	}
 	if len(p.calls) != 0 {
@@ -325,7 +325,7 @@ func TestPostRunRefusesARunDirectoryThatCameInWithTheCheckout(t *testing.T) {
 	// run directory lives.
 	mine := writeRunAt(t, filepath.Join(repo, ".fixpoint", "20260807-160000"), replayable(t, model.VerdictApprove, nil), "the review this machine produced")
 	logs.Reset()
-	if code := postRun(t.Context(), mine, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 0 {
+	if code := postRun(t.Context(), mine, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 0 {
 		t.Fatalf("postRun(t.Context(), ) = %d for an untracked run directory in a work tree, want 0; logs:\n%s", code, logs.String())
 	}
 	if len(p.calls) != 1 {
@@ -443,7 +443,7 @@ func TestPostRunPublishesTheRunItReplays(t *testing.T) {
 			installPoster(t, p)
 
 			var logs strings.Builder
-			code := postRun(t.Context(), dir, tc.postVerdict, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			code := postRun(t.Context(), dir, postFlags{verdict: tc.postVerdict}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
 			if code != 0 {
 				t.Fatalf("postRun(t.Context(), ) = %d, want 0; logs:\n%s", code, logs.String())
 			}
@@ -528,7 +528,7 @@ func TestPostRunPublishesOnlyToTheRepositoryItReviewed(t *testing.T) {
 			installRepoID(t, tc.now)
 
 			var logs strings.Builder
-			code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
 			if tc.calls == 0 && code != 2 {
 				t.Errorf("postRun(t.Context(), ) = %d, want the refusal 2; logs:\n%s", code, logs.String())
 			}
@@ -564,12 +564,12 @@ func TestPostRunPublishesARunOnlyOnce(t *testing.T) {
 	installPoster(t, p)
 
 	var first strings.Builder
-	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&first, f+"\n", a...) }); code != 0 {
+	if code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&first, f+"\n", a...) }); code != 0 {
 		t.Fatalf("first postRun(t.Context(), ) = %d, want 0; logs:\n%s", code, first.String())
 	}
 
 	var second strings.Builder
-	code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&second, f+"\n", a...) })
+	code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&second, f+"\n", a...) })
 	if code == 0 {
 		t.Errorf("second postRun(t.Context(), ) = 0, want a refusal; logs:\n%s", second.String())
 	}
@@ -633,7 +633,7 @@ func TestPostRunPublishesARunOnlyOnceUnderSimultaneousReplays(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				codes[i] = postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs[i], f+"\n", a...) })
+				codes[i] = postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&logs[i], f+"\n", a...) })
 			}()
 		}
 		wg.Wait()
@@ -683,12 +683,12 @@ func TestPostRunDoesNotReplayAFailedSubmission(t *testing.T) {
 	installPoster(t, p)
 
 	var first strings.Builder
-	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&first, f+"\n", a...) }); code != 1 {
+	if code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&first, f+"\n", a...) }); code != 1 {
 		t.Fatalf("first postRun(t.Context(), ) = %d, want 1; logs:\n%s", code, first.String())
 	}
 
 	var second strings.Builder
-	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&second, f+"\n", a...) }); code == 0 {
+	if code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&second, f+"\n", a...) }); code == 0 {
 		t.Errorf("second postRun(t.Context(), ) = 0 after a submission that may have been accepted; logs:\n%s", second.String())
 	}
 	if len(p.calls) != 1 {
@@ -722,7 +722,7 @@ func TestPostRunExplainsAnUnreadableReceipt(t *testing.T) {
 	installPoster(t, p)
 
 	var logs strings.Builder
-	code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+	code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
 	if code != 2 {
 		t.Errorf("postRun(t.Context(), ) = %d, want the refusal 2; logs:\n%s", code, logs.String())
 	}
@@ -749,14 +749,14 @@ func TestPostRunClaimsNothingWhenItNeverSubmits(t *testing.T) {
 	dir := writeRun(t, sum, "the review that was actually produced")
 	installPoster(t, nil)
 	var logs strings.Builder
-	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
+	if code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code == 0 {
 		t.Fatalf("postRun(t.Context(), ) = 0 with no forge; logs:\n%s", logs.String())
 	}
 
 	p := &fakePoster{url: "https://github.com/o/r/pull/3#pullrequestreview-1"}
 	installPoster(t, p)
 	logs.Reset()
-	if code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 0 {
+	if code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) }); code != 0 {
 		t.Fatalf("postRun(t.Context(), ) = %d after a refusal that published nothing, want 0; logs:\n%s", code, logs.String())
 	}
 	if len(p.calls) != 1 {
@@ -802,7 +802,7 @@ func TestPostRunRetriesOnlyWhenTheAnchorsWereRejected(t *testing.T) {
 			installPoster(t, p)
 
 			var logs strings.Builder
-			code := postRun(t.Context(), dir, true, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			code := postRun(t.Context(), dir, postFlags{verdict: true}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
 			if code != tc.code {
 				t.Errorf("postRun(t.Context(), ) = %d, want %d; logs:\n%s", code, tc.code, logs.String())
 			}
@@ -819,6 +819,49 @@ func TestPostRunRetriesOnlyWhenTheAnchorsWereRejected(t *testing.T) {
 			}
 			if !strings.Contains(logs.String(), tc.want) {
 				t.Errorf("logs should say %q:\n%s", tc.want, logs.String())
+			}
+		})
+	}
+}
+
+// -post-if-approved means the same thing on both roads to the forge. A flag that
+// gated the live run and was ignored here would be worse than no flag: the
+// operator's mental model would be "this cannot publish a non-approval", and the
+// command they reach for after reading the body would quietly break it.
+//
+// Refused before the receipt is claimed, so a run withheld today can still be
+// published deliberately tomorrow.
+func TestPostRunHonorsPostIfApproved(t *testing.T) {
+	for _, tc := range []struct {
+		outcome  string
+		wantCode int
+		wantPost bool
+	}{
+		{model.VerdictApprove, 0, true},
+		{model.VerdictChangesRequested, 2, false},
+		{model.VerdictInconclusive, 2, false},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			sum := replayable(t, tc.outcome, nil)
+			dir := writeRun(t, sum, "the review")
+			p := &fakePoster{}
+			installPoster(t, p)
+
+			var logs strings.Builder
+			code := postRun(t.Context(), dir, postFlags{ifApproved: true}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+			if code != tc.wantCode {
+				t.Fatalf("postRun() = %d for %s, want %d; logs:\n%s", code, tc.outcome, tc.wantCode, logs.String())
+			}
+			if got := len(p.calls) > 0; got != tc.wantPost {
+				t.Fatalf("published = %v for %s, want %v", got, tc.outcome, tc.wantPost)
+			}
+			if tc.wantPost {
+				return
+			}
+			// No receipt: the refusal must not consume the one claim the directory has,
+			// or reading the findings and then publishing on purpose would be impossible.
+			if _, err := os.Stat(filepath.Join(dir, postReceipt)); !os.IsNotExist(err) {
+				t.Errorf("a withheld publication left a %s receipt (%v); the run can then never be published", postReceipt, err)
 			}
 		})
 	}

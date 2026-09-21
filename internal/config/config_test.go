@@ -150,6 +150,15 @@ func TestValidate(t *testing.T) {
 		// widened.
 		{"unknown block_at", func(c *Config) { c.Review.BlockAt = "showstopper" }, "review.block_at: unknown severity"},
 		{"unknown refute_at", func(c *Config) { c.Review.RefuteAt = "urgent" }, "review.refute_at: unknown severity"},
+
+		// -post-if-approved gates on a verdict, and a fix run produces none. Refused
+		// rather than degraded to -post: a fix run given the flag would publish its
+		// conversation replies with the condition never evaluated once.
+		{"post_if_approved on a fix run", func(c *Config) { c.Review.PostIfApproved = true }, "only a review-only run reaches one"},
+		{"post_if_approved on a review-only run", func(c *Config) {
+			c.Review.PostIfApproved = true
+			c.Loop.ReviewOnly = true
+		}, ""},
 		{"refute_at equal to block_at", func(c *Config) {
 			c.Review.Refute = "refute"
 			c.Review.RefuteAt, c.Review.BlockAt = "high", "high"
