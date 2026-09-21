@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -862,6 +863,45 @@ func TestPostRunHonorsPostIfApproved(t *testing.T) {
 			// or reading the findings and then publishing on purpose would be impossible.
 			if _, err := os.Stat(filepath.Join(dir, postReceipt)); !os.IsNotExist(err) {
 				t.Errorf("a withheld publication left a %s receipt (%v); the run can then never be published", postReceipt, err)
+			}
+		})
+	}
+}
+
+// The same gate, driven through the COMMAND rather than through postRun. Nothing
+// else proves this call site forwards the flag: every postRun test above builds
+// postFlags by hand, so dropping ifApproved at the one place run() constructs it
+// would leave them all green while `fixpoint -post-run <dir> -post-if-approved`
+// published a changes-requested review under the operator's identity.
+//
+// The approval case is what makes the refusal meaningful -- without it, a run()
+// that had lost the -post-run wiring entirely would pass the first half.
+func TestRunForwardsPostIfApprovedToPostRun(t *testing.T) {
+	for _, tc := range []struct {
+		outcome  string
+		wantCode int
+		wantPost bool
+	}{
+		{model.VerdictApprove, 0, true},
+		{model.VerdictChangesRequested, 2, false},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			dir := writeRun(t, replayable(t, tc.outcome, nil), "the review")
+			p := &fakePoster{}
+			installPoster(t, p)
+
+			var buf bytes.Buffer
+			if code := run([]string{"-post-run", dir, "-post-if-approved"}, &buf, &buf); code != tc.wantCode {
+				t.Fatalf("run() = %d for %s, want %d; output:\n%s", code, tc.outcome, tc.wantCode, buf.String())
+			}
+			if got := len(p.calls) > 0; got != tc.wantPost {
+				t.Fatalf("published = %v for %s, want %v; output:\n%s", got, tc.outcome, tc.wantPost, buf.String())
+			}
+			if tc.wantPost {
+				return
+			}
+			if _, err := os.Stat(filepath.Join(dir, postReceipt)); !os.IsNotExist(err) {
+				t.Errorf("a withheld publication left a %s receipt (%v)", postReceipt, err)
 			}
 		})
 	}

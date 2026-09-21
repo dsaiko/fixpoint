@@ -4851,17 +4851,57 @@ func (o *Orchestrator) decideVerdict(ctx context.Context, rec *model.RoundRecord
 	return err
 }
 
-// postState says, in two or three words, whether the review reached the forge.
+// publishesVerdict is the ONE answer to "is a publication still due for this
+// outcome?", and both places that need it ask here.
+//
+// It has to be shared because -post-if-approved sets Review.Post: a caller that
+// reads Post alone now sees "publishing was requested" on a run the gate will
+// withhold, which is how the body-write failure below came to fail a withheld
+// changes-requested run with exit 1 over a publication that was never going to
+// be attempted.
+func (o *Orchestrator) publishesVerdict(outcome string) bool {
+	if !o.cfg.Review.Post {
+		return false
+	}
+	return !o.cfg.Review.PostIfApproved || outcome == model.VerdictApprove
+}
+
+// postFlagName is the flag the operator actually typed, for the messages that
+// name it. Reading Review.Post would name -post to someone who passed the gate.
+func (o *Orchestrator) postFlagName() string {
+	if o.cfg.Review.PostIfApproved {
+		return "-post-if-approved"
+	}
+	return "-post"
+}
+
+// withheldReason says, in the summary's voice, why this run publishes nothing.
+// The counterpart to publishesVerdict: one decides, one explains, and they are
+// written next to each other so they cannot come to disagree.
+func (o *Orchestrator) withheldReason(outcome string) string {
+	if !o.cfg.Review.Post {
+		return "publishing was not requested (-post / -post-if-approved)"
+	}
+	return "-post-if-approved and the verdict is " + model.VerdictLabel(outcome)
+}
+
+// postState says, in a few words, whether the review reached the forge.
 // It is rendered into the closing banner beside the verdict, where the pair reads
 // as the run's whole answer: what was decided, and what was done about it.
 func postState(sum *model.RunSummary) string {
 	if sum.ReviewPosted != "" {
-		return "POSTED as " + strings.ToUpper(sum.ReviewPosted)
+		return "POSTED as " + model.EventLabel(sum.ReviewPosted)
+	}
+	// Attempted and unresolved is its own answer: saying NOT POSTED here would
+	// assert something the run does not know. See RunSummary.ReviewPostAttempted.
+	state := "NOT POSTED"
+	if sum.ReviewPostAttempted {
+		state = "UNCONFIRMED"
 	}
 	if sum.ReviewPostSkipped != "" {
-		return "NOT POSTED (" + sum.ReviewPostSkipped + ")"
+		return state + " (" + sum.ReviewPostSkipped + ")"
 	}
-	return "NOT POSTED"
+	return state
 }
 
 // writeReviewBody renders the review document and puts it in the run directory.
@@ -4955,10 +4995,20 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 		// half of what posting means here -- it is what the operator inspects, what
 		// `-post-run` replays, and the only local record of what went out. Publishing
 		// under the operator's identity with no such record is the wrong half to keep.
-		if o.cfg.Review.Post {
-			return fmt.Errorf("-post was given but the review body could not be written: %w -- nothing was posted", err)
+		//
+		// Only when a publication was actually DUE. Under -post-if-approved on a
+		// verdict the gate will withhold, nothing was ever going to be posted, so
+		// failing the run here would trade the verdict's own exit code (4 or 5) for a
+		// generic 1 over a submission that was not going to happen -- and the message
+		// would name a flag the operator did not pass.
+		if o.publishesVerdict(string(d.Outcome)) {
+			return fmt.Errorf("%s was given but the review body could not be written: %w -- nothing was posted", o.postFlagName(), err)
 		}
 		o.logf("WARNING: failed to write the review body: %v", err)
+		// postReview is not reached from here, so the reason it would have recorded is
+		// recorded here instead; otherwise the scoreboard's posted row would fall back
+		// to a bare NOT PUBLISHED on exactly the runs that have the most to explain.
+		sum.ReviewPostSkipped = o.withheldReason(string(d.Outcome))
 		return nil
 	}
 	sum.ReviewBody = path
@@ -5724,15 +5774,12 @@ var checkerFor = forge.For
 // already terminates the run non-zero on its own.
 func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, body string) error {
 	if !o.cfg.Review.Post {
-		sum.ReviewPostSkipped = "publishing was not requested (-post / -post-if-approved)"
+		sum.ReviewPostSkipped = o.withheldReason("")
 		return nil
 	}
 	// Which of the two flags asked for this, so a refusal names the one the
 	// operator actually typed rather than one they did not pass.
-	askedBy := "-post"
-	if o.cfg.Review.PostIfApproved {
-		askedBy = "-post-if-approved"
-	}
+	askedBy := o.postFlagName()
 	if o.cfg.Target.Mode != config.ModePR || o.cfg.Target.PR <= 0 {
 		sum.ReviewPostSkipped = askedBy + " was given but this run reviews no pull request"
 		o.logf("WARNING: %s was given but this run reviews no pull request; the review is in %s", askedBy, sum.ReviewBody)
@@ -5756,8 +5803,8 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 	if sum.Verdict != nil {
 		outcome = sum.Verdict.Outcome
 	}
-	if o.cfg.Review.PostIfApproved && outcome != model.VerdictApprove {
-		sum.ReviewPostSkipped = fmt.Sprintf("-post-if-approved and the verdict is %s", model.VerdictLabel(outcome))
+	if !o.publishesVerdict(outcome) {
+		sum.ReviewPostSkipped = o.withheldReason(outcome)
 		o.logf("-post-if-approved: the verdict is %s, so nothing was published; the review is in %s", model.VerdictLabel(outcome), sum.ReviewBody)
 		return nil
 	}
@@ -5810,7 +5857,14 @@ func (o *Orchestrator) postReview(ctx context.Context, sum *model.RunSummary, bo
 	}
 	if err != nil {
 		if sum.ReviewPosted == "" {
-			sum.ReviewPostSkipped = fmt.Sprintf("the submission to %s failed", p.Kind())
+			// ATTEMPTED, not withheld. An error with no URL back does not prove the forge
+			// holds nothing: a timeout can arrive after the request was accepted, and the
+			// GitLab provider posts the body and its inline notes before the approve call
+			// that may be what failed -- so the comments can already be on the merge
+			// request while this branch runs. Saying NOT PUBLISHED here would be the run
+			// asserting something it cannot know.
+			sum.ReviewPostAttempted = true
+			sum.ReviewPostSkipped = "the submission to " + string(p.Kind()) + " failed and may or may not have been accepted"
 		}
 		return fmt.Errorf("posting the review to %s failed: %w -- it is written at %s", p.Kind(), err, sum.ReviewBody)
 	}

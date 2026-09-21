@@ -122,17 +122,6 @@ Flags:
 	runLog := newRunLogger(stderr)
 	logf, logRaw := runLog.Logf(), runLog.Raw
 
-	// Refused here rather than resolved by precedence, because both precedences are
-	// wrong. -post applied over the gate publishes a review the operator asked to
-	// have withheld; the gate applied over -post withholds one they asked to have
-	// published. The two flags are contradictory instructions about the same
-	// action, and the only honest answer is to say so -- Overrides.apply cannot,
-	// since the gate sets Post too and by then they are one field.
-	if *post && *postIfApproved {
-		logf("-post and -post-if-approved contradict each other: one publishes every review, the other only an approval. Pass exactly one")
-		return 2
-	}
-
 	// Anchor the run at the project root -- the git root, or the nearest directory
 	// holding a config bundle, found by walking up from the working directory. Every
 	// relative path in the configuration resolves against it, so the same command
@@ -610,6 +599,34 @@ func checkLiveOnly(ctx context.Context, o *orchestrator.Orchestrator, logf func(
 	return 0
 }
 
+// contradictoryFlags refuses combinations the flag package cannot express.
+//
+// -post and -post-if-approved are contradictory instructions about one act, and
+// neither precedence is defensible: -post over the gate publishes a review the
+// operator asked to have withheld, and the gate over -post withholds one they
+// asked to have published. Nor can it be caught further in -- Overrides.apply
+// folds the gate into Review.Post, so by the time a configuration exists the two
+// are one field.
+//
+// It writes the refusal itself, the way flag writes its own: run treats every
+// error from parseArgs as a silent exit 2, because flag has already printed
+// whatever it rejected.
+func contradictoryFlags(fs *flag.FlagSet) error {
+	if !flagTrue(fs, "post") || !flagTrue(fs, "post-if-approved") {
+		return nil
+	}
+	err := errors.New("-post and -post-if-approved contradict each other: one publishes every review, the other only an approval. Pass exactly one")
+	_, _ = fmt.Fprintln(fs.Output(), err)
+	return err
+}
+
+// flagTrue reports whether a boolean flag ended up true, however it was written
+// -- -post, -post=true, or a default somebody restated.
+func flagTrue(fs *flag.FlagSet, name string) bool {
+	f := fs.Lookup(name)
+	return f != nil && f.Value.String() == "true"
+}
+
 // flagUnset reports whether the named flag was left off the command line, which
 // a zero value cannot tell apart from a default somebody typed.
 func flagUnset(fs *flag.FlagSet, name string) bool {
@@ -1000,7 +1017,10 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 		}
 		rest := fs.Args()
 		if len(rest) == 0 {
-			return positionals, nil
+			// Combinations are checked once the whole command line is known, and here
+			// rather than in run, so a contradiction is refused before anything -- the
+			// -post-run branch included -- acts on either flag.
+			return positionals, contradictoryFlags(fs)
 		}
 		positionals = append(positionals, rest[0])
 		args = rest[1:]

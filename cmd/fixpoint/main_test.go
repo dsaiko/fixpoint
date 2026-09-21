@@ -2154,9 +2154,9 @@ func TestCheckToleratesAnUnreachableForkProbe(t *testing.T) {
 }
 
 // -post and -post-if-approved are contradictory instructions about one act, and
-// the contradiction has to be caught HERE: Overrides.apply folds the gate into
-// Review.Post, so by the time a config exists the two are one field and nothing
-// downstream can tell that both were typed.
+// the contradiction has to be caught during argument parsing: Overrides.apply
+// folds the gate into Review.Post, so by the time a config exists the two are one
+// field and nothing downstream can tell that both were typed.
 //
 // It is checked before the -post-run branch too, because that path resolves no
 // configuration at all and would otherwise honor one flag and drop the other.
@@ -2167,5 +2167,33 @@ func TestPostAndPostIfApprovedContradictEachOther(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "contradict") {
 		t.Errorf("the refusal must say the two flags contradict each other, got:\n%s", buf.String())
+	}
+}
+
+// The flag has to survive the whole way from the command line into the effective
+// configuration, and nothing else proves that: the orchestrator's gate tests set
+// Review.PostIfApproved by hand, and the override test reads only the audit
+// string. Here the ONLY input is the typed flag.
+//
+// A fix config is what makes it observable without a forge: -post-if-approved
+// gates on a verdict, a fix run reaches none, and Validate refuses. That refusal
+// can only happen if the flag reached Review.PostIfApproved -- bind it as plain
+// Post, or drop it from the Overrides literal, and this run validates cleanly.
+func TestPostIfApprovedReachesTheEffectiveConfiguration(t *testing.T) {
+	f := newFixture(t)
+	cfg := f.configFile("directory", "", "")
+
+	var buf bytes.Buffer
+	if got := run([]string{"-config", cfg, "-post-if-approved", "-check", "-trusted-target"}, &buf, &buf); got != 1 {
+		t.Errorf("run() = %d for -post-if-approved on a fix config, want the config refusal 1; output:\n%s", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), "only a review-only run reaches one") {
+		t.Errorf("the refusal does not name the review-only rule, so the flag may not have reached Validate:\n%s", buf.String())
+	}
+	// And with -review-only the same command is accepted, so the refusal above is
+	// the rule firing rather than the flag being rejected outright.
+	buf.Reset()
+	if got := run([]string{"-config", cfg, "-post-if-approved", "-review-only", "-check", "-trusted-target"}, &buf, &buf); got != 0 {
+		t.Errorf("run() = %d for -post-if-approved -review-only, want 0; output:\n%s", got, buf.String())
 	}
 }

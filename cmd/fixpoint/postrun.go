@@ -144,19 +144,9 @@ func postRun(ctx context.Context, dir string, flags postFlags, logf func(string,
 	// bytes in the file the operator was invited to read, which is the entire promise
 	// of this mode. Lstat for the same reason: a committed symlink at that name would
 	// redirect the read just as well as a path in the JSON.
-	bodyPath := filepath.Join(runDir, "review-body.md")
-	info, err := os.Lstat(bodyPath)
-	if err != nil {
-		logf("post-run: cannot read the review body at %s: %v", bodyPath, err)
-		return 1
-	}
-	if !info.Mode().IsRegular() {
-		logf("post-run: %s is not a regular file; refusing to publish whatever it resolves to", bodyPath)
-		return 1
-	}
-	body, err := os.ReadFile(bodyPath)
-	if err != nil {
-		logf("post-run: cannot read the review body at %s: %v", bodyPath, err)
+	body, why := reviewBodyBytes(runDir)
+	if why != "" {
+		logf("post-run: %s", why)
 		return 1
 	}
 
@@ -255,6 +245,24 @@ func postRun(ctx context.Context, dir string, flags postFlags, logf func(string,
 		logf("post-run: WARNING: %s", notice)
 	}
 	return 0
+}
+
+// reviewBodyBytes reads the bytes -post-run will publish, or says why it cannot.
+// See the call site for why the name is fixed and why the file is Lstat-ed first.
+func reviewBodyBytes(runDir string) ([]byte, string) {
+	path := filepath.Join(runDir, "review-body.md")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Sprintf("cannot read the review body at %s: %v", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, path + " is not a regular file; refusing to publish whatever it resolves to"
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Sprintf("cannot read the review body at %s: %v", path, err)
+	}
+	return body, ""
 }
 
 // recordPublication writes what became of the submission into the receipt already

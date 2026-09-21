@@ -8536,12 +8536,21 @@ func TestAFailedPostFailsTheRun(t *testing.T) {
 		poster     forge.Poster
 		wantPosted string
 		wantLogged string
+		// wantAttempted is whether the summary must report the outcome as UNKNOWN
+		// rather than as nothing published: a submission that left the machine and
+		// then failed may have been accepted first.
+		wantAttempted bool
+		wantSkipped   string
 	}{
 		{
-			name:       "the submission was refused outright",
-			poster:     failingPoster{err: errors.New("HTTP 401: bad credentials")},
-			wantPosted: "", // nothing reached the pull request
-			wantLogged: "bad credentials",
+			name:   "the submission was refused outright",
+			poster: failingPoster{err: errors.New("HTTP 401: bad credentials")},
+			// Nothing came back, which is NOT the same as nothing arrived: the call was
+			// made, so the summary says so rather than claiming the pull request is clean.
+			wantPosted:    "",
+			wantLogged:    "bad credentials",
+			wantAttempted: true,
+			wantSkipped:   "may or may not have been accepted",
 		},
 		{
 			name:       "the head moved after the approval was submitted",
@@ -8550,10 +8559,13 @@ func TestAFailedPostFailsTheRun(t *testing.T) {
 			wantLogged: "dismiss the review",
 		},
 		{
-			name:       "no remote was recognized",
-			poster:     nil,
-			wantPosted: "",
-			wantLogged: "no GitHub or GitLab remote",
+			name:   "no remote was recognized",
+			poster: nil,
+			// Here nothing was sent -- there was nowhere to send it -- so this one really
+			// is a publication that did not happen.
+			wantPosted:  "",
+			wantLogged:  "no GitHub or GitLab remote",
+			wantSkipped: "no GitHub or GitLab remote was recognized",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -8585,6 +8597,13 @@ func TestAFailedPostFailsTheRun(t *testing.T) {
 			}
 			if sum.ReviewPosted != tc.wantPosted {
 				t.Errorf("ReviewPosted = %q, want %q", sum.ReviewPosted, tc.wantPosted)
+			}
+			if sum.ReviewPostAttempted != tc.wantAttempted {
+				t.Errorf("ReviewPostAttempted = %v, want %v -- the scoreboard says NOT PUBLISHED or UNCONFIRMED on this",
+					sum.ReviewPostAttempted, tc.wantAttempted)
+			}
+			if !strings.Contains(sum.ReviewPostSkipped, tc.wantSkipped) {
+				t.Errorf("ReviewPostSkipped = %q, want it to contain %q", sum.ReviewPostSkipped, tc.wantSkipped)
 			}
 		})
 	}
@@ -11052,6 +11071,68 @@ func TestTheClosingBannerSaysWhetherTheReviewWasPublished(t *testing.T) {
 			}
 			if tc.notWant != "" && strings.Contains(logs(), tc.notWant) {
 				t.Errorf("the log says %q for a run with no pull request to publish to:\n%s", tc.notWant, logs())
+			}
+		})
+	}
+}
+
+// A review body that cannot be written fails the run only when a publication was
+// actually due.
+//
+// -post-if-approved sets Review.Post, so the fatal branch here used to fire on
+// every verdict: a changes-requested run that hit a disk error traded its own
+// exit 4 for a generic exit 1, over a submission the gate was never going to
+// attempt -- and blamed a flag ("-post was given") the operator had not passed.
+func TestABodyWriteFailureFailsTheRunOnlyWhenSomethingWouldBePublished(t *testing.T) {
+	blocking := []model.Issue{{ID: "I1", Severity: "high", Title: "a blocking finding"}}
+	for _, tc := range []struct {
+		name    string
+		issues  []model.Issue
+		wantErr string // empty: the run must NOT fail
+	}{
+		{name: "withheld by the gate", issues: blocking},
+		{name: "an approval that was due", wantErr: "-post-if-approved was given but the review body could not be written"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1})
+			f.reviewOnly("mock")
+			f.cfg.Review.Post = true
+			f.cfg.Review.PostIfApproved = true
+			f.cfg.Target.Mode = config.ModePR
+			f.cfg.Target.PR = 7
+
+			var posted string
+			restore := postedBodyForTest(&posted, nil)
+			defer restore()
+
+			o := f.orchestrator()
+			// A directory where the file goes: writeArtifact cannot open it, which is a
+			// write failure without making the whole log tree unwritable.
+			if err := os.Mkdir(filepath.Join(o.logs.RunDir(), "review-body.md"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			rec := &model.RoundRecord{
+				Round:       1,
+				Assignments: []model.Assignment{{Agent: "mock", Lens: "review"}},
+				Issues:      tc.issues,
+			}
+			sum := &model.RunSummary{ReviewedHead: strings.Repeat("a", 40)}
+			err := o.decideVerdict(t.Context(), rec, sum, true)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("decideVerdict() = %v, want nil: nothing was going to be published, so the verdict keeps its own exit code", err)
+				}
+				if !strings.Contains(sum.ReviewPostSkipped, "-post-if-approved") {
+					t.Errorf("ReviewPostSkipped = %q, want the withheld reason recorded even though postReview was never reached", sum.ReviewPostSkipped)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("decideVerdict() = %v, want an error naming %q", err, tc.wantErr)
+			}
+			if posted != "" {
+				t.Error("something was published although the bytes to publish could not be written")
 			}
 		})
 	}
