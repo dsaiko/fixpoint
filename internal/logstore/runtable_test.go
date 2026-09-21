@@ -684,3 +684,58 @@ func TestRunTableLastRoundIgnoresARoundThatNeverReviewed(t *testing.T) {
 		t.Errorf("the last REVIEWING round's findings are missing:\n%s", got)
 	}
 }
+
+// The scoreboard's last word about a review run is whether the verdict reached
+// the pull request. Before the `posted` row the table ended on "verdict APPROVE",
+// which reads like an approval was given whether one was published, withheld by
+// -post-if-approved, or never requested -- three different events, one line.
+func TestTheScoreboardSaysWhetherTheReviewWasPublished(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sum     model.RunSummary
+		want    string
+		notWant string
+	}{
+		{
+			name: "published",
+			sum:  model.RunSummary{PR: 42, ReviewPosted: "approve"},
+			want: "PUBLISHED as APPROVE on pull request 42",
+		},
+		{
+			name: "withheld by the gate",
+			sum:  model.RunSummary{PR: 42, ReviewPostSkipped: "-post-if-approved and the verdict is CHANGES REQUESTED"},
+			want: "NOT PUBLISHED · -post-if-approved and the verdict is CHANGES REQUESTED",
+		},
+		{
+			name: "never requested",
+			sum:  model.RunSummary{PR: 42, ReviewPostSkipped: "publishing was not requested (-post / -post-if-approved)"},
+			want: "NOT PUBLISHED · publishing was not requested",
+		},
+		{
+			// A summary written before the reason was recorded still has to answer the
+			// question the row asks, rather than printing an empty cell.
+			name:    "an older summary that recorded no reason",
+			sum:     model.RunSummary{PR: 42},
+			want:    "NOT PUBLISHED",
+			notWant: "NOT PUBLISHED ·",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sum := tc.sum
+			sum.ReviewOnly = true
+			sum.Termination = model.TermReviewOnly
+			sum.Verdict = &model.ReviewVerdict{Outcome: model.VerdictApprove, Reasons: []string{"no unresolved finding at high or above"}}
+			got := RenderRunTable(&sum)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("the table does not say %q:\n%s", tc.want, got)
+			}
+			if tc.notWant != "" && strings.Contains(got, tc.notWant) {
+				t.Errorf("the table says %q, which it has nothing to fill in after:\n%s", tc.notWant, got)
+			}
+			// Directly under the verdict, where the pair is read as one answer.
+			if i, j := strings.Index(got, " verdict "), strings.Index(got, " posted "); i < 0 || j < i {
+				t.Errorf("the posted row must follow the verdict row (verdict at %d, posted at %d):\n%s", i, j, got)
+			}
+		})
+	}
+}

@@ -287,11 +287,14 @@ The exit status carries the verdict: `0` approve, `4` changes requested, `5`
 inconclusive. A verdict only ever makes the status worse, so an errored or
 interrupted run keeps its own code.
 
-Publishing is two command-line flags, never config keys: `-post` puts the review
-on the pull request as a comment, and `-post-verdict` additionally lets it approve
-or request changes. The first bundle on the search path belongs to the target, so
-a YAML key here would let reviewed code arrange to have a review posted under the
-operator's identity — the same argument as the trust gates.
+Publishing is command-line flags, never config keys: `-post` puts the review on
+the pull request as a comment, `-post-if-approved` does the same but only when the
+verdict is an approval, and `-post-verdict` additionally lets what is published
+approve or request changes. The first bundle on the search path belongs to the
+target, so a YAML key here would let reviewed code arrange to have a review posted
+under the operator's identity — the same argument as the trust gates, and it
+covers `post_if_approved` above all: an approval is the outcome the code under
+review would want arranged.
 
 Every run writes `review-body.md` at the root of its log directory — the document
 a human reads, and on the posting path the exact bytes that get sent. `fixpoint

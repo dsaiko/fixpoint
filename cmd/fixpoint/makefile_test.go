@@ -212,3 +212,49 @@ func TestPRTargetsMakeTheNumberOptional(t *testing.T) {
 		})
 	}
 }
+
+// review-pr takes the same POST=1 opt-in as fix-pr, and spends it on the GATED
+// flag: this target's usual operator is the pull request's own author, for whom a
+// verdict short of an approval is work to do rather than a review to publish.
+//
+// Guarded identically, because the value is read from the environment the same
+// way and an inherited POST must not publish anything here either.
+func TestReviewPRPublishesOnlyWhenAskedAndOnlyAnApproval(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		recipe := makeDryRun(t, "review-pr", "PR=170")
+		argv := fixpointCommand(t, recipe)
+		if hasArg(argv, "-post") || hasArg(argv, "-post-if-approved") {
+			t.Errorf("make review-pr PR=170 publishes by default: %v", argv)
+		}
+		if code, out := runPostGuard(t, recipe); code != 0 {
+			t.Errorf("the POST guard exits %d with POST unset; the default invocation must still run:\n%s", code, out)
+		}
+	})
+	t.Run("POST=1", func(t *testing.T) {
+		recipe := makeDryRun(t, "review-pr", "PR=170", "POST=1")
+		argv := fixpointCommand(t, recipe)
+		if !hasArg(argv, "-post-if-approved") {
+			t.Errorf("make review-pr PR=170 POST=1 omits -post-if-approved: %v", argv)
+		}
+		// The unconditional flag is the one thing this target must never grow into:
+		// the two are mutually exclusive, and -post publishes the findings POST=1 was
+		// meant to keep local.
+		if hasArg(argv, "-post") {
+			t.Errorf("make review-pr PR=170 POST=1 passes the ungated -post: %v", argv)
+		}
+		if code, out := runPostGuard(t, recipe); code != 0 {
+			t.Errorf("the POST guard exits %d on POST=1, the one value that opts in:\n%s", code, out)
+		}
+	})
+	for _, post := range []string{"0", "false", "true", "yes"} {
+		t.Run("POST="+post, func(t *testing.T) {
+			recipe := makeDryRun(t, "review-pr", "PR=170", "POST="+post)
+			if argv := fixpointCommand(t, recipe); hasArg(argv, "-post-if-approved") {
+				t.Errorf("make review-pr PR=170 POST=%s publishes; only POST=1 opts in: %v", post, argv)
+			}
+			if code, out := runPostGuard(t, recipe); code != 2 {
+				t.Errorf("the POST guard exits %d on POST=%s, want 2:\n%s", code, post, out)
+			}
+		})
+	}
+}
