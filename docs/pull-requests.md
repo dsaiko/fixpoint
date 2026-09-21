@@ -229,9 +229,12 @@ conversation with yourself.
   usable as a CI or shell gate.
 
 Whether anything was published is on the run's last two lines either way —
-the closing banner reads `VERDICT APPROVE · POSTED as comment` or
-`VERDICT CHANGES REQUESTED · NOT POSTED (...)`, and the scoreboard carries a
-`posted` row directly under the `verdict` row. They are two rows rather than one
+the closing banner reads `VERDICT  APPROVE · POSTED as COMMENT` or
+`VERDICT  CHANGES REQUESTED · NOT POSTED (...)`, and the scoreboard carries a
+`posted` row directly under the `verdict` row. A submission that was sent and
+then failed says `UNCONFIRMED` in both places rather than either of the two: a
+client-side error does not prove the forge holds nothing, so that is the whole
+of what is known. They are two rows rather than one
 because a verdict that was reached and a verdict that was published are different
 events, and reading the first as the second is the mistake the row exists to
 prevent.

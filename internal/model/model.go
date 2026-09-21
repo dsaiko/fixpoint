@@ -379,6 +379,18 @@ type RunSummary struct {
 	// Set on every path out of postReview that does not publish, and left empty when
 	// one does, so exactly one of the two fields is ever filled.
 	ReviewPostSkipped string `json:"review_post_skipped,omitempty"`
+	// ReviewPostAttempted marks the one case neither field above can describe: a
+	// submission was SENT and its fate is unknown. A client-side failure with no URL
+	// back does not prove the forge refused it -- a timeout can arrive after the
+	// request was accepted, and the GitLab provider posts the body and its inline
+	// notes before the approve call that may be the thing that failed, so comments
+	// can already be visible on the merge request.
+	//
+	// Without it "nothing was published" was asserted from an error, and the banner
+	// and scoreboard stated a NOT PUBLISHED that the run had no way of knowing. With
+	// it they say UNCONFIRMED and name the reason, which is the whole of what is
+	// known. Set with ReviewPostSkipped, never with ReviewPosted.
+	ReviewPostAttempted bool `json:"review_post_attempted,omitempty"`
 	// ReviewInline are the anchors the run computed for its findings, kept so a
 	// later publish sends exactly what this run produced rather than recomputing it
 	// against a diff that may have moved.
@@ -472,7 +484,17 @@ func VerdictLabel(outcome string) string {
 	if outcome == "" {
 		return "NO VERDICT"
 	}
-	return strings.ToUpper(strings.ReplaceAll(outcome, "_", " "))
+	return EventLabel(outcome)
+}
+
+// EventLabel renders a forge event -- comment, approve, request_changes -- the
+// same way. It is the shared half of VerdictLabel, and it exists because the two
+// places that print what a review was PUBLISHED as had already drifted: the
+// closing banner said "POSTED as REQUEST_CHANGES" while the scoreboard a few
+// lines below said "PUBLISHED as REQUEST CHANGES", which is the exact ambiguity
+// VerdictLabel was written to remove, reintroduced for the event name.
+func EventLabel(event string) string {
+	return strings.ToUpper(strings.ReplaceAll(event, "_", " "))
 }
 
 // Exit codes above the terminations': a review verdict is a different axis from

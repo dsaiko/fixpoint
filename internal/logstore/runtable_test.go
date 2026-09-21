@@ -719,6 +719,24 @@ func TestTheScoreboardSaysWhetherTheReviewWasPublished(t *testing.T) {
 			want:    "NOT PUBLISHED",
 			notWant: "NOT PUBLISHED ·",
 		},
+		{
+			// The third state. A submission that failed on the client may have been
+			// accepted first -- the GitLab provider posts the body and its notes before
+			// the approve call -- so claiming NOT PUBLISHED here would state something
+			// the run cannot know, on a pull request that may already carry comments.
+			name:    "a submission that was sent and then failed",
+			sum:     model.RunSummary{PR: 42, ReviewPostAttempted: true, ReviewPostSkipped: "the submission to github failed and may or may not have been accepted"},
+			want:    "UNCONFIRMED · the submission to github failed",
+			notWant: "NOT PUBLISHED",
+		},
+		{
+			// And the event is rendered like the verdict is: one vocabulary, so the
+			// banner's "POSTED as REQUEST CHANGES" and this row cannot spell one fact
+			// two ways.
+			name: "an underscored event reads as words",
+			sum:  model.RunSummary{PR: 42, ReviewPosted: "request_changes"},
+			want: "PUBLISHED as REQUEST CHANGES on pull request 42",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sum := tc.sum

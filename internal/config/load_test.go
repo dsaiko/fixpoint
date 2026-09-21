@@ -505,3 +505,38 @@ func TestPRFromBranchCannotComeFromYAML(t *testing.T) {
 		t.Error("the override did not reach the config")
 	}
 }
+
+// -post-if-approved has to reach the config as TWO facts, and the live path
+// depends on both: postReview's first check is `if !Review.Post`, which sits in
+// front of the gate, and writeReviewBody's body-write failure branch asks the
+// same question. Nothing else pins this -- TestOverridesApplied checks only the
+// audit string, and the orchestrator's own tests set Review.Post by hand.
+//
+// Drop the Post assignment and the flag still passes Validate, still sets
+// PostIfApproved, and postReview returns early with "publishing was not
+// requested": the gate never consulted, approvals never published, and every
+// other test still green.
+func TestPostIfApprovedOverrideAlsoRequestsPublishing(t *testing.T) {
+	var c Config
+	Overrides{PostIfApproved: true}.apply(&c)
+	if !c.Review.PostIfApproved {
+		t.Error("Review.PostIfApproved is false; the gate never reached the config")
+	}
+	if !c.Review.Post {
+		t.Error("Review.Post is false; the gate narrows publishing, so it must also request it -- postReview returns before the gate without this")
+	}
+}
+
+// And the asymmetry is the point: -post is the unconditional flag, so it must
+// not acquire the condition. Were apply to set both, -post would silently stop
+// publishing anything but approvals.
+func TestPostOverrideDoesNotAcquireTheApprovalGate(t *testing.T) {
+	var c Config
+	Overrides{Post: true}.apply(&c)
+	if !c.Review.Post {
+		t.Fatal("Review.Post is false; the override did not reach the config")
+	}
+	if c.Review.PostIfApproved {
+		t.Error("-post set Review.PostIfApproved; the unconditional flag must stay unconditional")
+	}
+}
