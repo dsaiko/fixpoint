@@ -306,7 +306,7 @@ def cached_share(tok_in, cache_read):
     return (cache_read / total) if total else 0.0
 
 
-def run_cost_uncached(model, harness, tok_in, tok_out, cache_read):
+def run_cost_uncached(model, harness, tok_in, tok_out, cache_read, asof=None):
     """What the sweep would have cost with every input token billed fresh.
 
     The era-NEUTRAL figure: it is what an uncached-era row already paid, and the
@@ -314,7 +314,7 @@ def run_cost_uncached(model, harness, tok_in, tok_out, cache_read):
     Use it to rank cost across the switch; use run_cost() for what a sweep
     actually costs today.
     """
-    return run_cost(model, harness, tok_in + cache_read, tok_out, 0)
+    return run_cost(model, harness, tok_in + cache_read, tok_out, 0, asof)
 
 
 # The run id shape bench/run.sh records: fixpoint's run directory name.
@@ -342,16 +342,57 @@ def ollama_rate(model):
     return None
 
 
-def agent_model(model):
+# What an AGENT ran BEFORE its yaml was last changed, as
+# {agent: [(changed_on, model, effort), ...]} with the list in date order.
+#
+# THIS EXISTS BECAUSE AN AGENT NAME IS NOT A MEASUREMENT (found 2026-09-22, by
+# swapping the claude seat). `claude` and `codex` resolve through their yaml at
+# RENDER time, while results.csv only ever records the agent name -- so the day
+# the model line changes, every older row for that agent silently re-labels AND
+# RE-PRICES itself as the new model. Swapping claude-opus-5 -> claude-opus-5-5
+# restated the August `claude` baseline from ~$8.61 to ~$6.55 (~$0.023 ->
+# ~$0.017/pt): the same 376/484 sweep, billed at rates its tokens never paid,
+# on a table that is published. Nothing in the recorded data can catch it --
+# bench/summaries/*.json stores `"model": "claude"` and no resolved id -- so the
+# history has to be written down here when the yaml changes.
+#
+# A row resolves to the FIRST entry whose changed_on is after the row's last
+# measured date; rows on or after the final change resolve through the yaml.
+AGENT_MODEL_HISTORY = {
+    "claude": [("2026-09-22", "claude-opus-5", "high")],
+}
+
+
+def _asof(e):
+    """The date to resolve an aggregated entry's agent at: its LAST measured run.
+
+    Last rather than first, deliberately. An entry sums every run of a model, so
+    if a sweep straddles a yaml change its spend is a mix and no single rate is
+    right; resolving at the last run makes the row agree with the yaml as soon as
+    the agent has been re-measured even once since the change, which is the state
+    the table should converge to. Straddling entries are the reason to re-measure
+    an agent after changing its model rather than leave the two halves pooled.
+    """
+    return max(e["dates"]) if e.get("dates") else None
+
+
+def agent_model(model, asof=None):
     """The model id behind a candidate name, for pricing and for display.
 
     `claude` and `codex` are agent names: what they run is whatever their yaml
     says today, so a row that only says "claude" stops being a measurement the
-    moment that file changes.
+    moment that file changes. Pass `asof` -- the row's last measured date, as
+    YYYYMMDD-HHMMSS or YYYY-MM-DD -- to resolve it as of when it was MEASURED
+    rather than as of today. See AGENT_MODEL_HISTORY.
     """
     path = AGENTS / f"{model}.yaml"
     if not path.exists():
         return None, None
+    if asof is not None:
+        day = asof[:10] if "-" in asof[:5] else f"{asof[:4]}-{asof[4:6]}-{asof[6:8]}"
+        for changed_on, was_model, was_effort in AGENT_MODEL_HISTORY.get(model, ()):
+            if day < changed_on:
+                return was_model, was_effort
     name, effort = None, None
     for line in path.read_text().splitlines():
         if line.startswith("model:"):
@@ -361,9 +402,9 @@ def agent_model(model):
     return name, effort
 
 
-def resolve(model):
+def resolve(model, asof=None):
     """Display name for the model actually measured."""
-    name, effort = agent_model(model)
+    name, effort = agent_model(model, asof)
     if name is None:
         return model
     return f"{name} ({effort})" if effort else name
@@ -448,7 +489,7 @@ def billing(model, harness):
     return "sub (claude)"
 
 
-def run_cost(model, harness, tok_in, tok_out, cache_read):
+def run_cost(model, harness, tok_in, tok_out, cache_read, asof=None):
     """What the whole sweep cost, in money, or None where no rate is published.
 
     Split out of cost_per_point so the total and the per-point figure cannot
@@ -457,7 +498,7 @@ def run_cost(model, harness, tok_in, tok_out, cache_read):
     it does not (grok and qwen3.8-max on OpenRouter, qwen3.5 and the nemotrons
     on ollama, whose cached and fresh rates are identical anyway).
     """
-    name, _ = agent_model(model)
+    name, _ = agent_model(model, asof)
     rates = RATES.get(name or model) or ollama_rate(model)
     if rates is None:
         return None
@@ -476,7 +517,7 @@ def money(harness, usd):
     return f"{'~' if notional else ''}${usd:,.2f}"
 
 
-def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
+def cost_per_point(model, harness, tok_in, tok_out, cache_read, points, asof=None):
     """What one seeded defect cost, in the currency that route actually spends.
 
     A dollar figure wherever a published rate exists, prefixed with ~ when the
@@ -490,7 +531,7 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points):
     """
     if not points:
         return "-"
-    usd = run_cost(model, harness, tok_in, tok_out, cache_read)
+    usd = run_cost(model, harness, tok_in, tok_out, cache_read, asof)
     if usd is None:
         # No published rate anywhere: fall back to the quota-shaped figure.
         return f"{(tok_in + tok_out) / 1000 / points:.1f}k"
@@ -530,7 +571,7 @@ def per_point_uncached(model, harness, e):
     """
     if not e["points"]:
         return "-"
-    usd = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"])
+    usd = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"], _asof(e))
     if usd is None:
         return "-"
     prefix = "" if harness.startswith("openrouter") else "~"
@@ -547,7 +588,7 @@ def _cost_key(model, harness, e):
     reads as two ordered groups rather than one nonsensical sequence.
     """
     raw = cost_per_point(model, harness, e["tok_in"], e["tok_out"],
-                         e["cache_read"], e["points"])
+                         e["cache_read"], e["points"], _asof(e))
     if raw == "-":
         return -1
     if raw.endswith("k"):
@@ -857,7 +898,7 @@ def write_html(ranked, all_targets, out_path):
         mtok = e["tokens"] / 1e6
         eff = e["points"] / mtok if mtok else 0.0
         harness = route(model)
-        measured = resolve(model)
+        measured = resolve(model, _asof(e))
         baseline = model in ("claude", "codex")
         width = 100.0 * e["points"] / max(top, 1)
         # "code only" was accurate when the scale was go+design; now a row can
@@ -878,10 +919,10 @@ def write_html(ranked, all_targets, out_path):
         </td>
         <td data-sort="{e['tokens']}">{e['tokens']:,}</td>
         <td data-sort="{eff:.4f}">{eff:.0f}</td>
-        <td data-sort="{run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read']) or -1:.4f}">{_esc(money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'])))}</td>
-        <td data-sort="{_cost_key(model, harness, e)}">{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']))}</td>
+        <td data-sort="{run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e)) or -1:.4f}">{_esc(money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e))))}</td>
+        <td data-sort="{_cost_key(model, harness, e)}">{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e)))}</td>
         <td class="{'zero' if e['era'] != 'cached' else ''}" data-sort="{-1 if e['era'] != 'cached' else e['cached_share']}">{_esc(cached_cell(e))}</td>
-        <td data-sort="{(run_cost_uncached(model, harness, e['tok_in'], e['tok_out'], e['cache_read']) or 0) / (e['points'] or 1)}">{_esc(per_point_uncached(model, harness, e))}</td>
+        <td data-sort="{(run_cost_uncached(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e)) or 0) / (e['points'] or 1)}">{_esc(per_point_uncached(model, harness, e))}</td>
         <td data-sort="{e['seconds']}">{e['seconds']:,}</td>
         <td class="{'err' if e['errors'] else 'zero'}" data-sort="{e['errors']}">{e['errors']}</td>
         <td class="sub" data-sort="{max(e['dates']) if e['dates'] else ''}">{measured_on(e['dates'])}</td>
@@ -1156,9 +1197,9 @@ def write_json(ranked, all_targets, out_path):
     for i, (model, entries) in enumerate(ranked, 1):
         e = entries[0]
         harness = route(model)
-        name, effort = agent_model(model)
-        usd = run_cost(model, harness, e["tok_in"], e["tok_out"], e["cache_read"])
-        uncached = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"])
+        name, effort = agent_model(model, _asof(e))
+        usd = run_cost(model, harness, e["tok_in"], e["tok_out"], e["cache_read"], _asof(e))
+        uncached = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"], _asof(e))
         mtok = e["tokens"] / 1e6
         for t, got in e["by_target"].items():
             pool.setdefault(t, got[1])
@@ -1258,8 +1299,8 @@ def write_markdown(ranked, all_targets, out_path):
         lines.append(
             f"| {i} | `{model}`{note} | {harness} | {e['points']}/{e['possible']} "
             f"| {pct:.0f}% "
-            f"| {money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read']))} "
-            f"| {cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'])} "
+            f"| {money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e)))} "
+            f"| {cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e))} "
             f"| {cached_cell(e)} | {per_point_uncached(model, harness, e)} "
             f"| {e['seconds']} | {e['errors']} |")
     lines.append("")
@@ -1460,13 +1501,13 @@ def main():
             if e["missing"]:
                 flag = f"  INCOMPLETE (no {', '.join(e['missing'])} run)"
             label = model if len(entries) == 1 else f"{model} #{e['repeat']}"
-            measured = resolve(model)
+            measured = resolve(model, _asof(e))
             harness = route(model)
             print(f"{label:30s} {(measured if measured != model else '-'):22s} "
                   f"{harness:11s} {billing(model, harness):13s} "
                   f"{e['points']:>4d}/{e['possible']:<4d} {e['tokens']:>9d} {eff:>9.1f} "
-                  f"{money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'])):>9s} "
-                  f"{cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points']):>10s} "
+                  f"{money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e))):>9s} "
+                  f"{cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e)):>10s} "
                   f"{cached_cell(e):>7s} "
                   f"{per_point_uncached(model, harness, e):>9s} "
                   f"{e['seconds']:>6d} {e['errors']:>4d} "
