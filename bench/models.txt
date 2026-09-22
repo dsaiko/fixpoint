@@ -394,3 +394,99 @@ gpt-5.6-terra
 # weekly quota rather than kimi-k3's separate credits. Sweep ran 20:21 UTC
 # Sunday = STANDARD deepseek pricing; a weekday-afternoon re-run bills 2x.
 deepseek-v4.1-flash:cloud
+
+# Claude Opus 5.5 -- added 2026-09-22, the tier successor to the model that
+# holds the panel's Anthropic seat. This is the ONLY candidate on this list that
+# can take that seat: the one-payer-one-seat rule blocks adding a second
+# Anthropic reviewer, but a swap WITHIN the seat costs nothing structurally --
+# same payer, same harness, same yaml with the model line changed.
+#
+# Reachable on the first try, unlike astra: `claude --model claude-opus-5-5`
+# answered on 2026-09-22 with no unrecognized_model warning, modelUsage keyed
+# `claude-opus-5-5` (canonicalModel the same), 1M context, 128K max output,
+# provider firstParty. The dash form works; fable-5.1's dot-form trap does not
+# repeat here.
+#
+# IT IS CHEAPER THAN THE MODEL IT SUCCEEDS, which inverts the usual tier
+# question. Sonnet 5 and terra both asked "does the cheap sibling keep its
+# discount?"; this one asks whether the SUCCESSOR gives anything up, with the
+# price already lower on every axis:
+#
+#   claude-opus-5     $5.00 in  $25.00 out  $0.50 cached
+#   claude-opus-5-5   $4.00 in  $20.00 out  $0.20 cached   (-20% / -20% / -60%)
+#
+# Those rates are SOLVED from a billed probe, not read off a page -- see the
+# arithmetic in bench/report.py's RATES entry, which reproduces the probe's
+# costUSD to the last digit. The cached line is the one that matters: the claude
+# route caches ~98% of a sweep's input, so a 60% cut there is most of the bill.
+#
+# The comparison that decides a seat is against `claude` (the agent, 376/484) and
+# `claude-opus-5` (the same model through the same yaml, 373/484) -- that pair is
+# also the bench's measured noise floor, 1.0 seeds on code targets and 4 on
+# design, so a swap inside +-4 is a wash on recall and has to be decided on price
+# and wall clock instead.
+claude-opus-5-5
+#
+# MEASURED 2026-09-22, full 8-target grid, 1 repeat, 0 errors, 0 contract failures:
+#
+#   claude-opus-5-5   372/484  3rd of 27  ~$4.27  ~$0.011/pt  2016s  0 fails
+#   claude (opus-5)   376/484  1st        ~$8.61  ~$0.023/pt  3958s  0 fails
+#   claude-opus-5     373/484  2nd        ~$8.84  ~$0.024/pt  4152s  0 fails
+#
+#   go 42/56  design 17/34  rust 52/64  java 56/69
+#   typescript 53/63  csharp 53/68  cpp 51/64  python 48/66
+#
+# ON RECALL IT IS A WASH, AND THAT IS THE POINT. 372 against 376 and 373 is a
+# 4-seed spread across three rows, and two of those rows are the SAME MODEL run
+# twice -- the pair that defines this bench's noise floor (1.0 seeds on code
+# targets, 4 on design). Per target it is -1 go, -3 design, -1 rust, +4 java,
+# -2 typescript, +2 csharp, 0 cpp, -3 python: seven columns inside the floor and
+# one above it. Do not report this as "slightly worse than Opus 5"; the bench
+# cannot separate them, and saying otherwise is the error the noise floor was
+# measured to prevent.
+#
+# WHAT IT ACTUALLY BUYS is the two columns recall does not cover:
+#   wall clock  2016s against 3958s -- 1.96x faster, the fastest claude-route
+#               sweep measured, and faster than every ollama candidate too. A
+#               round runs at its SLOWEST reviewer's pace, so this is panel
+#               latency, not one seat's.
+#   money       ~$4.27 against ~$8.61 -- half the cost for the same recall,
+#               ~$0.011/pt against ~$0.023/pt. It is the cheapest Anthropic row
+#               ever measured here and 3rd cheapest per point in the whole grid.
+#
+# THE SAVING SURVIVES THE CACHING CAVEAT, which is why it is worth acting on.
+# This sweep cached 100% of its input (tokens_in totals 144 across eight
+# sessions), and [[ollama-route-now-caches]] is the standing warning against
+# pricing a model on routing luck. So read the uncached-equivalent column, which
+# bills every cached token fresh: ~$0.030/pt against claude's ~$0.043. Still ~30%
+# cheaper with the luck taken out. The rate card is the reason and it is
+# structural, not circumstantial -- $4/$20/$0.20 against $5/$25/$0.50, cheaper on
+# all three lines, with the 60% cut on cached input landing on ~98% of a sweep.
+#
+# SEAT ARITHMETIC (parser rules in the 2026-09-02 section of the panel-marginals
+# note; anchors 398 and 409 both reproduced before these were read):
+#
+#   shipped panel [claude, codex, glm-5.3-flash]   409/484
+#   opus-5-5 REPLACES claude in it                 414   (+5)
+#   marginal over claude+codex                     +25
+#   as a 4th seat                                  429   (not available: one
+#                                                   payer, one seat)
+#
+# +25 is the LARGEST marginal contribution of any candidate ever measured on this
+# bench -- for comparison deepseek-v4.1-flash +7, astra-high +7, astra-xhigh +12,
+# sonnet-5 +7, terra +4. Against the incumbent head to head it finds 37 seeds
+# claude misses while claude finds 41 of its, which is what a near-tie looks like
+# when two models are strong in different places rather than one dominating.
+#
+# UNLIKE EVERY OTHER ANTHROPIC CANDIDATE HERE, THE PAYER RULE DOES NOT BLOCK IT.
+# sonnet-5 and fable-5-1 could only ever have replaced claude and both lost the
+# comparison. This one wins it, and the swap is structurally free: same payer,
+# same harness, same yaml with one line changed. It is the first candidate since
+# the panel was formed that improves the panel without touching the payer map.
+#
+# RECOMMENDED for the claude seat. The standing caveat still applies and is not
+# rhetorical: this bench measures single-round seeded RECALL, and the seat also
+# rests on live multi-round NOVEL yield, which it cannot see. gemma4 and kimi both
+# benched better than they lived. What makes this one safer than those two is that
+# it is not a different lab or a different harness -- it is the same vendor's next
+# tier through the same CLI, so the live risk is a version bump, not a stranger.

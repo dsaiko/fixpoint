@@ -74,6 +74,19 @@ AGENTS = pathlib.Path(__file__).resolve().parent.parent / "config" / "agents"
 # input at 10%. OpenRouter rates from each model's own page, same date.
 RATES = {
     "claude-opus-5": (5.00, 25.00, 0.50),
+    # Opus 5.5, added 2026-09-22 when it was benched. CHEAPER than the Opus 5 it
+    # succeeds on every axis -- $4/$20 against $5/$25, and cached input $0.20
+    # against $0.50, a 60% cut on the line that dominates a sweep (the claude
+    # route caches ~98% of its input). These three numbers are not quoted from a
+    # price page: they are SOLVED from a billed call and reproduce its cost
+    # exactly. Probe 2026-09-22, claude-opus-5-5, from the CLI's own modelUsage:
+    #   2 in, 4 out, 21641 cache read, 14199 cache write (1h), costUSD 0.1180082
+    #   2*4 + 4*20 + 21641*0.20 + 14199*8.00, /1e6  =  0.1180082  exactly
+    # The 1h cache-write rate ($8.00 = 2x input) is not in this tuple because
+    # run_cost does not bill cache writes at all; it is recorded here because it
+    # is what pinned the other three -- no other (in, out, cached) triple
+    # reproduces that cent-exact total.
+    "claude-opus-5-5": (4.00, 20.00, 0.20),
     "claude-opus-4-8": (5.00, 25.00, 0.50),
     "claude-fable-5": (10.00, 50.00, 1.00),
     # Fable 5.1: same input/output as Fable 5, but cached input drops 75%

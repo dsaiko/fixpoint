@@ -1,0 +1,281 @@
+{
+ "run": "20260922-230256",
+ "task": "design",
+ "target": "design",
+ "model": "claude-opus-5-5",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 49,
+     "title": "Clearing the whole outbox on ack erases edits made while the sync was in flight",
+     "description": "Step 4 'clears the outbox' after the response arrives. Offline edits keep being added to the outbox (line 31), including while a sync request is in flight, and some requests take a long time because the server has no timeout (line 89). Any row added after the batch was built is deleted without ever being sent. This happens in normal use, whenever the user types during a sync, and it breaks Goal 1 and the claim on line 102 that the outbox holds only the batch.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Cursor built from client wall clocks, shared across devices, strictly-newer comparison: changes are silently never delivered",
+     "description": "The cursor is the client-supplied modified_at of the newest change seen, and one cursor is stored per account. Suppose device A syncs and moves the cursor to T. Device B then syncs an edit from its offline period with modified_at < T, either because the edit is older or because B's clock is behind. The row goes to the server, but every device's cursor is already past it, so no other device ever fetches it. Two edits in the same millisecond cause the same loss through the '>' comparison. Because the cursor is per account, a device can also skip changes it never saw when another device advances the cursor. The copies diverge permanently and no error is raised.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Last-writer-wins on client wall clock, with the loser discarded and not kept anywhere",
+     "description": "Conflicts are settled by comparing client modified_at, and the losing body is thrown away (line 111). The server overwrites superseded bodies in place (line 93). A device whose clock is hours fast, which happens on phones with manual time, dead RTC batteries, or VMs, wins every conflict against real newer edits until its clock is corrected. Each loss is permanent, because no copy exists anywhere. The statement that skew is 'expected to be rare' is not a mitigation.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 71,
+     "title": "A 401 on refresh wipes notes.db, including unsynced offline edits",
+     "description": "Any refresh 401 wipes local state. The listed causes include 'token corruption', and a server-side auth bug, key rotation mistake, or clock problem would produce the same 401 across the fleet. The wipe deletes the outbox, which may hold days of offline edits the server has never seen. This directly breaks Goal 1. One bad auth deploy would destroy unsynced work on every device that refreshes during it.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 79,
+     "title": "Partial commits plus blind retries: no idempotency, contradictory recovery story, and a poison row blocks the outbox forever",
+     "description": "Line 79 says /sync runs in a single transaction, but line 80 says rows 1..N-1 stay applied when row N fails. Line 104 relies on rollback. These cannot all be true. With partial commits, a timeout or dropped connection after some rows commit leads the client to resend the same POST (line 56). There is no idempotency key or per-edit id, so edits are applied again with server-side effects repeated. A row that fails validation deterministically is resent 'until the batch is acknowledged', which never happens. Every later edit on that device then stays stuck behind it indefinitely, with no signal to anyone (line 125).",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Whole outbox in one request, with no limit on outbox size, body size, or response size",
+     "description": "The outbox has no cap (line 32), every row carries a full copy of the body (line 34), bodies are unlimited (line 28), and the whole outbox goes in one POST. A device offline for weeks while editing a long note produces a request larger than load-balancer and proxy body limits, and larger than what fits in memory. The request fails every time and the retry loop resends it forever, so that device never syncs again. The response has the same problem in reverse: first sync returns every row the user has, with no pagination (line 84). One oversized note or tight-loop client (line 147) can also tie up server memory and connections.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "Changes query has no index and no limit, over a table that grows without bound",
+     "description": "The query filters on user_id and modified_at with only a primary key index, so it becomes a sequential scan of the shared notes table. Tombstones stay forever (line 153) and orphaned rows from deleted accounts stay too (line 157), so the table only grows. That is about 50k users syncing every 15 minutes plus on every foreground, each running a full scan. Postgres is the component that saturates first, and it can't be scaled out the way line 144 assumes.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 57,
+     "title": "Every client uses the same deterministic backoff, with no jitter and no rate limit: synchronized retries after an outage",
+     "description": "Every client doubles its delay from 1s up to 60s on the same schedule, so after a regional outage (line 143) or a Postgres outage (line 107) all clients retry at the same moments, each resending its full outbox. There is no per-user rate limit (line 147) and no server-side load shedding. Adding instances (line 144) only adds more database connections pointed at the one bottleneck. The resulting overload produces 5xx errors, which trigger more retries, so recovery keeps failing.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 88,
+     "title": "No server request timeout and no draining on shutdown",
+     "description": "With no timeout, a slow Postgres or an oversized batch holds an HTTP connection and a database connection indefinitely. The connection pool runs out and every user gets stuck, not only the slow one. Line 130 drops in-flight requests on every rolling deploy. Because partial commits exist (line 80), each killed request can leave rows half-applied, and the retry then replays them without idempotency. Normal deploys regularly produce the failure that finding 5 describes.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deploys do run versions side by side, and there is no protocol version to handle it",
+     "description": "A rolling deploy by definition runs old and new instances at the same time, and a retry can land on either (line 88). Line 129 says they 'never run concurrently' because 'deploys are quick', which is false. Clients also run old builds for months. Line 65 says adding a field is backward compatible, but clients send full note copies: an old client that doesn't know shared_with (line 168) or a future attachment URL (line 163) resends the note without it, and the server overwrites the row and silently drops the field. With no version number, the server can't tell an old client from one that meant to clear the field.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 117,
+     "title": "/healthz ignores database connectivity, so broken instances stay in rotation",
+     "description": "An instance whose pool can't reach Postgres, because of a network partition, exhausted connections, or a failover to a new primary, keeps passing /healthz and keeps receiving round-robin traffic. Every request it gets returns a 500. The load balancer never removes it, so the failure lasts until someone notices it on a dashboard.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 123,
+     "title": "No signal for devices that stopped syncing, and no audit trail, which defeats the support goal",
+     "description": "Goal 14-15 says support can answer 'why doesn't this device have my note' from dashboards. But devices that stopped syncing are explicitly left unmonitored (line 125), and no record is kept of which device sent which batch (line 159). A device stuck on a poison row, an oversized batch, or a wiped outbox looks exactly like a device that is simply idle. Incidents are found through support tickets, and no data exists to diagnose them.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Restore from backup is unrehearsed and does not recover data clients already had acknowledged",
+     "description": "Nightly pg_dump means a restore rewinds the server by up to 24 hours. Clients already cleared their outboxes for acknowledged edits and hold cursors newer than anything in the restored database, so they never re-upload the lost edits and never re-fetch. The server and devices then disagree permanently. The design also has no recovery point or recovery time target, and no restore test, so no one knows how long an outage lasts or how much data it loses.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "32-bit random client note ids collide at the target scale",
+     "description": "About 15M notes (50k users \u00d7 a few hundred) in a 2^32 id space makes collisions certain across the dataset if lookup by client id is global. They are also plausible within some accounts as volume grows. When two notes share an id, the server treats them as the same note, and last-writer-wins silently discards one of them.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 19,
+     "title": "Two processes share notes.db with no coordination for creation, schema changes, or version mismatch",
+     "description": "The desktop app and the CLI both open notes.db, and 'whichever starts first creates it'. A creation race, or a newer CLI migrating the schema under an older desktop app, can corrupt the file or break the running app, and this is the only store of unsynced edits. The design also doesn't say which process runs sync, so both could drain and clear the same outbox at once.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Cursor is a client-clock modified_at shared per account, so late-arriving offline edits are never delivered",
+     "description": "The cursor is the modified_at (client wall clock) of the newest change seen, and the server returns rows with modified_at > cursor. An edit made offline carries the time it was made, not the time it reached the server. Suppose device A edits a note at 10:00 while offline and syncs at 14:00, and device B has already synced a 12:00 change. B's cursor is then 12:00, so A's row (modified_at 10:00) is never returned to B. This happens without any clock skew, and skew makes it worse. Two more problems add to it. Strict '>' at millisecond resolution drops rows that share the cursor's timestamp. And 'one cursor is stored per user account' means devices share a single position: one device advancing it causes the others to skip changes they never received. The result is that devices silently disagree forever, which breaks the goals at lines 10 and 14.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 71,
+     "title": "401 on refresh wipes notes.db including the unsynced outbox",
+     "description": "Any refresh failure with 401 (revocation, password change, or a corrupted token) signs the user out and deletes notes.db. The outbox lives in that same file (line 19), so every offline edit not yet acknowledged is destroyed. A user who changes their password on the web while a laptop is offline loses everything that laptop edited offline. This directly breaks 'a note edited offline is never lost' (line 10), and nothing on the server can reconstruct the edits.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 49,
+     "title": "Clearing the whole outbox on acknowledgment deletes edits appended during the in-flight sync",
+     "description": "Step 1 sends 'the entire outbox' and step 4 'clears the outbox'. Without a server request timeout (line 89), a sync can take a long time. Edits the user makes while the request is in flight are appended to the outbox and then deleted by the clear, even though they were never sent. They are lost silently. The same happens if the CLI and desktop client (both writing notes.db, line 20) interleave a sync with an edit.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Last-writer-wins on client wall clocks, with the loser discarded and no history kept, silently destroys edits",
+     "description": "Conflicts are settled by comparing client-clock modified_at values, and the losing body is discarded immediately (lines 111-113). The server keeps only the latest version and overwrites superseded bodies in place (lines 93-94). A device whose clock runs fast wins every conflict against real later edits, and a device with a slow clock can never win. In both cases the lost text is gone with no copy anywhere: not on the server, not in a conflict record, and not in the nightly backup if the overwrite happened the same day. Under normal multi-device use of an offline-first app, concurrent offline edits are the expected case, not a rare one.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "32-bit random client note ids will collide at the planned scale",
+     "description": "Note ids are random 32-bit integers, and the server looks notes up by that client id in a secondary column. At 50k users \u00d7 a few hundred notes (about 15M notes), the birthday bound makes collisions across the table certain. Within a single heavy user a collision happens roughly once in every ~65k notes created. The design does not say whether the lookup is scoped by user_id or whether that column is unique. A collision makes one note's edit overwrite a different note, or makes the unique constraint reject the sync. Either way data is corrupted or sync gets stuck. The design also keeps two identities (client id and server note_id) without saying which one the protocol and the other devices use.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "The 'single transaction' and 'rows 1..N-1 stay applied' claims contradict each other, leaving a poison-row batch stuck forever",
+     "description": "Line 78 says /sync runs in one transaction, and line 102 relies on that to roll back on a crash. But lines 79-81 say rows before a failing row stay committed. Both cannot be true, so the actual state after a partial failure is undefined. Separately, the outbox is cleared only when the whole batch is acknowledged and retries 'repeat until the batch is acknowledged'. A row that permanently fails validation therefore blocks the device's entire outbox forever: every later edit queues up behind it and never syncs. There are also no idempotency keys, so a retry after a timeout the server actually committed (there is no server timeout) replays edits whose effect depends on ordering.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "No sync audit trail makes the stated support goal impossible",
+     "description": "Goal line 14 says a support engineer can answer 'why does this device not have my note' from dashboards alone. But the server records nothing about which device sent which batch or received which changes, keeps no per-device cursor (line 54), and overwrites note history (line 93). Operations also admits that a device that never syncs is invisible (lines 124-126). Nothing held anywhere could answer that question.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Restoring the nightly backup loses up to a day of acknowledged edits, and clients will not re-send them",
+     "description": "Backups are a nightly pg_dump. After a restore, every edit acknowledged since the dump is gone from the server. Clients cleared those edits from their outboxes when they were acknowledged, and their cursors are now ahead of the server's data, so nothing re-uploads the lost edits or makes devices converge again. This breaks the headline 'no acknowledged edit is ever lost' (line 98). The restore procedure has never been rehearsed, so how long a restore takes, and whether it works at all, is unknown.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 65,
+     "title": "Full-body writes from old clients without a protocol version will erase fields added later",
+     "description": "The protocol has no version number on the grounds that adding fields is backward compatible. But every edit carries the full note as it stood (line 34), and conflicts replace the whole row. An old client that does not know a newer field (the reserved shared_with at line 168, or attachment URLs at line 163) sends the note without it or with a default, and that write overwrites the value a newer client set. Adding a field is exactly the change this design plans for, and without a version the server cannot tell an old client's 'absent' from 'cleared'.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 19,
+     "title": "Two processes open notes.db directly with no named owner or write protocol",
+     "description": "The desktop client and the CLI both open notes.db, and 'whichever starts first creates it'. The design does not say who owns schema creation or migration, whether both processes can run a sync, or how outbox draining is coordinated. Both processes can send the same outbox rows (duplicate application) or clear each other's unsent rows (see the outbox-clear finding). A newer CLI can also migrate the schema under an older desktop app.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion orphans the user's notes indefinitely",
+     "description": "Deleting an account removes the user row but leaves every note row, including note bodies, in place, and cleanup is only a 'could' for later. The deleted user's content stays readable on the server and in 14 days of backups, with no owner row. That fails any erasure request (GDPR Article 17), which the design must meet for a consumer note app. There is also no foreign key or cascade stating what happens to rows that reference the deleted user.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deploys do run old and new code against the migrated schema",
+     "description": "Migrations run before the new version starts, and the design claims old and new versions never overlap because deploys are quick. In a rolling deploy, old instances keep serving after the migration, by definition. A migration that renames, drops or tightens a column makes old instances write rows that are wrong or rejected. Because in-flight requests are not drained, the rows a batch had already applied (line 80) are cut off partway.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 32,
+     "title": "An unbounded outbox holding full body copies, sent as one request with unbounded note size, grows without limit",
+     "description": "Each outbox row stores the whole note body, with no cap on body length or row count, and the whole outbox goes out in a single POST. A long-offline device editing a large note repeatedly builds a request of O(edits \u00d7 body size). There is no pagination on the changes response (line 84), so a first sync returns the user's whole data set in one response. The first time a heavy user or a large body turns up, sync keeps failing on payload or memory limits, and with the retry-until-acknowledged rule that device never syncs again.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 162,
+     "title": "Attachments stored as object-storage URLs have no lifecycle tied to note or account deletion",
+     "description": "The note row will hold a URL to an object in storage. Note deletion is only a flag that is kept forever (line 152), account deletion leaves rows behind (line 156), and superseded bodies are overwritten (line 93). So nothing ever deletes an attachment object, and an overwritten body that dropped its URL leaves an object nothing references. Storage then grows without bound, and deleted users' media stays in the bucket.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 153,
+     "title": "Tombstones kept forever, with no compaction rule",
+     "description": "Deleted rows stay forever in both databases so that deletion converges. That is safe but grows without limit. Because the cursor also depends on modified_at, a first sync must also transfer every tombstone the account has ever produced.",
+     "lens": "design-data",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 4,
+      "output_tokens": 7908,
+      "cache_read_tokens": 35851,
+      "cache_write_tokens": 21260,
+      "cost_usd": 0.3354262,
+      "cost_known": true
+     },
+     "duration_ms": 85696,
+     "failed": false,
+     "output_bytes": 17596
+    },
+    {
+     "usage": {
+      "input_tokens": 4,
+      "output_tokens": 7140,
+      "cache_read_tokens": 41264,
+      "cache_write_tokens": 21716,
+      "cost_usd": 0.3247968,
+      "cost_known": true
+     },
+     "duration_ms": 78616,
+     "failed": false,
+     "output_bytes": 16102
+    }
+   ]
+  }
+ ]
+}
