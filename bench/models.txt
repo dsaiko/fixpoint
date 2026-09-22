@@ -446,22 +446,53 @@ claude-opus-5-5
 # measured to prevent.
 #
 # WHAT IT ACTUALLY BUYS is the two columns recall does not cover:
-#   wall clock  2016s against 3958s -- 1.96x faster, the fastest claude-route
-#               sweep measured, and faster than every ollama candidate too. A
-#               round runs at its SLOWEST reviewer's pace, so this is panel
-#               latency, not one seat's.
-#   money       ~$4.27 against ~$8.61 -- half the cost for the same recall,
-#               ~$0.011/pt against ~$0.023/pt. It is the cheapest Anthropic row
-#               ever measured here and 3rd cheapest per point in the whole grid.
+#   wall clock  2016s against 3958s -- 1.96x faster, and the fastest claude-route
+#               sweep measured. (NOT "faster than every ollama candidate", which
+#               this file claimed until the review checked it: qwen3.5:397b ran
+#               1187s and gemma4 1598s. They are also 186 and 216 seeds worse,
+#               which is why the claim was not worth making.) A round runs at its
+#               SLOWEST reviewer's pace, so this is panel latency, not one seat's.
+#   money       ~$4.27 against ~$8.61 in the generated table -- but see the
+#               correction below, which halves that gap. On the sweeps' own
+#               CLI-reported spend it is $10.02 against $13.90, ~28% less.
 #
-# THE SAVING SURVIVES THE CACHING CAVEAT, which is why it is worth acting on.
-# This sweep cached 100% of its input (tokens_in totals 144 across eight
-# sessions), and [[ollama-route-now-caches]] is the standing warning against
-# pricing a model on routing luck. So read the uncached-equivalent column, which
-# bills every cached token fresh: ~$0.030/pt against claude's ~$0.043. Still ~30%
-# cheaper with the luck taken out. The rate card is the reason and it is
-# structural, not circumstantial -- $4/$20/$0.20 against $5/$25/$0.50, cheaper on
-# all three lines, with the 60% cut on cached input landing on ~98% of a sweep.
+# *** THE COST COLUMNS IN THE GENERATED TABLE ARE TOO LOW, FOR EVERY ROW ***
+# Found 2026-09-22 by the panel's own review of this change (run 20260922-232802,
+# flagged by all three reviewers). report.py's run_cost bills fresh input, cached
+# input and output -- and NOT cache-WRITE tokens, which are really billed and are
+# the largest single line on a claude-route sweep. Measured, not inferred:
+#
+#                    table says   CLI actually reported   writes as % of bill
+#   claude (opus-5)    ~$8.61            $13.90                   40%
+#   claude-opus-5-5    ~$4.27            $10.02                   57%
+#
+# The probe in report.py's RATES entry already proved writes are billed ($0.1136
+# of its $0.1180082) -- the rate card was read correctly and then only three of
+# its four lines were charged. Confirmed exactly: 144*$4 + 1,854,658*$0.20 +
+# 194,696*$20 = $4.266 (the published figure), + 719,033 writes * $8 = $10.018,
+# against the CLI's own $10.0177.
+#
+# WHAT THAT DOES TO THE SEAT ARGUMENT: it shrinks the gap, it does not reverse
+# it. Opus 5.5 is ~28% cheaper per point ($0.027 vs $0.037), not the ~50% the
+# table implies. Recall, wall clock and panel coverage are untouched -- none of
+# them is derived from cost -- so the seat still stands on 2x the speed at the
+# same recall. But DO NOT quote the ~50% figure, or the "~$0.030 vs ~$0.043"
+# uncached-equivalent one, both of which this file claimed before the review.
+#
+# The bias is not uniform, which is why this is decision-grade rather than
+# cosmetic: the write share differs per model (40% vs 57% above), so the
+# model-to-model RATIOS built on this arithmetic are skewed, not just the
+# absolutes. results.csv has no cache_write column to fix it with, though every
+# bench/summaries/*.json already records one and config/agents/claude.yaml
+# already maps it. Fixing it is a schema change plus a backfill; until then,
+# treat every dollar column in the table as a LOWER BOUND.
+#
+# The caching caveat still applies on top of that: this sweep cached 100% of its
+# input (tokens_in totals 144 across eight sessions), and [[ollama-route-now-caches]]
+# is the standing warning against pricing a model on routing luck. The reason to
+# believe the direction anyway is the rate card, which is structural rather than
+# circumstantial -- $4/$20/$0.20 against $5/$25/$0.50, cheaper on all three of the
+# lines report.py does charge, and cheaper on the fourth as well ($8 vs $10).
 #
 # SEAT ARITHMETIC (parser rules in the 2026-09-02 section of the panel-marginals
 # note; anchors 398 and 409 both reproduced before these were read):
@@ -490,3 +521,32 @@ claude-opus-5-5
 # benched better than they lived. What makes this one safer than those two is that
 # it is not a different lab or a different harness -- it is the same vendor's next
 # tier through the same CLI, so the live risk is a version bump, not a stranger.
+
+# GPT-6 Sol -- added 2026-09-22 on operator request, alongside claude-opus-5-5
+# and asking the identical question of the other seated payer: is the SUCCESSOR
+# of a seated model worth the seat it already holds?
+#
+# Agent file config/agents/gpt-6-sol.yaml is codex.yaml with one line changed
+# (verified by diff), so model is the only variable against the baseline. Its
+# default effort is `medium`; codex.yaml already pins `high`, which the copy
+# inherits. Probe answered first try on ChatGPT-account auth 2026-09-22 --
+# no availability gap of the kind astra had on announcement day.
+#
+#   gpt-5.6-sol (codex seat)  $5.00 in  $30.00 out  $0.50 cached   (LIST)
+#   gpt-6-sol                 $2.00 in  $10.00 out  $0.20 cached   (permanent)
+#
+# READ THAT GAP CAREFULLY. The codex row deliberately carries LIST price so its
+# figures do not move under a promotion, while OpenAI is currently discounting
+# gpt-5.6-sol to $4/$20 through at least 2026-11-21. So the headline "60% cheaper
+# input" is against list; against the promo it is 50%. Both sources checked on
+# 2026-09-22 describe the gpt-6 prices as permanent, which is the one thing that
+# makes a seat argument on price durable rather than seasonal.
+#
+# Seat arithmetic before the run, so the bar is set in advance and not after the
+# fact: it CANNOT be added -- one payer, one seat, and codex holds the ChatGPT
+# one -- so it can only REPLACE codex. codex is 298/484 and the shipped panel
+# reads 409. The bar is therefore: does the panel stay at or above 409 with this
+# model in codex's seat? A cheaper model that costs the panel coverage is not a
+# saving, it is a downgrade with a discount attached -- which is exactly how
+# terra (221/484, panel 406) and astra-high (265/484, panel 407) both failed.
+gpt-6-sol

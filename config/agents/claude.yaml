@@ -6,9 +6,15 @@
 # for it: 372/484 against Opus 5's 373 and the `claude` agent's 376 is a spread
 # inside this bench's own noise floor, which those last two rows are what define.
 # It buys the two columns recall does not cover -- 2016s against 3958s, which is
-# PANEL latency because a round runs at its slowest reviewer's pace, and half the
-# cost per point (~$0.011 vs ~$0.023, and ~$0.030 vs ~$0.043 with caching luck
-# priced out). The panel reads 414 with it against 409 shipped.
+# PANEL latency because a round runs at its slowest reviewer's pace, and a lower
+# cost per point. The panel reads 414 with it against 409 shipped.
+#
+# ON THAT COST FIGURE, read bench/models.txt before quoting a number. The
+# generated table says ~$0.011 against ~$0.023 per point, i.e. half; the sweeps'
+# own CLI-reported spend says $0.027 against $0.037, i.e. ~28% less. The table is
+# the one that is wrong: report.py does not bill cache-WRITE tokens, which are
+# 40-57% of these two bills. The direction survives the correction and the seat
+# does not rest on the magnitude, but the magnitude published today is overstated.
 #
 # To revert, put `claude-opus-5` back on the line below: it is still measured, and
 # nothing else in this file changes. Effort stays `high` so the model is the only
