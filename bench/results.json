@@ -27,8 +27,8 @@
   "last": "2026-09-22"
  },
  "totals": {
-  "candidates": 27,
-  "sessions": 633,
+  "candidates": 28,
+  "sessions": 656,
   "targets": 8,
   "contract_failures": 3
  },
@@ -1760,6 +1760,75 @@
   },
   {
    "rank": 26,
+   "candidate": "gpt-6-sol",
+   "baseline": false,
+   "model": "gpt-6-sol",
+   "effort": "high",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 221,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 551982,
+   "points_per_mtok": 400.4,
+   "cost_usd": 2.39,
+   "cost_per_point_usd": 0.011,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.79,
+   "cost_per_point_uncached_usd": 0.024,
+   "seconds": 2451,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-09-22",
+    "last": "2026-09-22"
+   },
+   "by_target": {
+    "go": {
+     "found": 20,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 13,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 21,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 39,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 34,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 27,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 32,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 27,
    "candidate": "qwen3.5:397b-cloud",
    "baseline": false,
    "model": "qwen3.5:397b-cloud",
@@ -1828,7 +1897,7 @@
    }
   },
   {
-   "rank": 27,
+   "rank": 28,
    "candidate": "gemma4:31b-cloud",
    "baseline": false,
    "model": "gemma4:31b-cloud",

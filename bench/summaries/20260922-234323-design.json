@@ -1,0 +1,203 @@
+{
+ "run": "20260922-234323",
+ "task": "design",
+ "target": "design",
+ "model": "gpt-6-sol",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "A refresh failure deletes unsynced edits",
+     "description": "A 401 caused by revocation or token corruption wipes notes.db, including the outbox. Offline edits that have never reached the server then lose their only copy.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Conflict resolution permanently discards offline writing",
+     "description": "When two devices edit a note, the older timestamp loses and its body is discarded. This is a normal offline-sync case and permanently loses a user's edit.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "A fast client clock can hide later changes",
+     "description": "The cursor is a client-clock timestamp and the query uses a strict greater-than comparison. An edit from a device with a fast clock can advance the cursor past subsequent edits from other devices, leaving those edits absent from sync.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "Partial batch failure has no usable acknowledgment",
+     "description": "The server keeps rows before a validation failure, but the protocol defines only acknowledgment of the whole batch. Clearing the outbox would lose the failed and later edits; retrying the unchanged batch would encounter the same failure indefinitely. The stated partial commit also conflicts with the stated single transaction.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 31,
+     "title": "An offline device can fill its local storage",
+     "description": "Every edit adds a full note body to an outbox with no bound or compaction. A prolonged offline period or repeated edits to a large note can exhaust device storage and prevent further offline edits.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "An unbounded outbox must fit in one sync request",
+     "description": "The entire outbox is sent in one POST while bodies and outbox length are unbounded. A large offline backlog can exceed HTTP limits or hold a server connection and database transaction for an unbounded time, leaving the client unable to drain it.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "Every changes query scans an unindexed notes table",
+     "description": "The query filters by user_id and modified_at, but only the note primary key is indexed. At the stated user count, and more so at ten times that count, frequent syncs scan the shared notes table and can saturate Postgres; adding HTTP instances does not remove that bottleneck.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 56,
+     "title": "Identical retry schedules amplify an outage",
+     "description": "Clients reconnecting after a regional outage retry on the same backoff schedule. Their requests remain synchronized, repeatedly concentrating load on the database when it is recovering.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deploys assume old and new versions never overlap",
+     "description": "A rolling deploy necessarily leaves old instances serving while new ones start. Running a migration first can therefore break old instances; data written by the new version may also make rollback unsafe.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Nightly backups can lose acknowledged edits",
+     "description": "If Postgres is lost, restoring the latest nightly dump can discard up to a day of edits already acknowledged to clients. This contradicts the stated no-loss guarantee, and the restore procedure has not been rehearsed.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 123,
+     "title": "Devices that stop syncing have no operational signal",
+     "description": "Request and error metrics cannot distinguish a healthy quiet device from one whose sync loop has stopped. Operators learn about missing notes only from support tickets and cannot meet the stated dashboard-only diagnosis goal.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 71,
+     "title": "Refresh failure deletes unsynced edits",
+     "description": "A 401 caused by revocation, password change, or token corruption wipes notes.db, including offline edits that have never reached the server. Those edits cannot be recovered by signing in again.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Conflict resolution discards an offline edit",
+     "description": "When two devices edit the same note, the losing body is discarded immediately. This violates the goal that an offline edit is never lost, even when both device clocks are correct.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Wall-clock cursor can permanently skip changes",
+     "description": "The query uses modified_at strictly greater than the last cursor. Two changes with the same millisecond timestamp cannot both be delivered across syncs; a device with a clock set ahead can also advance the cursor past later changes from other devices.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 49,
+     "title": "Clearing the outbox can erase edits made during sync",
+     "description": "The client clears the outbox after applying a response, while the desktop client and CLI can continue writing to it. An edit appended after the request was assembled but before the clear was never sent and is then deleted.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Nightly backups cannot preserve acknowledged edits",
+     "description": "Restoring the latest nightly dump loses every server edit acknowledged since that dump. The stated guarantee that no acknowledged edit is lost therefore does not hold after database loss.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Client note IDs can collide",
+     "description": "Random 32-bit IDs provide too small an identifier space for the stated population. Two distinct notes can receive the same client ID, while the server relies on that ID for lookup, causing one note to be mistaken for the other.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "An oversized outbox has no path to make progress",
+     "description": "The entire unbounded outbox, including full bodies of uncapped length, must fit in one request. After prolonged offline use, a batch that exceeds a transport or gateway limit cannot be acknowledged, so none of its edits can sync.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves all note data behind",
+     "description": "Deleting the user row leaves its notes in Postgres indefinitely, with no owner and no specified cleanup. The account deletion lifecycle therefore does not delete the account's content.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "Sync history cannot answer the stated support question",
+     "description": "The server retains neither per-device batch history nor device progress, and note bodies are overwritten. Dashboards therefore cannot establish whether a missing note was sent, rejected, superseded, or never delivered to a particular device, despite the stated support requirement.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "Partial batch commits leave retry state ambiguous",
+     "description": "The design says each request is one transaction yet also says rows before a validation failure stay applied. A client that does not receive the failure response retries the same full batch, while the protocol has no durable batch ID or acknowledged prefix to distinguish already applied edits.",
+     "lens": "design-data",
+     "severity": "high"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 35278,
+      "output_tokens": 4468,
+      "cache_read_tokens": 24192
+     },
+     "duration_ms": 87236,
+     "failed": false,
+     "output_bytes": 5994
+    },
+    {
+     "usage": {
+      "input_tokens": 35158,
+      "output_tokens": 3652,
+      "cache_read_tokens": 16128
+     },
+     "duration_ms": 73508,
+     "failed": false,
+     "output_bytes": 5708
+    }
+   ]
+  }
+ ]
+}
