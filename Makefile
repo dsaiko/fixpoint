@@ -204,6 +204,7 @@ bench-check:
 	python3 bench/score.py --selftest bench/manifest-cpp.yaml
 	python3 bench/score.py --selftest bench/manifest-python.yaml
 	python3 bench/score.py --selftest bench/manifest-design.yaml
+	python3 bench/report.py --selftest
 	cd bench/testdata/target-go && go build ./...
 	# --offline and an out-of-tree CARGO_TARGET_DIR: the target has no
 	# dependencies, and a target/ directory inside the tree would be handed to a

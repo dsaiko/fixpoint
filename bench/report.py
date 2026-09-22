@@ -103,6 +103,19 @@ RATES = {
     # 2026". The row keeps the list price it was measured at so the codex
     # figures do not move under a promotion; revisit if the promo becomes list.
     "gpt-5.6-sol": (5.00, 30.00, 0.50),
+    # GPT-6 Sol, added 2026-09-22 when it was benched: the successor of the model
+    # holding the ChatGPT seat, and cheaper than it on every line -- $2/$10 with
+    # cached input at $0.20, against gpt-5.6-sol's $5/$30/$0.50 below.
+    #
+    # THE COMPARISON BETWEEN THOSE TWO ROWS IS NOT LIKE FOR LIKE, and the note on
+    # gpt-5.6-sol says why: that row deliberately keeps LIST price while OpenAI
+    # discounts the model to $4/$20 "at least through November 21, 2026". Two
+    # independent sources on 2026-09-22 give these figures as PERMANENT, not
+    # promotional, so the honest reading of a gpt-6-sol / codex cost gap is
+    # against list on one side and a permanent price on the other. Against the
+    # promo the input gap is 2x rather than 2.5x. Long-context rows (>272K input)
+    # are 2x in / 1.5x out, which no bench session reaches.
+    "gpt-6-sol": (2.00, 10.00, 0.20),
     # GPT-5.6 Terra, from developers.openai.com on 2026-09-07 when it was added
     # as a candidate: $2/$12, cached $0.20 -- the cheap sibling of the codex
     # seat, and 20% of astra's list price. Long-context (>272K input) rows are
@@ -358,22 +371,46 @@ def ollama_rate(model):
 #
 # A row resolves to the FIRST entry whose changed_on is after the row's last
 # measured date; rows on or after the final change resolve through the yaml.
+# Dates carry a TIME on purpose. A calendar-day comparison is one granule too
+# coarse in the one case that matters: a run measured on the change day but
+# BEFORE the edit would fail a `day <` test and be priced at the new model's
+# rates though its tokens ran on the old one -- the very restatement this table
+# exists to prevent, just narrower. And a same-day re-measure is not a remote
+# possibility: changing a seat is exactly when someone re-benches the alias.
+# `2026-09-22 23:27:01` is when commit 1620c5f changed config/agents/claude.yaml.
 AGENT_MODEL_HISTORY = {
-    "claude": [("2026-09-22", "claude-opus-5", "high")],
+    "claude": [("2026-09-22 23:27:01", "claude-opus-5", "high")],
 }
+
+
+def _stamp(s):
+    """Any of a run id, a day, or a dated time -> one sortable YYYYMMDDHHMMSS.
+
+    Accepts `20260922-230101` (run id, the live path), `20260922`, `2026-09-22`
+    and `2026-09-22 23:27:01`. A value with no time means the START of that day,
+    so a bare day compares as "before anything that happened during it".
+    """
+    digits = re.sub(r"\D", "", s)
+    if len(digits) < 8:
+        raise ValueError(f"not a date: {s!r}")
+    return (digits[:14] + "0" * 14)[:14]
 
 
 def _asof(e):
     """The date to resolve an aggregated entry's agent at: its LAST measured run.
 
-    Last rather than first, deliberately. An entry sums every run of a model, so
-    if a sweep straddles a yaml change its spend is a mix and no single rate is
-    right; resolving at the last run makes the row agree with the yaml as soon as
-    the agent has been re-measured even once since the change, which is the state
-    the table should converge to. Straddling entries are the reason to re-measure
-    an agent after changing its model rather than leave the two halves pooled.
+    Last rather than first, and SAFE ONLY BECAUSE THE GROUP IS SINGLE-EPOCH by
+    the time this is called -- the aggregation drops an alias's older epoch as
+    soon as it has a newer one. Without that, "latest date" would be the bug
+    rather than the rule: an entry sums tokens across every run it contains, so
+    a group straddling a seat change would bill August's tokens at September's
+    rates, which is the restatement AGENT_MODEL_HISTORY exists to prevent.
+
+    An earlier version of this docstring claimed re-measuring made a pooled row
+    "converge" to the new model. It did not; it averaged the two. The dropping
+    is what makes the claim true, so the two must stay together.
     """
-    return max(e["dates"]) if e.get("dates") else None
+    return max(e.get("runs") or e.get("dates") or [None])
 
 
 def agent_model(model, asof=None):
@@ -389,9 +426,9 @@ def agent_model(model, asof=None):
     if not path.exists():
         return None, None
     if asof is not None:
-        day = asof[:10] if "-" in asof[:5] else f"{asof[:4]}-{asof[4:6]}-{asof[6:8]}"
+        when = _stamp(asof)
         for changed_on, was_model, was_effort in AGENT_MODEL_HISTORY.get(model, ()):
-            if day < changed_on:
+            if when < _stamp(changed_on):
                 return was_model, was_effort
     name, effort = None, None
     for line in path.read_text().splitlines():
@@ -1337,8 +1374,107 @@ def write_markdown(ranked, all_targets, out_path):
     print(f"{out_path}: bench table regenerated ({len(ranked)} candidates)")
 
 
+def drop_stale_epochs(by_mt):
+    """Keep only an alias's CURRENT model, in place, once it has been measured on one.
+
+    See the comment at the call site for why. Split out so it can be tested:
+    the aggregation around it is inline in main() and reachable only by writing
+    a csv, while this is the whole of the rule and is pure.
+    """
+    for key, rs in by_mt.items():
+        alias = key[0]
+        if alias not in AGENT_MODEL_HISTORY:
+            continue
+        epochs = {r["run"]: agent_model(alias, r["run"])[0] for r in rs}
+        if len(set(epochs.values())) > 1:
+            current = epochs[max(epochs)]
+            by_mt[key] = [r for r in rs if epochs[r["run"]] == current]
+    return by_mt
+
+
+def selftest():
+    """Assert the agent-history pricing guard still guards. Run by `make bench-check`.
+
+    This exists because the guard's only proof was once a one-time manual check
+    that the regenerated table came out byte-identical -- which cannot be re-run
+    on the day it matters, i.e. the next time a seat's yaml changes. Everything
+    here is about that one mechanism; the rest of the module is covered by the
+    fact that its output is generated and diffed.
+    """
+    fails = []
+
+    def check(label, got, want):
+        if got != want:
+            fails.append(f"  {label}\n     got  {got!r}\n     want {want!r}")
+
+    # 1. The regression itself: a `claude` row measured in August must resolve
+    #    to the model that actually ran it, not to whatever the yaml says today.
+    check("agent_model('claude', <august run id>)",
+          agent_model("claude", "20260901-120000"), ("claude-opus-5", "high"))
+    check("resolve('claude', <august run id>)",
+          resolve("claude", "20260901-120000"), "claude-opus-5 (high)")
+
+
+    # 3. Every shape _asof can hand over must mean the same instant. The run-id
+    #    form is the live path; the others are what a future caller may pass.
+    for shape in ("20260901-120000", "20260901", "2026-09-01", "2026-09-01 12:00:00"):
+        check(f"date shape {shape!r} resolves like the run id",
+              agent_model("claude", shape)[0], "claude-opus-5")
+    check("_stamp pads a bare day to the START of it",
+          _stamp("2026-09-22"), "20260922000000")
+
+    # 3b. The precision that day-granularity got wrong: a run measured on the
+    #     change DAY but before the edit must still price at the OLD model.
+    check("same-day run BEFORE the change keeps the old model",
+          agent_model("claude", "20260922-230101")[0], "claude-opus-5")
+    check("same-day run AFTER the change takes the new one",
+          agent_model("claude", "20260922-235959")[0], "claude-opus-5-5")
+
+    # 4. The August claude sweep must still price at its own rate card. These are
+    #    its committed totals; the figure is the one published as ~$8.61.
+    aug = run_cost("claude", "cli", 54576, 299472, 1691052, "20260901-013218")
+    check("august claude sweep prices at opus-5 rates",
+          round(aug, 2), 8.61)
+    check("the same tokens at TODAY's yaml would be wrong",
+          round(run_cost("claude", "cli", 54576, 299472, 1691052), 2) != round(aug, 2),
+          True)
+
+    # 5. AGENT_MODEL_HISTORY must stay in ascending date order: the lookup returns
+    #    on the FIRST entry with day < changed_on, so an out-of-order or malformed
+    #    date ('2026-9-22') would silently hand an older model and an older rate
+    #    card to newer rows -- with no other signal that it had.
+    for alias, hist in AGENT_MODEL_HISTORY.items():
+        days = [h[0] for h in hist]
+        check(f"AGENT_MODEL_HISTORY[{alias!r}] dates ascending", days, sorted(days))
+        for d in days:
+            check(f"AGENT_MODEL_HISTORY[{alias!r}] date {d!r} parses",
+                  bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?", d)), True)
+
+    # 6. The other half of the same defect: an alias row must never POOL two
+    #    models. Before any post-change run the historical rows stay (there is
+    #    nothing newer to prefer); after one, the older epoch leaves the row,
+    #    so tokens from two rate cards are never summed and then billed at one.
+    old, new = {"run": "20260901-013218"}, {"run": "20260923-010000"}
+    check("alias with only OLD runs keeps them",
+          drop_stale_epochs({("claude", "go"): [dict(old)]})[("claude", "go")],
+          [old])
+    check("alias with BOTH epochs drops the old one",
+          drop_stale_epochs({("claude", "go"): [dict(old), dict(new)]})[("claude", "go")],
+          [new])
+    check("a pinned (non-alias) model is never touched",
+          drop_stale_epochs({("claude-opus-5", "go"): [dict(old), dict(new)]})[("claude-opus-5", "go")],
+          [old, new])
+
+    if fails:
+        sys.exit("report.py --selftest FAILED:\n" + "\n".join(fails))
+    print("report.py: agent-history pricing guard OK")
+    return 0
+
+
 def main():
     args = sys.argv[1:]
+    if "--selftest" in args:
+        return selftest()
     if "--seeds" in args:
         here = pathlib.Path(__file__).resolve().parent
         return seed_value(here / "results")
@@ -1405,6 +1541,23 @@ def main():
         tgt = r.get("target") or ("go" if r["task"] == "code" else r["task"])
         by_mt.setdefault((r["model"], tgt), []).append(r)
 
+    # AN AGENT ROW MUST NOT POOL TWO MODELS. Everything below sums tokens and
+    # medians recall across every run in a group, and a group is keyed on the
+    # csv's `model` column -- which for `claude` and `codex` is a mutable ALIAS.
+    # So the first re-measurement after a seat change would put the old and the
+    # new model in one bucket, median their recalls together, add their tokens,
+    # and (because _asof reads the LATEST date) bill the whole mixture at the new
+    # model's rates. That is the same silent restatement AGENT_MODEL_HISTORY
+    # exists to stop, arriving by a different door.
+    #
+    # So an alias keeps only its CURRENT epoch once it has one. Before the first
+    # post-change run there is nothing to drop and the row stays historical,
+    # priced at its own model by _asof. Afterwards the older runs leave the row:
+    # they are not lost -- they stay in results.csv, in git, and in the pinned
+    # `claude-opus-5` row that exists precisely so a seat's history survives its
+    # alias moving on.
+    drop_stale_epochs(by_mt)
+
     all_targets = sorted({t for (_, t) in by_mt},
                          key=lambda t: (LEGACY_SCALE.index(t) if t in LEGACY_SCALE
                                         else len(LEGACY_SCALE), t))
@@ -1423,6 +1576,10 @@ def main():
                     "errors", "sessions"):
             rep[col] = str(sum(int(r[col]) for r in rs))
         rep["_dates"] = sorted({r["run"].split("-")[0] for r in rs})
+        # Full run ids alongside the days: _asof needs the TIME, because a
+        # seat can change on a day that also has runs. `dates` stays
+        # day-granular because the era and the "Measured" column want days.
+        rep["_runs"] = sorted({r["run"] for r in rs})
         runs.setdefault((model, "1"), {})[tgt] = rep
 
     per_model = {}
@@ -1444,6 +1601,7 @@ def main():
             "seconds": sum(int(t["duration_s"]) for t in tasks.values()),
             "sessions": sum(int(t["sessions"]) for t in tasks.values()),
             "dates": sorted({d for t in tasks.values() for d in t["_dates"]}),
+            "runs": sorted({r for t in tasks.values() for r in t["_runs"]}),
             # Which pricing era this candidate's dollar columns belong to, and
             # how much of its input actually came from cache. The era is what
             # the route did when it ran; the share is what its own rows record.
