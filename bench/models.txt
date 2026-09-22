@@ -550,3 +550,49 @@ claude-opus-5-5
 # saving, it is a downgrade with a discount attached -- which is exactly how
 # terra (221/484, panel 406) and astra-high (265/484, panel 407) both failed.
 gpt-6-sol
+#
+# MEASURED 2026-09-22, full 8-target grid, 1 repeat, 0 errors, 0 contract failures:
+#
+#   gpt-6-sol            221/484  ~$2.39  ~$0.011/pt  400 pts/Mtok  2451s
+#   codex / gpt-5.6-sol  298/484  ~$8.36  ~$0.028/pt  523 pts/Mtok  6810s
+#
+#   go 20/56  design 13/34  rust 21/64  java 39/69
+#   typescript 34/63  csharp 27/68  cpp 35/64  python 32/66
+#
+# NOT A SEAT, and unlike the Opus 5.5 question this one is not close. It is 77
+# seeds below the model it would replace and BELOW IT ON SEVEN OF EIGHT TARGETS,
+# level only on design (13/34 each). The two collapses are go 20 against 39 and
+# rust 21 against 36 -- the same go column where astra and terra also fell short
+# of sol, which keeps looking like depth the gpt-5.6-sol tuning has and the
+# others do not, rather than anything about the model generation.
+#
+#   shipped panel [claude, codex, glm-5.3-flash]   409/484
+#   gpt-6-sol REPLACES codex                       404   (-5)
+#   as a 4th seat                                  412   (not available: one
+#                                                    payer, one seat, and codex
+#                                                    already holds the ChatGPT one)
+#   marginal over claude+codex                     +4
+#   marginal of CODEX over claude+gpt-6-sol       +10   (the reverse test: codex
+#                                                    earns more beside this model
+#                                                    than it earns beside codex)
+# It finds 14 seeds codex misses; codex finds 91 of its. It fails the bar set
+# before the run -- panel >= 409 -- so the answer is the one the note predicted
+# would be required, not one found afterwards.
+#
+# THE SUCCESSOR QUESTION CAME OUT OPPOSITE TO OPUS 5.5, which is the result worth
+# keeping. Both were the next tier of a seated model, both cheaper, both a free
+# swap on the payer rule. Opus 5.5 held its predecessor's recall and halved the
+# clock; gpt-6-sol gives up a quarter of the score. "Newer and cheaper" is not a
+# reviewer argument on its own, and one sweep each is what distinguishes them.
+#
+# It lands on exactly the same 221/484 as gpt-5.6-terra with a different shape
+# (go 20 vs terra's 28, java 39 vs 29), and at a lower price: ~$2.39 is the
+# cheapest ChatGPT-route sweep measured, ~$0.011/pt. Cheapest is simply not the
+# question a seat asks -- terra proved that at 221 and this row re-proves it.
+#
+# One route fact worth recording, found while checking the cache-write undercount
+# above: THE CODEX ROUTE RECORDS NO CACHE-WRITE TOKENS AND NO cost_usd in its
+# summaries (codex.yaml maps usage.cache_write_input_tokens; the field comes back
+# 0/absent). So the undercount that understates every Anthropic row does NOT
+# touch these rows -- which means a claude-vs-codex dollar comparison is biased
+# in claude's favour until results.csv grows a cache_write column.

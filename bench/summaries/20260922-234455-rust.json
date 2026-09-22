@@ -1,0 +1,261 @@
+{
+ "run": "20260922-234455",
+ "task": "code",
+ "target": "rust",
+ "model": "gpt-6-sol",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "HTTP requests wait for the client to close the connection",
+     "description": "read_to_end waits for EOF before parsing the request. A normal HTTP client waits for the response while keeping its connection open, so the handler never responds.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 40,
+     "title": "No request can obtain a valid session",
+     "description": "The server creates an empty Authenticator, but nothing calls issue or loads sessions. Every token therefore fails verification and every endpoint returns 401.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 96,
+     "title": "Missing Authorization header panics",
+     "description": "bearer_token indexes the second split element without checking it. An absent or single-word Authorization header panics in the handler, leaving the request without a response.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Creating the first link panics after inserting it",
+     "description": "The quota map starts empty, so get_mut(owner).unwrap() panics for every new owner. The link has already been inserted, and the store mutex becomes poisoned.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 57,
+     "title": "Resolver removes live links and accepts expired ones",
+     "description": "The condition marks a link expired when the current time is before its expiry. Following a valid link removes it and returns 404; an expired link can resolve until the janitor removes it.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "Pagination panics when the requested page exceeds the link count",
+     "description": "When offset + size exceeds the number of links, end is set to len + 1 and the slice at line 92 panics. The default /links size of 20 triggers this whenever there are 1\u201319 links.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "Stats panics on an empty store",
+     "description": "guard.len() is zero on a fresh server or after all links are deleted, so /stats divides by zero.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 261,
+     "title": "Form and query values are never decoded",
+     "description": "parse_query retains percent escapes and plus signs. A conventional form submission such as target=https%3A%2F%2Fexample.com fails URL validation, and encoded query values are looked up incorrectly.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 158,
+     "title": "The link listing omits the links",
+     "description": "GET /links computes a page but responds only with its count. Callers cannot obtain any link from the listing endpoint.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 102,
+     "title": "Success rate is zero for every partial success",
+     "description": "Integer division occurs before multiplication, so used / len is zero unless every link has been followed. For example, one used link out of two reports 0 instead of 50.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "Cache utilization is wrong and can divide by zero",
+     "description": "Integer division makes utilization report 0% until the cache is full. LINKD_CACHE_SIZE also accepts zero, which makes /stats panic at this division.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 218,
+     "title": "Report download fails when name is omitted",
+     "description": "export_csv substitutes the filename links.csv for an empty name, but read_report receives the original empty name and attempts to read .csv. A nameless report request returns 500 after writing the report.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 216,
+     "title": "Reports silently omit links beyond the first thousand",
+     "description": "The report is built from page(0, 1000). Once the store has more than 1000 links, the downloaded export contains only the first 1000 without indicating truncation.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 181,
+     "title": "Permanent redirects undercount later clicks",
+     "description": "/out uses a 301 response even though it counts each click. Clients may cache that permanent redirect and go directly to next on later clicks, bypassing the counter.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 113,
+     "title": "Configuration validation accepts known invalid values",
+     "description": "validate collects errors for port zero and zero timeout but always returns Ok. main therefore starts with an invalid configuration; a zero port binds an arbitrary port while printing port 0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 121,
+     "title": "Large TTL input can overflow and panic",
+     "description": "An accepted u64 ttl is multiplied by 3600 without checking overflow. A sufficiently large value panics in checked builds or wraps to an unintended expiry in unchecked builds.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 18,
+     "title": "Report fields are written without CSV escaping",
+     "description": "A target or owner containing a comma, quote, or newline changes the number of fields or rows in the downloaded report.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 128,
+     "title": "Created-link response can contain invalid JSON",
+     "description": "The target is inserted directly into a JSON string. A target containing a quote or backslash makes the 201 response malformed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 110,
+     "title": "Deleting a link leaves its owner's quota count unchanged",
+     "description": "delete removes the link but discards its owner without decrementing the quota map. The admin quota count remains too high after deletions.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Request workers wait indefinitely for connection close",
+     "description": "Each accepted connection gets a thread, then read_to_end waits for the peer to close its write side before any response is sent. A client that sends a complete request and waits for a response keeps that thread blocked; many such connections can exhaust server threads without authentication.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 28,
+     "title": "Concurrent resolved increments can be lost",
+     "description": "Two request threads can both load the same resolved value and store the same incremented value. Concurrent /out requests therefore increase the counter only once, making /stats undercount redirects.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 115,
+     "title": "Cache flush and get acquire locks in opposite orders",
+     "description": "get holds entries and then waits for hits, while flush holds hits and then waits for entries. If they overlap in that order, both threads block permanently.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 103,
+     "title": "Sweep can delete an entry refreshed after its expiry scan",
+     "description": "Sweep collects an expired code and releases the read lock. Another thread can then set a fresh entry for that code before sweep calls delete, causing the fresh entry to be removed.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "Owner count locks the same mutex twice",
+     "description": "count_by_owner retains the first store guard when it calls store.lock() again. Since this mutex is not reentrant, every call with a live store blocks permanently at the second lock.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "Cache warming returns before its worker threads finish",
+     "description": "warm_cache drops its JoinHandles without joining them. A caller can inspect the cache immediately after the function returns while some entries have yet to be inserted, contrary to the function's completion contract.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 215,
+     "title": "Report generation holds the store mutex through I/O",
+     "description": "The report handler keeps the store guard while writing and reading the CSV file and sending the response. A slow filesystem or client holds up every handler needing the store mutex, as well as the janitor.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Unauthenticated connections can exhaust server resources",
+     "description": "Each accepted connection gets a thread that calls read_to_end before authentication. An unauthenticated client can keep many connections open or continuously send bytes, leaving threads blocked and growing their request buffers until the server runs out of threads or memory.",
+     "lens": "review-security",
+     "severity": "high"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 91999,
+      "output_tokens": 6598,
+      "cache_read_tokens": 74624
+     },
+     "duration_ms": 136944,
+     "failed": false,
+     "output_bytes": 8721
+    },
+    {
+     "usage": {
+      "input_tokens": 99453,
+      "output_tokens": 3922,
+      "cache_read_tokens": 78848
+     },
+     "duration_ms": 78134,
+     "failed": false,
+     "output_bytes": 3686
+    },
+    {
+     "usage": {
+      "input_tokens": 115073,
+      "output_tokens": 1955,
+      "cache_read_tokens": 85120
+     },
+     "duration_ms": 46697,
+     "failed": false,
+     "output_bytes": 665
+    }
+   ]
+  }
+ ]
+}
