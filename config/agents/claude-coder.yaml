@@ -3,7 +3,23 @@
 # Pinned to an exact model id rather than the `opus` alias. That alias currently
 # resolves to claude-opus-4-8 and re-points whenever the CLI ships a new alias
 # table, which would silently change which model fixes your code mid-project.
-model: claude-opus-5
+#
+# Opus 5 -> Opus 5.5 on 2026-09-22, alongside the reviewer seat in claude.yaml,
+# so the two halves of a run do not drift onto different model generations.
+#
+# BE HONEST ABOUT THE EVIDENCE FOR THIS ONE: the bench behind the reviewer swap
+# measures REVIEWER duty -- single-round recall of seeded defects -- and says
+# nothing about CODER duty, which is writing a fix that survives the verify gate.
+# No bench here measures that. What carries over is the part that is a property
+# of the model rather than the role: same vendor, same CLI, same effort, a 1M
+# context, and a rate card cheaper on all four lines. What does not carry over is
+# any claim about fix quality.
+#
+# So this is a deliberate, reversible bet rather than a measured result. The
+# signal to watch is the one a coder run already reports: rejected findings and
+# verify-gate failures. If those rise, put `claude-opus-5` back on the line below
+# -- nothing else in this file depends on the model.
+model: claude-opus-5-5
 effort: high # xhigh runs ~2x slower for marginal gain on typical findings
 command:
   - claude
