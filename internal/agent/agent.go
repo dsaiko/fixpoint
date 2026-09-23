@@ -332,15 +332,24 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	raw := stdout.String()
 	// Unwrap here rather than at the call sites: every consumer of Stdout wants
 	// the agent's reply, and only this function knows which agent produced it.
-	text, usage, providerStatus := parseEnvelope(a.Usage, raw)
+	env := parseEnvelope(a.Usage, raw)
+	text, usage, providerStatus := env.text, env.usage, env.providerStatus
 	// A failed agent that still produced an envelope explained itself in it, and
 	// that explanation is worth more than the exit code: `exit status 1` reads as a
 	// broken coder, while the reply it came with says "You've hit your session
 	// limit · resets 8:20pm". Only the first line, and only when it is not the raw
 	// output (ParseUsage falls back to raw when it cannot decode), so an
 	// unparseable dump is not spliced into the error.
-	if err != nil && text != "" && text != raw {
-		if msg := firstLine(text); msg != "" {
+	//
+	// The CLI's own error message, where the config names one, wins over the reply:
+	// a streaming CLI's last reply is whatever it narrated before the failure, not
+	// the failure itself. See config.AgentUsage.ErrorText.
+	explanation := env.errText
+	if explanation == "" && text != raw {
+		explanation = text
+	}
+	if err != nil {
+		if msg := firstLine(explanation); msg != "" {
 			err = fmt.Errorf("%w: %s", err, msg)
 		}
 	}

@@ -612,6 +612,17 @@ type AgentUsage struct {
 	// clock to wait on, and the summary could not tell them apart. See
 	// agent.Result.ProviderStatus.
 	ErrorStatus string `yaml:"error_status"`
+
+	// ErrorText is the dotted path to the CLI's own error message, read only when
+	// the agent failed. Optional, for a CLI that reports its failure OUTSIDE the
+	// reply text: without it a failed run is explained by the first line of its
+	// last reply, which for a streaming CLI is whatever it narrated before dying.
+	//
+	// A real codex run failed three lenses as `exit status 1: I'm reviewing the
+	// Maven wiring...` -- a status update, read as a broken reviewer -- while its
+	// stream ended on turn.failed with "Your workspace is out of credits". The
+	// reply and the reason are different fields, and only the config knows which.
+	ErrorText string `yaml:"error_text"`
 }
 
 // Enabled reports whether this agent's output carries usage fixpoint can read.
@@ -628,7 +639,7 @@ func (u AgentUsage) validate(name string) error {
 		// since it reads as configured and does nothing.
 		if u.Text != "" || u.InputTokens != "" || u.OutputTokens != "" ||
 			u.CacheReadTokens != "" || u.CacheWriteTokens != "" || u.CostUSD != "" ||
-			u.ErrorStatus != "" {
+			u.ErrorStatus != "" || u.ErrorText != "" {
 			return fmt.Errorf("agents.%s: usage paths are set but usage.format is empty, so none of them are read; set format to %s",
 				name, strings.Join(usageFormats, " or "))
 		}
