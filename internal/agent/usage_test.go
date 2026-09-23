@@ -26,6 +26,7 @@ var codexUsage = config.AgentUsage{
 	InputTokens:     "usage.input_tokens",
 	OutputTokens:    "usage.output_tokens",
 	CacheReadTokens: "usage.cached_input_tokens",
+	ErrorText:       "error.message",
 }
 
 // A verbatim envelope from `claude -p --output-format json`, trimmed to the fields
@@ -47,7 +48,8 @@ const claudeRateLimited = `{"is_error":false,"terminal_reason":"api_error","api_
 "result":"You've hit your session limit · resets 8:20pm (Europe/Prague)","type":"result"}`
 
 func TestParseEnvelopeReportsProviderRefusal(t *testing.T) {
-	text, u, status := parseEnvelope(claudeUsage, claudeRateLimited)
+	env := parseEnvelope(claudeUsage, claudeRateLimited)
+	text, u, status := env.text, env.usage, env.providerStatus
 	if status != 429 {
 		t.Errorf("provider status = %d, want 429", status)
 	}
@@ -59,15 +61,39 @@ func TestParseEnvelopeReportsProviderRefusal(t *testing.T) {
 		t.Errorf("output tokens = %d, want 4562 (a refused call still spent them)", u.OutputTokens)
 	}
 	// A healthy envelope carries no status, so nothing is mislabeled a refusal.
-	if _, _, ok := parseEnvelope(claudeUsage, claudeEnvelope); ok != 0 {
+	if ok := parseEnvelope(claudeUsage, claudeEnvelope).providerStatus; ok != 0 {
 		t.Errorf("provider status = %d on a successful envelope, want 0", ok)
 	}
 	// Unconfigured path: an agent that declares no error_status reports nothing
 	// rather than guessing at field names.
 	bare := claudeUsage
 	bare.ErrorStatus = ""
-	if _, _, ok := parseEnvelope(bare, claudeRateLimited); ok != 0 {
+	if ok := parseEnvelope(bare, claudeRateLimited).providerStatus; ok != 0 {
 		t.Errorf("provider status = %d without error_status configured, want 0", ok)
+	}
+}
+
+// The stream a real codex review ended on, trimmed: a status update as the only
+// reply, then the failure on its own lines. The first line of the reply is what
+// the run reported, and it read as a reviewer that could not do its job.
+const codexOutOfCredits = `{"type":"thread.started","thread_id":"019f"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'm reviewing the Maven wiring from source only."}}
+{"type":"error","message":"Your workspace is out of credits. Ask your workspace owner to refill in order to continue."}
+{"type":"turn.failed","error":{"message":"Your workspace is out of credits. Ask your workspace owner to refill in order to continue."}}`
+
+func TestParseEnvelopeReadsCodexFailureApartFromReply(t *testing.T) {
+	env := parseEnvelope(codexUsage, codexOutOfCredits)
+	if !strings.Contains(env.errText, "out of credits") {
+		t.Errorf("errText = %q, want the turn.failed message", env.errText)
+	}
+	// The reply stays the reply: error_text names the failure, it does not
+	// replace what the contract extractor reads.
+	if !strings.Contains(env.text, "Maven wiring") {
+		t.Errorf("text = %q, want the agent's last reply", env.text)
+	}
+	if env := parseEnvelope(codexUsage, `{"type":"item.completed","item":{"text":"ok"}}`); env.errText != "" {
+		t.Errorf("errText = %q on a stream with no failure, want empty", env.errText)
 	}
 }
 

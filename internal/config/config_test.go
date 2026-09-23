@@ -615,6 +615,11 @@ func TestValidate(t *testing.T) {
 			a.Usage = AgentUsage{ErrorStatus: "error.status"}
 			c.Agents["rev"] = a
 		}, "usage.format is empty"},
+		{"usage.error_text without format", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{ErrorText: "error.message"}
+			c.Agents["rev"] = a
+		}, "usage.format is empty"},
 		{"usage.input_tokens without format", func(c *Config) {
 			a := c.Agents["rev"]
 			a.Usage = AgentUsage{InputTokens: "usage.input"}

@@ -56,6 +56,7 @@ usage:
   output_tokens: usage.output_tokens
   cache_read_tokens: usage.cached_input_tokens
   cache_write_tokens: usage.cache_write_input_tokens
+  error_text: error.message # turn.failed: the reason, not the last narration
 prompt_via: stdin
 # 30m: see claude.yaml. This agent was killed at 10m having emitted 1 MB of
 # exploration output and still working -- unlike a hung process, it was making

@@ -68,6 +68,34 @@ func TestRunCapturesStderrAndExitError(t *testing.T) {
 	}
 }
 
+// A failed agent is explained by the CLI's own error message when the config
+// names one, not by the status update it happened to narrate last.
+func TestRunNamesTheCLIErrorOverTheLastReply(t *testing.T) {
+	stream := filepath.Join(t.TempDir(), "stream.jsonl")
+	if err := os.WriteFile(stream, []byte(codexOutOfCredits+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := config.Agent{
+		Command:   []string{script(t, "cat '"+stream+"'; exit 1")},
+		PromptVia: "stdin",
+		Timeout:   config.Duration(time.Minute),
+		Usage:     codexUsage,
+	}
+	res := Run(t.Context(), a, "", t.TempDir())
+	if res.Err == nil {
+		t.Fatal("Run() err = nil, want the non-zero exit")
+	}
+	if msg := res.Err.Error(); !strings.Contains(msg, "out of credits") || strings.Contains(msg, "Maven wiring") {
+		t.Errorf("err = %q, want the turn.failed message and not the narration", msg)
+	}
+
+	// Without error_text the reply's first line is still the explanation.
+	a.Usage.ErrorText = ""
+	if msg := Run(t.Context(), a, "", t.TempDir()).Err.Error(); !strings.Contains(msg, "Maven wiring") {
+		t.Errorf("err = %q, want the reply's first line as the fallback", msg)
+	}
+}
+
 func TestRunRunsInDir(t *testing.T) {
 	dir := t.TempDir()
 	a := config.Agent{

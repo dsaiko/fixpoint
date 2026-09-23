@@ -626,6 +626,13 @@ the reply before extracting the output contract, so machine-readable mode stays
 invisible to everything downstream. Omit it and every round fails to parse;
 validation refuses the config rather than letting you find out at runtime.
 
+`error_text` is optional and is read only when the agent fails. It names where
+the CLI puts its own error message, and when it is set that message becomes the
+reason on the `FAILED` line in place of the reply's first line. Set it for a CLI
+that reports its failure outside the reply. codex does this: its stream ends on
+`turn.failed` with the reason in `error.message`, and the last `item.text` is only
+whatever it narrated before failing (`error_text: error.message`).
+
 Paths are dotted, with `*` matching every key at a level. Within one object a
 wildcard's matches are **summed** (a session that used two models spent both);
 across the lines of a `jsonl` stream the **last** value wins (successive lines are

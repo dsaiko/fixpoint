@@ -19,25 +19,38 @@ import (
 // left zero. The alternative -- discarding a round's findings because the token
 // counter could not be read -- inverts the priorities.
 func ParseUsage(u config.AgentUsage, stdout string) (text string, usage model.Usage) {
-	text, usage, _ = parseEnvelope(u, stdout)
-	return text, usage
+	env := parseEnvelope(u, stdout)
+	return env.text, env.usage
 }
 
-// parseEnvelope is ParseUsage plus the provider status, split out so Run can tell
-// a CLI failure from a provider refusal without a second decode of the same output.
-func parseEnvelope(u config.AgentUsage, stdout string) (text string, usage model.Usage, providerStatus int) {
+// envelope is what one decode of a CLI's machine-readable output yields.
+type envelope struct {
+	text  string
+	usage model.Usage
+	// providerStatus is the status at usage.error_status, zero when absent.
+	providerStatus int
+	// errText is the message at usage.error_text, empty when absent.
+	errText string
+}
+
+// parseEnvelope is ParseUsage plus the failure fields, split out so Run can tell a
+// CLI failure from a provider refusal, and name the reason, without a second
+// decode of the same output.
+func parseEnvelope(u config.AgentUsage, stdout string) envelope {
 	if !u.Enabled() {
-		return stdout, model.Usage{}, 0
+		return envelope{text: stdout}
 	}
 	objs := decodeEnvelope(u.Format, stdout)
 	if len(objs) == 0 {
-		return stdout, model.Usage{}, 0
+		return envelope{text: stdout}
 	}
-	providerStatus = lastInt(objs, u.ErrorStatus)
+	var usage model.Usage
+	providerStatus := lastInt(objs, u.ErrorStatus)
+	errText, _ := lastString(objs, u.ErrorText)
 	// Last value wins: a jsonl stream reports its running state line by line, and
 	// the final mention of a path is the settled one. For a single object it is
 	// simply the only value.
-	text = stdout
+	text := stdout
 	if s, ok := lastString(objs, u.Text); ok {
 		text = s
 	}
@@ -49,7 +62,7 @@ func parseEnvelope(u config.AgentUsage, stdout string) (text string, usage model
 		usage.CostUSD = c
 		usage.CostKnown = true
 	}
-	return text, usage, providerStatus
+	return envelope{text: text, usage: usage, providerStatus: providerStatus, errText: errText}
 }
 
 // decodeEnvelope parses stdout into the objects the paths are resolved against.
