@@ -19,6 +19,11 @@ command:
 # No cost_usd: codex reports tokens but no price, because ChatGPT-account auth has
 # no per-request cost to report. The scoreboard leaves its cost blank rather than
 # inventing one from a published rate card -- see config.AgentUsage.
+#
+# error_text: a failed turn ends on `turn.failed` with the reason in
+# error.message, and the last item.text is only what codex narrated before it --
+# "I'm reviewing the Maven wiring..." where the reason was "Your workspace is out
+# of credits". The path matches nothing on a healthy turn.
 usage:
   format: jsonl
   text: item.text
@@ -26,6 +31,7 @@ usage:
   output_tokens: usage.output_tokens
   cache_read_tokens: usage.cached_input_tokens
   cache_write_tokens: usage.cache_write_input_tokens
+  error_text: error.message
 prompt_via: stdin
 # 30m: see claude.yaml. This agent was killed at 10m having emitted 1 MB of
 # exploration output and still working -- unlike a hung process, it was making
