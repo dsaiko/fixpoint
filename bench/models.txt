@@ -596,3 +596,74 @@ gpt-6-sol
 # 0/absent). So the undercount that understates every Anthropic row does NOT
 # touch these rows -- which means a claude-vs-codex dollar comparison is biased
 # in claude's favour until results.csv grows a cache_write column.
+
+# Claude Sonnet 5.5 -- added 2026-09-29, the tier successor to claude-sonnet-5
+# (245/484, 20th of 24, no seat). Same rate card as Sonnet 5 -- $2/$10 per MTok,
+# cached input $0.20, 1h cache write $4 -- so this row asks whether the new
+# generation closes the recall gap at the same price, not whether it is cheaper.
+#
+# Reachable: `claude --model claude-sonnet-5-5` answered on 2026-09-29, modelUsage
+# keyed `claude-sonnet-5-5`, provider firstParty. Claude Code 2.1.280 prints
+#   [claude-code:unrecognized_model] {"model":"claude-sonnet-5-5"}
+# and runs it anyway -- fable-5-1's cosmetic warning again. BUT ITS COST FIGURE
+# IS WRONG: modelUsage says `costBasis: "unknown"`, and the probe's costUSD of
+# 0.0969738 is exactly OPUS 5.5's card (2*4 + 4*20 + 35149*0.20 + 11232*8, /1e6),
+# not this model's (Sonnet's card gives 0.0520018). So every cost_usd in this
+# model's summaries is ~2x too high until the CLI learns the id. report.py prices
+# from tokens through RATES and is unaffected; do not "correct" the table toward
+# the summaries' cost_usd for this row.
+#
+# Seat arithmetic before the run, so the bar is set in advance: one payer, one
+# seat, so it can only REPLACE claude-opus-5-5 in the claude seat. The panel
+# reads 414/484 with opus-5-5 there. Its cached-input rate is the SAME $0.20, and
+# the claude route caches ~98% of a sweep, so the saving on offer is small by
+# construction -- only fresh input, output and cache writes are halved. The bar is
+# therefore all three of: panel >= 410 with it in the seat (inside the 4-seed
+# noise floor of 414), a lower cost per point than opus-5-5, and a wall clock no
+# slower than opus-5-5's 2016s. Missing any one is a downgrade, not a saving.
+claude-sonnet-5-5
+#
+# MEASURED 2026-09-29, full 8-target grid, 1 repeat, 0 errors, 0 contract failures,
+# all eight summaries keyed claude-sonnet-5-5 (no fallback, no side-model work):
+#
+#   claude-sonnet-5-5  369/484  4th of 29  ~$2.32  ~$0.006/pt  1605s  0 fails
+#   claude-opus-5-5    372/484  3rd        ~$4.27  ~$0.011/pt  2016s  0 fails
+#   claude-sonnet-5    245/484  23rd       ~$4.89  ~$0.020/pt  4313s  0 fails
+#
+#   go 44/56  design 18/34  rust 49/64  java 53/69
+#   typescript 49/63  csharp 51/68  cpp 54/64  python 51/66
+#
+# THE GENERATION CLOSED THE GAP: +124 seeds over Sonnet 5 at the same rate card,
+# above it on all eight targets, and design 18/34 against Sonnet 5's 8 -- from the
+# weakest Anthropic design row to the best. Solo it is 3 seeds under opus-5-5,
+# inside the noise floor; per target -3 rust, -3 java, -4 typescript, -2 csharp
+# against +2 go, +1 design, +3 cpp, +3 python.
+#
+# Money, from the summaries' own cache_write_tokens rather than the table (which
+# drops writes -- see the undercount note in report.py's run_cost): 114 in, 195133
+# out, 1831897 cache read, 652004 cache write = ~$4.93 against opus-5-5's ~$10.02.
+# Half the price for the same solo recall, and structural: the fresh-input,
+# output and write lines are all halved. (The summaries' own cost_usd sums to
+# $9.49 because the CLI prices this id at Opus 5.5's card -- see above.)
+#
+# SEAT ARITHMETIC (parser reproduced 398 / 409 / 414 before these were read):
+#
+#   panel [opus-5-5, codex, glm-5.3-flash]          414/484
+#   sonnet-5-5 REPLACES opus-5-5 in the claude seat 407   (-7)
+#   marginal over opus-5-5+codex                    +25
+#   marginal of opus-5-5 over sonnet-5-5+codex      +27   (the reverse test)
+#   as a 4th seat                                   430   (not available: one
+#                                                     payer, one seat)
+#
+# NOT A SEAT, BY THE BAR SET BEFORE THE RUN. Two of three conditions pass --
+# cheaper per point, faster -- and the one that decides a seat fails: 407 against
+# a bar of 410. Solo the two are a tie, but in the panel they are not
+# interchangeable: each finds ~40 seeds the other misses (38 vs 41), and the ones
+# opus-5-5 brings are the ones codex and glm-5.3-flash do not cover. It is the
+# same lesson as sonnet-5 and the whole marginals file: solo rank is the wrong lens.
+#
+# The clock does not rescue it either. 1605s against 2016s is a real gain for
+# the seat, but codex (6810s) is still the panel's slowest reviewer, so a round's
+# wall clock does not move. What the swap would actually buy is Claude
+# subscription quota -- about half a sweep's -- for 7 seeds of coverage.
+# That is a real trade and the operator's call, but it is not what the bar asked.
