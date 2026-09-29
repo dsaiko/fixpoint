@@ -162,10 +162,13 @@ type IgnoredStat struct {
 // (review run 20260929-125352). A directory counts when git itself reports it
 // wholly ignored (--directory, which also reports an empty one) or lies beneath
 // one on the way to an ignored file; git never reports a directory holding a
-// tracked or un-ignored file that way, so deleting a created one can take
-// nothing but ignored bytes. An empty directory nested inside a PRE-EXISTING
-// ignored one is not seen: finding it means walking node_modules/ on every
-// census, which findNestedGit prunes precisely to avoid.
+// tracked or un-ignored file that way. It CAN report one holding ignored files
+// that were already there -- its tracked files deleted and the deletion staged
+// -- which is why DiffIgnored never calls a directory above a first-census path
+// created, and RemoveCreated never deletes recursively (review run
+// 20260929-133423, i7). An empty directory nested inside a PRE-EXISTING ignored
+// one is not seen: finding it means walking node_modules/ on every census,
+// which findNestedGit prunes precisely to avoid.
 func (g Git) TakeIgnoredCensus(ctx context.Context, dir string) (map[string]IgnoredStat, error) {
 	out, err := g.run(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
 	if err != nil {
@@ -220,11 +223,31 @@ func recordIgnoredParents(census map[string]IgnoredStat, path string) {
 // recreate); modified paths are reported, not failed -- build churn rewrites
 // caches in place from task 2 onward, and stat metadata cannot carry an
 // integrity claim anyway. The clean-clone check is the enforcement (§7.2).
+//
+// A path whose type changed counts as created (review run 20260929-133423,
+// i3): an ignored file the attempt replaced with a directory is the attempt's
+// directory, and diffed as "modified" it survived the discard for the next
+// gate's `test -d` to pass on. The file it replaced is gone already, so
+// removing the directory takes only what the attempt made.
+//
+// A directory is NEVER created while a first-census path lies beneath it
+// (i7): git reports a directory wholly ignored by its current contents, so one
+// whose tracked files the task deleted reads as new at step 6 while it still
+// holds the operator's certs/dev.key. Its children are diffed on their own.
 func DiffIgnored(pre, post map[string]IgnoredStat) (created, modified []string) {
+	var holdsPre map[string]bool // every directory above a first-census path, built on first need
 	for path, st := range post {
 		prev, existed := pre[path]
+		if st.Dir && !prev.Dir {
+			if holdsPre == nil {
+				holdsPre = ancestorsOf(pre)
+			}
+			if holdsPre[path] {
+				continue
+			}
+		}
 		switch {
-		case !existed:
+		case !existed, prev.Dir != st.Dir:
 			created = append(created, path)
 		case prev != st:
 			modified = append(modified, path)
@@ -233,6 +256,17 @@ func DiffIgnored(pre, post map[string]IgnoredStat) (created, modified []string) 
 	sort.Strings(created)
 	sort.Strings(modified)
 	return created, modified
+}
+
+// ancestorsOf is the set of directories strictly above any census path.
+func ancestorsOf(census map[string]IgnoredStat) map[string]bool {
+	out := map[string]bool{}
+	for path := range census {
+		for p := filepath.ToSlash(filepath.Dir(strings.TrimSuffix(path, "/"))); p != "." && p != "/" && !out[p]; p = filepath.ToSlash(filepath.Dir(p)) {
+			out[p] = true
+		}
+	}
+	return out
 }
 
 // GateDiff classifies every post-gate difference against the pre-gate census

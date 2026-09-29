@@ -281,7 +281,22 @@ func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
 	// same hole the -c overrides close for fixpoint's own git calls. The keys with
 	// dynamic names, which no override can reach, are refused by the preflight
 	// instead (target.UnsafeConfig).
-	cmd.Env = gitenv.Harden(buildEnv(a))
+	//
+	// PathWithout then drops every PATH entry inside dir, and every relative one
+	// (the child resolves those against dir). The CLI runs `git` by name while
+	// exploring, holding the credential its agent declared, so a PATH carrying
+	// $PWD/node_modules/.bin or a direnv PATH_add hands that call to a bin/git the
+	// reviewed branch supplied -- the hole probeEnv and forgeEnv already close.
+	// argv[0] is unaffected: exec.CommandContext above resolved it against
+	// fixpoint's own PATH, and cmd.Env does not apply to that lookup.
+	//
+	// Every role, the coder included: the verify gate the coder's edits answer to
+	// runs through internal/verify with its own environment (EnvWithoutCredentials,
+	// PATH intact), so no gate loses a project-local tool, and a coder reaching one
+	// by bare name still has npx and `npm run`, which add node_modules/.bin
+	// themselves. What stripping for the coder buys is the same guarantee: it reads
+	// the target's content too, and holds a credential with edit rights.
+	cmd.Env = PathWithout(gitenv.Harden(buildEnv(a)), dir)
 	if a.PromptVia == config.PromptViaStdin {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
@@ -611,32 +626,56 @@ func ExtractText(output, tag string) (string, error) {
 // opener would silently drop everything above it.
 //
 // The search is bounded first: only openers after the last closer that precedes
-// the NEAREST opener. A closer before it ends an earlier block (a draft, a
-// quoted previous design), and reaching back past it spliced that draft, its
-// </design> and the prose after it into the answer (review run 20260929-125352,
-// i1); a closer after it lies inside the final body, which is why the bound is
-// taken from the nearest opener rather than from s's last closer. Inside the
-// region an envelope tag alone on its line wins, then one that begins a line
-// (a mention can begin a line too, i18), then the nearest.
+// the NEAREST opener AND ends its line. A closer before it ends an earlier block
+// (a draft, a quoted previous design), and reaching back past it spliced that
+// draft, its </design> and the prose after it into the answer (review run
+// 20260929-125352, i1); a closer after it lies inside the final body, which is why
+// the bound is taken from the nearest opener rather than from s's last closer. A
+// block's end is followed by a line break, while a closer the body quotes has
+// prose, a backtick or punctuation after it on its line: "closes with `</design>`
+// and opens with `<design>`" once bounded the search at that quote and returned
+// "`." as the whole design (review run 20260929-133423, i1).
+//
+// Inside the region an envelope tag alone on its line wins, then one that begins
+// a line (a mention can begin a line too, i18), then the nearest -- the EARLIEST
+// of its kind, because the real opener precedes everything its body says: a
+// design that shows the envelope as an indented or fenced example has a second
+// opener alone on its line, and taking the later one dropped the text above the
+// example.
 func openerIndex(s, openTag, closeTag string) int {
 	nearest := strings.LastIndex(s, openTag)
 	if nearest < 0 {
 		return -1
 	}
 	from := 0
-	if b := strings.LastIndex(s[:nearest], closeTag); b >= 0 {
-		from = b + len(closeTag)
-	}
-	leading := -1
-	for end := len(s); ; {
-		i := strings.LastIndex(s[:end], openTag)
-		if i < from {
+	for end := nearest; ; {
+		b := strings.LastIndex(s[:end], closeTag)
+		if b < 0 {
 			break
 		}
+		rest := s[b+len(closeTag):]
+		if k := strings.IndexByte(rest, '\n'); k >= 0 {
+			rest = rest[:k]
+		}
+		// Ends its line, or is followed straight by the next block's opener
+		// ("draft</design> <design>final").
+		if rest = strings.TrimLeft(rest, " \t\r"); rest == "" || strings.HasPrefix(rest, openTag) {
+			from = b + len(closeTag)
+			break
+		}
+		end = b
+	}
+	leading := -1
+	for i := from; ; i += len(openTag) {
+		j := strings.Index(s[i:], openTag)
+		if j < 0 {
+			break
+		}
+		i += j
 		lineStart := strings.LastIndexByte(s[:i], '\n') + 1
 		lineEnd := len(s)
-		if j := strings.IndexByte(s[i:], '\n'); j >= 0 {
-			lineEnd = i + j
+		if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
+			lineEnd = i + k
 		}
 		if strings.TrimLeft(s[lineStart:i], " \t") == "" {
 			if strings.TrimRight(s[i+len(openTag):lineEnd], " \t\r") == "" {
@@ -646,7 +685,6 @@ func openerIndex(s, openTag, closeTag string) int {
 				leading = i
 			}
 		}
-		end = i
 	}
 	if leading >= 0 {
 		return leading

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
+	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -49,6 +50,12 @@ func writeRunAt(t *testing.T, dir string, sum model.RunSummary, body string) str
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "summary-20260806-120000.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Every real run root holds its journal beside the summary, and the summary walk
+	// skips a directory with a journal -- except the one it was given. Without it
+	// here, nothing would notice that exemption going missing.
+	if err := os.WriteFile(filepath.Join(dir, logstore.JournalName), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -287,12 +294,90 @@ func TestPostRunFindsASummaryUnderAnyPattern(t *testing.T) {
 
 	t.Run("a nested run is not this directory's", func(t *testing.T) {
 		root := t.TempDir()
-		nested := writeRunAt(t, filepath.Join(root, "20260806-120000"), sum, "body")
-		if err := os.WriteFile(filepath.Join(nested, "journal.jsonl"), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		// writeRunAt gives the nested run its journal, which is what marks it as a run
+		// root of its own.
+		writeRunAt(t, filepath.Join(root, "20260806-120000"), sum, "body")
 		if logs := post(root); !strings.Contains(logs, "is it a run directory") {
 			t.Errorf("a logs root adopted a nested run's summary:\n%s", logs)
+		}
+	})
+
+	// Two summaries in one tree: the later started_at wins whichever the walk meets
+	// first, and on a tie the greater path does, so the pick never depends on the
+	// order the directory happens to list in.
+	t.Run("the newest of two summaries", func(t *testing.T) {
+		at := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+		for _, tc := range []struct {
+			name         string
+			first, later time.Time // started_at of a.json and b.json
+			want         int       // the PR of the one that must be picked
+		}{
+			{"the newer sorts first", at.Add(time.Hour), at, 1},
+			{"the newer sorts last", at, at.Add(time.Hour), 2},
+			{"a tie goes to the greater path", at, at, 2},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := writeRun(t, sum, "body")
+				for i, started := range []time.Time{tc.first, tc.later} {
+					s := sum
+					s.PR, s.StartedAt, s.ReviewBody = i+1, started, filepath.Join(dir, "review-body.md")
+					raw, err := json.Marshal(s)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(dir, string(rune('a'+i))+".json"), raw, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// writeRun's own summary has a zero started_at, older than both.
+				got, _, err := loadRunSummary(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.PR != tc.want {
+					t.Errorf("picked the summary for PR %d, want PR %d", got.PR, tc.want)
+				}
+			})
+		}
+	})
+
+	// A .json that is a link is not a summary, however new the file it names: the
+	// walk would otherwise read bytes from outside the run directory it vetted.
+	t.Run("a linked summary inside the run is not read", func(t *testing.T) {
+		dir := writeRun(t, sum, "body")
+		s := sum
+		s.PR, s.StartedAt, s.ReviewBody = 9, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), filepath.Join(dir, "review-body.md")
+		raw, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(t.TempDir(), "planted.json")
+		if err := os.WriteFile(outside, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, "zz.json")); err != nil {
+			t.Skip("no symlinks here:", err)
+		}
+		got, _, err := loadRunSummary(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.PR == 9 {
+			t.Error("the walk followed a linked .json out of the run directory")
+		}
+	})
+
+	// A link to a run directory is refused by name rather than followed or reported
+	// as "not a run directory": the provenance check and the content would otherwise
+	// be reached through separate resolutions of it.
+	t.Run("a symlinked run directory is refused", func(t *testing.T) {
+		dir := writeRun(t, sum, "body")
+		link := filepath.Join(t.TempDir(), "last")
+		if err := os.Symlink(dir, link); err != nil {
+			t.Skip("no symlinks here:", err)
+		}
+		if logs := post(link); !strings.Contains(logs, "is a symbolic link") {
+			t.Errorf("want the link refused as a link:\n%s", logs)
 		}
 	})
 }
