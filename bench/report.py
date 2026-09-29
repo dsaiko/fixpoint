@@ -98,6 +98,14 @@ RATES = {
     # whole reason to measure it: the claude route caches ~98% of a sweep, so
     # the $0.20 cached-input rate is most of what it would actually pay.
     "claude-sonnet-5": (2.00, 10.00, 0.20),
+    # Sonnet 5.5, added 2026-09-29 when it was benched: the same card as Sonnet 5
+    # ($2/$10, cached $0.20, 1h cache write $4), from the claude-api model table
+    # cached 2026-09-25. NOT solved from a probe like opus-5-5, because the probe
+    # cannot be trusted here: Claude Code 2.1.280 does not know the id, reports
+    # `costBasis: "unknown"`, and bills it at OPUS 5.5 rates -- 2*4 + 4*20 +
+    # 35149*0.20 + 11232*8, /1e6 = 0.0969738, its reported costUSD exactly. So
+    # this model's summaries carry a cost_usd ~2x too high; this tuple is right.
+    "claude-sonnet-5-5": (2.00, 10.00, 0.20),
     # NOTE 2026-09-07: developers.openai.com now shows sol at $4/$20, cached
     # $0.40, footnoted as "promotional pricing ... at least through November 21,
     # 2026". The row keeps the list price it was measured at so the codex
