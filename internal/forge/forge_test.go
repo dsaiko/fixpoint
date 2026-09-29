@@ -850,8 +850,10 @@ func TestGitLabInlineNotePathCannotEscapeItsCodeSpan(t *testing.T) {
 	if strings.Contains(note.Body, "a`@victim") {
 		t.Errorf("the path closed its code span, so what follows renders as markdown: %s", note.Body)
 	}
-	if !strings.Contains(note.Body, "`a&#96;@<!---->victim **b**.go:9`") {
-		t.Errorf("the path was not escaped and sanitized in place: %s", note.Body)
+	// Only the backtick: with the span intact the mention is inside it, where no
+	// forge links one, and breaking it too would misquote the path.
+	if !strings.Contains(note.Body, "`a&#96;@victim **b**.go:9`") {
+		t.Errorf("the path was not escaped in place: %s", note.Body)
 	}
 }
 

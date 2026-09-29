@@ -57,11 +57,129 @@ import (
 // and do nothing until a human clicks them, findings use them constantly, and
 // escaping them would make fixpoint misquote its own evidence in exchange for
 // nothing a reader could not already have been told in plain prose.
+//
+// Nor is the INSIDE of an inline code span, beyond steps 1 and 2 (see codeSpans).
+// A forge renders a span literally -- it decodes no entity, hides no comment,
+// links no mention -- so `List<String>` escaped came out as `List&lt;String>` and
+// `@Override` as `@<!---->Override`: a misquote with nothing bought. Step 2 still
+// runs there because the markers a later review reads back are matched in the RAW
+// body (see PublishedFindings), where a span is no protection. Fenced blocks are
+// NOT exempted, and that is not an oversight: the signature joins its lines after
+// sanitizing, which turns a fence's content back into inline text, and a fence's
+// extent depends on list and quote containers the string cannot see.
+//
+// A caller that puts two agent strings in ONE paragraph must sanitize them in one
+// call. Each call's span pairing holds only for the text it saw, and an unpaired
+// backtick at the end of one string pairs, on the forge, with the first one in the
+// next -- turning the rest of that span into live prose.
 func SanitizeText(s string) string {
+	s = model.StripControl(s)
+	spans, ok := codeSpans(s)
+	if !ok {
+		spans = nil // the pairing is not certain, so all of it is treated as prose
+	}
+	var b strings.Builder
+	at := 0
+	for _, sp := range spans {
+		b.WriteString(sanitizeProse(s[at:sp[0]]))
+		b.WriteString(escapeHTMLComments(s[sp[0]:sp[1]]))
+		at = sp[1]
+	}
+	b.WriteString(sanitizeProse(s[at:]))
+	return closeOpenFence(b.String())
+}
+
+// sanitizeProse is every per-string rule for text outside a code span.
+func sanitizeProse(s string) string {
 	s = sanitizeInline(s)
 	s = escapeRawHTML(s)
-	s = breakImages(s)
-	return closeOpenFence(s)
+	return breakImages(s)
+}
+
+// codeSpans finds the inline code spans of s, backticks included, and reports
+// whether a forge is CERTAIN to pair them the same way.
+//
+// The pairing is CommonMark's: a run of N backticks opens, the next run of exactly
+// N closes, an opener with no closer is literal, and a backslash escapes a
+// backtick outside a span. That is not enough on its own, because exempting a span
+// is only safe where the forge agrees it IS one -- text taken for code that the
+// forge renders as prose is an unescaped mention or tag. So any shape where the
+// two could disagree gives up on the whole string (ok false), which is the old
+// escape-everything behavior:
+//
+//   - a span over a newline: the forge pairs within a paragraph, and a blank line,
+//     a heading or a list item between the two runs ends it;
+//   - a span holding a `|`: a table row is split into cells before spans are
+//     paired;
+//   - an opener whose unbroken run of prose holds `<`, `:`, `@` or `www.`: an
+//     autolink starting there takes the backticks into its URL (an email autolink
+//     may carry one in its local part), and those are the characters that start
+//     one;
+//   - an opener with `](`, `$` or `[[` anywhere in the prose before it: a link
+//     destination or title, GitLab's `$`...`$` and `$...$` math and a wikilink
+//     each read raw text up to their own closer, backticks included, before any
+//     span there can form.
+func codeSpans(s string) ([][2]int, bool) {
+	var spans [][2]int
+	prev := 0    // where the prose before the next opener begins
+	raw := false // whether that prose so far could open a construct that reads raw text
+	for i := 0; i < len(s); {
+		if s[i] == '\\' && i+1 < len(s) && isASCIIPunct(s[i+1]) {
+			i += 2
+			continue
+		}
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		open := backtickRunEnd(s, i)
+		n, closer := open-i, -1
+		for k := open; k < len(s); {
+			if s[k] != '`' {
+				k++
+				continue
+			}
+			e := backtickRunEnd(s, k)
+			if e-k == n {
+				closer = k
+				break
+			}
+			k = e
+		}
+		if closer < 0 {
+			i = open // no closer: these backticks are literal text
+			continue
+		}
+		prose := s[prev:i]
+		raw = raw || strings.Contains(prose, "](") || strings.Contains(prose, "$") || strings.Contains(prose, "[[")
+		if raw || strings.ContainsAny(s[open:closer], "\n|") || autolinkCanStart(prose) {
+			return nil, false
+		}
+		spans = append(spans, [2]int{i, closer + n})
+		prev = closer + n
+		i = prev
+	}
+	return spans, true
+}
+
+// autolinkCanStart reports whether the prose right before a backtick could begin
+// an autolink that runs over it: an autolink stops only at whitespace, so only the
+// unbroken tail of the prose matters.
+func autolinkCanStart(prose string) bool {
+	tail := prose[strings.LastIndexAny(prose, " \n")+1:]
+	return strings.ContainsAny(tail, "<:@") || strings.Contains(strings.ToLower(tail), "www.")
+}
+
+func backtickRunEnd(s string, i int) int {
+	for i < len(s) && s[i] == '`' {
+		i++
+	}
+	return i
+}
+
+// isASCIIPunct is the set CommonMark lets a backslash escape.
+func isASCIIPunct(c byte) bool {
+	return strings.IndexByte("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", c) >= 0
 }
 
 // sanitizeInline is the part of the rule that holds in every context, including
@@ -234,13 +352,18 @@ func breakImages(s string) string { return strings.ReplaceAll(s, "![", "!<!---->
 // Exported because the review body puts a path in a span too (review.mdCode). Two
 // hand-rolled escapes for one rule is how one of them ends up without it.
 //
-// It composes sanitizeInline rather than SanitizeText because the two BLOCK rules
-// have nothing to do here: no HTML tag and no code fence can form inside a span,
-// the backtick escape below already denies the only way out of one, and applying
-// them anyway would misquote the path -- `a<b.txt` printed as `a&lt;b.txt`, which
-// a code span shows verbatim instead of rendering.
+// Inside the span only the rules that hold THERE run, for the reason SanitizeText
+// exempts a span's content: no tag, image, mention or reference can form inside
+// one, and escaping them would misquote the path -- `@types/foo.d.ts` printed as
+// `@<!---->types/foo.d.ts`, `a<b.txt` as `a&lt;b.txt`. The comment escape stays,
+// because a marker is read out of the raw body, span or no span.
+//
+// A line break becomes a space, which is what a span renders one as anyway. Kept,
+// it is a way out: a blank line ends the paragraph and the span with it, and what
+// follows -- a `<details>` or a fence -- is live in the document around it.
 func CodeSpan(s string) string {
-	return strings.ReplaceAll(sanitizeInline(s), "`", "&#96;")
+	s = strings.ReplaceAll(model.StripControl(s), "\n", " ")
+	return strings.ReplaceAll(escapeHTMLComments(s), "`", "&#96;")
 }
 
 // AddressableLines reports which lines of which files a forge will accept a
@@ -256,9 +379,16 @@ func CodeSpan(s string) string {
 // Context lines count, not just additions. A finding about a line the change
 // merely moved past is still anchorable, and GitHub accepts it as long as the
 // line appears in a hunk.
+//
+// The path is read the way git wrote it, not the way its defaults write it. The
+// diff comes from the operator's own git, whose config can change the prefixes
+// (diff.noprefix, diff.mnemonicPrefix's `w/`, diff.dstPrefix) and quotes any
+// non-ASCII name by default (core.quotePath). Trimming a literal "b/" stored those
+// files under a key no finding ever names, and their anchors were dropped without
+// a word. See newSidePath.
 func AddressableLines(diff string) map[string]map[int]bool {
 	out := map[string]map[int]bool{}
-	var path string
+	var path, header, renamed string
 	var newLine int
 	inHunk := false
 	for _, line := range strings.Split(diff, "\n") {
@@ -280,14 +410,17 @@ func AddressableLines(diff string) map[string]map[int]bool {
 			// Removed: it exists only on the old side, which RIGHT comments cannot name.
 		case inHunk && strings.HasPrefix(line, "\\"):
 			// "\ No newline at end of file" -- a note about the previous line.
+		case strings.HasPrefix(line, "diff --git "):
+			header, renamed, path, inHunk = strings.TrimPrefix(line, "diff --git "), "", "", false
+		case !inHunk && (strings.HasPrefix(line, "rename to ") || strings.HasPrefix(line, "copy to ")):
+			// The one place git names the new path with no prefix at all.
+			_, to, _ := strings.Cut(line, " to ")
+			renamed = unquoteGitPath(to)
 		case strings.HasPrefix(line, "+++ "):
 			// "+++ b/path" -- and "+++ /dev/null" for a deletion, which has no side to
 			// comment on.
-			path = strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, "+++ ")), "b/")
-			if path == "/dev/null" {
-				path = ""
-			}
-			inHunk = false
+			path = newSidePath(strings.TrimPrefix(line, "+++ "), header, renamed)
+			header, renamed, inHunk = "", "", false
 		case strings.HasPrefix(line, "@@"):
 			start, ok := hunkNewStart(line)
 			inHunk = ok && path != ""
@@ -304,6 +437,70 @@ func AddressableLines(diff string) map[string]map[int]bool {
 		}
 	}
 	return out
+}
+
+// newSidePath is the repository path a "+++ " line names, whatever prefix the
+// operator's git gave it.
+//
+// No prefix can be stripped by name, because none is fixed: `b/` by default,
+// nothing under diff.noprefix, `w/` or `i/` under diff.mnemonicPrefix, anything at
+// all under diff.dstPrefix. What IS fixed is that the `diff --git` header names
+// the same file on both sides, each under its own prefix, so the path is what the
+// two sides share at the end, from a directory boundary. A rename names two files,
+// and git spells the new one out on its `rename to` line instead -- unprefixed.
+// Only with neither (a bare patch, no header) is `b/` assumed.
+func newSidePath(dst, header, renamed string) string {
+	// git ends the name with a tab when it holds a space, so a patch tool can tell
+	// where it stops.
+	dst = strings.TrimRight(dst, "\t\r")
+	switch {
+	case dst == "/dev/null":
+		return ""
+	case renamed != "":
+		return renamed
+	}
+	name := unquoteGitPath(dst)
+	if src, ok := strings.CutSuffix(header, " "+dst); ok {
+		if p := sharedPathTail(unquoteGitPath(src), name); p != "" {
+			return p
+		}
+	}
+	return strings.TrimPrefix(name, "b/")
+}
+
+// sharedPathTail is the longest common suffix of a and b that starts a path
+// component in both: "x/y.go" for "a/x/y.go" and "b/x/y.go", all of "x.go" for
+// two unprefixed "x.go".
+func sharedPathTail(a, b string) string {
+	n := 0
+	for n < len(a) && n < len(b) && a[len(a)-1-n] == b[len(b)-1-n] {
+		n++
+	}
+	tail := b[len(b)-n:]
+	for tail != "" {
+		i, j := len(a)-len(tail), len(b)-len(tail)
+		if (i == 0 || a[i-1] == '/') && (j == 0 || b[j-1] == '/') {
+			return tail
+		}
+		_, rest, ok := strings.Cut(tail, "/")
+		if !ok {
+			return ""
+		}
+		tail = rest
+	}
+	return ""
+}
+
+// unquoteGitPath undoes core.quotePath: a name git put in double quotes carries C
+// escapes, octal bytes for anything outside ASCII among them, which are exactly
+// Go's own. Anything else is returned as it came.
+func unquoteGitPath(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		if u, err := strconv.Unquote(s); err == nil {
+			return u
+		}
+	}
+	return s
 }
 
 // hunkNewStart pulls the new-file start line out of "@@ -a,b +c,d @@".

@@ -588,7 +588,12 @@ func ExtractText(output, tag string) (string, error) {
 	if strings.TrimSpace(output[c+len(closeTag):]) != "" {
 		return "", fmt.Errorf("<%s> block is not the last output (the contract requires the tagged block to be final; untagged trailing output follows the last </%s>)", tag, tag)
 	}
-	o := strings.LastIndex(output[:c], openTag)
+	o := lastLineStartIndex(output[:c], openTag)
+	if o < 0 {
+		// No opener begins a line: the agent put it inline ("Here it is: <design>"),
+		// which is still a valid envelope, so the nearest one is the answer.
+		o = strings.LastIndex(output[:c], openTag)
+	}
 	if o < 0 {
 		return "", fmt.Errorf("no <%s> block found in agent output", tag)
 	}
@@ -597,6 +602,26 @@ func ExtractText(output, tag string) (string, error) {
 		return "", fmt.Errorf("the <%s> block is empty", tag)
 	}
 	return body, nil
+}
+
+// lastLineStartIndex is strings.LastIndex restricted to occurrences that begin
+// a line (only spaces or tabs before them on it). ExtractText cannot try
+// candidates the way ExtractJSON does -- any prose parses -- so it needs another
+// way past an opener the BODY mentions: a design about fixpoint itself says
+// "prose in a `<design>` envelope", and taking that as the opener would silently
+// drop everything above it. Envelope tags stand on their own line; mentions sit
+// inside a sentence.
+func lastLineStartIndex(s, sub string) int {
+	for end := len(s); ; {
+		i := strings.LastIndex(s[:end], sub)
+		if i < 0 {
+			return -1
+		}
+		if strings.TrimLeft(s[strings.LastIndexByte(s[:i], '\n')+1:i], " \t") == "" {
+			return i
+		}
+		end = i
+	}
 }
 
 // ExtractJSON finds the agent's FINAL <tag>...</tag> block in the output and

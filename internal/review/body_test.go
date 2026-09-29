@@ -710,3 +710,66 @@ func TestADifferentDefectOnAnAlreadyReportedLineIsStillPublished(t *testing.T) {
 		t.Errorf("a defect nobody has reported must reach the body, not the omitted count:\n%s", got)
 	}
 }
+
+// A '.' ends the advisory line only where a sentence ends. The first '.' anywhere
+// cut a file name, a version or a qualified name in half, and a kept newline ended
+// the list item early.
+func TestFirstSentenceDoesNotEndInsideANameOrAnAbbreviation(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"The handler in api/server.go leaks the body. Close it.", "The handler in api/server.go leaks the body."},
+		{"Pin v1.2 or call pkg.Func instead. More.", "Pin v1.2 or call pkg.Func instead."},
+		{"Use a guard, e.g. a mutex. Or a channel.", "Use a guard, e.g. a mutex."},
+		{"first line\nsecond line", "first line"},
+		{"no full stop at all", "no full stop at all"},
+		{"ends here.", "ends here."},
+	} {
+		if got := firstSentence(tc.in); got != tc.want {
+			t.Errorf("firstSentence(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A finding with no file has no location to show. An empty span renders as two
+// literal backticks, and a bare line number names a line of nothing.
+func TestAFindingWithNoFileRendersNoLocation(t *testing.T) {
+	for _, line := range []int{0, 42} {
+		it := model.Issue{ID: "i1", Severity: "high", Title: "the change needs a test", Line: line}
+		body := RenderBody(BodyInput{Decision: Decision{Outcome: ChangesRequested}, Issues: []model.Issue{it}})
+		if strings.Contains(body, "``") || strings.Contains(body, "`:42`") {
+			t.Errorf("line %d: an empty location was rendered:\n%s", line, body)
+		}
+		if !strings.Contains(body, "**HIGH**\n\nthe change needs a test") {
+			t.Errorf("line %d: the header should be the severity alone:\n%s", line, body)
+		}
+	}
+}
+
+// The identity is built from the normalized path, so the moved-file lookup has to
+// be too. Spelled `./auth.go` by the reviewer, a finding on a file pushed to since
+// matched its old marker, missed moved["auth.go"], and was withheld as already
+// reported.
+func TestCarriesComparesTheNormalizedPath(t *testing.T) {
+	it := model.Issue{Title: "a defect", File: "./auth.go", Line: 7, Fingerprint: issue.Fingerprint(model.Finding{Title: "a defect", File: "./auth.go", Line: 7})}
+	p := Published{
+		At:    map[string][]string{FindingID(it): {"0ld"}},
+		Moved: map[string]map[string]bool{"0ld": {"auth.go": true}},
+	}
+	if p.Carries(FindingID(it), it.File) {
+		t.Error("a finding on a file that moved since it was said counts as carried because of how its path was spelled")
+	}
+}
+
+// Two agent strings in one paragraph go through one sanitize call. Apart, an
+// unpaired backtick ending the first paired with the second's first on the forge,
+// and what the second call had left as code rendered as prose.
+func TestFieldsSharingALineAreSanitizedTogether(t *testing.T) {
+	body := bodyFor(t, Input{Quorum: full(2)}, func(b *BodyInput) {
+		b.Advisory = []model.Finding{{Title: "a `", Description: "`@victim` is pinged."}}
+		b.Panel = []string{"claude `", "`@victim2`"}
+	})
+	for _, mention := range []string{"@victim", "@victim2"} {
+		if strings.Contains(body, mention) {
+			t.Errorf("%s survived as a live mention:\n%s", mention, body)
+		}
+	}
+}

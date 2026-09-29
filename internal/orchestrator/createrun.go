@@ -615,7 +615,11 @@ func (o *Orchestrator) prepareCreate(ctx context.Context, sum *model.RunSummary)
 	if err != nil {
 		return "", snap, 0, "", err
 	}
-	snap, err = create.Snapshot(assignment, scratch, []string{out}, snapBudget)
+	// The logs are excluded by PATH, not only by the built-in `.fixpoint` name: a
+	// custom logs.dir inside a directory assignment would otherwise put this very
+	// snapshot inside the tree it copies, and the walk would copy it into itself
+	// -- along with earlier runs' prompts and raw outputs as assignment material.
+	snap, err = create.Snapshot(assignment, scratch, []string{out, o.cfg.Logs.StaticBase(), scratch}, snapBudget)
 	if err != nil {
 		return "", snap, 0, "", err
 	}
