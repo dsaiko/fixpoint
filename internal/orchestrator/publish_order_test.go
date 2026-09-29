@@ -15,7 +15,8 @@ import (
 // the way the orchestrator builds it: the review body (with the finding's
 // location), an inline comment, and the thread and triage replies (SanitizeText,
 // then the signature, then publishedText).
-func publishedPaths(file, text string) map[string]string {
+func publishedPaths(file string) map[string]string {
+	const text = publishedPayloadText
 	const sig = "_fixpoint_"
 	it := model.Issue{Severity: "high", Title: text, File: file, Line: 9, Description: text, Suggestion: text}
 	body := review.RenderBody(review.BodyInput{
@@ -35,17 +36,21 @@ func publishedPaths(file, text string) map[string]string {
 // out -- means an escape was skipped.
 var livePayload = []string{"@victim", "<details", "![x]"}
 
+const (
+	publishedPayload     = "@victim <details> ![x](https://evil.example/leak)"
+	publishedPayloadText = "see `token=abcdefgh`x and `" + publishedPayload + "` and " + publishedPayload
+)
+
 // No agent string reaches a forge with a live mention, tag or image in it, however
 // the forge pairs its code spans. The inside of a span is escaped like prose, so
 // that pairing is not something the sanitizer has to predict: an agent span, a
 // location span, and a publish-time mask that eats a span's closing backtick all
 // publish inert text.
 func TestPublishedTextCarriesNoLivePayload(t *testing.T) {
-	const payload = "@victim <details> ![x](https://evil.example/leak)"
-	const text = "see `token=abcdefgh`x and `" + payload + "` and " + payload
+	const payload = publishedPayload
 
 	t.Run("built-in rules", func(t *testing.T) {
-		for name, got := range publishedPaths("a`"+payload+".go", text) {
+		for name, got := range publishedPaths("a`" + payload + ".go") {
 			for _, live := range livePayload {
 				if strings.Contains(got, live) {
 					t.Errorf("%s: published %q carries %q", name, got, live)
@@ -57,7 +62,7 @@ func TestPublishedTextCarriesNoLivePayload(t *testing.T) {
 		}
 		// The location keeps its span: a backtick in the path is not a way out of it.
 		const loc = "`a&#96;@<!---->victim &lt;details> !<!---->[x](https://evil.example/leak).go:9`"
-		if got := publishedPaths("a`"+payload+".go", text)["body"]; !strings.Contains(got, loc) {
+		if got := publishedPaths("a`" + payload + ".go")["body"]; !strings.Contains(got, loc) {
 			t.Errorf("body %q, want the location quoted whole as %q", got, loc)
 		}
 	})
@@ -67,11 +72,11 @@ func TestPublishedTextCarriesNoLivePayload(t *testing.T) {
 	t.Run("operator pattern eats a closing backtick", func(t *testing.T) {
 		agent.SetExtraRedactions([]*regexp.Regexp{regexp.MustCompile(`(secret=)\S+`)})
 		t.Cleanup(func() { agent.SetExtraRedactions(nil) })
-		body := publishedPaths(payload+" secret=abc.go", text)["body"]
+		body := publishedPaths(payload + " secret=abc.go")["body"]
 		if strings.Contains(body, "[REDACTED]:9`") {
 			t.Fatalf("precondition: the mask must eat the location's closing backtick: %q", body)
 		}
-		for name, got := range publishedPaths(payload+" secret=abc.go", text) {
+		for name, got := range publishedPaths(payload + " secret=abc.go") {
 			for _, live := range livePayload {
 				if strings.Contains(got, live) {
 					t.Errorf("%s: published %q carries %q", name, got, live)
