@@ -130,6 +130,11 @@ func escapeRawHTML(s string) string {
 // Closing it costs three characters and keeps a legitimate code block -- which
 // findings do carry -- rendering exactly as the agent wrote it.
 //
+// It counts fences as if s began at column 0 and stood alone, which is only true of
+// a field the caller places as a block of its own. After a prefix on its line or
+// inside a list item the count is wrong in both directions, so those callers flatten
+// the field to one line first (review.mdLine).
+//
 // It errs towards doing nothing. Only fences CommonMark is unambiguous about are
 // tracked (at most three spaces of indent, a backtick opener whose info string
 // carries no backtick), because a MISSED fence leaves the status quo while an
