@@ -206,3 +206,51 @@ func TestSnapshotExcludesAcrossSpellingsAndIgnoresAncestors(t *testing.T) {
 		t.Errorf("an exclude containing the assignment emptied the snapshot: Files = %d, want 2", snap.Files)
 	}
 }
+
+// A logs.dir whose literal prefix IS the assignment directory is refused. The
+// exclusion used to be dropped as "names no part of the assignment", so every
+// earlier run's prompts and raw outputs, sitting directly under the assignment,
+// were copied in as material for every agent.
+func TestSnapshotRefusesAnExcludeThatIsTheAssignment(t *testing.T) {
+	base := t.TempDir()
+	write(t, base, "real/proj/brief.md", "the brief")
+	write(t, base, "real/proj/20260101-000000/round-1/prompt.md", "a previous run's prompt")
+	if err := os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "alias")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	canon, err := filepath.EvalSymlinks(filepath.Join(base, "real", "proj"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(base, "alias", "proj")
+	// Both spellings: as written, and canonical while the assignment is an alias.
+	for _, logs := range []string{src, canon, src + string(filepath.Separator)} {
+		dst := filepath.Join(t.TempDir(), "s")
+		_, err := Snapshot(src, dst, []string{logs}, 1<<20)
+		if err == nil || !strings.Contains(err.Error(), "logs.dir") {
+			t.Errorf("Snapshot(exclude %s) = %v, want the refusal", logs, err)
+		}
+		if _, rerr := os.Stat(filepath.Join(dst, "20260101-000000")); rerr == nil {
+			t.Errorf("an earlier run's logs reached the snapshot (exclude %s)", logs)
+		}
+	}
+}
+
+// copyFile's O_NOFOLLOW is the guard for a file swapped for a link between the
+// walk classifying it and the open. The walk itself skips links it sees, so only
+// a direct call can reach the open with one: it must fail, and the link's
+// destination must not be copied.
+func TestCopyFileDoesNotFollowASymlink(t *testing.T) {
+	secret := write(t, t.TempDir(), "credentials", "aws_secret_access_key=x")
+	link := filepath.Join(t.TempDir(), "brief.md")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	dst := filepath.Join(t.TempDir(), "brief.md")
+	if n, err := copyFile(link, dst, 1<<20); err == nil {
+		t.Errorf("copyFile(symlink) = %d, nil; want a refusal to follow it", n)
+	}
+	if b, err := os.ReadFile(dst); err == nil && strings.Contains(string(b), "aws_secret") {
+		t.Errorf("the link's destination was copied: %q", b)
+	}
+}

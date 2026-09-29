@@ -86,6 +86,43 @@ func TestForgeCLIRunsWithoutTargetPathEntries(t *testing.T) {
 		}
 		check(t, out)
 	})
+	// A RELATIVE entry names the target's own bin, because gh runs with cmd.Dir =
+	// the target and its `git` lookup resolves `bin` there. Checked from
+	// fixpoint's side it resolved against fixpoint's cwd and survived (review run
+	// 20260929-125352, i5/i8).
+	t.Run("relative", func(t *testing.T) {
+		// fixpoint's cwd has a bin of its own, outside the target, so the entry
+		// resolves from here and passes the inside-the-target check. It holds no
+		// gh, so gh itself still resolves to the stub outside.
+		cwd := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(cwd, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(cwd)
+		t.Setenv("PATH", "bin"+sep+outside)
+		// A collector of its own: UseGitEnv snapshots PATH, so c still holds the
+		// absolute one.
+		rc := New(config.Target{Mode: config.ModePR, PR: 7, Path: target})
+		rc.UseGitEnv(agent.EnvWithoutCredentials(nil))
+		for name, out := range map[string]func() string{
+			"prIntent": func() string { return rc.prIntent(t.Context()) },
+			"run": func() string {
+				out, err := rc.run(t.Context(), "gh", "repo", "view")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return out
+			},
+		} {
+			got := out()
+			check(t, got)
+			for _, line := range strings.Split(got, "\n") {
+				if v, ok := strings.CutPrefix(line, "PATH="); ok && slices.Contains(filepath.SplitList(v), "bin") {
+					t.Errorf("%s: gh's PATH kept the relative entry bin: %q", name, v)
+				}
+			}
+		}
+	})
 	// Every Collector subprocess, not only the forge CLIs: git's own children
 	// (ssh, gpg, a credential helper) resolve through the same PATH.
 	t.Run("git", func(t *testing.T) {

@@ -439,8 +439,15 @@ func IsForgeCLI(name string) bool {
 // Entries are compared after symlink resolution, so a link into the target does
 // not slip past a lexical check. An entry that cannot be resolved is dropped:
 // this runs on the path a credential travels, and a directory nobody can
-// identify is not one to trust with it.
+// identify is not one to trust with it. So is every relative entry (`bin`,
+// `node_modules/.bin`, `.`): fixpoint would resolve it against its own cwd, but
+// the child runs with cmd.Dir = the target and resolves it there, so no check
+// made here says anything about the directory the child will search. git and
+// its non-Go helpers have no ErrDot guard (review run 20260929-125352, i5/i8).
 func PathWithout(env []string, root string) []string {
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		realRoot = filepath.Clean(root)
@@ -457,6 +464,9 @@ func PathWithout(env []string, root string) []string {
 			if dir == "" {
 				// An empty entry means "the current directory", which in pr mode is
 				// the target itself.
+				continue
+			}
+			if !filepath.IsAbs(dir) {
 				continue
 			}
 			resolved, rerr := filepath.EvalSymlinks(dir)

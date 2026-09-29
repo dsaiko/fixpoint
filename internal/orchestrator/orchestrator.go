@@ -5032,6 +5032,13 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 // operator read [REDACTED] and approved the post, and the leak went out beside it.
 // Naming the transform is what keeps the two channels from drifting again.
 //
+// Over agent text the redaction here is expected to change NOTHING:
+// forge.SanitizeText and forge.CodeSpan redact before they pair code spans, and
+// SanitizeText gives up its spans when this pass would still alter what it
+// rendered. That order is load-bearing -- a mask applied only here can eat a
+// span's closing backtick and publish the raw inside of the next span as live
+// prose. What is left for this pass is fixpoint's own text.
+//
 // Both transforms are idempotent, so logstore re-applying them changes nothing.
 func publishedText(s string) string {
 	return agent.EscapeTerminalBlock(agent.RedactSecrets(s))

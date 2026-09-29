@@ -97,7 +97,13 @@ type implementPrep struct {
 	// commit, an outcome marker. Anything past it at HEAD is a session's own,
 	// unverified and unattributed, and must not survive an interrupted run.
 	attributed string
-	baseline   implement.RepoState
+	// inflightIgnored is the in-flight attempt's step 2 ignored census, nil once
+	// the attempt has reached a verdict. cleanUpInterrupted needs it: GitClean
+	// cannot see ignored output, so without it an attempt canceled after writing
+	// only dist/ left that behind for -continue's next step 2 to census as
+	// pre-existing.
+	inflightIgnored map[string]implement.IgnoredStat
+	baseline        implement.RepoState
 	// outcomes is every processed task's recorded outcome, by id. Shared state
 	// rather than a buildPhase local because the coverage check needs it:
 	// "already_satisfied, covered by T04" is only true if T04 was IMPLEMENTED.
@@ -1083,8 +1089,11 @@ func (o *Orchestrator) runTask(ctx context.Context, rec *model.RoundRecord, p *i
 		o.journal("task_started", 1, map[string]any{"id": t.ID, "title": t.Title, "attempt": attempt})
 		res, report, verdict, err := o.taskAttempt(ctx, rec, p, pl, idx, attempt, priorFailure)
 		if err != nil {
-			return out, err
+			return out, err // inflightIgnored kept: the attempt may be half-discarded
 		}
+		// A verdict means the attempt committed or finished its discard, so its
+		// census is stale: a committed gate's ignored output is the project's now.
+		p.inflightIgnored = nil
 		switch verdict.kind {
 		case attemptInfra:
 			*infraStrikes++
@@ -1224,6 +1233,7 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 	// ladder below either finds HEAD unmoved or resets it back to base, what it
 	// must still look like when the gate has finished too.
 	before := attemptBase{head: base, repo: preState, ignored: preIgnored}
+	p.inflightIgnored = preIgnored
 
 	// Step 3: the coder session.
 	d := prompt.TaskData{
@@ -1693,16 +1703,39 @@ func (o *Orchestrator) cleanUpInterrupted(ctx context.Context, p *implementPrep)
 		}
 	}
 	clean, err := p.col.GitClean(fresh)
-	if err != nil || clean {
+	if err != nil {
 		return
 	}
-	o.logf("the run was interrupted with the tree dirty; discarding the in-flight attempt so the project stays consistent")
-	if _, err := p.col.StashDirty(fresh, fmt.Sprintf("fixpoint %s: interrupted (discarded)", o.logs.RunID())); err != nil {
-		o.logf("WARNING: could not discard the interrupted attempt (%v); %s is left dirty -- `git stash` there before continuing", err, p.out)
+	if !clean {
+		o.logf("the run was interrupted with the tree dirty; discarding the in-flight attempt so the project stays consistent")
+		if _, err := p.col.StashDirty(fresh, fmt.Sprintf("fixpoint %s: interrupted (discarded)", o.logs.RunID())); err != nil {
+			o.logf("WARNING: could not discard the interrupted attempt (%v); %s is left dirty -- `git stash` there before continuing", err, p.out)
+			return
+		}
+		if clean, err := p.col.GitClean(fresh); err != nil || !clean {
+			o.logf("WARNING: %s is still dirty after the discard; inspect it before continuing", p.out)
+		}
+	}
+	// finishDiscard's ignored half, on the fresh context and whether or not the
+	// tree was clean: an attempt that wrote only ignored output leaves GitClean
+	// true, and that is exactly the residue a resumed step 2 would take for the
+	// project's own. After the stash, so HEAD's ignore rules decide.
+	if p.inflightIgnored == nil {
 		return
 	}
-	if clean, err := p.col.GitClean(fresh); err != nil || !clean {
-		o.logf("WARNING: %s is still dirty after the discard; inspect it before continuing", p.out)
+	post, err := p.git.TakeIgnoredCensus(fresh, p.out)
+	if err != nil {
+		o.logf("WARNING: could not census the interrupted attempt's ignored paths (%v); %s may hold its build output -- inspect it before continuing", err, p.out)
+		return
+	}
+	created, _ := implement.DiffIgnored(p.inflightIgnored, post)
+	if stuck := removeAll(p.out, created); len(stuck) > 0 {
+		o.logf("WARNING: could not delete the interrupted attempt's ignored path(s): %s -- remove them before continuing, or the next attempt builds on them unseen", strings.Join(stuck, ", "))
+		return
+	}
+	if len(created) > 0 {
+		o.logf("the interrupted attempt's %d ignored path(s) deleted", len(created))
+		o.journal("ignored_paths_discarded", 1, map[string]any{"interrupted": true, "created": created})
 	}
 }
 

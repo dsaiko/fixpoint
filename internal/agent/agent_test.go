@@ -242,6 +242,23 @@ func TestRedactSecretsPreservesJSONEscaping(t *testing.T) {
 	}
 }
 
+// A mask never swallows a closing backtick. Published review text is redacted,
+// and eating the backtick that closes `token=...` would pair the NEXT backtick
+// with it, turning the content of the following span into live markdown (review
+// run 20260929-125352, i6).
+func TestRedactSecretsKeepsClosingBacktick(t *testing.T) {
+	in := "see `token=abcd1234efgh` and `@victim <details>`"
+	want := "see `token=" + redactionMask + "` and `@victim <details>`"
+	if got := RedactSecrets(in); got != want {
+		t.Errorf("RedactSecrets(%q) = %q, want %q", in, got, want)
+	}
+	// A value glued to the backtick with no room left for 8 value characters is
+	// not masked at all, rather than masked across the backtick.
+	if in := "`token=abc`defghijk`"; RedactSecrets(in) != in {
+		t.Errorf("RedactSecrets(%q) = %q, crossed the backtick", in, RedactSecrets(in))
+	}
+}
+
 // The built-in rules are shapes, so a site's own opaque token is exactly what
 // they cannot recognize; logs.redact is the operator's answer and must reach
 // every persisted format, not just Raw. Both spellings are asserted: a bare
@@ -534,6 +551,16 @@ func TestExtractText(t *testing.T) {
 		"inline mention in body": {output: "notes\n<design>\n# T\nprose in a `<design>` envelope\nend\n</design>", want: "# T\nprose in a `<design>` envelope\nend"},
 		"indented opener":        {output: "notes\n  <design>\n# T\nsee <design> here\n</design>", want: "# T\nsee <design> here"},
 		"inline opener only":     {output: "Here it is: <design># T\nBody.</design>", want: "# T\nBody."},
+		// An earlier, already-closed block (a draft, a quoted previous design) is
+		// not reached back into for its better-placed opener (i1).
+		"closed draft then inline final":       {output: "<design>\ndraft\n</design>\nRevised: <design>final</design>", want: "final"},
+		"inline draft then inline final":       {output: "<design>draft</design>\nRevised: <design>final</design>", want: "final"},
+		"closed draft then quoted closer body": {output: "<design>\ndraft\n</design>\n<design>\nwrite </design> literally\n</design>", want: "write </design> literally"},
+		// A closer quoted after the nearest opener lies inside the final body, so
+		// it does not bound the search.
+		"body mentions both tags": {output: "notes\n<design>\n# T\nsee `<design>` and `</design>` here\n</design>", want: "# T\nsee `<design>` and `</design>` here"},
+		// A mention that begins its own line loses to the opener alone on its line (i18).
+		"line-leading mention in body": {output: "notes\n<design>\n# T\n  <design> envelope mentioned here\n</design>", want: "# T\n  <design> envelope mentioned here"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := ExtractText(tc.output, "design")

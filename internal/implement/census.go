@@ -143,20 +143,49 @@ func contentDigest(path string) (string, error) {
 type IgnoredStat struct {
 	Size    int64
 	ModTime time.Time
+	// Dir marks a wholly-ignored directory. Its entry carries no stat, so it is
+	// only ever created, never modified: a directory's mtime moves with every
+	// build that touches its contents, and that churn is already reported per
+	// file.
+	Dir bool
 }
 
-// TakeIgnoredCensus records every ignored file, minus fixpoint's own artifact
-// root -- on a continued run `.fixpoint/` is the run's scratch inside the
-// project, and a census that reads the run's own journal writes would fail
-// every task on the tool's bookkeeping (review run 20260813-003817).
+// TakeIgnoredCensus records every ignored file, and every wholly-ignored
+// directory, minus fixpoint's own artifact root -- on a continued run
+// `.fixpoint/` is the run's scratch inside the project, and a census that reads
+// the run's own journal writes would fail every task on the tool's bookkeeping
+// (review run 20260813-003817).
+//
+// Directories because git lists only files, so a discard that deleted a
+// session's scratch/build.tmp left the scratch/ it made -- invisible to
+// GitClean -- and the next attempt's `test -d scratch` gate passed on it
+// (review run 20260929-125352). A directory counts when git itself reports it
+// wholly ignored (--directory, which also reports an empty one) or lies beneath
+// one on the way to an ignored file; git never reports a directory holding a
+// tracked or un-ignored file that way, so deleting a created one can take
+// nothing but ignored bytes. An empty directory nested inside a PRE-EXISTING
+// ignored one is not seen: finding it means walking node_modules/ on every
+// census, which findNestedGit prunes precisely to avoid.
 func (g Git) TakeIgnoredCensus(ctx context.Context, dir string) (map[string]IgnoredStat, error) {
 	out, err := g.run(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
 	}
+	dirs, err := g.run(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		return nil, err
+	}
+	artifactRoot := func(path string) bool {
+		return path == ".fixpoint" || strings.HasPrefix(path, ".fixpoint/")
+	}
 	census := map[string]IgnoredStat{}
+	for _, path := range strings.Split(strings.Trim(dirs, "\x00"), "\x00") {
+		if p, isDir := strings.CutSuffix(path, "/"); isDir && p != "" && !artifactRoot(p) {
+			census[p] = IgnoredStat{Dir: true}
+		}
+	}
 	for _, path := range strings.Split(strings.Trim(out, "\x00"), "\x00") {
-		if path == "" || path == ".fixpoint" || strings.HasPrefix(path, ".fixpoint/") {
+		if path == "" || artifactRoot(path) {
 			continue
 		}
 		st, err := os.Lstat(filepath.Join(dir, path))
@@ -164,8 +193,26 @@ func (g Git) TakeIgnoredCensus(ctx context.Context, dir string) (map[string]Igno
 			continue // deleted between listing and stat: not present, not censused
 		}
 		census[path] = IgnoredStat{Size: st.Size(), ModTime: st.ModTime()}
+		recordIgnoredParents(census, path)
 	}
 	return census, nil
+}
+
+// recordIgnoredParents adds the directories between path and the nearest
+// wholly-ignored directory above it. Nothing is recorded when no such directory
+// exists: src/debug.log's parent is src/, which holds tracked files, and a
+// census that listed it could have it deleted as "created".
+func recordIgnoredParents(census map[string]IgnoredStat, path string) {
+	var between []string
+	for p := filepath.ToSlash(filepath.Dir(path)); p != "." && p != "/"; p = filepath.ToSlash(filepath.Dir(p)) {
+		if census[p].Dir {
+			for _, d := range between {
+				census[d] = IgnoredStat{Dir: true}
+			}
+			return
+		}
+		between = append(between, p)
+	}
 }
 
 // DiffIgnored compares two ignored censuses: created paths are deleted before
