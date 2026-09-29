@@ -584,6 +584,11 @@ func loadRunSummary(dir string) (*model.RunSummary, string, error) {
 func findRunSummary(dir string) (string, *model.RunSummary) {
 	var bestPath string
 	var best *model.RunSummary
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", nil
+	}
+	defer func() { _ = root.Close() }()
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() && path != dir {
 			if _, jerr := os.Lstat(filepath.Join(path, logstore.JournalName)); jerr == nil {
@@ -597,27 +602,39 @@ func findRunSummary(dir string) (string, *model.RunSummary) {
 		if err != nil || !d.Type().IsRegular() || !strings.HasSuffix(path, ".json") {
 			return nil //nolint:nilerr // an unreadable entry is not a summary; keep looking
 		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil //nolint:nilerr // as above
-		}
-		var keys map[string]json.RawMessage
-		if json.Unmarshal(raw, &keys) != nil {
-			return nil
-		}
-		for _, k := range []string{"started_at", "finished_at", "termination"} {
-			if _, ok := keys[k]; !ok {
-				return nil
-			}
-		}
-		var sum model.RunSummary
-		if json.Unmarshal(raw, &sum) != nil {
-			return nil
-		}
-		if best == nil || sum.StartedAt.After(best.StartedAt) || (sum.StartedAt.Equal(best.StartedAt) && path > bestPath) {
-			bestPath, best = path, &sum
+		sum := readSummary(root, dir, path)
+		if sum != nil && (best == nil || sum.StartedAt.After(best.StartedAt) || (sum.StartedAt.Equal(best.StartedAt) && path > bestPath)) {
+			bestPath, best = path, sum
 		}
 		return nil
 	})
 	return bestPath, best
+}
+
+// readSummary parses path as a run summary, or returns nil if it is not one. It
+// reads through root, the run directory opened once, so a component swapped for a
+// link during the walk cannot point the read outside it.
+func readSummary(root *os.Root, dir, path string) *model.RunSummary {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return nil
+	}
+	raw, err := root.ReadFile(rel)
+	if err != nil {
+		return nil
+	}
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(raw, &keys) != nil {
+		return nil
+	}
+	for _, k := range []string{"started_at", "finished_at", "termination"} {
+		if _, ok := keys[k]; !ok {
+			return nil
+		}
+	}
+	var sum model.RunSummary
+	if json.Unmarshal(raw, &sum) != nil {
+		return nil
+	}
+	return &sum
 }
