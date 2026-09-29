@@ -769,15 +769,15 @@ func openFenceAt(doc string, n int) bool {
 		if i == n {
 			return open != ""
 		}
-		t := strings.TrimLeft(line, " ")
-		if len(line)-len(t) > 3 || !strings.HasPrefix(t, "```") {
+		if !startsFence(line) {
 			continue
 		}
-		run := t[:len(t)-len(strings.TrimLeft(t, "`"))]
+		t := strings.TrimLeft(line, " ")
+		run := t[:len(t)-len(strings.TrimLeft(t, t[:1]))]
 		switch {
 		case open == "":
 			open = run
-		case len(run) >= len(open) && strings.TrimSpace(t[len(run):]) == "":
+		case run[0] == open[0] && len(run) >= len(open) && strings.TrimSpace(t[len(run):]) == "":
 			open = ""
 		}
 	}
@@ -821,25 +821,61 @@ func TestAFenceInASuggestionCannotSwallowTheRestOfTheReview(t *testing.T) {
 	}
 }
 
-// Inside a list item a fence ends with the item, so the closer SanitizeText appends
-// at column 0 for a fence it saw left open OPENS a block there instead, and the
-// rest of the review is inside it. Every field that lands in a list item or after
-// a prefix is flattened to one line, where no fence can form.
+// startsFence reports whether a rendered line can open or close a fence: a run of
+// three backticks or tildes, unescaped, at column 0-3.
+func startsFence(line string) bool {
+	t := strings.TrimLeft(line, " ")
+	return len(line)-len(t) <= 3 && (strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~"))
+}
+
+// Inside a list item a fence ends with the item, so a closer appended at column 0
+// for a fence left open OPENS a block there instead, and after a prefix a closer is
+// a line break plus a column-0 fence. Every field that lands in a list item or after
+// a prefix is one line, gets no closer, and has a leading fence run escaped -- so no
+// line of the document is a fence it wrote. The payloads that begin with the fence
+// are the ones the first version of this missed (review run 20260929-153952, i1/i6).
 func TestAFenceInAnInlineFieldCannotOpenABlock(t *testing.T) {
-	payload := "looks fine\n  ```"
-	body := RenderBody(BodyInput{
-		Decision: Decision{Outcome: ChangesRequested, Reasons: []string{payload}},
-		Issues:   []model.Issue{{ID: "i1", Severity: payload, Title: payload}},
-		Advisory: []model.Finding{{Title: payload, Description: payload}},
-		Panel:    []string{payload},
-		Target:   payload,
-	})
-	inline := RenderInline(model.Issue{ID: "i1", Severity: payload, Title: payload}, "")
-	for name, doc := range map[string]string{"body": body, "inline": inline} {
-		for i, line := range strings.Split(doc, "\n") {
-			if strings.HasPrefix(strings.TrimLeft(line, " "), "```") {
-				t.Errorf("%s line %d starts a fence from an inline field:\n%s", name, i, doc)
+	for _, payload := range []string{"```", "```go handler leaks", "~~~", "   ```", "looks fine\n  ```"} {
+		body := RenderBody(BodyInput{
+			Decision: Decision{Outcome: ChangesRequested, Reasons: []string{payload}},
+			Issues:   []model.Issue{{ID: "i1", Severity: payload, Title: payload}},
+			Advisory: []model.Finding{{Title: payload, Description: payload}},
+			Panel:    []string{payload},
+			Target:   payload,
+		})
+		inline := RenderInline(model.Issue{ID: "i1", Severity: payload, Title: payload}, "")
+		for name, doc := range map[string]string{"body": body, "inline": inline} {
+			for i, line := range strings.Split(doc, "\n") {
+				if startsFence(line) {
+					t.Errorf("payload %q: %s line %d is a fence an inline field wrote:\n%s", payload, name, i, doc)
+				}
 			}
 		}
+	}
+}
+
+// A block field keeps its fences only while closeOpenFence can count them, and it
+// cannot see containers: "- ```" + "  ```" + "```" is a closed pair and nothing to it,
+// but to the forge a block closed inside the list item and a top-level opener that
+// swallows every finding after it and the signature (review run 20260929-153952,
+// i4). A field that mixes a fence with a list item or a blockquote gives its fences
+// up, so no line of it is one.
+func TestAFenceInsideAContainerInABlockFieldIsEscaped(t *testing.T) {
+	for _, payload := range []string{"- ```\n  ```\n\n```\n", "> ```\n\n```", "1. x\n   ~~~\n\n~~~"} {
+		it := model.Issue{ID: "i1", Severity: "high", Title: "t", Description: payload, Suggestion: payload}
+		body := RenderBody(BodyInput{Decision: Decision{Outcome: ChangesRequested}, Issues: []model.Issue{it}})
+		inline := RenderInline(it, "")
+		for name, doc := range map[string]string{"body": body, "inline": inline} {
+			for i, line := range strings.Split(doc, "\n") {
+				if startsFence(line) {
+					t.Errorf("payload %q: %s line %d is a live fence inside a container field:\n%s", payload, name, i, doc)
+				}
+			}
+		}
+	}
+	// And a plain block keeps its code block: the escape is for containers only.
+	it := model.Issue{ID: "i1", Severity: "high", Title: "t", Suggestion: "```go\nx()\n```"}
+	if body := RenderBody(BodyInput{Decision: Decision{Outcome: ChangesRequested}, Issues: []model.Issue{it}}); !strings.Contains(body, "\n```go\nx()\n```\n") {
+		t.Errorf("a plain code block lost its fences:\n%s", body)
 	}
 }
