@@ -144,7 +144,7 @@ func RenderBody(in BodyInput) string {
 		// names in the quorum note. An unsanitized check called `@victim` or
 		// `Closes #42` would act on the forge under the operator's identity from the
 		// one region of the document a reader trusts most.
-		fmt.Fprintf(&b, "- %s\n", mdText(r))
+		fmt.Fprintf(&b, "- %s\n", mdLine(r))
 	}
 	b.WriteString("\n")
 
@@ -198,7 +198,7 @@ func RenderBody(in BodyInput) string {
 		// reasonably assume they counted.
 		fmt.Fprintf(&b, "### Advisory (%d)\n\nReported for a human; these did not affect the verdict.\n\n", len(advisory))
 		for _, f := range advisory {
-			fmt.Fprintf(&b, "- **%s** — %s\n", mdText(f.Title), mdText(firstSentence(f.Description)))
+			fmt.Fprintf(&b, "- **%s** — %s\n", mdLine(f.Title), mdLine(firstSentence(f.Description)))
 		}
 		b.WriteString("\n")
 	}
@@ -208,9 +208,9 @@ func RenderBody(in BodyInput) string {
 
 	b.WriteString("---\n\n")
 	if len(in.Panel) > 0 {
-		fmt.Fprintf(&b, "Reviewed by %s", strings.Join(mdTexts(in.Panel), ", "))
+		fmt.Fprintf(&b, "Reviewed by %s", strings.Join(mdLines(in.Panel), ", "))
 		if in.Target != "" {
-			fmt.Fprintf(&b, " over %s", mdText(in.Target))
+			fmt.Fprintf(&b, " over %s", mdLine(in.Target))
 		}
 		b.WriteString(".\n\n")
 	}
@@ -302,7 +302,7 @@ func split(issues []model.Issue, d Decision) (blocking, other []model.Issue) {
 }
 
 func writeIssue(b *strings.Builder, it model.Issue) {
-	fmt.Fprintf(b, "**%s**", strings.ToUpper(mdText(it.Severity)))
+	fmt.Fprintf(b, "**%s**", strings.ToUpper(mdLine(it.Severity)))
 	if strings.TrimSpace(it.File) != "" {
 		// mdCode, not mdText: the location is rendered inside a code span, and mdText
 		// deliberately leaves backticks alone. A reported path carrying one would close
@@ -322,12 +322,12 @@ func writeIssue(b *strings.Builder, it model.Issue) {
 		// it happens: across 19 measured runs under 4% of findings had it.
 		fmt.Fprintf(b, " · reported by %d reviewers", len(agents))
 	}
-	fmt.Fprintf(b, "\n\n%s\n\n", mdText(it.Title))
+	fmt.Fprintf(b, "\n\n%s\n\n", mdLine(it.Title)) // a title is one line by contract
 	if d := strings.TrimSpace(it.Description); d != "" {
 		fmt.Fprintf(b, "%s\n\n", mdText(d))
 	}
 	if s := strings.TrimSpace(it.Suggestion); s != "" {
-		fmt.Fprintf(b, "_Suggested:_ %s\n\n", mdText(s))
+		fmt.Fprintf(b, "_Suggested:_\n\n%s\n\n", mdText(s))
 	}
 	if it.Contested {
 		// The same notice RenderInline gives, for the same reason: a finding the
@@ -355,10 +355,24 @@ func mdText(s string) string { return forge.SanitizeText(s) }
 // than a local escape so this and the GitLab inline-note path cannot drift.
 func mdCode(s string) string { return forge.CodeSpan(s) }
 
-func mdTexts(in []string) []string {
+// mdLine is mdText for a field that does NOT start a block of its own: one that
+// follows a prefix on its line ("_Suggested:_", "**HIGH** — ") or is the body of a
+// list item. forge.SanitizeText closes a code fence the text left open, and it can
+// only count fences correctly in text that begins at column 0 and stands alone. Placed
+// after a prefix, the field's first "```" is not a fence at all, so a balanced pair
+// reads to the forge as one opener that swallows every finding and the signature
+// after it. Inside a list item, a fence ends with the item, and the closer
+// SanitizeText appends at column 0 opens a new block instead. A line break has no
+// business in either place, so the field is flattened to one line, where no fence can
+// outlive the line or the item it sits in.
+func mdLine(s string) string {
+	return mdText(strings.Join(strings.Fields(s), " "))
+}
+
+func mdLines(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, s := range in {
-		out = append(out, mdText(s))
+		out = append(out, mdLine(s))
 	}
 	return out
 }
@@ -407,12 +421,12 @@ func firstSentence(s string) string {
 // composed from a finding's prose could be forged by whatever wrote that prose.
 func RenderInline(it model.Issue, signature string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**%s** — %s\n\n", strings.ToUpper(mdText(it.Severity)), mdText(it.Title))
+	fmt.Fprintf(&b, "**%s** — %s\n\n", strings.ToUpper(mdLine(it.Severity)), mdLine(it.Title))
 	if d := strings.TrimSpace(it.Description); d != "" {
 		fmt.Fprintf(&b, "%s\n\n", mdText(d))
 	}
 	if s := strings.TrimSpace(it.Suggestion); s != "" {
-		fmt.Fprintf(&b, "_Suggested:_ %s\n", mdText(s))
+		fmt.Fprintf(&b, "_Suggested:_\n\n%s\n", mdText(s))
 	}
 	if it.Contested {
 		b.WriteString("\n_The panel disagreed about this one._\n")

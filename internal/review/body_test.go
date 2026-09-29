@@ -758,3 +758,88 @@ func TestCarriesComparesTheNormalizedPath(t *testing.T) {
 		t.Error("a finding on a file that moved since it was said counts as carried because of how its path was spelled")
 	}
 }
+
+// openFenceAt reports whether line n of doc sits inside a top-level fenced code
+// block, reading fences the way a forge does at the top level: a run of three or
+// more backticks at column 0-3 opens one, and the same run, alone, closes it. It
+// is deliberately NOT closeOpenFence's logic, so the two can disagree.
+func openFenceAt(doc string, n int) bool {
+	open := ""
+	for i, line := range strings.Split(doc, "\n") {
+		if i == n {
+			return open != ""
+		}
+		t := strings.TrimLeft(line, " ")
+		if len(line)-len(t) > 3 || !strings.HasPrefix(t, "```") {
+			continue
+		}
+		run := t[:len(t)-len(strings.TrimLeft(t, "`"))]
+		switch {
+		case open == "":
+			open = run
+		case len(run) >= len(open) && strings.TrimSpace(t[len(run):]) == "":
+			open = ""
+		}
+	}
+	return open != ""
+}
+
+func lineOf(t *testing.T, doc, s string) int {
+	t.Helper()
+	for i, line := range strings.Split(doc, "\n") {
+		if strings.Contains(line, s) {
+			return i
+		}
+	}
+	t.Fatalf("%q not in:\n%s", s, doc)
+	return -1
+}
+
+// A field placed after a prefix on its line is not where closeOpenFence assumes it
+// is. Rendered as "_Suggested:_ ```", a balanced pair read as ONE opener to the
+// forge -- the first backticks were not at the start of a line -- and every finding
+// after it, the signature included, rendered as the contents of a code block.
+func TestAFenceInASuggestionCannotSwallowTheRestOfTheReview(t *testing.T) {
+	fenced := "```\nrm -rf build\n```"
+	issues := []model.Issue{
+		{ID: "i1", Severity: "high", Title: "first finding", Suggestion: fenced},
+		{ID: "i2", Severity: "high", Title: "second finding"},
+	}
+	body := RenderBody(BodyInput{Decision: Decision{Outcome: ChangesRequested}, Issues: issues, Signature: "SIGNED-BY-FIXPOINT"})
+	for _, s := range []string{"second finding", "SIGNED-BY-FIXPOINT"} {
+		if openFenceAt(body, lineOf(t, body, s)) {
+			t.Errorf("%q renders inside a code block:\n%s", s, body)
+		}
+	}
+	inline := RenderInline(issues[0], "SIGNED-BY-FIXPOINT")
+	if openFenceAt(inline, lineOf(t, inline, "SIGNED-BY-FIXPOINT")) {
+		t.Errorf("the inline comment's signature renders inside a code block:\n%s", inline)
+	}
+	// The block is still a block: the suggestion keeps its code.
+	if !strings.Contains(body, "_Suggested:_\n\n```\nrm -rf build\n```") {
+		t.Errorf("the suggestion's code block was not kept as one:\n%s", body)
+	}
+}
+
+// Inside a list item a fence ends with the item, so the closer SanitizeText appends
+// at column 0 for a fence it saw left open OPENS a block there instead, and the
+// rest of the review is inside it. Every field that lands in a list item or after
+// a prefix is flattened to one line, where no fence can form.
+func TestAFenceInAnInlineFieldCannotOpenABlock(t *testing.T) {
+	payload := "looks fine\n  ```"
+	body := RenderBody(BodyInput{
+		Decision: Decision{Outcome: ChangesRequested, Reasons: []string{payload}},
+		Issues:   []model.Issue{{ID: "i1", Severity: payload, Title: payload}},
+		Advisory: []model.Finding{{Title: payload, Description: payload}},
+		Panel:    []string{payload},
+		Target:   payload,
+	})
+	inline := RenderInline(model.Issue{ID: "i1", Severity: payload, Title: payload}, "")
+	for name, doc := range map[string]string{"body": body, "inline": inline} {
+		for i, line := range strings.Split(doc, "\n") {
+			if strings.HasPrefix(strings.TrimLeft(line, " "), "```") {
+				t.Errorf("%s line %d starts a fence from an inline field:\n%s", name, i, doc)
+			}
+		}
+	}
+}
