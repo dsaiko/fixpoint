@@ -596,6 +596,16 @@ gpt-6-sol
 # 0/absent). So the undercount that understates every Anthropic row does NOT
 # touch these rows -- which means a claude-vs-codex dollar comparison is biased
 # in claude's favour until results.csv grows a cache_write column.
+#
+# SEATED 2026-09-29, REVERSING THE VERDICT ABOVE, and the reason is the panel it
+# is measured against, not a new measurement. The -5 above was computed with Opus 5
+# in the claude seat (409 -> 404). With claude-opus-5-5 seated the same swap reads
+# 414 -> 411, -3, inside the noise floor; per target go -1, cpp -3, typescript +1,
+# the other five unchanged. What decided it is wall clock: codex at 6810s was the
+# panel's slowest seat by ~3x and paced every round; gpt-6-sol runs 2451s. The same
+# trade the ollama seat made on 2026-09-14 (-4 for 2209s against 6003s). The bar
+# written before the run (>= 409) was set against a panel that no longer exists;
+# against today's it would be >= 410, and 411 clears it.
 
 # Claude Sonnet 5.5 -- added 2026-09-29, the tier successor to claude-sonnet-5
 # (245/484, 20th of 24, no seat). Same rate card as Sonnet 5 -- $2/$10 per MTok,

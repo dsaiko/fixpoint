@@ -1,7 +1,12 @@
-# GPT-6 Sol as a BENCH CANDIDATE, through the codex harness -- the same file as
-# config/agents/codex.yaml with only the model and effort lines swapped, so the
-# comparison against the codex baseline (gpt-5.6-sol) has one variable. Not a
-# seat: nothing references this file except `make bench MODEL=gpt-6-sol`.
+# GPT-6 Sol through the codex harness -- the same file as config/agents/codex.yaml
+# with only the model and effort lines swapped, so the comparison against the
+# codex baseline (gpt-5.6-sol) has one variable.
+#
+# SEATED 2026-09-29: this file holds the panel's ChatGPT seat in
+# config/defaults.yaml, in place of codex. The reasoning is there; in short, -3
+# panel coverage (inside the noise floor) for a round that is no longer paced by
+# codex's 6810s. Reviewer duty, so the read-only sandbox and can_edit: false below
+# are what the panel relies on -- keep them in step with codex.yaml.
 #
 # This is the SUCCESSOR of the model that holds the panel's ChatGPT seat, which
 # makes it the codex-route twin of the claude-opus-5-5 question -- and the same
