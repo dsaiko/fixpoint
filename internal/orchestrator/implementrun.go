@@ -1343,8 +1343,11 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	// The failures used to be discarded while the log said the paths had been
 	// deleted. Ignored paths are invisible to the census and to GitClean, so a
 	// path that survived affected the gate and the next attempt with nothing
-	// anywhere recording it (review run 20260814-012440).
-	if stuck := removeAll(p.out, created); len(stuck) > 0 {
+	// anywhere recording it (review run 20260814-012440). A directory left in
+	// place stops too: DiffIgnored never names one holding first-census files,
+	// so what keeps it non-empty is bytes neither census saw, and the gate would
+	// measure them as the work.
+	if stuck := implement.RemoveCreated(p.out, created, postIgnored); len(stuck) > 0 {
 		return res, report, attemptVerdict{}, fmt.Errorf("could not delete session-created ignored path(s) before the gate: %s -- they would be measured as part of the work and carried into the next attempt", strings.Join(stuck, ", "))
 	}
 	if len(created) > 0 || len(modified) > 0 {
@@ -1412,19 +1415,6 @@ func (o *Orchestrator) refuseCredentialShaped(ctx context.Context, p *implementP
 		" -- these match the patterns that hide a path from every reviewer, so keeping them would bury a secret in the project's history", nil
 }
 
-// removeAll deletes each repo-relative path and returns the ones that survived.
-// A path that cannot be removed is reported rather than assumed gone: everything
-// this deletes is invisible to the census, so nothing downstream would notice.
-func removeAll(root string, paths []string) []string {
-	var stuck []string
-	for _, path := range paths {
-		if err := os.RemoveAll(filepath.Join(root, path)); err != nil {
-			stuck = append(stuck, fmt.Sprintf("%s (%v)", path, err))
-		}
-	}
-	return stuck
-}
-
 // censusPhase is §5.2 step 6's census with its byte bound. A non-empty reason
 // fails the attempt: the oversized tree is discarded by checkout-and-clean
 // rather than stashed, so the ceiling never writes it into the object database
@@ -1479,7 +1469,7 @@ func (o *Orchestrator) gatePhase(ctx context.Context, p *implementPrep, taskID s
 		return "", nil, "", err
 	}
 	diff := implement.ClassifyGateDiff(census, post, o.cfg.Implement.GateGenerated)
-	if stuck := removeAll(p.out, diff.Output); len(stuck) > 0 {
+	if stuck := implement.RemoveCreated(p.out, diff.Output, nil); len(stuck) > 0 {
 		return "", nil, "", fmt.Errorf("could not delete gate output: %s -- it would be committed as if the session had written it", strings.Join(stuck, ", "))
 	}
 	if len(diff.Output) > 0 {
@@ -1729,7 +1719,7 @@ func (o *Orchestrator) cleanUpInterrupted(ctx context.Context, p *implementPrep)
 		return
 	}
 	created, _ := implement.DiffIgnored(p.inflightIgnored, post)
-	if stuck := removeAll(p.out, created); len(stuck) > 0 {
+	if stuck := implement.RemoveCreated(p.out, created, post); len(stuck) > 0 {
 		o.logf("WARNING: could not delete the interrupted attempt's ignored path(s): %s -- remove them before continuing, or the next attempt builds on them unseen", strings.Join(stuck, ", "))
 		return
 	}
@@ -1762,13 +1752,20 @@ func (o *Orchestrator) discardAttempt(ctx context.Context, p *implementPrep, tas
 // the previous session's build output. Runs AFTER the stash or the clean, so
 // the census reads HEAD's ignore rules rather than a session-edited
 // .gitignore. A read and plain unlinks: nothing here writes a git object.
+//
+// Anything RemoveCreated leaves is a loud stop, the directory it could not
+// empty included. A directory kept for holding the operator's pre-existing
+// files never gets that far (DiffIgnored does not name it), so a leftover
+// holds bytes neither census recorded, or sits behind a symlink: fixpoint
+// cannot call them the project's, and must neither delete them nor let the
+// next step 2 adopt them.
 func (o *Orchestrator) finishDiscard(ctx context.Context, p *implementPrep, taskID string, preIgnored map[string]implement.IgnoredStat) error {
 	post, err := p.git.TakeIgnoredCensus(ctx, p.out)
 	if err != nil {
 		return err
 	}
 	created, _ := implement.DiffIgnored(preIgnored, post)
-	if stuck := removeAll(p.out, created); len(stuck) > 0 {
+	if stuck := implement.RemoveCreated(p.out, created, post); len(stuck) > 0 {
 		return runStopError{"the discard could not delete the attempt's ignored path(s): " + strings.Join(stuck, ", ") + " -- the next attempt would build on them unseen"}
 	}
 	if len(created) > 0 {

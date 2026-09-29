@@ -561,6 +561,16 @@ func TestExtractText(t *testing.T) {
 		"body mentions both tags": {output: "notes\n<design>\n# T\nsee `<design>` and `</design>` here\n</design>", want: "# T\nsee `<design>` and `</design>` here"},
 		// A mention that begins its own line loses to the opener alone on its line (i18).
 		"line-leading mention in body": {output: "notes\n<design>\n# T\n  <design> envelope mentioned here\n</design>", want: "# T\n  <design> envelope mentioned here"},
+		// A closer the body quotes BEFORE it mentions the opener is not a block end:
+		// only a closer that ends its line bounds the search, or the region held only
+		// the mention and the design came back as "`." (review run 20260929-133423, i1).
+		"body quotes closer then opener":                     {output: "<design>\n# T\nsee `</design>` then `<design>`\n</design>", want: "# T\nsee `</design>` then `<design>`"},
+		"body quotes closer then opener, same line":          {output: "<design>\n# T\nThe envelope closes with `</design>` and opens with `<design>`.\n</design>", want: "# T\nThe envelope closes with `</design>` and opens with `<design>`."},
+		"closed draft, then final quotes closer then opener": {output: "<design>\ndraft\n</design>\n<design>\n# T\nsee `</design>` then `<design>`\n</design>", want: "# T\nsee `</design>` then `<design>`"},
+		"inline draft closed straight into the final":        {output: "<design>draft</design><design>final</design>", want: "final"},
+		// An envelope shown as an example has its own opener alone on its line; the
+		// real opener is the EARLIEST such line, or the text above the example is lost.
+		"body shows the envelope as an example": {output: "<design>\n# T\nReply with:\n```\n<design>\nyour design\n</design>\n```\nMore.\n</design>", want: "# T\nReply with:\n```\n<design>\nyour design\n</design>\n```\nMore."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := ExtractText(tc.output, "design")

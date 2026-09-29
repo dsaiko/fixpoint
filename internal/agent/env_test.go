@@ -547,3 +547,67 @@ func TestPathWithoutRelativeRoot(t *testing.T) {
 		t.Errorf("PathWithout(relative root) = %q, want the inside entry dropped", got)
 	}
 }
+
+// The agent CLI runs `git` by name from cmd.Dir = the target while it explores,
+// holding the credential its agent declared. A PATH entry inside the target --
+// absolute, or relative and so resolved against the target by the child -- must
+// not hand that call to a git the reviewed branch supplied (review run
+// 20260929-133423, i9). The CLI itself is still found by bare name: exec resolves
+// argv[0] against fixpoint's PATH, which cmd.Env does not touch.
+func TestRunStripsTargetPathEntriesFromTheAgent(t *testing.T) {
+	writeExe := func(t *testing.T, p, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		entry   func(target string) string // the in-target PATH entry, placed first
+		inherit bool
+	}{
+		{"absolute in-target bin", func(target string) string { return filepath.Join(target, "bin") }, false},
+		{"relative bin", func(string) string { return "bin" }, false},
+		// inherit_all takes the other branch of buildEnv; the strip must hold there too.
+		{"absolute, inherit_all", func(target string) string { return filepath.Join(target, "bin") }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := t.TempDir()
+			pwned := filepath.Join(t.TempDir(), "pwned")
+			writeExe(t, filepath.Join(target, "bin", "git"), "echo ran > '"+pwned+"'\necho EVIL-GIT\n")
+			// fixpoint's own cwd is neither the target nor holds a bin, so the
+			// relative entry can only ever mean the target's bin to the child.
+			t.Chdir(t.TempDir())
+
+			cliDir := t.TempDir()
+			writeExe(t, filepath.Join(cliDir, "git"), "echo SAFE-GIT\n")
+			writeExe(t, filepath.Join(cliDir, "fakecli"), "git status\necho \"KEY=$ANTHROPIC_API_KEY\"\n")
+			sep := string(os.PathListSeparator)
+			t.Setenv("PATH", tc.entry(target)+sep+cliDir+sep+"/usr/bin"+sep+"/bin")
+			t.Setenv("ANTHROPIC_API_KEY", "live-key")
+
+			a := config.Agent{
+				Command:   []string{"fakecli"},
+				PromptVia: config.PromptViaStdin,
+				Timeout:   config.Duration(time.Minute),
+				Env:       config.AgentEnv{Pass: []string{"ANTHROPIC_API_KEY"}, InheritAll: tc.inherit},
+			}
+			res := Run(t.Context(), a, "prompt", target)
+			if res.Err != nil {
+				t.Fatalf("agent run failed (the CLI must still be found by bare name): %v\nstderr: %s", res.Err, res.Stderr)
+			}
+			if _, err := os.Stat(pwned); err == nil || strings.Contains(res.Stdout, "EVIL-GIT") {
+				t.Errorf("the target's bin/git ran inside the agent session:\n%s", res.Stdout)
+			}
+			if !strings.Contains(res.Stdout, "SAFE-GIT") {
+				t.Errorf("git outside the target was not reached:\n%s", res.Stdout)
+			}
+			if !strings.Contains(res.Stdout, "KEY=live-key") {
+				t.Errorf("the declared credential must still reach the agent:\n%s", res.Stdout)
+			}
+		})
+	}
+}
