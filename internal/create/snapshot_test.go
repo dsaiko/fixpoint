@@ -236,21 +236,66 @@ func TestSnapshotRefusesAnExcludeThatIsTheAssignment(t *testing.T) {
 	}
 }
 
-// copyFile's O_NOFOLLOW is the guard for a file swapped for a link between the
-// walk classifying it and the open. The walk itself skips links it sees, so only
-// a direct call can reach the open with one: it must fail, and the link's
-// destination must not be copied.
-func TestCopyFileDoesNotFollowASymlink(t *testing.T) {
-	secret := write(t, t.TempDir(), "credentials", "aws_secret_access_key=x")
-	link := filepath.Join(t.TempDir(), "brief.md")
-	if err := os.Symlink(secret, link); err != nil {
+// copyFile reads through the assignment's root, which is the guard for a link
+// swapped in after the walk classified a path: at the file itself, or at an
+// ANCESTOR, which O_NOFOLLOW on a plain path does not cover. The walk skips links
+// it sees, so only a direct call reaches the open with one: it must fail, and the
+// link's destination must not be copied.
+func TestCopyFileDoesNotFollowASymlinkOutOfTheRoot(t *testing.T) {
+	outside := t.TempDir()
+	write(t, outside, "credentials", "aws_secret_access_key=x")
+	assignment := t.TempDir()
+	if err := os.Symlink(filepath.Join(outside, "credentials"), filepath.Join(assignment, "brief.md")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	dst := filepath.Join(t.TempDir(), "brief.md")
-	if n, err := copyFile(link, dst, 1<<20); err == nil {
-		t.Errorf("copyFile(symlink) = %d, nil; want a refusal to follow it", n)
+	if err := os.Symlink(outside, filepath.Join(assignment, "docs")); err != nil {
+		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(dst); err == nil && strings.Contains(string(b), "aws_secret") {
-		t.Errorf("the link's destination was copied: %q", b)
+	root, err := os.OpenRoot(assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	for _, name := range []string{"brief.md", filepath.Join("docs", "credentials")} {
+		dst := filepath.Join(t.TempDir(), "copy")
+		if n, err := copyFile(root, name, dst, 1<<20, nil); err == nil {
+			t.Errorf("copyFile(%s) = %d, nil; want a refusal to leave the assignment", name, n)
+		}
+		if b, err := os.ReadFile(dst); err == nil && strings.Contains(string(b), "aws_secret") {
+			t.Errorf("copyFile(%s) copied the link's destination: %q", name, b)
+		}
+	}
+}
+
+// The root is compared with what the refusal checked: a file other than the one
+// Lstat saw at the name is refused rather than copied.
+func TestCopyFileRefusesAFileOtherThanTheOneChecked(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "brief.md", "the brief")
+	other := write(t, dir, "other.md", "not the brief")
+	checked, err := os.Lstat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if _, err := copyFile(root, "brief.md", filepath.Join(t.TempDir(), "copy"), 1<<20, checked); err == nil {
+		t.Error("copyFile copied a file other than the one checked")
+	}
+}
+
+// The same comparison for the directory the root pins: a directory other than the
+// one the refusal checked at that path is refused, not walked.
+func TestPinnedRefusesADirectoryOtherThanTheOneChecked(t *testing.T) {
+	checked, err := os.Lstat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, err := pinned(t.TempDir(), checked); err == nil {
+		_ = root.Close()
+		t.Error("pinned opened a directory other than the one checked")
 	}
 }

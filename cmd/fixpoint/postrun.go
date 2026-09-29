@@ -528,7 +528,14 @@ func unreplayable(dir string, sum *model.RunSummary) string {
 // link again on its own, so a link retargeted in between splits the directory that
 // was vetted from the one that is published. fixpoint never writes such a link, and
 // the operator loses only a realpath.
+//
+// Cleaned first, and the cleaned spelling is the one every later step is handed:
+// lstat(2) on "last/" resolves the final link (tab completion adds that slash),
+// and "last/." does the same. Only the final component is checked: a symlinked
+// ANCESTOR is how ordinary paths look (macOS /var -> /private/var holds every
+// TempDir), and refusing it would refuse legitimate runs.
 func loadRunSummary(dir string) (*model.RunSummary, string, error) {
+	dir = filepath.Clean(dir)
 	if info, err := os.Lstat(dir); err == nil && info.Mode()&fs.ModeSymlink != 0 {
 		to, _ := filepath.EvalSymlinks(dir)
 		return nil, "", fmt.Errorf("%s is a symbolic link (to %q); pass the run directory itself, so what is checked and what is published are one path", dir, to)

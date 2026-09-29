@@ -154,7 +154,11 @@ type IgnoredStat struct {
 // directory, minus fixpoint's own artifact root -- on a continued run
 // `.fixpoint/` is the run's scratch inside the project, and a census that reads
 // the run's own journal writes would fail every task on the tool's bookkeeping
-// (review run 20260813-003817).
+// (review run 20260813-003817). exclude names further artifact roots, repo-
+// relative: logs.dir is configurable, and a `runlogs/` the operator ignored as
+// told was censused, so the prompts and replies an attempt logs after step 2
+// read as created and every discard deleted them (review run 20260929-141502,
+// i7).
 //
 // Directories because git lists only files, so a discard that deleted a
 // session's scratch/build.tmp left the scratch/ it made -- invisible to
@@ -169,7 +173,7 @@ type IgnoredStat struct {
 // 20260929-133423, i7). An empty directory nested inside a PRE-EXISTING ignored
 // one is not seen: finding it means walking node_modules/ on every census,
 // which findNestedGit prunes precisely to avoid.
-func (g Git) TakeIgnoredCensus(ctx context.Context, dir string) (map[string]IgnoredStat, error) {
+func (g Git) TakeIgnoredCensus(ctx context.Context, dir string, exclude ...string) (map[string]IgnoredStat, error) {
 	out, err := g.run(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
@@ -178,8 +182,14 @@ func (g Git) TakeIgnoredCensus(ctx context.Context, dir string) (map[string]Igno
 	if err != nil {
 		return nil, err
 	}
+	roots := append([]string{".fixpoint"}, exclude...)
 	artifactRoot := func(path string) bool {
-		return path == ".fixpoint" || strings.HasPrefix(path, ".fixpoint/")
+		for _, r := range roots {
+			if path == r || strings.HasPrefix(path, r+"/") {
+				return true
+			}
+		}
+		return false
 	}
 	census := map[string]IgnoredStat{}
 	for _, path := range strings.Split(strings.Trim(dirs, "\x00"), "\x00") {

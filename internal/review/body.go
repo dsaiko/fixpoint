@@ -198,11 +198,7 @@ func RenderBody(in BodyInput) string {
 		// reasonably assume they counted.
 		fmt.Fprintf(&b, "### Advisory (%d)\n\nReported for a human; these did not affect the verdict.\n\n", len(advisory))
 		for _, f := range advisory {
-			// One mdText call for the whole line, not one per field: the title and the
-			// sentence share a paragraph, and a backtick left unpaired at the end of the
-			// title would pair with the sentence's first on the forge -- see
-			// forge.SanitizeText.
-			fmt.Fprintf(&b, "- %s\n", mdText("**"+f.Title+"** — "+firstSentence(f.Description)))
+			fmt.Fprintf(&b, "- **%s** — %s\n", mdText(f.Title), mdText(firstSentence(f.Description)))
 		}
 		b.WriteString("\n")
 	}
@@ -212,13 +208,11 @@ func RenderBody(in BodyInput) string {
 
 	b.WriteString("---\n\n")
 	if len(in.Panel) > 0 {
-		// One line, one mdText call, for the reason the advisory line gives: the panel
-		// names and the target are separate strings in one paragraph.
-		line := "Reviewed by " + strings.Join(in.Panel, ", ")
+		fmt.Fprintf(&b, "Reviewed by %s", strings.Join(mdTexts(in.Panel), ", "))
 		if in.Target != "" {
-			line += " over " + in.Target
+			fmt.Fprintf(&b, " over %s", mdText(in.Target))
 		}
-		fmt.Fprintf(&b, "%s.\n\n", mdText(line))
+		b.WriteString(".\n\n")
 	}
 	if in.Signature != "" {
 		fmt.Fprintf(&b, "%s\n", in.Signature)
@@ -360,6 +354,14 @@ func mdText(s string) string { return forge.SanitizeText(s) }
 // span's own delimiter is part of the attack surface. It is forge.CodeSpan rather
 // than a local escape so this and the GitLab inline-note path cannot drift.
 func mdCode(s string) string { return forge.CodeSpan(s) }
+
+func mdTexts(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		out = append(out, mdText(s))
+	}
+	return out
+}
 
 // firstSentence keeps an advisory line to one line. Advisory notes are prose and
 // often long; the full text is in the run's artifacts.

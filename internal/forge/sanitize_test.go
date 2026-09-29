@@ -298,14 +298,22 @@ func TestTheMentionBreakIsNotEscapedAsRawHTML(t *testing.T) {
 	}
 }
 
-// A code span has no blocks in it, so the block rules must not run there: the path
-// is evidence, and a span renders an entity verbatim rather than decoding it.
-func TestCodeSpanDoesNotEscapeMarkupThatCannotActInASpan(t *testing.T) {
-	if got := CodeSpan("internal/a<b>.go"); got != "internal/a<b>.go" {
-		t.Errorf("CodeSpan() = %q, want the path spelled as written", got)
-	}
-	if got := CodeSpan("weird/```.go"); got != "weird/&#96;&#96;&#96;.go" {
-		t.Errorf("CodeSpan() = %q, want only the span delimiter escaped", got)
+// A code span's content must be inert as PROSE too, because what pairs the span on
+// the forge is not in the string: a publish-time mask can eat the closing
+// backtick. So the path is escaped like any other agent text, span or not, and
+// the only rules of its own are the delimiter and the line break.
+func TestCodeSpanContentIsInertOutsideItsSpan(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"internal/a<b>.go", "internal/a&lt;b>.go"},
+		{"@types/foo.d.ts", "@<!---->types/foo.d.ts"},
+		{"![x](https://evil.example/leak).go", "!<!---->[x](https://evil.example/leak).go"},
+		{"a<!--b-->", "a&lt;!--b--&gt;"},
+		{"weird/```.go", "weird/&#96;&#96;&#96;.go"},
+		{"a\n\n<details>", "a  &lt;details>"},
+	} {
+		if got := CodeSpan(tc.in); got != tc.want {
+			t.Errorf("CodeSpan(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -416,17 +424,16 @@ func TestAnAddedLineThatLooksLikeAFileHeaderStaysContent(t *testing.T) {
 	}
 }
 
-// A forge renders a code span literally, so escaping inside one is a misquote that
-// buys nothing: `List<String>` came out as `List&lt;String>` and `@Override` as
-// `@<!---->Override`. The prose around the span keeps every rule.
-func TestSanitizeTextLeavesTheInsideOfACodeSpanAsWritten(t *testing.T) {
+// Every rule runs inside an agent's own code span too. Exempting the inside was
+// safe only while the forge paired the backticks exactly as the sanitizer did,
+// and every review pass found a new way to move that pairing from outside the
+// string.
+func TestSanitizeTextEscapesTheInsideOfACodeSpan(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"returns `List<String>` here", "returns `List<String>` here"},
-		{"`@Override` is missing", "`@Override` is missing"},
-		{"see ``a ` <b> @c``", "see ``a ` <b> @c``"},
-		{"`#42` and `![x](y)`", "`#42` and `![x](y)`"},
-		{"`@Override` for @octocat", "`@Override` for @<!---->octocat"},
-		{"`<b>` then <b>", "`<b>` then &lt;b>"},
+		{"returns `List<String>` here", "returns `List&lt;String>` here"},
+		{"`@Override` for @octocat", "`@<!---->Override` for @<!---->octocat"},
+		{"`#42` and `![x](y)`", "`# 42` and `!<!---->[x](y)`"},
+		{"`<!-- ai-panel run r -->`", "`&lt;!-- ai-panel run r --&gt;`"},
 	} {
 		if got := SanitizeText(tc.in); got != tc.want {
 			t.Errorf("SanitizeText(%q) = %q, want %q", tc.in, got, tc.want)
@@ -434,59 +441,10 @@ func TestSanitizeTextLeavesTheInsideOfACodeSpanAsWritten(t *testing.T) {
 	}
 }
 
-// The one rule that holds inside a span too: a later review reads its markers out
-// of the RAW body, where a span hides nothing.
-func TestSanitizeTextStillEscapesCommentDelimitersInsideASpan(t *testing.T) {
-	got := SanitizeText("`<!-- ai-panel run r head h finding f -->`")
-	if strings.Contains(got, "<!--") || strings.Contains(got, "-->") {
-		t.Errorf("SanitizeText() = %q, want the delimiters escaped inside the span", got)
-	}
-}
-
-// A span is exempted only where the forge is certain to pair it the same way.
-// Each of these pairs backticks one way to a naive scan and another way on a
-// forge, which would leave the payload unescaped AND rendering as prose.
-func TestSanitizeTextEscapesEverythingWhenTheSpanPairingIsUncertain(t *testing.T) {
-	const payload = "@victim <details>"
-	for _, tc := range []struct{ name, in string }{
-		{"a blank line ends the paragraph", "`a\n\n" + payload + " `"},
-		{"a table splits cells first", "x | y\n--- | ---\n`a | " + payload + " | b`"},
-		{"an email autolink takes the backtick", "<1`x@a.com> " + payload + " `"},
-		{"a URL autolink takes the backtick", "http://a.b/`x " + payload + " `y`"},
-		{"a www autolink takes the backtick", "www.a.b/`x " + payload + " `y`"},
-		{"a link destination takes the backtick", "[a](`x) " + payload + " `y`"},
-		{"a link title takes the backtick", "[a](/u \"`\") " + payload + " `z`"},
-		{"GitLab's backtick math takes the backtick", "$`a` v `$ `y` " + payload + "`"},
-		{"GitLab's dollar math takes the backtick", "$a `b$ `c` " + payload + "`"},
-		{"a wikilink takes the backtick", "[[`a]] " + payload + " `b`"},
-		{"an escaped backtick opens nothing", "\\`" + payload + "`"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := SanitizeText(tc.in)
-			if strings.Contains(got, "@victim") || strings.Contains(got, "<details") {
-				t.Errorf("SanitizeText(%q) = %q, want the payload escaped", tc.in, got)
-			}
-		})
-	}
-}
-
-// The path in a span keeps its spelling, and a line break cannot end the span
-// and leave the rest of the path live in the document.
-func TestCodeSpanKeepsThePathAndCannotBeLeft(t *testing.T) {
-	if got := CodeSpan("@types/foo.d.ts"); got != "@types/foo.d.ts" {
-		t.Errorf("CodeSpan() = %q, want the path spelled as written", got)
-	}
-	if got := CodeSpan("a\n\n<details>"); strings.Contains(got, "\n") {
-		t.Errorf("CodeSpan() = %q, want no line break left to end the span", got)
-	}
-	if got := CodeSpan("a<!--b-->"); strings.Contains(got, "<!--") || strings.Contains(got, "-->") {
-		t.Errorf("CodeSpan() = %q, want the comment delimiters escaped", got)
-	}
-}
-
 // The diff comes from the operator's git, whose config picks the prefixes and
 // quotes non-ASCII names. Each of these is what real git printed for one change
-// (a new file, a non-ASCII name, a rename, a name with a space, a nested path);
+// (a new file, a non-ASCII name, a rename, a name with a space, a nested path, a
+// copy under -C, a rename to a non-ASCII name, which git prints quoted);
 // trimming a literal "b/" filed all of them under keys no finding ever names.
 func TestAddressableLinesReadsPathsWhateverPrefixGitUsed(t *testing.T) {
 	diff := func(src, dst string) string {
@@ -531,10 +489,35 @@ index 422c2b7..55dce13 100644
  a
 -b
 +B
+diff --git SRC/a.go DST/c.go
+similarity index 66%
+copy from a.go
+copy to c.go
+index 56d3007..255f68f 100644
+--- SRC/a.go
++++ DST/c.go
+@@ -1,3 +1,3 @@
+ q
+ r
+-s
++S
+diff --git SRC/old2.go "DST/caf\303\251-2.go"
+similarity index 66%
+rename from old2.go
+rename to "caf\303\251-2.go"
+index 04ec35a..661264d 100644
+--- SRC/old2.go
++++ "DST/caf\303\251-2.go"
+@@ -1,3 +1,3 @@
+ x
+ y
+-z
++Z
 `)
 	}
 	want := map[string][]int{
 		"added.go": {1}, "café.go": {1}, "new.go": {1, 2, 3}, "sp ace.go": {1}, "src/x.go": {1, 2},
+		"c.go": {1, 2, 3}, "café-2.go": {1, 2, 3},
 	}
 	for _, tc := range []struct{ name, src, dst string }{
 		{"default", "a/", "b/"},
@@ -558,39 +541,6 @@ index 422c2b7..55dce13 100644
 	}
 }
 
-// published is what every forge path does to sanitized text afterwards (the
-// orchestrator's publishedText, minus the terminal escape, which touches no
-// markdown).
-func published(s string) string { return agent.RedactSecrets(s) }
-
-// payloadInert reports whether each occurrence of every payload in s is either
-// gone or inside a code span as a forge pairs s -- the PUBLISHED text, not the text
-// the sanitizer saw.
-func payloadInert(t *testing.T, s string, payloads ...string) {
-	t.Helper()
-	spans, ok := codeSpans(s)
-	if !ok {
-		spans = nil
-	}
-	for _, p := range payloads {
-		for at := 0; ; {
-			i := strings.Index(s[at:], p)
-			if i < 0 {
-				break
-			}
-			i += at
-			inside := false
-			for _, sp := range spans {
-				inside = inside || sp[0] < i && i+len(p) <= sp[1]
-			}
-			if !inside {
-				t.Errorf("published %q: %q renders as live prose", s, p)
-			}
-			at = i + len(p)
-		}
-	}
-}
-
 // withRedactions installs operator logs.redact patterns for one test.
 func withRedactions(t *testing.T, patterns ...string) {
 	t.Helper()
@@ -602,61 +552,18 @@ func withRedactions(t *testing.T, patterns ...string) {
 	t.Cleanup(func() { agent.SetExtraRedactions(nil) })
 }
 
-var livePayload = []string{"@victim", "<details", "![x]"}
-
-// A mask that runs on over a span's closing backtick re-pairs everything after it,
-// so text the sanitizer left raw as the inside of a span is published as prose.
-// Redacting FIRST means the pairing it computes is the published one.
-func TestSanitizeTextRedactsBeforePairingSpans(t *testing.T) {
-	const tail = " and `@victim <details> ![x](https://evil.example/leak)` end"
-	for _, tc := range []struct{ name, pattern, in, secret string }{
-		// A built-in rule: masked before pairing, so publishing changes nothing. (Its
-		// value class no longer takes a backtick, which is why the pairing half of
-		// this test is carried by the operator pattern below.)
-		{"built-in rule", "", "see `token=abcdefgh`x" + tail, "abcdefgh"},
-		// An operator pattern can take one whatever the built-in rules do.
-		{"operator pattern", `(ticket=)\S+`, "see `ticket=abc`x" + tail, "ticket=abc`"},
+// Secrets are masked before any escape is inserted. Escaped first, the raw-HTML
+// escape split the value (`ab<cd` to `ab&lt;cd`), a rule whose value class takes
+// the `<` but not the `&` masked only the part before it, and the rest was
+// published.
+func TestSanitizersRedactBeforeEscaping(t *testing.T) {
+	withRedactions(t, `(ticket=)[\w<]+`)
+	for name, got := range map[string]string{
+		"SanitizeText": SanitizeText("see ticket=ab<cdefgh here"),
+		"CodeSpan":     CodeSpan("cfg/ticket=ab<cdefgh.go"),
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.pattern != "" {
-				withRedactions(t, tc.pattern)
-			}
-			sanitized := SanitizeText(tc.in)
-			got := published(sanitized)
-			if strings.Contains(got, tc.secret) {
-				t.Errorf("published %q still carries the secret", got)
-			}
-			if got != sanitized {
-				t.Errorf("publishing changed the sanitized text:\n sanitized %q\n published %q", sanitized, got)
-			}
-			payloadInert(t, got, livePayload...)
-		})
-	}
-}
-
-// Redacting first is not enough on its own: the escape a span keeps can grow a
-// value past a pattern's minimum, so the publish-time pass matches what the first
-// one did not and eats the backtick after it. SanitizeText must notice.
-func TestSanitizeTextGivesUpSpansThePublishedRedactionWouldRepair(t *testing.T) {
-	withRedactions(t, `(id=)\S{8,}`)
-	in := "see `id=-->`x and `@victim <details> ![x](https://evil.example/leak)` end"
-	if agent.RedactSecrets(in) != in {
-		t.Fatalf("precondition: %q must not match before sanitizing", in)
-	}
-	payloadInert(t, published(SanitizeText(in)), livePayload...)
-}
-
-// A path is redacted like any other agent string, before its backticks are
-// escaped.
-func TestCodeSpanRedactsThePath(t *testing.T) {
-	withRedactions(t, `(ticket=)\S+`)
-	for _, in := range []string{"cfg/token=abcdefghij.go", "ticket=abc`x.go"} {
-		got := CodeSpan(in)
-		if !strings.Contains(got, "[REDACTED]") {
-			t.Errorf("CodeSpan(%q) = %q, want the secret masked", in, got)
-		}
-		if published(got) != got {
-			t.Errorf("CodeSpan(%q) = %q changes again when published: %q", in, got, published(got))
+		if strings.Contains(got, "cdefgh") || !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("%s = %q, want the whole secret masked", name, got)
 		}
 	}
 }
