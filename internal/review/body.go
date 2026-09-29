@@ -355,19 +355,10 @@ func mdText(s string) string { return forge.SanitizeText(s) }
 // than a local escape so this and the GitLab inline-note path cannot drift.
 func mdCode(s string) string { return forge.CodeSpan(s) }
 
-// mdLine is mdText for a field that does NOT start a block of its own: one that
-// follows a prefix on its line ("_Suggested:_", "**HIGH** — ") or is the body of a
-// list item. forge.SanitizeText closes a code fence the text left open, and it can
-// only count fences correctly in text that begins at column 0 and stands alone. Placed
-// after a prefix, the field's first "```" is not a fence at all, so a balanced pair
-// reads to the forge as one opener that swallows every finding and the signature
-// after it. Inside a list item, a fence ends with the item, and the closer
-// SanitizeText appends at column 0 opens a new block instead. A line break has no
-// business in either place, so the field is flattened to one line, where no fence can
-// outlive the line or the item it sits in.
-func mdLine(s string) string {
-	return mdText(strings.Join(strings.Fields(s), " "))
-}
+// mdLine is mdText for a field that does not start a block of its own -- after a
+// prefix on its line, or as a list item's body. See forge.SanitizeLine for why the
+// fence handling mdText does is wrong there.
+func mdLine(s string) string { return forge.SanitizeLine(s) }
 
 func mdLines(in []string) []string {
 	out := make([]string, 0, len(in))

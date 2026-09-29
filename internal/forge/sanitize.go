@@ -75,7 +75,47 @@ import (
 // Each review pass found another way. Escaped everywhere, the text is inert
 // however the forge pairs it.
 func SanitizeText(s string) string {
-	return closeOpenFence(sanitizeInline(s))
+	s = sanitizeInline(s)
+	if fenceInContainer(s) {
+		return escapeFences(s)
+	}
+	return closeOpenFence(s)
+}
+
+// SanitizeLine is SanitizeText for a field that does NOT start a block of its own:
+// one that follows a prefix on its line ("_Suggested:_", "**HIGH** — ") or is the
+// body of a list item. closeOpenFence counts fences as if its text began at column 0
+// and stood alone, and in those places the count is wrong in both directions: after
+// a prefix a "```" is not a fence at all, and inside a list item a fence ends with
+// the item, so a closer appended at column 0 OPENS a block there. Either way every
+// finding after the field and the signature render as code.
+//
+// So the field is flattened to one line, no closer is ever appended -- a closer is
+// a line break and a column-0 fence, the construct this exists to prevent -- and a
+// fence run the line begins with is escaped, since a field that stands at column 0
+// (a finding's title) would otherwise open one.
+func SanitizeLine(s string) string {
+	s = sanitizeInline(strings.Join(strings.Fields(s), " "))
+	if codeFence.MatchString(s) {
+		s = `\` + s
+	}
+	return s
+}
+
+// fenceInContainer reports whether s has a fence run anywhere AND a line that opens
+// a list item or a blockquote. closeOpenFence cannot see containers: a fence inside
+// a list item ends with the item, so "- ```" + "  ```" + "```" reads to it as a
+// closed pair and a stray opener it never sees, while the forge reads a closed
+// block in the item and a top-level opener that swallows the rest of the document.
+// Rather than parse containers, a field that mixes the two gives up its fences.
+func fenceInContainer(s string) bool {
+	return fenceRun.MatchString(s) && containerLine.MatchString(s)
+}
+
+// escapeFences makes every run of three or more backticks or tildes literal, so no
+// line of s can open or close a fence.
+func escapeFences(s string) string {
+	return fenceRun.ReplaceAllStringFunc(s, func(run string) string { return `\` + run })
 }
 
 // sanitizeInline is every rule but the fence, the part that holds in every
@@ -133,7 +173,8 @@ func escapeRawHTML(s string) string {
 // It counts fences as if s began at column 0 and stood alone, which is only true of
 // a field the caller places as a block of its own. After a prefix on its line or
 // inside a list item the count is wrong in both directions, so those callers flatten
-// the field to one line first (review.mdLine).
+// the field to one line first (SanitizeLine), and SanitizeText itself gives up the
+// fences of a field that holds a list item or a blockquote (fenceInContainer).
 //
 // It errs towards doing nothing. Only fences CommonMark is unambiguous about are
 // tracked (at most three spaces of indent, a backtick opener whose info string
@@ -200,6 +241,11 @@ var (
 	// codeFence splits a candidate fence line into its delimiter and whatever
 	// follows, which is the info string on an opener and must be blank on a closer.
 	codeFence = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
+	// fenceRun is any run a fence could be made of, wherever it sits on its line.
+	fenceRun = regexp.MustCompile("`{3,}|~{3,}")
+	// containerLine is a line that opens a blockquote or a list item: the containers
+	// a fence can end inside.
+	containerLine = regexp.MustCompile(`(?m)^ {0,3}(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?:[ \t]|$))`)
 )
 
 // breakMentions stops a review from notifying people an injected finding named.

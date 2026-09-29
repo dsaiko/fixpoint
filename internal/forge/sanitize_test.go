@@ -567,3 +567,35 @@ func TestSanitizersRedactBeforeEscaping(t *testing.T) {
 		}
 	}
 }
+
+// SanitizeLine is for a field placed after a prefix or in a list item: one line,
+// never a closer, and never a leading fence run.
+func TestSanitizeLineCannotEmitAFence(t *testing.T) {
+	for _, in := range []string{"```", "```go x", "~~~", "  ~~~~ y", "a\n```\nb"} {
+		got := SanitizeLine(in)
+		if strings.Contains(got, "\n") || codeFence.MatchString(got) {
+			t.Errorf("SanitizeLine(%q) = %q: a line break or a fence survived", in, got)
+		}
+	}
+	if got := SanitizeLine("use ```go blocks"); got != "use ```go blocks" {
+		t.Errorf("a mid-line run is not a fence and should be left as written, got %q", got)
+	}
+}
+
+// A block field that mixes a fence with a list item or a blockquote gives up its
+// fences, because closeOpenFence cannot see the container a fence ends inside.
+func TestSanitizeTextEscapesFencesInsideAContainer(t *testing.T) {
+	for _, in := range []string{"- ```\n  ```\n\n```", "> ```\n\n```", "* a\n  ~~~\n~~~", "10) x\n    ```"} {
+		for _, line := range strings.Split(SanitizeText(in), "\n") {
+			if codeFence.MatchString(line) {
+				t.Errorf("SanitizeText(%q): line %q is still a fence", in, line)
+			}
+		}
+	}
+	if got := SanitizeText("```go\nx()\n```"); got != "```go\nx()\n```" {
+		t.Errorf("a plain code block must keep its fences, got %q", got)
+	}
+	if got := SanitizeText("- a list\n- with no fence"); got != "- a list\n- with no fence" {
+		t.Errorf("a list with no fence must be left alone, got %q", got)
+	}
+}
