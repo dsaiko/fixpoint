@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -26,7 +27,10 @@ import (
 //
 //  1. Control characters go first (model.StripControl): bidi overrides that render
 //     text as something other than what it says, zero-width characters that hide
-//     content from a reader while leaving it in the data.
+//     content from a reader while leaving it in the data. Secrets are masked
+//     (agent.RedactSecrets, the operator's logs.redact included) right after, and
+//     BEFORE the code spans are paired: a mask can swallow a closing backtick, and
+//     the pairing that decides which text is left raw must be the one published.
 //  2. HTML comment delimiters are escaped BEFORE anything else is inserted. An
 //     unescaped `<!--` in agent text would open a comment that swallows the rest of
 //     the document -- including the signature -- and step 4 inserts comments of its
@@ -35,8 +39,10 @@ import (
 //     (`Closes #42`, and the full-URL spelling of the same thing) cannot act.
 //  4. Mentions are broken, so a review cannot notify arbitrary people.
 //
-// Steps 1-4 hold wherever the text lands, so they live in sanitizeInline and are
-// shared with CodeSpan. Two more run only here, because they are about BLOCKS --
+// Steps 1-4 are the rule for prose and live in sanitizeInline, but for the
+// redaction, which runs once over the whole string before it. Inside a code span
+// -- here and in CodeSpan -- only steps 1 and 2 run (see below). Three more run
+// only here, because they are about BLOCKS --
 // constructs that reach past the string into the document around it, which is
 // where fixpoint's own words are:
 //
@@ -58,7 +64,9 @@ import (
 // escaping them would make fixpoint misquote its own evidence in exchange for
 // nothing a reader could not already have been told in plain prose.
 //
-// Nor is the INSIDE of an inline code span, beyond steps 1 and 2 (see codeSpans).
+// Nor is the INSIDE of an inline code span, beyond steps 1 and 2 (see codeSpans):
+// no reference or mention is broken there, which is safe ONLY while the span is
+// certain to pair the same way on the forge.
 // A forge renders a span literally -- it decodes no entity, hides no comment,
 // links no mention -- so `List<String>` escaped came out as `List&lt;String>` and
 // `@Override` as `@<!---->Override`: a misquote with nothing bought. Step 2 still
@@ -73,11 +81,26 @@ import (
 // backtick at the end of one string pairs, on the forge, with the first one in the
 // next -- turning the rest of that span into live prose.
 func SanitizeText(s string) string {
-	s = model.StripControl(s)
+	s = agent.RedactSecrets(model.StripControl(s))
 	spans, ok := codeSpans(s)
 	if !ok {
-		spans = nil // the pairing is not certain, so all of it is treated as prose
+		return sanitizeSpans(s, nil) // the pairing is not certain, so all of it is treated as prose
 	}
+	out := sanitizeSpans(s, spans)
+	if agent.RedactSecrets(out) != out {
+		// Every published path redacts once more (publishedText, logstore), and here
+		// that pass would CHANGE text whose span content was left raw: an escape
+		// inside a span (`-->` to `--&gt;`) can grow a value past a rule's minimum, and
+		// a mask that runs on to a closing backtick re-pairs everything after it. With
+		// the spans no longer certain, none of them is exempted.
+		return sanitizeSpans(s, nil)
+	}
+	return out
+}
+
+// sanitizeSpans applies the prose rules everywhere but the given code spans,
+// whose content keeps only the comment escape.
+func sanitizeSpans(s string, spans [][2]int) string {
 	var b strings.Builder
 	at := 0
 	for _, sp := range spans {
@@ -182,9 +205,12 @@ func isASCIIPunct(c byte) bool {
 	return strings.IndexByte("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", c) >= 0
 }
 
-// sanitizeInline is the part of the rule that holds in every context, including
-// inside a code span where no block can form. One function rather than two
-// call-site copies: the copies are how one of them ends up a rule behind.
+// sanitizeInline is steps 1-4, the part of the rule that holds in all prose. It
+// does NOT run inside a code span: there only steps 1 and 2 do (SanitizeText's
+// span branch, CodeSpan), and leaving mentions and references unbroken is safe
+// only because the forge is certain to render that text as a span. Text that is
+// not guaranteed to be one needs all of this. One function rather than call-site
+// copies: the copies are how one of them ends up a rule behind.
 func sanitizeInline(s string) string {
 	s = model.StripControl(s)
 	s = escapeHTMLComments(s)
@@ -356,13 +382,14 @@ func breakImages(s string) string { return strings.ReplaceAll(s, "![", "!<!---->
 // exempts a span's content: no tag, image, mention or reference can form inside
 // one, and escaping them would misquote the path -- `@types/foo.d.ts` printed as
 // `@<!---->types/foo.d.ts`, `a<b.txt` as `a&lt;b.txt`. The comment escape stays,
-// because a marker is read out of the raw body, span or no span.
+// because a marker is read out of the raw body, span or no span, and so does the
+// redaction, first: a mask applied later could run on over the closing delimiter.
 //
 // A line break becomes a space, which is what a span renders one as anyway. Kept,
 // it is a way out: a blank line ends the paragraph and the span with it, and what
 // follows -- a `<details>` or a fence -- is live in the document around it.
 func CodeSpan(s string) string {
-	s = strings.ReplaceAll(model.StripControl(s), "\n", " ")
+	s = agent.RedactSecrets(strings.ReplaceAll(model.StripControl(s), "\n", " "))
 	return strings.ReplaceAll(escapeHTMLComments(s), "`", "&#96;")
 }
 

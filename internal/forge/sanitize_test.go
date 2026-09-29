@@ -1,8 +1,11 @@
 package forge
 
 import (
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/dsaiko/fixpoint/internal/agent"
 )
 
 // A review comment is where a finding stops being a local file and becomes an
@@ -552,5 +555,108 @@ index 422c2b7..55dce13 100644
 				}
 			}
 		})
+	}
+}
+
+// published is what every forge path does to sanitized text afterwards (the
+// orchestrator's publishedText, minus the terminal escape, which touches no
+// markdown).
+func published(s string) string { return agent.RedactSecrets(s) }
+
+// payloadInert reports whether each occurrence of every payload in s is either
+// gone or inside a code span as a forge pairs s -- the PUBLISHED text, not the text
+// the sanitizer saw.
+func payloadInert(t *testing.T, s string, payloads ...string) {
+	t.Helper()
+	spans, ok := codeSpans(s)
+	if !ok {
+		spans = nil
+	}
+	for _, p := range payloads {
+		for at := 0; ; {
+			i := strings.Index(s[at:], p)
+			if i < 0 {
+				break
+			}
+			i += at
+			inside := false
+			for _, sp := range spans {
+				inside = inside || sp[0] < i && i+len(p) <= sp[1]
+			}
+			if !inside {
+				t.Errorf("published %q: %q renders as live prose", s, p)
+			}
+			at = i + len(p)
+		}
+	}
+}
+
+// withRedactions installs operator logs.redact patterns for one test.
+func withRedactions(t *testing.T, patterns ...string) {
+	t.Helper()
+	var res []*regexp.Regexp
+	for _, p := range patterns {
+		res = append(res, regexp.MustCompile(p))
+	}
+	agent.SetExtraRedactions(res)
+	t.Cleanup(func() { agent.SetExtraRedactions(nil) })
+}
+
+var livePayload = []string{"@victim", "<details", "![x]"}
+
+// A mask that runs on over a span's closing backtick re-pairs everything after it,
+// so text the sanitizer left raw as the inside of a span is published as prose.
+// Redacting FIRST means the pairing it computes is the published one.
+func TestSanitizeTextRedactsBeforePairingSpans(t *testing.T) {
+	const tail = " and `@victim <details> ![x](https://evil.example/leak)` end"
+	for _, tc := range []struct{ name, pattern, in, secret string }{
+		// A built-in rule: masked before pairing, so publishing changes nothing. (Its
+		// value class no longer takes a backtick, which is why the pairing half of
+		// this test is carried by the operator pattern below.)
+		{"built-in rule", "", "see `token=abcdefgh`x" + tail, "abcdefgh"},
+		// An operator pattern can take one whatever the built-in rules do.
+		{"operator pattern", `(ticket=)\S+`, "see `ticket=abc`x" + tail, "ticket=abc`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.pattern != "" {
+				withRedactions(t, tc.pattern)
+			}
+			sanitized := SanitizeText(tc.in)
+			got := published(sanitized)
+			if strings.Contains(got, tc.secret) {
+				t.Errorf("published %q still carries the secret", got)
+			}
+			if got != sanitized {
+				t.Errorf("publishing changed the sanitized text:\n sanitized %q\n published %q", sanitized, got)
+			}
+			payloadInert(t, got, livePayload...)
+		})
+	}
+}
+
+// Redacting first is not enough on its own: the escape a span keeps can grow a
+// value past a pattern's minimum, so the publish-time pass matches what the first
+// one did not and eats the backtick after it. SanitizeText must notice.
+func TestSanitizeTextGivesUpSpansThePublishedRedactionWouldRepair(t *testing.T) {
+	withRedactions(t, `(id=)\S{8,}`)
+	in := "see `id=-->`x and `@victim <details> ![x](https://evil.example/leak)` end"
+	if agent.RedactSecrets(in) != in {
+		t.Fatalf("precondition: %q must not match before sanitizing", in)
+	}
+	payloadInert(t, published(SanitizeText(in)), livePayload...)
+}
+
+// A path is redacted like any other agent string, before its backticks are
+// escaped.
+func TestCodeSpanRedactsThePath(t *testing.T) {
+	withRedactions(t, `(ticket=)\S+`)
+	for _, in := range []string{"cfg/token=abcdefghij.go", "ticket=abc`x.go"} {
+		got := CodeSpan(in)
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("CodeSpan(%q) = %q, want the secret masked", in, got)
+		}
+		if published(got) != got {
+			t.Errorf("CodeSpan(%q) = %q changes again when published: %q", in, got, published(got))
+		}
 	}
 }

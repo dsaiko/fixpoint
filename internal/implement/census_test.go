@@ -124,6 +124,66 @@ func TestIgnoredCensusAndDiff(t *testing.T) {
 	}
 }
 
+// Directories enter the ignored census so a discard can delete the ones an
+// attempt created (review run 20260929-125352, i4) -- and ONLY those: a
+// directory that existed at step 2 is kept, and one holding tracked files is
+// never listed, however ignored its contents, since deleting it as "created"
+// would take the sources with it.
+func TestIgnoredCensusRecordsDirectories(t *testing.T) {
+	dir := censusRepo(t)
+	write(t, dir, "src/main.go", "package main\n")
+	if _, err := testGit.run(t.Context(), dir, "add", "src/main.go"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testGit.run(t.Context(), dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "src"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, ".git/info/exclude", "*.log\n")
+	write(t, dir, "ignored/pkg/old.bin", "old\n")
+	if err := os.MkdirAll(filepath.Join(dir, "ignored", "keep-empty"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pre, err := testGit.TakeIgnoredCensus(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	write(t, dir, "ignored/pkg/sub/new.bin", "new\n") // new dir under a pre-existing one
+	write(t, dir, "ignored/fresh/deep/a.bin", "a\n")  // new nested dirs
+	if err := os.MkdirAll(filepath.Join(dir, "ignored", "fresh", "empty"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "logs-only/run.log", "l\n") // a directory git reports as wholly ignored
+	write(t, dir, "src/debug.log", "l\n")     // an ignored file in a TRACKED directory
+	post, err := testGit.TakeIgnoredCensus(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, modified := DiffIgnored(pre, post)
+	want := []string{
+		"ignored/fresh", "ignored/fresh/deep", "ignored/fresh/deep/a.bin",
+		"ignored/pkg/sub", "ignored/pkg/sub/new.bin",
+		"logs-only", "logs-only/run.log",
+		"src/debug.log",
+	}
+	if !reflect.DeepEqual(created, want) {
+		t.Errorf("created = %v\nwant      %v", created, want)
+	}
+	if len(modified) != 0 {
+		t.Errorf("modified = %v; a directory's mtime is churn, not a modification", modified)
+	}
+	// Recorded at step 2, so the diff above keeps them rather than never seeing
+	// them; ignored/keep-empty is kept by never being listed at all.
+	for _, kept := range []string{"ignored", "ignored/pkg"} {
+		if !pre[kept].Dir {
+			t.Errorf("%s is missing from the first census as a directory: %v", kept, pre)
+		}
+	}
+	if _, ok := post["src"]; ok {
+		t.Error("src/ holds a tracked file and entered the ignored census, where a discard could delete it")
+	}
+}
+
 // The three buckets of §5.2 step 7: mutation fails the task, gate_generated
 // commits with attribution, output is removed. Pure function, no git.
 func TestClassifyGateDiff(t *testing.T) {

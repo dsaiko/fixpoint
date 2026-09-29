@@ -133,7 +133,12 @@ var redactRules = []struct {
 	// that matches none of the shape-based rules above -- would escape redaction.
 	// Only the value is masked; the captured prefix (quotes and all) is kept, so
 	// admitting the quotes here cannot unbalance anything either.
-	{regexp.MustCompile(`(?i)((?:\\?["'])?(?:api[_-]?key|secret|token|password|passwd)(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)[^\s"'\\]{8,}`), "${1}" + redactionMask},
+	//
+	// The backtick is excluded for the same reason as the backslash: published
+	// review text is redacted, and a mask that swallowed a code span's closing
+	// backtick would re-pair the spans after them and turn exempted span content
+	// into live markdown (review run 20260929-125352, i6).
+	{regexp.MustCompile(`(?i)((?:\\?["'])?(?:api[_-]?key|secret|token|password|passwd)(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)[^\s"'` + "`" + `\\]{8,}`), "${1}" + redactionMask},
 }
 
 // extraRedactions holds the operator's own patterns (logs.redact), installed
@@ -588,12 +593,7 @@ func ExtractText(output, tag string) (string, error) {
 	if strings.TrimSpace(output[c+len(closeTag):]) != "" {
 		return "", fmt.Errorf("<%s> block is not the last output (the contract requires the tagged block to be final; untagged trailing output follows the last </%s>)", tag, tag)
 	}
-	o := lastLineStartIndex(output[:c], openTag)
-	if o < 0 {
-		// No opener begins a line: the agent put it inline ("Here it is: <design>"),
-		// which is still a valid envelope, so the nearest one is the answer.
-		o = strings.LastIndex(output[:c], openTag)
-	}
+	o := openerIndex(output[:c], openTag, closeTag)
 	if o < 0 {
 		return "", fmt.Errorf("no <%s> block found in agent output", tag)
 	}
@@ -604,24 +604,54 @@ func ExtractText(output, tag string) (string, error) {
 	return body, nil
 }
 
-// lastLineStartIndex is strings.LastIndex restricted to occurrences that begin
-// a line (only spaces or tabs before them on it). ExtractText cannot try
-// candidates the way ExtractJSON does -- any prose parses -- so it needs another
-// way past an opener the BODY mentions: a design about fixpoint itself says
-// "prose in a `<design>` envelope", and taking that as the opener would silently
-// drop everything above it. Envelope tags stand on their own line; mentions sit
-// inside a sentence.
-func lastLineStartIndex(s, sub string) int {
+// openerIndex picks the opener of the block that closes at the end of s.
+// ExtractText cannot try candidates the way ExtractJSON does -- any prose parses
+// -- so it needs another way past an opener the BODY mentions: a design about
+// fixpoint itself says "prose in a `<design>` envelope", and taking that as the
+// opener would silently drop everything above it.
+//
+// The search is bounded first: only openers after the last closer that precedes
+// the NEAREST opener. A closer before it ends an earlier block (a draft, a
+// quoted previous design), and reaching back past it spliced that draft, its
+// </design> and the prose after it into the answer (review run 20260929-125352,
+// i1); a closer after it lies inside the final body, which is why the bound is
+// taken from the nearest opener rather than from s's last closer. Inside the
+// region an envelope tag alone on its line wins, then one that begins a line
+// (a mention can begin a line too, i18), then the nearest.
+func openerIndex(s, openTag, closeTag string) int {
+	nearest := strings.LastIndex(s, openTag)
+	if nearest < 0 {
+		return -1
+	}
+	from := 0
+	if b := strings.LastIndex(s[:nearest], closeTag); b >= 0 {
+		from = b + len(closeTag)
+	}
+	leading := -1
 	for end := len(s); ; {
-		i := strings.LastIndex(s[:end], sub)
-		if i < 0 {
-			return -1
+		i := strings.LastIndex(s[:end], openTag)
+		if i < from {
+			break
 		}
-		if strings.TrimLeft(s[strings.LastIndexByte(s[:i], '\n')+1:i], " \t") == "" {
-			return i
+		lineStart := strings.LastIndexByte(s[:i], '\n') + 1
+		lineEnd := len(s)
+		if j := strings.IndexByte(s[i:], '\n'); j >= 0 {
+			lineEnd = i + j
+		}
+		if strings.TrimLeft(s[lineStart:i], " \t") == "" {
+			if strings.TrimRight(s[i+len(openTag):lineEnd], " \t\r") == "" {
+				return i
+			}
+			if leading < 0 {
+				leading = i
+			}
 		}
 		end = i
 	}
+	if leading >= 0 {
+		return leading
+	}
+	return nearest
 }
 
 // ExtractJSON finds the agent's FINAL <tag>...</tag> block in the output and
