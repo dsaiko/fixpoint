@@ -12,10 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/dsaiko/fixpoint/internal/config"
 )
@@ -61,6 +61,14 @@ type Snapshotted struct {
 // (see refuseLinkedAssignment). The snapshot is the choke point: every later
 // read, the collector's own document checks included, sees only the copy.
 //
+// Every read goes through an os.Root on the assignment (its parent, for a file),
+// never through a path. Checking a path and then opening it are two resolutions,
+// and an ancestor swapped for a link in between redirects the open outside the
+// tree -- O_NOFOLLOW guards only the final component. The root resolves each
+// component against the directory it pinned and refuses one that leaves it, in
+// the same call that opens. The pinned directory is also compared with the one
+// the refusal checked (pinned), so a swap before the root opens is caught too.
+//
 // maxBytes bounds the copy and a breach is a refusal, not a truncation: an
 // assignment too large for the prompt caps fails here, at startup, before any
 // session is paid for -- and a partial assignment silently passed on would be
@@ -77,31 +85,39 @@ func Snapshot(src, dst string, exclude []string, maxBytes int64) (Snapshotted, e
 		return Snapshotted{}, err
 	}
 	if !info.IsDir() {
+		root, err := pinned(filepath.Dir(src), nil)
+		if err != nil {
+			return Snapshotted{}, err
+		}
+		defer func() { _ = root.Close() }()
 		out := Snapshotted{Dir: dst, Entry: filepath.Base(src)}
-		n, err := copyFile(src, filepath.Join(dst, out.Entry), maxBytes)
+		n, err := copyFile(root, out.Entry, filepath.Join(dst, out.Entry), maxBytes, info)
 		if err != nil {
 			return Snapshotted{}, overBudget(err, src, maxBytes)
 		}
 		out.Files, out.Bytes = 1, n
 		return out, nil
 	}
+	root, err := pinned(src, info)
+	if err != nil {
+		return Snapshotted{}, err
+	}
+	defer func() { _ = root.Close() }()
 	out := Snapshotted{Dir: dst}
 	budget := maxBytes
 	srcReal := canonical(src)
 	if exclude, err = excludesWithin(src, srcReal, exclude); err != nil {
 		return Snapshotted{}, err
 	}
-	err = filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+	err = fs.WalkDir(root.FS(), ".", func(slashed string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
+		if slashed == "." {
 			return nil
 		}
+		rel := filepath.FromSlash(slashed)
+		path := filepath.Join(src, rel)
 		if excluded(path, rel, exclude) || excluded(filepath.Join(srcReal, rel), rel, exclude) {
 			if d.IsDir() {
 				return filepath.SkipDir
@@ -119,7 +135,7 @@ func Snapshot(src, dst string, exclude []string, maxBytes int64) (Snapshotted, e
 			// block forever.
 			return nil
 		}
-		n, err := copyFile(path, filepath.Join(dst, rel), budget)
+		n, err := copyFile(root, rel, filepath.Join(dst, rel), budget, nil)
 		if err != nil {
 			return overBudget(err, path, maxBytes)
 		}
@@ -157,6 +173,23 @@ func refuseLinkedAssignment(src string, info os.FileInfo) error {
 		return fmt.Errorf("assignment %s reaches its destination through %s, a symlink to %q that leaves the directory it sits in; the snapshot shows the assignment's bytes to every agent and will not follow one out of the tree -- pass the real path if you meant it", src, link, dest)
 	}
 	return nil
+}
+
+// pinned opens dir as a root, refusing it unless it is the directory want
+// describes (when given): the refusal checked a path, and the root is what every
+// read will go through.
+func pinned(dir string, want os.FileInfo) (*os.Root, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("assignment: %w", err)
+	}
+	if want != nil {
+		if got, err := root.Stat("."); err != nil || !os.SameFile(got, want) {
+			_ = root.Close()
+			return nil, fmt.Errorf("assignment %s changed while it was being opened; the snapshot will not copy a directory other than the one it checked", dir)
+		}
+	}
+	return root, nil
 }
 
 // canonical resolves p's symlinks, or its parent's when p does not exist yet
@@ -226,18 +259,29 @@ func excluded(abs, rel string, exclude []string) bool {
 	return false
 }
 
-// copyFile copies one regular file, refusing -- not truncating -- at the budget.
-func copyFile(src, dst string, budget int64) (int64, error) {
+// copyFile copies the regular file name, relative to root, refusing -- not
+// truncating -- at the budget. want, when given, is the file the caller checked,
+// and a different one at the name is refused.
+//
+// Through the root, so a link anywhere on the way -- an ancestor or the file
+// itself, swapped in after the walk classified it -- cannot lead the open out of
+// the assignment. A caller's O_NOFOLLOW would add nothing: os.Root already opens
+// each component with it and then resolves an in-root link itself, and such a
+// link can only reach assignment bytes.
+func copyFile(root *os.Root, name, dst string, budget int64, want os.FileInfo) (int64, error) {
 	if budget < 0 {
 		budget = 0
 	}
-	// O_NOFOLLOW: the walk classified this path as a regular file, and a swap to
-	// a link between that and the open must not be followed.
-	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	in, err := root.Open(name)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = in.Close() }()
+	if want != nil {
+		if got, err := in.Stat(); err != nil || !os.SameFile(got, want) {
+			return 0, fmt.Errorf("assignment %s changed while it was being opened; the snapshot will not copy a file other than the one it checked", name)
+		}
+	}
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return 0, err

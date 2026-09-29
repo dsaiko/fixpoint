@@ -100,7 +100,7 @@ func TestIgnoredCensusAndDiff(t *testing.T) {
 		t.Errorf("ignored file missing from the census: %v", pre)
 	}
 	for path := range pre {
-		if strings.HasPrefix(path, ".fixpoint/") {
+		if path == ".fixpoint" || strings.HasPrefix(path, ".fixpoint/") {
 			t.Errorf("the artifact root leaked into the ignored census: %s", path)
 		}
 	}
@@ -121,6 +121,36 @@ func TestIgnoredCensusAndDiff(t *testing.T) {
 	}
 	if !reflect.DeepEqual(modified, []string{"ignored/old.bin"}) {
 		t.Errorf("modified = %v", modified)
+	}
+}
+
+// Review run 20260929-141502, i7: logs.dir is configurable, and a run whose
+// logs live under an ignored runlogs/ in the project censused its own files --
+// the prompts an attempt logs after step 2 read as created, and every discard
+// deleted them.
+func TestIgnoredCensusExcludesTheNamedArtifactRoots(t *testing.T) {
+	dir := censusRepo(t)
+	write(t, dir, ".git/info/exclude", "runlogs/\n")
+	write(t, dir, "runlogs/20260929/journal.jsonl", "{}\n")
+	pre, err := testGit.TakeIgnoredCensus(t.Context(), dir, "runlogs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "runlogs/20260929/round-1/coder-prompt.md", "logged after step 2\n")
+	write(t, dir, "ignored/new.bin", "the attempt's\n")
+	post, err := testGit.TakeIgnoredCensus(t.Context(), dir, "runlogs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []map[string]IgnoredStat{pre, post} {
+		for path := range c {
+			if path == "runlogs" || strings.HasPrefix(path, "runlogs/") {
+				t.Errorf("the configured logs root leaked into the ignored census: %s", path)
+			}
+		}
+	}
+	if created, _ := DiffIgnored(pre, post); !reflect.DeepEqual(created, []string{"ignored", "ignored/new.bin"}) {
+		t.Errorf("created = %v, want only the attempt's own output", created)
 	}
 }
 

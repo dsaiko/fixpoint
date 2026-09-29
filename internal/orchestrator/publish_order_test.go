@@ -12,63 +12,70 @@ import (
 )
 
 // publishedPaths is every way a finding's or a reply's text reaches a forge, built
-// the way the orchestrator builds it: the review body, an inline comment, and the
-// thread and triage replies (SanitizeText, then the signature, then publishedText).
-func publishedPaths(text string) map[string][2]string {
+// the way the orchestrator builds it: the review body (with the finding's
+// location), an inline comment, and the thread and triage replies (SanitizeText,
+// then the signature, then publishedText).
+func publishedPaths(file, text string) map[string]string {
 	const sig = "_fixpoint_"
-	it := model.Issue{Severity: "high", Title: "t", Description: text, Suggestion: text}
+	it := model.Issue{Severity: "high", Title: text, File: file, Line: 9, Description: text, Suggestion: text}
 	body := review.RenderBody(review.BodyInput{
 		Decision:  review.Decision{Outcome: review.ChangesRequested},
 		Issues:    []model.Issue{it},
 		Signature: sig,
 	})
-	inline := review.RenderInline(it, sig)
-	reply := forge.SanitizeText(text) + "\n\n" + sig
-	out := map[string][2]string{}
-	for name, rendered := range map[string]string{"body": body, "inline": inline, "reply": reply} {
-		out[name] = [2]string{rendered, publishedText(rendered)}
+	return map[string]string{
+		"body":   publishedText(body),
+		"inline": publishedText(review.RenderInline(it, sig)),
+		"reply":  publishedText(forge.SanitizeText(text) + "\n\n" + sig),
 	}
-	return out
 }
 
-// publishedText redacts the rendered document once more, and a mask there can
-// swallow a code span's closing backtick -- re-pairing every span after it, so the
-// text the sanitizer left raw as the INSIDE of a span is published as prose. The
-// sanitizer therefore redacts first, and on what it rendered the publish-time pass
-// must change nothing.
-func TestPublishedTextCannotRepairWhatWasSanitized(t *testing.T) {
-	const tail = " and `@victim <details> ![x](https://evil.example/leak)` end"
+// The live shapes, raw. Every one of them is escaped in agent text wherever it
+// stands, so finding one anywhere in the published text -- inside a code span or
+// out -- means an escape was skipped.
+var livePayload = []string{"@victim", "<details", "![x]"}
 
-	t.Run("built-in rule", func(t *testing.T) {
-		for name, p := range publishedPaths("see `token=abcdefgh`x" + tail) {
-			if strings.Contains(p[1], "abcdefgh") {
-				t.Errorf("%s: published %q still carries the secret", name, p[1])
+// No agent string reaches a forge with a live mention, tag or image in it, however
+// the forge pairs its code spans. The inside of a span is escaped like prose, so
+// that pairing is not something the sanitizer has to predict: an agent span, a
+// location span, and a publish-time mask that eats a span's closing backtick all
+// publish inert text.
+func TestPublishedTextCarriesNoLivePayload(t *testing.T) {
+	const payload = "@victim <details> ![x](https://evil.example/leak)"
+	const text = "see `token=abcdefgh`x and `" + payload + "` and " + payload
+
+	t.Run("built-in rules", func(t *testing.T) {
+		for name, got := range publishedPaths("a`"+payload+".go", text) {
+			for _, live := range livePayload {
+				if strings.Contains(got, live) {
+					t.Errorf("%s: published %q carries %q", name, got, live)
+				}
 			}
-			if p[0] != p[1] {
-				t.Errorf("%s: publishing changed the sanitized text:\n rendered  %q\n published %q", name, p[0], p[1])
+			if strings.Contains(got, "abcdefgh") {
+				t.Errorf("%s: published %q still carries the secret", name, got)
 			}
+		}
+		// The location keeps its span: a backtick in the path is not a way out of it.
+		const loc = "`a&#96;@<!---->victim &lt;details> !<!---->[x](https://evil.example/leak).go:9`"
+		if got := publishedPaths("a`"+payload+".go", text)["body"]; !strings.Contains(got, loc) {
+			t.Errorf("body %q, want the location quoted whole as %q", got, loc)
 		}
 	})
 
-	// An operator's logs.redact pattern CAN take a backtick, whatever the built-in
-	// rules do, so it is what shows the pairing is decided after the mask.
-	t.Run("operator pattern", func(t *testing.T) {
-		agent.SetExtraRedactions([]*regexp.Regexp{regexp.MustCompile(`(ticket=)\S+`)})
+	// An operator's logs.redact pattern can run on over `[REDACTED]:9` and the
+	// location's closing backtick, which leaves the path's text in the open.
+	t.Run("operator pattern eats a closing backtick", func(t *testing.T) {
+		agent.SetExtraRedactions([]*regexp.Regexp{regexp.MustCompile(`(secret=)\S+`)})
 		t.Cleanup(func() { agent.SetExtraRedactions(nil) })
-		for name, p := range publishedPaths("see `ticket=abc`x" + tail) {
-			got := p[1]
-			for _, live := range []string{"@victim", "<details", "![x]"} {
+		body := publishedPaths(payload+" secret=abc.go", text)["body"]
+		if strings.Contains(body, "[REDACTED]:9`") {
+			t.Fatalf("precondition: the mask must eat the location's closing backtick: %q", body)
+		}
+		for name, got := range publishedPaths(payload+" secret=abc.go", text) {
+			for _, live := range livePayload {
 				if strings.Contains(got, live) {
-					t.Errorf("%s: published %q carries %q as live prose", name, got, live)
+					t.Errorf("%s: published %q carries %q", name, got, live)
 				}
-			}
-			for _, escaped := range []string{"@<!---->victim", "&lt;details>", "!<!---->[x]"} {
-				if !strings.Contains(got, escaped) {
-					t.Errorf("%s: published %q, want %q", name, got, escaped)
-				}
-			}
-			if p[0] != got {
-				t.Errorf("%s: publishing changed the sanitized text:\n rendered  %q\n published %q", name, p[0], got)
 			}
 		}
 	})
