@@ -444,10 +444,12 @@ func IsForgeCLI(name string) bool {
 // the child runs with cmd.Dir = the target and resolves it there, so no check
 // made here says anything about the directory the child will search. git and
 // its non-Go helpers have no ErrDot guard (review run 20260929-125352, i5/i8).
+//
+// root is widened to its enclosing git work tree first (WorktreeRoot): a target
+// that is a subdirectory of a checkout does not make the rest of that checkout
+// the operator's.
 func PathWithout(env []string, root string) []string {
-	if abs, err := filepath.Abs(root); err == nil {
-		root = abs
-	}
+	root = WorktreeRoot(root)
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		realRoot = filepath.Clean(root)
@@ -478,6 +480,43 @@ func PathWithout(env []string, root string) []string {
 		out = append(out, "PATH="+strings.Join(kept, string(os.PathListSeparator)))
 	}
 	return out
+}
+
+// WorktreeRoot returns the root of the git work tree that contains dir, or dir
+// itself (made absolute) when no ancestor holds a .git entry.
+//
+// The trust boundary is the checkout, not target.path. A git-diff or directory
+// run over /repo/src reviews a branch that owns /repo/bin just as much as
+// /repo/src, so a PATH entry there is a place the branch can plant `claude` or
+// `git` (review run 20260929-141502, i9). Every "is this inside the target"
+// question about PATH -- the child's PATH here, and the preflight's refusal of an
+// agent CLI or pinned helper resolved through it -- is asked against this root.
+//
+// A filesystem walk, not `git rev-parse --show-toplevel`: this runs on every
+// probe fixpoint makes, and asking git would run git to decide how to run git.
+// The nearest .git (a directory, or the file a linked worktree or submodule has)
+// is what git itself stops at. A core.worktree/GIT_WORK_TREE redirect is refused
+// by the preflight, so it is not modelled here. The walk climbs the RESOLVED path,
+// as git does from its cwd: a target reached through a symlink belongs to the
+// checkout the link points into, not to whatever repository holds the link.
+func WorktreeRoot(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	start := dir
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		start = real
+	}
+	for d := start; ; {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return dir
+		}
+		d = parent
+	}
 }
 
 // within reports whether path lies inside root, on a path-segment boundary so a

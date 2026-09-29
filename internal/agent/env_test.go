@@ -532,6 +532,38 @@ func TestPathWithoutDropsRelativeEntries(t *testing.T) {
 	}
 }
 
+// A target that is a subdirectory of a checkout does not make the rest of the
+// checkout trusted: the branch under review owns /repo/bin as much as /repo/src,
+// so the strip measures against the work tree root (review run 20260929-141502,
+// i9). An entry outside every work tree survives, and a target with no .git above
+// it keeps target.path as the bound.
+func TestPathWithoutMeasuresTheWorkTree(t *testing.T) {
+	repo := t.TempDir()
+	sub := filepath.Join(repo, "src")
+	bin := filepath.Join(repo, "bin")
+	outside := t.TempDir()
+	for _, d := range []string{filepath.Join(repo, ".git"), sub, bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := []string{"PATH=" + bin + string(os.PathListSeparator) + outside}
+	if got := PathWithout(env, sub); !slices.Equal(got, []string{"PATH=" + outside}) {
+		t.Errorf("PathWithout(subdirectory of a work tree) = %q, want only %q", got, outside)
+	}
+	// No .git anywhere above: the bound is target.path itself, so a sibling stays.
+	plain := t.TempDir()
+	for _, d := range []string{filepath.Join(plain, "src"), filepath.Join(plain, "bin")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env = []string{"PATH=" + filepath.Join(plain, "bin")}
+	if got := PathWithout(env, filepath.Join(plain, "src")); !slices.Equal(got, env) {
+		t.Errorf("PathWithout(outside any work tree) = %q, want the sibling kept", got)
+	}
+}
+
 // A relative root is made absolute first: every kept entry is absolute, so a
 // relative root would otherwise match none of them and let an absolute entry
 // inside the target through.

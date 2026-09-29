@@ -758,18 +758,3 @@ func TestCarriesComparesTheNormalizedPath(t *testing.T) {
 		t.Error("a finding on a file that moved since it was said counts as carried because of how its path was spelled")
 	}
 }
-
-// Two agent strings in one paragraph go through one sanitize call. Apart, an
-// unpaired backtick ending the first paired with the second's first on the forge,
-// and what the second call had left as code rendered as prose.
-func TestFieldsSharingALineAreSanitizedTogether(t *testing.T) {
-	body := bodyFor(t, Input{Quorum: full(2)}, func(b *BodyInput) {
-		b.Advisory = []model.Finding{{Title: "a `", Description: "`@victim` is pinged."}}
-		b.Panel = []string{"claude `", "`@victim2`"}
-	})
-	for _, mention := range []string{"@victim", "@victim2"} {
-		if strings.Contains(body, mention) {
-			t.Errorf("%s survived as a live mention:\n%s", mention, body)
-		}
-	}
-}

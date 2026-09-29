@@ -376,8 +376,12 @@ func TestPostRunFindsASummaryUnderAnyPattern(t *testing.T) {
 		if err := os.Symlink(dir, link); err != nil {
 			t.Skip("no symlinks here:", err)
 		}
-		if logs := post(link); !strings.Contains(logs, "is a symbolic link") {
-			t.Errorf("want the link refused as a link:\n%s", logs)
+		// The trailing-slash spellings make lstat(2) resolve the link, so they
+		// bypassed a check on the raw argument.
+		for _, arg := range []string{link, link + "/", link + "/."} {
+			if logs := post(arg); !strings.Contains(logs, "is a symbolic link") {
+				t.Errorf("post(%q): want the link refused as a link:\n%s", arg, logs)
+			}
 		}
 	})
 }

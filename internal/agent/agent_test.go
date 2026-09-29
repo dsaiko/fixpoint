@@ -571,6 +571,19 @@ func TestExtractText(t *testing.T) {
 		// An envelope shown as an example has its own opener alone on its line; the
 		// real opener is the EARLIEST such line, or the text above the example is lost.
 		"body shows the envelope as an example": {output: "<design>\n# T\nReply with:\n```\n<design>\nyour design\n</design>\n```\nMore.\n</design>", want: "# T\nReply with:\n```\n<design>\nyour design\n</design>\n```\nMore."},
+		// The example's closer closes the EXAMPLE, not the design: a later inline
+		// mention must not become the opener (review run 20260929-141502, i1).
+		"indented example, then an inline mention": {output: "<design>\n# T\nReply with:\n    <design>\n    your design\n    </design>\nSee the `<design>` tag.\n</design>", want: "# T\nReply with:\n    <design>\n    your design\n    </design>\nSee the `<design>` tag."},
+		"fenced example, then an inline mention":   {output: "<design>\n# T\n```\n<design>\nx\n</design>\n```\nSee the `<design>` tag.\n</design>", want: "# T\n```\n<design>\nx\n</design>\n```\nSee the `<design>` tag."},
+		// A draft's closer that begins its line closes the draft even with a note
+		// after it (review run 20260929-141502, i4).
+		"closed draft, closer line has trailing text": {output: "<design>\ndraft\n</design> (superseded)\n<design>\nfinal\n</design>", want: "final"},
+		// A closer the body starts a line with pops the design's opener; with no
+		// opener after it, it was the body's, and the design is that block.
+		"body line begins with a closer": {output: "<design>\n# T\nUse `<design>`:\n</design> ends it.\nMore.\n</design>", want: "# T\nUse `<design>`:\n</design> ends it.\nMore."},
+		// A preamble that mentions the tag is not the opener: only the opener alone
+		// on its line opens a block.
+		"preamble mentions the tag": {output: "I will wrap it in a <design> block.\n<design>\n# T\n</design>", want: "# T"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := ExtractText(tc.output, "design")

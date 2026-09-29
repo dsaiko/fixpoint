@@ -54,7 +54,7 @@ func TestDiffIgnoredNeverCreatesADirectoryHoldingFirstCensusFiles(t *testing.T) 
 	if want := []string{"certs/new.key"}; !slices.Equal(created, want) {
 		t.Errorf("created = %v, want %v: certs/ holds a file that was there before the attempt", created, want)
 	}
-	if left := RemoveCreated(dir, created, post); len(left) != 0 {
+	if left := RemoveCreated(dir, created, post, pre); len(left) != 0 {
 		t.Errorf("left = %v", left)
 	}
 	mustExist(t, filepath.Join(dir, "certs", "dev.key"), "the operator's pre-existing ignored file was deleted")
@@ -71,7 +71,7 @@ func TestRemoveCreatedNeverDeletesUncensusedBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	census := map[string]IgnoredStat{"out": {Dir: true}, "out/new.bin": {}}
-	left := RemoveCreated(dir, []string{"out", "out/new.bin"}, census)
+	left := RemoveCreated(dir, []string{"out", "out/new.bin"}, census, nil)
 	if len(left) != 1 || !strings.HasPrefix(left[0], "out (left in place") {
 		t.Errorf("left = %v, want out reported as left in place", left)
 	}
@@ -103,7 +103,7 @@ func TestRemoveCreatedRefusesASymlinkedParent(t *testing.T) {
 				t.Fatal(err)
 			}
 			census := map[string]IgnoredStat{"ignored/sub": {Dir: true}, "ignored/sub/precious": {}}
-			left := RemoveCreated(dir, []string{"ignored/sub", "ignored/sub/precious"}, census)
+			left := RemoveCreated(dir, []string{"ignored/sub", "ignored/sub/precious"}, census, nil)
 			if len(left) != 2 || !strings.Contains(left[0], "is a symlink") {
 				t.Errorf("left = %v, want both paths refused over the symlink", left)
 			}
@@ -126,7 +126,7 @@ func TestRemoveCreatedRefusesAChangedType(t *testing.T) {
 		t.Fatal(err)
 	}
 	census := map[string]IgnoredStat{"was-dir": {Dir: true}, "was-file": {}}
-	left := RemoveCreated(dir, []string{"was-dir", "was-file"}, census)
+	left := RemoveCreated(dir, []string{"was-dir", "was-file"}, census, nil)
 	if len(left) != 2 {
 		t.Errorf("left = %v, want both refused", left)
 	}
@@ -158,10 +158,122 @@ func TestDiffIgnoredFileReplacedByADirectoryIsCreated(t *testing.T) {
 	if !slices.Contains(created, "scratch") || slices.Contains(modified, "scratch") {
 		t.Fatalf("created = %v, modified = %v: a file replaced by a directory is a replacement", created, modified)
 	}
-	if left := RemoveCreated(dir, created, post); len(left) != 0 {
+	if left := RemoveCreated(dir, created, post, pre); len(left) != 0 {
 		t.Errorf("left = %v", left)
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "scratch")); !os.IsNotExist(err) {
 		t.Errorf("the attempt's directory survived: %v", err)
+	}
+}
+
+// Review run 20260929-141502, i2: git lists a nested repository as one entry
+// with a trailing slash and never descends it, so the plain rmdir that removes
+// every other created directory can never empty one. A fixture the attempt
+// cloned or `git init`ed under an ignored directory stopped the run instead of
+// being discarded.
+func TestRemoveCreatedRemovesACreatedNestedRepository(t *testing.T) {
+	dir := censusRepo(t)
+	write(t, dir, ".git/info/exclude", "out/\n")
+	pre, err := testGit.TakeIgnoredCensus(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testGit.run(t.Context(), dir, "init", "-q", "out/dep"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "out/dep/sub/f", "the attempt's\n")
+	write(t, dir, "out/other.bin", "the attempt's\n")
+	post, err := testGit.TakeIgnoredCensus(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _ := DiffIgnored(pre, post)
+	if !slices.Contains(created, "out/dep/") {
+		t.Fatalf("created = %v: git no longer lists the nested repository as a unit, so this proves nothing", created)
+	}
+	if left := RemoveCreated(dir, created, post, pre); len(left) != 0 {
+		t.Errorf("left = %v, want the attempt's nested repository removed", left)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
+		t.Errorf("the attempt's directory survived: %v", err)
+	}
+}
+
+// ... but only when it is wholly the attempt's: a `git init` over a directory
+// the first census saw files in hides those files from every later census,
+// and removing the unit would take them.
+func TestRemoveCreatedKeepsANestedRepositoryOverFirstCensusPaths(t *testing.T) {
+	dir := censusRepo(t)
+	write(t, dir, ".git/info/exclude", "out/\n")
+	write(t, dir, "out/dep/precious", "there before the attempt\n")
+	pre, err := testGit.TakeIgnoredCensus(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testGit.run(t.Context(), dir, "init", "-q", "out/dep"); err != nil {
+		t.Fatal(err)
+	}
+	post, err := testGit.TakeIgnoredCensus(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _ := DiffIgnored(pre, post)
+	if !slices.Contains(created, "out/dep/") {
+		t.Fatalf("created = %v: the nested repository is not named, so this proves nothing", created)
+	}
+	left := RemoveCreated(dir, created, post, pre)
+	if len(left) != 1 || !strings.HasPrefix(left[0], "out/dep/ (left in place") {
+		t.Errorf("left = %v, want the nested repository reported as left in place", left)
+	}
+	mustExist(t, filepath.Join(dir, "out", "dep", "precious"), "a first-census file under a nested repository was deleted")
+}
+
+// Review run 20260929-141502, i14: a parent swapped for an in-repository
+// symlink AFTER it was checked. The os.Root removal re-resolved the path and
+// the unlink landed on keep/cache, a file that existed before the attempt.
+// Removal is relative to the parent descriptor pinned before the swap, so it
+// takes the attempt's own file, now reachable only as moved/cache.
+func TestRemoveCreatedIgnoresAParentSwappedAfterItWasPinned(t *testing.T) {
+	for _, isDir := range []bool{false, true} {
+		t.Run(map[bool]string{false: "file", true: "directory"}[isDir], func(t *testing.T) {
+			// An empty pre-existing directory is the directory case's victim: an
+			// rmdir that re-resolved the path would take it.
+			dir := t.TempDir()
+			census := map[string]IgnoredStat{"scratch/cache": {Dir: isDir}}
+			if isDir {
+				for _, d := range []string{"keep/cache", "scratch/cache"} {
+					if err := os.MkdirAll(filepath.Join(dir, d), 0o750); err != nil {
+						t.Fatal(err)
+					}
+				}
+			} else {
+				write(t, dir, "keep/cache", "not the attempt's\n")
+				write(t, dir, "scratch/cache", "the attempt's\n")
+			}
+			swapped := false
+			afterParentsPinned = func() {
+				if swapped {
+					return
+				}
+				swapped = true
+				if err := os.Rename(filepath.Join(dir, "scratch"), filepath.Join(dir, "moved")); err != nil {
+					t.Error(err)
+				}
+				if err := os.Symlink("keep", filepath.Join(dir, "scratch")); err != nil {
+					t.Error(err)
+				}
+			}
+			t.Cleanup(func() { afterParentsPinned = func() {} })
+			if left := RemoveCreated(dir, []string{"scratch/cache"}, census, nil); len(left) != 0 {
+				t.Errorf("left = %v", left)
+			}
+			if !swapped {
+				t.Fatal("the seam never ran, so this proves nothing")
+			}
+			mustExist(t, filepath.Join(dir, "keep", "cache"), "the swapped-in symlink redirected the removal onto a pre-existing path")
+			if _, err := os.Lstat(filepath.Join(dir, "moved", "cache")); !os.IsNotExist(err) {
+				t.Errorf("the attempt's own entry in the pinned parent survived: %v", err)
+			}
+		})
 	}
 }

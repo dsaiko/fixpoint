@@ -28,9 +28,10 @@ import (
 //  1. Control characters go first (model.StripControl): bidi overrides that render
 //     text as something other than what it says, zero-width characters that hide
 //     content from a reader while leaving it in the data. Secrets are masked
-//     (agent.RedactSecrets, the operator's logs.redact included) right after, and
-//     BEFORE the code spans are paired: a mask can swallow a closing backtick, and
-//     the pairing that decides which text is left raw must be the one published.
+//     (agent.RedactSecrets, the operator's logs.redact included) right after,
+//     BEFORE any escape: an escape inserted into a secret (`ab@cd` to
+//     `ab@<!---->cd`) can split it where a rule no longer matches it whole, and
+//     the publish-time redaction would then pass what is left of it.
 //  2. HTML comment delimiters are escaped BEFORE anything else is inserted. An
 //     unescaped `<!--` in agent text would open a comment that swallows the rest of
 //     the document -- including the signature -- and step 4 inserts comments of its
@@ -39,12 +40,9 @@ import (
 //     (`Closes #42`, and the full-URL spelling of the same thing) cannot act.
 //  4. Mentions are broken, so a review cannot notify arbitrary people.
 //
-// Steps 1-4 are the rule for prose and live in sanitizeInline, but for the
-// redaction, which runs once over the whole string before it. Inside a code span
-// -- here and in CodeSpan -- only steps 1 and 2 run (see below). Three more run
-// only here, because they are about BLOCKS --
-// constructs that reach past the string into the document around it, which is
-// where fixpoint's own words are:
+// Three more are about BLOCKS -- constructs that reach past the string into the
+// document around it, which is where fixpoint's own words are -- or about acting
+// with no reader at all:
 //
 //  5. Raw HTML tags are escaped. `<details>` renders everything after it collapsed,
 //     and an unclosed `<?` block hides it outright -- either one takes the
@@ -58,164 +56,38 @@ import (
 //     construct that acts with no reader: rendering it FETCHES a URL the agent
 //     chose.
 //
+// All but step 6 hold wherever the text lands, so they live in sanitizeInline and
+// are shared with CodeSpan, whose text is one line, where no fence can open.
+//
 // What is deliberately NOT escaped is the rest of inline markup: emphasis, links,
 // headings, balanced code spans. Those cannot reach past the string they are in
 // and do nothing until a human clicks them, findings use them constantly, and
 // escaping them would make fixpoint misquote its own evidence in exchange for
 // nothing a reader could not already have been told in plain prose.
 //
-// Nor is the INSIDE of an inline code span, beyond steps 1 and 2 (see codeSpans):
-// no reference or mention is broken there, which is safe ONLY while the span is
-// certain to pair the same way on the forge.
-// A forge renders a span literally -- it decodes no entity, hides no comment,
-// links no mention -- so `List<String>` escaped came out as `List&lt;String>` and
-// `@Override` as `@<!---->Override`: a misquote with nothing bought. Step 2 still
-// runs there because the markers a later review reads back are matched in the RAW
-// body (see PublishedFindings), where a span is no protection. Fenced blocks are
-// NOT exempted, and that is not an oversight: the signature joins its lines after
-// sanitizing, which turns a fence's content back into inline text, and a fence's
-// extent depends on list and quote containers the string cannot see.
-//
-// A caller that puts two agent strings in ONE paragraph must sanitize them in one
-// call. Each call's span pairing holds only for the text it saw, and an unpaired
-// backtick at the end of one string pairs, on the forge, with the first one in the
-// next -- turning the rest of that span into live prose.
+// Every rule runs INSIDE a code span too, so `List<String>` is published as
+// `List&lt;String>` and `@Override` as `@<!---->Override`: a forge shows a span
+// literally, and the misquote is the price. Exempting the inside was tried and
+// removed. It was safe only while the forge paired the backticks exactly as the
+// sanitizer did, and that pairing can be moved from outside the string: by an
+// autolink, a link destination, math, a table, a paragraph break, the next
+// string in the paragraph, or a publish-time mask that eats a closing backtick.
+// Each review pass found another way. Escaped everywhere, the text is inert
+// however the forge pairs it.
 func SanitizeText(s string) string {
-	s = agent.RedactSecrets(model.StripControl(s))
-	spans, ok := codeSpans(s)
-	if !ok {
-		return sanitizeSpans(s, nil) // the pairing is not certain, so all of it is treated as prose
-	}
-	out := sanitizeSpans(s, spans)
-	if agent.RedactSecrets(out) != out {
-		// Every published path redacts once more (publishedText, logstore), and here
-		// that pass would CHANGE text whose span content was left raw: an escape
-		// inside a span (`-->` to `--&gt;`) can grow a value past a rule's minimum, and
-		// a mask that runs on to a closing backtick re-pairs everything after it. With
-		// the spans no longer certain, none of them is exempted.
-		return sanitizeSpans(s, nil)
-	}
-	return out
+	return closeOpenFence(sanitizeInline(s))
 }
 
-// sanitizeSpans applies the prose rules everywhere but the given code spans,
-// whose content keeps only the comment escape.
-func sanitizeSpans(s string, spans [][2]int) string {
-	var b strings.Builder
-	at := 0
-	for _, sp := range spans {
-		b.WriteString(sanitizeProse(s[at:sp[0]]))
-		b.WriteString(escapeHTMLComments(s[sp[0]:sp[1]]))
-		at = sp[1]
-	}
-	b.WriteString(sanitizeProse(s[at:]))
-	return closeOpenFence(b.String())
-}
-
-// sanitizeProse is every per-string rule for text outside a code span.
-func sanitizeProse(s string) string {
-	s = sanitizeInline(s)
-	s = escapeRawHTML(s)
-	return breakImages(s)
-}
-
-// codeSpans finds the inline code spans of s, backticks included, and reports
-// whether a forge is CERTAIN to pair them the same way.
-//
-// The pairing is CommonMark's: a run of N backticks opens, the next run of exactly
-// N closes, an opener with no closer is literal, and a backslash escapes a
-// backtick outside a span. That is not enough on its own, because exempting a span
-// is only safe where the forge agrees it IS one -- text taken for code that the
-// forge renders as prose is an unescaped mention or tag. So any shape where the
-// two could disagree gives up on the whole string (ok false), which is the old
-// escape-everything behavior:
-//
-//   - a span over a newline: the forge pairs within a paragraph, and a blank line,
-//     a heading or a list item between the two runs ends it;
-//   - a span holding a `|`: a table row is split into cells before spans are
-//     paired;
-//   - an opener whose unbroken run of prose holds `<`, `:`, `@` or `www.`: an
-//     autolink starting there takes the backticks into its URL (an email autolink
-//     may carry one in its local part), and those are the characters that start
-//     one;
-//   - an opener with `](`, `$` or `[[` anywhere in the prose before it: a link
-//     destination or title, GitLab's `$`...`$` and `$...$` math and a wikilink
-//     each read raw text up to their own closer, backticks included, before any
-//     span there can form.
-func codeSpans(s string) ([][2]int, bool) {
-	var spans [][2]int
-	prev := 0    // where the prose before the next opener begins
-	raw := false // whether that prose so far could open a construct that reads raw text
-	for i := 0; i < len(s); {
-		if s[i] == '\\' && i+1 < len(s) && isASCIIPunct(s[i+1]) {
-			i += 2
-			continue
-		}
-		if s[i] != '`' {
-			i++
-			continue
-		}
-		open := backtickRunEnd(s, i)
-		n, closer := open-i, -1
-		for k := open; k < len(s); {
-			if s[k] != '`' {
-				k++
-				continue
-			}
-			e := backtickRunEnd(s, k)
-			if e-k == n {
-				closer = k
-				break
-			}
-			k = e
-		}
-		if closer < 0 {
-			i = open // no closer: these backticks are literal text
-			continue
-		}
-		prose := s[prev:i]
-		raw = raw || strings.Contains(prose, "](") || strings.Contains(prose, "$") || strings.Contains(prose, "[[")
-		if raw || strings.ContainsAny(s[open:closer], "\n|") || autolinkCanStart(prose) {
-			return nil, false
-		}
-		spans = append(spans, [2]int{i, closer + n})
-		prev = closer + n
-		i = prev
-	}
-	return spans, true
-}
-
-// autolinkCanStart reports whether the prose right before a backtick could begin
-// an autolink that runs over it: an autolink stops only at whitespace, so only the
-// unbroken tail of the prose matters.
-func autolinkCanStart(prose string) bool {
-	tail := prose[strings.LastIndexAny(prose, " \n")+1:]
-	return strings.ContainsAny(tail, "<:@") || strings.Contains(strings.ToLower(tail), "www.")
-}
-
-func backtickRunEnd(s string, i int) int {
-	for i < len(s) && s[i] == '`' {
-		i++
-	}
-	return i
-}
-
-// isASCIIPunct is the set CommonMark lets a backslash escape.
-func isASCIIPunct(c byte) bool {
-	return strings.IndexByte("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", c) >= 0
-}
-
-// sanitizeInline is steps 1-4, the part of the rule that holds in all prose. It
-// does NOT run inside a code span: there only steps 1 and 2 do (SanitizeText's
-// span branch, CodeSpan), and leaving mentions and references unbroken is safe
-// only because the forge is certain to render that text as a span. Text that is
-// not guaranteed to be one needs all of this. One function rather than call-site
+// sanitizeInline is every rule but the fence, the part that holds in every
+// context, inside a code span included. One function rather than two call-site
 // copies: the copies are how one of them ends up a rule behind.
 func sanitizeInline(s string) string {
-	s = model.StripControl(s)
+	s = agent.RedactSecrets(model.StripControl(s))
 	s = escapeHTMLComments(s)
 	s = BreakReferences(s)
-	return breakMentions(s)
+	s = breakMentions(s)
+	s = escapeRawHTML(s)
+	return breakImages(s)
 }
 
 // escapeHTMLComments makes a literal comment delimiter render as text.
@@ -358,9 +230,6 @@ func breakMentions(s string) string { return mention.ReplaceAllString(s, "$1@<!-
 // already an inert link, and prefixing another backslash would give `\\![x](url)`
 // -- a literal backslash followed by a live image, so a payload could turn the
 // defense into the attack by writing the first backslash itself.
-//
-// It runs here and not in sanitizeInline because no image can form inside a code
-// span, where the comment would render verbatim and misquote the path.
 func breakImages(s string) string { return strings.ReplaceAll(s, "![", "!<!---->[") }
 
 // CodeSpan renders one agent-authored string inside a markdown code span.
@@ -378,19 +247,17 @@ func breakImages(s string) string { return strings.ReplaceAll(s, "![", "!<!---->
 // Exported because the review body puts a path in a span too (review.mdCode). Two
 // hand-rolled escapes for one rule is how one of them ends up without it.
 //
-// Inside the span only the rules that hold THERE run, for the reason SanitizeText
-// exempts a span's content: no tag, image, mention or reference can form inside
-// one, and escaping them would misquote the path -- `@types/foo.d.ts` printed as
-// `@<!---->types/foo.d.ts`, `a<b.txt` as `a&lt;b.txt`. The comment escape stays,
-// because a marker is read out of the raw body, span or no span, and so does the
-// redaction, first: a mask applied later could run on over the closing delimiter.
+// Every rule but the fence runs inside the span, as SanitizeText's own spans get
+// it, so `a<b>.go` is quoted as `a&lt;b>.go`. That misquote buys the span's content
+// being inert as PROSE: a publish-time mask can eat the closing backtick (an
+// operator pattern like `(secret=)\S+` runs on over `[REDACTED]:9` and the
+// delimiter after it), and whatever the span held is then rendered in the open.
 //
 // A line break becomes a space, which is what a span renders one as anyway. Kept,
-// it is a way out: a blank line ends the paragraph and the span with it, and what
-// follows -- a `<details>` or a fence -- is live in the document around it.
+// it is a way out: a blank line ends the paragraph and the span with it.
 func CodeSpan(s string) string {
-	s = agent.RedactSecrets(strings.ReplaceAll(model.StripControl(s), "\n", " "))
-	return strings.ReplaceAll(escapeHTMLComments(s), "`", "&#96;")
+	s = sanitizeInline(strings.ReplaceAll(s, "\n", " "))
+	return strings.ReplaceAll(s, "`", "&#96;")
 }
 
 // AddressableLines reports which lines of which files a forge will accept a

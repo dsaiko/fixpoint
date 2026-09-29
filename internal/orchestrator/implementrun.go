@@ -98,7 +98,7 @@ type implementPrep struct {
 	// unverified and unattributed, and must not survive an interrupted run.
 	attributed string
 	// inflightIgnored is the in-flight attempt's step 2 ignored census, nil once
-	// the attempt has reached a verdict. cleanUpInterrupted needs it: GitClean
+	// the attempt has committed or reached a verdict. cleanUpInterrupted needs it: GitClean
 	// cannot see ignored output, so without it an attempt canceled after writing
 	// only dist/ left that behind for -continue's next step 2 to census as
 	// pre-existing.
@@ -1225,7 +1225,7 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 	if err != nil {
 		return agent.Result{}, report, attemptVerdict{}, err
 	}
-	preIgnored, err := p.git.TakeIgnoredCensus(ctx, p.out)
+	preIgnored, err := o.ignoredCensus(ctx, p)
 	if err != nil {
 		return agent.Result{}, report, attemptVerdict{}, err
 	}
@@ -1335,7 +1335,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	if why != "" {
 		return res, report, attemptVerdict{kind: attemptFailed, why: why}, nil
 	}
-	postIgnored, err := p.git.TakeIgnoredCensus(ctx, p.out)
+	postIgnored, err := o.ignoredCensus(ctx, p)
 	if err != nil {
 		return res, report, attemptVerdict{}, err
 	}
@@ -1347,7 +1347,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	// place stops too: DiffIgnored never names one holding first-census files,
 	// so what keeps it non-empty is bytes neither census saw, and the gate would
 	// measure them as the work.
-	if stuck := implement.RemoveCreated(p.out, created, postIgnored); len(stuck) > 0 {
+	if stuck := implement.RemoveCreated(p.out, created, postIgnored, before.ignored); len(stuck) > 0 {
 		return res, report, attemptVerdict{}, fmt.Errorf("could not delete session-created ignored path(s) before the gate: %s -- they would be measured as part of the work and carried into the next attempt", strings.Join(stuck, ", "))
 	}
 	if len(created) > 0 || len(modified) > 0 {
@@ -1469,7 +1469,7 @@ func (o *Orchestrator) gatePhase(ctx context.Context, p *implementPrep, taskID s
 		return "", nil, "", err
 	}
 	diff := implement.ClassifyGateDiff(census, post, o.cfg.Implement.GateGenerated)
-	if stuck := implement.RemoveCreated(p.out, diff.Output, nil); len(stuck) > 0 {
+	if stuck := implement.RemoveCreated(p.out, diff.Output, nil, before.ignored); len(stuck) > 0 {
 		return "", nil, "", fmt.Errorf("could not delete gate output: %s -- it would be committed as if the session had written it", strings.Join(stuck, ", "))
 	}
 	if len(diff.Output) > 0 {
@@ -1535,6 +1535,12 @@ func (o *Orchestrator) commitTask(ctx context.Context, p *implementPrep, t imple
 		return "", err
 	}
 	p.attributed = sha
+	// Cleared here, not when the verdict comes back: assertClean can fail after
+	// the commit exists -- a cancel landing on its git status -- and the
+	// in-flight census kept for that error made cleanUpInterrupted delete a
+	// gated, committed task's ignored gate output (review run 20260929-141502,
+	// i13).
+	p.inflightIgnored = nil
 	return sha, o.assertClean(ctx, p)
 }
 
@@ -1713,13 +1719,13 @@ func (o *Orchestrator) cleanUpInterrupted(ctx context.Context, p *implementPrep)
 	if p.inflightIgnored == nil {
 		return
 	}
-	post, err := p.git.TakeIgnoredCensus(fresh, p.out)
+	post, err := o.ignoredCensus(fresh, p)
 	if err != nil {
 		o.logf("WARNING: could not census the interrupted attempt's ignored paths (%v); %s may hold its build output -- inspect it before continuing", err, p.out)
 		return
 	}
 	created, _ := implement.DiffIgnored(p.inflightIgnored, post)
-	if stuck := implement.RemoveCreated(p.out, created, post); len(stuck) > 0 {
+	if stuck := implement.RemoveCreated(p.out, created, post, p.inflightIgnored); len(stuck) > 0 {
 		o.logf("WARNING: could not delete the interrupted attempt's ignored path(s): %s -- remove them before continuing, or the next attempt builds on them unseen", strings.Join(stuck, ", "))
 		return
 	}
@@ -1760,18 +1766,32 @@ func (o *Orchestrator) discardAttempt(ctx context.Context, p *implementPrep, tas
 // cannot call them the project's, and must neither delete them nor let the
 // next step 2 adopt them.
 func (o *Orchestrator) finishDiscard(ctx context.Context, p *implementPrep, taskID string, preIgnored map[string]implement.IgnoredStat) error {
-	post, err := p.git.TakeIgnoredCensus(ctx, p.out)
+	post, err := o.ignoredCensus(ctx, p)
 	if err != nil {
 		return err
 	}
 	created, _ := implement.DiffIgnored(preIgnored, post)
-	if stuck := implement.RemoveCreated(p.out, created, post); len(stuck) > 0 {
+	if stuck := implement.RemoveCreated(p.out, created, post, preIgnored); len(stuck) > 0 {
 		return runStopError{"the discard could not delete the attempt's ignored path(s): " + strings.Join(stuck, ", ") + " -- the next attempt would build on them unseen"}
 	}
 	if len(created) > 0 {
 		o.journal("ignored_paths_discarded", 1, map[string]any{"id": taskID, "created": created})
 	}
 	return o.assertClean(ctx, p)
+}
+
+// ignoredCensus is TakeIgnoredCensus over the write-target, minus the run's
+// own logs when logs.dir puts them inside it (review run 20260929-141502, i7):
+// a -continue from inside the project with `logs.dir: runlogs/...` writes the
+// attempt's prompts and replies there after step 2, and a census that saw them
+// named them created, so every discard deleted the run's own record. "." is
+// not excluded: that would hide the whole project from the census.
+func (o *Orchestrator) ignoredCensus(ctx context.Context, p *implementPrep) (map[string]implement.IgnoredStat, error) {
+	var exclude []string
+	if rel, err := logsDirWithin(o.cfg.Logs.StaticBase(), p.out); err == nil && rel != "" && rel != "." {
+		exclude = append(exclude, rel)
+	}
+	return p.git.TakeIgnoredCensus(ctx, p.out, exclude...)
 }
 
 // assertClean is §5.2 step 0's check, reused everywhere a phase promises to

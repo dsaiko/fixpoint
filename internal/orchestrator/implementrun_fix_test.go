@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/config"
+	"github.com/dsaiko/fixpoint/internal/implement"
 	"github.com/dsaiko/fixpoint/internal/model"
+	"github.com/dsaiko/fixpoint/internal/target"
 )
 
 // The exact leak review run 20260929-113519 (i2) described: attempt 1 runs the
@@ -308,5 +310,114 @@ func TestRunImplementDiscardRemovesADirectoryThatReplacedAnIgnoredFile(t *testin
 	}
 	if st, err := os.Lstat(filepath.Join(f.out, "scratch")); err == nil && st.IsDir() {
 		t.Error("the discarded attempt's directory survived where an ignored file had been")
+	}
+}
+
+// Review run 20260929-141502, i2: an attempt that `git init`s a fixture under
+// an ignored directory leaves an entry git lists as a unit, and the discard's
+// plain rmdir could never empty it -- the run stopped instead of retrying.
+func TestRunImplementDiscardRemovesANestedRepositoryTheAttemptCreated(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "sessions")
+	coder := "n=$(cat " + counter + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + counter + "\n" +
+		"if [ \"$n\" = 1 ]; then git init -q scratch/dep && printf 'x\\n' > scratch/dep/f; echo 'no contract block'; exit 0; fi\n" +
+		implementReply("printf 'work\\n' > \"src_$n.txt\"", `{"status": "implemented", "notes": "done"}`)
+	f := newImplementFixture(t, coder, config.Verify{
+		Policy:   config.VerifyMustPass,
+		Timeout:  config.Duration(time.Minute),
+		Commands: []config.VerifyCommand{{Name: "no-fixture", Run: []string{"test", "!", "-e", "scratch"}}},
+	})
+	f.cfg.Implement.GitignoreSeed = []string{"scratch/"}
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if !strings.Contains(f.logs(), "broke the output contract") {
+		t.Fatalf("attempt 1 was not discarded, so this proves nothing\nlog:\n%s", f.logs())
+	}
+	if sum.Tasks[0].Outcome != outcomeImplemented {
+		t.Errorf("T01 = %q (%s): the retry ran against the discarded attempt's repository\nlog:\n%s", sum.Tasks[0].Outcome, sum.Tasks[0].Reason, f.logs())
+	}
+}
+
+// Review run 20260929-141502, i13: commitTask's assertClean can fail after the
+// commit exists -- a cancel landing on its git status -- and the in-flight
+// census survived that error, so cleanUpInterrupted diffed the committed
+// task's gate output against it and deleted it. The dirty tree here is the
+// stand-in for the cancel: both make assertClean fail with the commit made.
+func TestCommitTaskClearsTheInflightCensusOnceTheCommitExists(t *testing.T) {
+	f := newImplementFixture(t, "true\n", config.Verify{Policy: config.VerifyOff})
+	o, err := New(&config.Loaded{Config: f.cfg, Source: config.Source{Config: "t.yaml"}}, func(string, ...any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := target.New(config.Target{Mode: config.ModeDirectory, Path: f.out})
+	files := map[string][]byte{".gitignore": []byte(implement.GitignoreContent([]string{"dist/"}))}
+	_, release, err := implement.Scaffold(t.Context(), col, f.out, files, "init", "-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	p := &implementPrep{out: f.out, col: col, git: implement.NewGit(nil), outcomes: map[string]string{}}
+	if p.inflightIgnored, err = o.ignoredCensus(t.Context(), p); err != nil {
+		t.Fatal(err)
+	}
+	// The committed task's source and its gate's ignored output, plus the stray
+	// file that keeps the tree dirty past the commit.
+	for rel, body := range map[string]string{"src.txt": "work\n", "dist/app.js": "built\n", "stray.txt": "x\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(f.out, rel)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.out, rel), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	census := implement.Census{Untracked: map[string]string{"src.txt": ""}, Modified: map[string]string{}}
+	task := implement.Task{ID: "T01", Title: "t", Goal: "g"}
+	if _, err := o.commitTask(t.Context(), p, task, 1, census, "passed", nil); err == nil {
+		t.Fatal("commitTask() succeeded with the tree dirty, so this proves nothing")
+	}
+	if p.attributed == "" {
+		t.Fatal("the commit was not made, so this proves nothing")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	o.cleanUpInterrupted(ctx, p)
+	if _, err := os.Stat(filepath.Join(f.out, "dist", "app.js")); err != nil {
+		t.Errorf("the interrupted cleanup deleted a committed task's ignored gate output: %v", err)
+	}
+}
+
+// Review run 20260929-141502, i7: logs.dir is configurable, and a -continue
+// from inside the project with `logs.dir: runlogs/...` put the run's own
+// prompts and replies under the census, where every discard deleted them.
+func TestIgnoredCensusLeavesOutTheLogsInsideTheProject(t *testing.T) {
+	f := newImplementFixture(t, "true\n", config.Verify{Policy: config.VerifyOff})
+	col := target.New(config.Target{Mode: config.ModeDirectory, Path: f.out})
+	files := map[string][]byte{".gitignore": []byte(implement.GitignoreContent([]string{"runlogs/", "dist/"}))}
+	_, release, err := implement.Scaffold(t.Context(), col, f.out, files, "init", "-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	for _, rel := range []string{"runlogs/20260929-000000/round-1/coder.md", "dist/app.js"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(f.out, rel)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.out, rel), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := &Orchestrator{cfg: &config.Config{Logs: config.Logs{Dir: filepath.Join(f.out, "runlogs", "{timestamp}", "round-{round}")}}}
+	census, err := o.ignoredCensus(t.Context(), &implementPrep{out: f.out, git: implement.NewGit(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := census["dist/app.js"]; !ok {
+		t.Fatalf("census = %v: it missed ordinary ignored output, so this proves nothing", census)
+	}
+	for path := range census {
+		if path == "runlogs" || strings.HasPrefix(path, "runlogs/") {
+			t.Errorf("the run's own logs entered the ignored census: %s", path)
+		}
 	}
 }

@@ -2255,6 +2255,10 @@ func (o *Orchestrator) preflightGuards(ctx context.Context, agentsInTarget bool)
 		o.preflightErr = err
 		return o.preflightErr
 	}
+	if err := o.guardAgentOnWorktreePATH(); err != nil {
+		o.preflightErr = err
+		return o.preflightErr
+	}
 	if err := o.guardRedirectedWorktree(ctx); err != nil {
 		o.preflightErr = err
 		return o.preflightErr
@@ -2280,11 +2284,37 @@ func (o *Orchestrator) guardPinnedHelpers() error {
 	if o.cfg.Loop.TrustedTarget || o.cfg.Target.Path == "" {
 		return nil
 	}
-	name, path := gitenv.PinnedInside(o.cfg.Target.Path)
+	// The work tree, not target.path: see agent.WorktreeRoot.
+	root := agent.WorktreeRoot(o.cfg.Target.Path)
+	name, path := gitenv.PinnedInside(root)
 	if name == "" {
 		return nil
 	}
-	return fmt.Errorf("%s resolves to %s, inside target %s: fixpoint runs %s itself to inspect and commit to this checkout, so the reviewed material would be supplying the tool that inspects it -- and every guard after this one would run through it. Drop that directory from PATH, or pass -trusted-target if this checkout is yours", name, path, o.cfg.Target.Path, name)
+	return fmt.Errorf("%s resolves to %s, inside target %s (its git work tree %s): fixpoint runs %s itself to inspect and commit to this checkout, so the reviewed material would be supplying the tool that inspects it -- and every guard after this one would run through it. Drop that directory from PATH, or pass -trusted-target if this checkout is yours", name, path, o.cfg.Target.Path, root, name)
+}
+
+// guardAgentOnWorktreePATH extends config.Validate's refusal of an agent CLI
+// resolved by bare name through a PATH entry inside target.path to the whole git
+// work tree around it. A git-diff or directory run over /repo/src reviews a branch
+// that also owns /repo/bin, so an operator PATH carrying /repo/bin lets that
+// branch supply `claude`, which exec resolves against fixpoint's own PATH and runs
+// with the credential the agent declares (review run 20260929-141502, i9).
+// Validate cannot ask: it knows target.path but runs no filesystem walk for the
+// work tree, so the wider question is asked here, where every agent-launching
+// entry point already passes (run() and Ping). Gated exactly as Validate is.
+func (o *Orchestrator) guardAgentOnWorktreePATH() error {
+	if o.cfg.Loop.TrustedTarget || o.cfg.Loop.AllowUntrustedFix || o.cfg.Target.Path == "" {
+		return nil
+	}
+	root := agent.WorktreeRoot(o.cfg.Target.Path)
+	for _, n := range o.activeAgentNames() {
+		for _, bin := range o.cfg.Agents[n].ExecHeads() {
+			if dir := config.TargetSuppliedPATHDir(bin, root); dir != "" {
+				return fmt.Errorf("agents.%s: command %q is a bare name resolved through PATH, and PATH entry %s lies inside the git work tree %s that holds target %s -- the reviewed branch owns that whole checkout, so it can supply that executable, or shadow one further down PATH, and fixpoint would run it as the agent process with the credentials this agent declares (env.pass/env.set). Give the command an absolute path outside the work tree, drop that entry from PATH, or pass -trusted-target if this checkout is yours", n, bin, dir, root, o.cfg.Target.Path)
+			}
+		}
+	}
+	return nil
 }
 
 // guardRedirectedWorktree refuses a target whose git work tree is not the target
@@ -3248,7 +3278,7 @@ func (o *Orchestrator) warnTargetSuppliedCommand() {
 		// The same acceptance, for the spelling argv cannot show: a bare command name
 		// is re-resolved through PATH after the checkout, so a PATH entry inside the
 		// target lets the PR supply or shadow the executable itself.
-		if dir := config.TargetSuppliedPATHDir(argv[0], o.cfg.Target.Path); dir != "" {
+		if dir := config.TargetSuppliedPATHDir(argv[0], agent.WorktreeRoot(o.cfg.Target.Path)); dir != "" {
 			o.logf("WARNING: agent %q runs the bare command %q, and PATH entry %s is inside target %s -- in mode pr `gh pr checkout` writes the PR's content there before the first round, so the PR can supply or shadow that executable and its code runs as the agent process itself, with the credentials this agent declares and before any reviewer sandbox; -trusted-target/-allow-untrusted-fix accepts that on top of coder prompt-injection. Give the command an absolute path outside the target, drop that PATH entry, or review under an external sandbox (container/VM)", n, argv[0], dir, o.cfg.Target.Path)
 		}
 	}
@@ -5032,12 +5062,12 @@ func (o *Orchestrator) writeReviewBody(ctx context.Context, rec *model.RoundReco
 // operator read [REDACTED] and approved the post, and the leak went out beside it.
 // Naming the transform is what keeps the two channels from drifting again.
 //
-// Over agent text the redaction here is expected to change NOTHING:
-// forge.SanitizeText and forge.CodeSpan redact before they pair code spans, and
-// SanitizeText gives up its spans when this pass would still alter what it
-// rendered. That order is load-bearing -- a mask applied only here can eat a
-// span's closing backtick and publish the raw inside of the next span as live
-// prose. What is left for this pass is fixpoint's own text.
+// forge.SanitizeText and forge.CodeSpan already redact agent text, before they
+// escape it, so an escape cannot split a secret past a rule. This pass can still
+// change what they rendered -- an escape can grow a value past a rule's minimum,
+// and a mask can run on over a code span's closing backtick -- and that is safe
+// only because they escape the INSIDE of a span like prose: however the spans
+// pair once masked, nothing an agent wrote is live.
 //
 // Both transforms are idempotent, so logstore re-applying them changes nothing.
 func publishedText(s string) string {

@@ -621,75 +621,95 @@ func ExtractText(output, tag string) (string, error) {
 
 // openerIndex picks the opener of the block that closes at the end of s.
 // ExtractText cannot try candidates the way ExtractJSON does -- any prose parses
-// -- so it needs another way past an opener the BODY mentions: a design about
-// fixpoint itself says "prose in a `<design>` envelope", and taking that as the
-// opener would silently drop everything above it.
+// -- so it needs another way past a tag the BODY mentions: a design about
+// fixpoint itself says "prose in a `<design>` envelope", shows the envelope as a
+// fenced example, or quotes "`</design>`", and a draft may precede the answer.
 //
-// The search is bounded first: only openers after the last closer that precedes
-// the NEAREST opener AND ends its line. A closer before it ends an earlier block
-// (a draft, a quoted previous design), and reaching back past it spliced that
-// draft, its </design> and the prose after it into the answer (review run
-// 20260929-125352, i1); a closer after it lies inside the final body, which is why
-// the bound is taken from the nearest opener rather than from s's last closer. A
-// block's end is followed by a line break, while a closer the body quotes has
-// prose, a backtick or punctuation after it on its line: "closes with `</design>`
-// and opens with `<design>`" once bounded the search at that quote and returned
-// "`." as the whole design (review run 20260929-133423, i1).
+// The rule: only an opener alone on its line opens a block, and only a closer
+// that begins or ends its line (or runs straight into the next opener) closes
+// one; counted as a stack, the design is the outermost block still open at the
+// final closer. When none is open, the design opens at the first opener that
+// begins a line after the last closed block, else at the last opener there, else
+// (no opener follows it, so that closer was the body's) at the start of that
+// block.
 //
-// Inside the region an envelope tag alone on its line wins, then one that begins
-// a line (a mention can begin a line too, i18), then the nearest -- the EARLIEST
-// of its kind, because the real opener precedes everything its body says: a
-// design that shows the envelope as an indented or fenced example has a second
-// opener alone on its line, and taking the later one dropped the text above the
-// example.
+// The stack is what separates a finished draft ("<design>\ndraft\n</design>",
+// then the answer) from an example the answer contains: the example's closer
+// pops only the example's opener, leaving the design's open. A mention -- an
+// opener with prose on its line, a closer with prose on both sides -- is never
+// structure, which is what the previous three heuristics each got wrong in a
+// different corner (review runs 20260929-125352 i1, 20260929-133423 i1,
+// 20260929-141502 i1/i4).
 func openerIndex(s, openTag, closeTag string) int {
-	nearest := strings.LastIndex(s, openTag)
-	if nearest < 0 {
-		return -1
-	}
-	from := 0
-	for end := nearest; ; {
-		b := strings.LastIndex(s[:end], closeTag)
-		if b < 0 {
+	depth, open, closed, from := 0, -1, -1, 0
+	for i := 0; ; {
+		j := strings.IndexByte(s[i:], '<')
+		if j < 0 {
 			break
 		}
-		rest := s[b+len(closeTag):]
-		if k := strings.IndexByte(rest, '\n'); k >= 0 {
-			rest = rest[:k]
+		i += j
+		switch {
+		case strings.HasPrefix(s[i:], openTag):
+			end := i + len(openTag)
+			if beginsLine(s, i) && endsLine(s, end) {
+				if depth == 0 {
+					open = i
+				}
+				depth++
+			}
+			i = end
+		case strings.HasPrefix(s[i:], closeTag):
+			end := i + len(closeTag)
+			if beginsLine(s, i) || endsLine(s, end) || strings.HasPrefix(s[end:], openTag) {
+				if depth > 1 {
+					depth--
+				} else {
+					closed, open, depth, from = open, -1, 0, end
+				}
+			}
+			i = end
+		default:
+			i++
 		}
-		// Ends its line, or is followed straight by the next block's opener
-		// ("draft</design> <design>final").
-		if rest = strings.TrimLeft(rest, " \t\r"); rest == "" || strings.HasPrefix(rest, openTag) {
-			from = b + len(closeTag)
-			break
-		}
-		end = b
 	}
-	leading := -1
+	if depth > 0 {
+		return open
+	}
+	leading, last := -1, -1
 	for i := from; ; i += len(openTag) {
 		j := strings.Index(s[i:], openTag)
 		if j < 0 {
 			break
 		}
 		i += j
-		lineStart := strings.LastIndexByte(s[:i], '\n') + 1
-		lineEnd := len(s)
-		if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
-			lineEnd = i + k
+		if leading < 0 && beginsLine(s, i) {
+			leading = i
 		}
-		if strings.TrimLeft(s[lineStart:i], " \t") == "" {
-			if strings.TrimRight(s[i+len(openTag):lineEnd], " \t\r") == "" {
-				return i
-			}
-			if leading < 0 {
-				leading = i
-			}
-		}
+		last = i
 	}
-	if leading >= 0 {
+	switch {
+	case leading >= 0:
 		return leading
+	case last >= 0:
+		return last
+	case closed >= 0:
+		return closed
 	}
-	return nearest
+	return strings.LastIndex(s, openTag)
+}
+
+// beginsLine reports whether only spaces and tabs precede s[i] on its line.
+func beginsLine(s string, i int) bool {
+	return strings.TrimLeft(s[strings.LastIndexByte(s[:i], '\n')+1:i], " \t") == ""
+}
+
+// endsLine reports whether only whitespace follows s[:i] on its line.
+func endsLine(s string, i int) bool {
+	rest := s[i:]
+	if k := strings.IndexByte(rest, '\n'); k >= 0 {
+		rest = rest[:k]
+	}
+	return strings.TrimRight(rest, " \t\r") == ""
 }
 
 // ExtractJSON finds the agent's FINAL <tag>...</tag> block in the output and
