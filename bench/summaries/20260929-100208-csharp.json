@@ -1,0 +1,638 @@
+{
+ "run": "20260929-100208",
+ "task": "code",
+ "target": "csharp",
+ "model": "claude-sonnet-5-5",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "Store.cs",
+     "line": 41,
+     "title": "Create always throws KeyNotFoundException: quota[owner] read before it is ever set",
+     "description": "`quota[owner] = quota[owner] + 1` reads a key that has never been inserted. The first link for any owner throws KeyNotFoundException. The link is already in `links[code]` by then, so a half-created link is left behind. `Links()` only catches ArgumentException, so the exception escapes `Task.Run`. The client never gets a response and the request hangs. Link creation is effectively broken.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "Store.cs",
+     "line": 55,
+     "title": "Resolve expiry check is inverted",
+     "description": "`if (DateTime.Now < link.ExpiresAt)` removes and returns null for links that are still valid. Expired links resolve and keep counting hits. Every fresh link 404s on first use and is deleted. Dead codes are revived, contradicting the doc comment.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 34,
+     "title": "Janitor removes from the dictionary while enumerating it, and the exception kills the process",
+     "description": "The timer callback enumerates `store.All().Keys` and calls `Remove` inside the loop. As soon as one link has expired, the next MoveNext throws InvalidOperationException. An unhandled exception in a Timer callback terminates the process. The service crashes about a minute after the first link expires.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 107,
+     "title": "Sweep mutates the dictionary during enumeration",
+     "description": "`foreach (var code in entries.Keys)` calls `entries.Remove(code)` inside the loop. Once any entry has expired the loop throws InvalidOperationException. Sweep runs in the janitor's Timer callback, so this also crashes the process.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 178,
+     "title": "Prune removes during enumeration and returns links.Count instead of removed",
+     "description": "The `foreach` over `links.Keys` removes entries, which throws InvalidOperationException once anything is pruned. Even without the exception, the method returns `links.Count` (the remaining size) instead of `removed`, contradicting its doc comment.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 93,
+     "title": "Page computes end = Count + 1, so GetRange throws on the last partial page",
+     "description": "When `offset + size > all.Count`, `end` is set to `all.Count + 1`. `GetRange(offset, end - offset)` then asks for one element past the list and throws ArgumentException. `Report` (Page(0,1000)) and the list endpoint hit this whenever there are fewer links than the page size. `int.Parse(size)` can also yield a negative size or offset, which throws as well.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 170,
+     "title": "Stats divides by store.Count, which is zero on an empty store",
+     "description": "`store.TotalHits() / store.Count` is long / int division, and it throws DivideByZeroException when there are no links. /stats therefore fails on a fresh server and after all links expire. The exception escapes the handler and the client hangs.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 46,
+     "title": "Verify never checks session expiry",
+     "description": "The doc says a token whose lifetime has run out yields null, but the loop only compares tokens. Sessions issued with `ExpiresAt = Now + 12h` stay valid forever, and expired sessions are never removed from the dictionary. The lookup is also a linear scan over all sessions.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 69,
+     "title": "RequireAdmin returns true for every session",
+     "description": "The role check passes for admin or owner, but the fall-through `return true;` also passes everyone else. The admin gate is a no-op. Role 'owner' is also accepted as admin, contradicting the doc comment.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 94,
+     "title": "BearerToken indexes parts[1] without checking length",
+     "description": "A missing or malformed Authorization header (empty string, or a value without a space) makes `parts[1]` throw IndexOutOfRangeException. `Program.Handle` calls it before authentication, so an unauthenticated request throws inside `Task.Run` and never gets a response. The 401 path is unreachable for that input.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 20,
+     "title": "Startup ignores Validate, and Validate always returns true",
+     "description": "`cfg.Validate()` discards its result. Validate itself only prints the problems and returns true (Config.cs:126), so a bad configuration such as port 0 or a non-positive timeout still starts the server. This contradicts the doc comment ('a bad deploy fails at startup'). CacheSize == 0 also passes validation (`< 0` check) and then crashes Cache (`Utilization` divides by zero and `Set` calls `First()` on an empty dictionary).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 109,
+     "title": "DELETE and POST ignore the authenticated session: any caller can delete anyone's link or create links as any owner",
+     "description": "The comment says only the creator may delete and that the owner comes from the session. `Handle` discards the session after the null check. `Links` takes `owner` from the query string on POST, and DELETE calls `store.Delete(code)` with no owner comparison. Any authenticated user can delete other users' links or attribute links to anybody, which also corrupts the per-owner quota.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 159,
+     "title": "Admin endpoint is gated by a client-supplied X-Admin header, not the session role",
+     "description": "AdminQuotas trusts `X-Admin: true` from the request instead of the authenticated session's Role or `RequireAdmin`. Any authenticated caller who sends that header can read every owner's data.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 18,
+     "title": "Report name is not confined to dir (path traversal, absolute path overrides dir)",
+     "description": "The doc says the user-supplied name is confined to dir, but `Path.Combine(dir, name + \".csv\")` with `../../x` escapes it. A name that is an absolute path makes Combine discard dir entirely. `ReadReport` (line 75) reads back through the same unchecked path, so both writing and reading are attacker-controlled. The same applies to `ArchiveAll` using `entry.Key` as a filename.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 75,
+     "title": "ReadReport does not apply the 'links' default that ExportCsv uses, so an empty name fails",
+     "description": "With no `name`, ExportCsv writes `links.csv`, but ReadReport reads `.csv`. That throws FileNotFoundException, which Program reports as a 500. A default report request never succeeds.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Config.cs",
+     "line": 44,
+     "title": "LINKD_CACHE_TTL_MS is parsed as seconds",
+     "description": "The variable is documented as milliseconds but converted with `TimeSpan.FromSeconds(n)`. A value of 300000 gives a TTL of about 83 hours instead of 5 minutes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 38,
+     "title": "Unparsable LINKD_TIMEOUT_MS sets the timeout to zero despite the 'keeping default' message",
+     "description": "When TryParse fails, `ms` is 0, the log says the default is kept, and `cfg.Timeout = FromMilliseconds(0)` runs anyway. Validate then flags it (ignored, see Program.cs:20).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 28,
+     "title": "int.TryParse(port, out cfg.Port) zeroes the port on a bad value",
+     "description": "TryParse writes 0 to its out parameter on failure, so an invalid LINKD_PORT overwrites the default 8080 with 0 and silently. Combined with the ignored Validate, HttpListener is then asked to listen on port 0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 56,
+     "title": "LINKD_FETCH_LIMIT is parsed but never stored",
+     "description": "`parsed = parsed;` is a self-assignment. `cfg.FetchLimit` is never set, so the env var has no effect.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 66,
+     "title": "Eviction picks an arbitrary key, not the least recently used",
+     "description": "`entries.Keys.First()` is the first key in dictionary enumeration order (roughly insertion order until removals reuse slots). The `Used` timestamp is recorded on every Get but never consulted, so hot entries can be evicted while cold ones stay, contradicting the docs.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 126,
+     "title": "Utilization uses integer division and divides by zero when limit is 0",
+     "description": "`entries.Count / limit * 100` divides before multiplying. The result is 0 until the cache is full, then 100, never a percentage in between. With a limit of 0 (allowed by Validate) it throws DivideByZeroException in /stats.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 109,
+     "title": "SuccessRate truncates to 0 before multiplying",
+     "description": "`used / links.Count * 100` is int division first, so the result is 0 unless every link was followed, in which case it is 100. Intermediate percentages are never reported.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 122,
+     "title": "Delete does not give the quota slot back",
+     "description": "The doc comment promises that the owner's quota slot is returned, but Delete only removes the link and never decrements `quota[link.Owner]`. Quota counts drift upward and the admin dashboard is wrong. Any limit built on them locks users out.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 68,
+     "title": "Rename validates `from` twice and never validates the new code",
+     "description": "The second `ValidateCode(from)` should be `ValidateCode(to)`. A link can be renamed to an invalid code (empty, too long, or containing bad characters), and mixed-case codes can never be resolved because Redirect lower-cases the input.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 129,
+     "title": "Top sorts ascending, returning the least followed links",
+     "description": "The comparer is `a.Hits.CompareTo(b.Hits)`, which puts the fewest hits first. `Take(n)` therefore returns the n least followed links, the opposite of the doc.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 136,
+     "title": "ByOwner uses Contains instead of equality",
+     "description": "The doc says 'exactly this owner', but `l.Owner.Contains(owner)` matches substrings. Owner 'al' also returns links of 'alice' and 'malory'. An empty owner matches every link.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 149,
+     "title": "Extend revives expired links",
+     "description": "The doc says an expired link stays expired. Extend unconditionally sets `ExpiresAt = Now + ttl`, so a dead code can be brought back to life, and the extension is measured from now rather than from the current expiry.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 167,
+     "title": "ImportAll is not atomic despite its contract",
+     "description": "Links are validated and inserted one by one. If the k-th code is invalid, the first k-1 links are already stored and the exception leaves the store partially modified. The insert also overwrites existing codes silently and does not update `quota`.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 158,
+     "title": "Quotas returns the live internal dictionary rather than a snapshot",
+     "description": "The doc says it is a snapshot that cannot affect the store, but the mutable `quota` field is returned. Any caller can change or clear the counts, and enumerating it while Create runs can throw.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 86,
+     "title": "CountForOwner throws KeyNotFoundException for an owner with no links",
+     "description": "`store.Quotas()[owner]` uses the indexer on a dictionary that only has keys for owners who created something. An unknown owner, or one with zero links, throws instead of returning 0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 61,
+     "title": "WarmCache is fire-and-forget although it documents that it returns after all work has finished",
+     "description": "`Task.Run` tasks are not awaited or collected, so the method returns before any entries are set. Callers that rely on the cache being warm see a cold cache, and exceptions in the tasks are unobserved.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 58,
+     "title": "WriteSnapshot is not atomic: it writes to /tmp and moves across filesystems",
+     "description": "The temp file is in /tmp and the target is in `dir`. When they are on different filesystems, File.Move falls back to copy+delete, so a crash mid-copy leaves a half-written snapshot.json, the exact case the doc says cannot happen. The fixed temp name also collides between concurrent calls, and nothing flushes the bytes to disk.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 80,
+     "title": "ExportCsvAsync is async void, so failures crash the process, and it ignores the links",
+     "description": "An exception (missing dir, permission error) from an `async void` method is thrown on the synchronization context or thread pool and terminates the process. The method also writes only the header and never writes `links`. The report is always empty.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 90,
+     "title": "int.Parse on query parameters throws unhandled FormatException",
+     "description": "`ttl`, `offset` and `size` are parsed with `int.Parse`. A non-numeric value throws FormatException, which POST does not catch (it only catches ArgumentException) and which GET never catches. The exception escapes `Task.Run` and the client never receives a response. A negative or zero ttl also produces an already expired link.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 96,
+     "title": "JSON response is built by string interpolation without escaping",
+     "description": "`link.Target` is attacker-supplied and can contain quotes or backslashes. The response body then is not valid JSON, and it can inject extra fields.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Export.cs",
+     "line": 23,
+     "title": "CSV output is not escaped and the report file handle leaks on error",
+     "description": "Code, target and owner are written raw, so a comma, quote or newline in a target or owner corrupts the columns. The StreamWriter is not in a `using`, so an exception in Write leaks the handle (same in ArchiveAll). The file also gets default permissions, although the comment says only the service user may read it.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 40,
+     "title": "Store has no synchronization but is shared by every request thread and the janitor",
+     "description": "Program.Main dispatches each request with Task.Run(() => Handle(context)), and the janitor timer runs on another thread-pool thread. All of them call into Store, which uses plain Dictionary<string, Link> (links, quota) with no lock. Create writes links[code] and quota[owner] while Resolve/Delete/Rename/Page/Top/SuccessRate/TotalHits read, remove and enumerate the same dictionaries. Concurrent writers can corrupt Dictionary internals, which shows up as lost links, an infinite loop in a bucket chain, or InvalidOperationException/IndexOutOfRange. Resolve's link.Hits++ (line 60) is a non-atomic read-modify-write, so concurrent redirects lose hit counts. Rename is a check-then-act (ContainsKey, then Remove/insert), so two concurrent renames to the same 'to' both pass the check and one link silently overwrites the other.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 34,
+     "title": "Janitor mutates the store's live dictionary from a timer thread",
+     "description": "The timer callback enumerates store.All().Keys and calls store.All().Remove(code) on the live dictionary, with no lock, while handlers concurrently Create/Resolve/Page on it. Removing while a handler inserts can corrupt the dictionary. An exception thrown in the callback (the timer runs on a thread-pool thread) is unhandled and terminates the whole process. The timer callback can also overlap itself if a sweep takes longer than the interval, so two sweeps can mutate the dictionary at once. The Store comment says the dictionary 'never escapes', but All() at Store.cs:208 hands it out.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 37,
+     "title": "Session dictionary and Random used from concurrent requests without locking",
+     "description": "Every request calls auth.Verify(token) from its own Task.Run thread, and Verify enumerates sessions.Values. Issue and Revoke write to the same unsynchronized Dictionary. An Issue during a Verify can throw 'Collection was modified' or corrupt the dictionary, so a valid token is rejected or the request faults. The shared System.Random instance (line 19) is not thread-safe. Concurrent Next() calls can corrupt its state and return repeating or zero values, which yields duplicate or guessable session tokens.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 228,
+     "title": "Shared System.Random used to mint codes from many threads",
+     "description": "NewCode calls the single shared Random instance from concurrent Create calls. System.Random is not thread-safe. Concurrent use can corrupt its internal state (the legacy algorithm degrades to returning 0), so many links get the same code and overwrite each other in links[code] (line 40).",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 53,
+     "title": "Peek reads the dictionary without the lock, and Warm's check-then-set is racy",
+     "description": "Every other method takes lock(this), but Peek calls entries.ContainsKey unlocked. It can run concurrently with Set/Sweep/Delete, which mutate the Dictionary. Reading during a resize or removal can throw or return wrong results. Warm (line 95) then does Peek followed by Set as two separate operations. Between them another thread can Set the same key, and Warm overwrites the fresher entry with a possibly stale value. Warm runs from the janitor while handlers serve, so this is reached. Utilization (line 126) also reads entries.Count unlocked.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 17,
+     "title": "Metrics claims thread safety but created++ and Snapshot are unsynchronized",
+     "description": "AddResolved uses Interlocked.Increment, but AddCreated does a plain created++ (line 17), a non-atomic read-modify-write. Concurrent POST /links requests lose increments. Snapshot reads the three longs with plain reads, so it can tear on 32-bit runtimes and has no visibility guarantee. Cache.Stats() (Cache.cs:120) has the same unlocked read of hits.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 65,
+     "title": "WarmCache fires Task.Run per link and never awaits, contrary to its contract",
+     "description": "The doc says it 'Returns after every probe has finished', but the tasks are discarded. The method returns immediately while Sets are still running, so callers that rely on a warm cache see a cold one. Any exception in a task is unobserved, and it spawns one task per link with no bound.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 37,
+     "title": "Fire-and-forget Task.Run(Handle) swallows exceptions and leaves requests hanging",
+     "description": "Handle runs in an unobserved Task.Run. Any exception (BearerToken's parts[1] on a missing Authorization header, int.Parse on user input, the divide by zero in Stats, a concurrent-dictionary fault) faults the discarded task, so it is never observed. The HttpListenerContext response is never written or closed, so the client hangs until it times out, and the connection and thread state leak. There is no bound on in-flight handlers, no cancellation, and no shutdown path.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 28,
+     "title": "Concurrent /report requests race on the same file",
+     "description": "Report calls ExportCsv (StreamWriter on Path.Combine(dir, name + \".csv\")) and then ReadReport for the same path, on concurrent handler threads. Two requests with the same name open the file with FileMode.Create and default sharing. The second gets an IOException (reported as a 500), or truncates the file while the first is reading it, so a reader can return a partial or empty report. The writer is also not disposed on exceptions, so a failed write leaves the handle open and locks the file for later requests.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 58,
+     "title": "WriteSnapshot uses one fixed shared temp path",
+     "description": "All callers write /tmp/linkd-snapshot.json and then move it. Two overlapping snapshots interleave: one writes while the other moves, so the moved file can be missing or contain the other caller's partial contents, or the second File.Move throws FileNotFoundException. The advertised no-half-written-snapshot guarantee does not hold under concurrency.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "Export.cs",
+     "line": 80,
+     "title": "async void ExportCsvAsync cannot be awaited and crashes the process on failure",
+     "description": "The background exporter is async void, so callers cannot await completion or observe exceptions. An IOException from WriteAllTextAsync is rethrown on the synchronization context or thread pool and terminates the process. The caller also cannot know when the file is finished, so a following read races with the write.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 47,
+     "title": "StopJanitor does not wait for an in-flight callback",
+     "description": "Timer.Dispose() does not wait for a running callback, so the janitor can still be mutating the store or cache after StopJanitor returns. Also, calling it twice or before StartJanitor is fine, but the static field is written without any visibility guarantee.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 74,
+     "title": "Sync-over-async .Result blocks a thread per probe",
+     "description": "CheckTargets calls ProbeAsync(...).Result in a loop. Each call blocks a thread-pool thread. Run from request handlers under load it can starve the pool. It would also deadlock if ever invoked on a thread with a synchronization context.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 33,
+     "title": "lock(this) exposes the cache's lock object publicly",
+     "description": "All synchronization uses lock(this) on a public class, so any external code that locks the same instance can block or deadlock the cache.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "Export.cs",
+     "line": 18,
+     "title": "Path traversal / arbitrary file write and read via report name",
+     "description": "ExportCsv does Path.Combine(dir, name + \".csv\") with `name` taken straight from the ?name= query parameter in Program.Report. An absolute name such as /home/svc/.ssh/x replaces dir entirely, and ../ sequences escape it. The doc comment says the name is 'confined to dir', but nothing enforces that. The service then writes attacker-influenced content (link targets and owners the attacker created) to that path, and ReadReport (line 75) reads back any *.csv file the same way. ExportCsvAsync (line 82) has the same flaw.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Program.cs",
+     "line": 159,
+     "title": "Admin authorization trusts a client-supplied X-Admin header",
+     "description": "/admin/quotas grants access when the request header `X-Admin: true` is present. Any authenticated user, or any client that can obtain a token, can add that header and get every owner's link counts. The session's Role is never consulted.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 69,
+     "title": "RequireAdmin always returns true",
+     "description": "RequireAdmin falls through to `return true` when the role is not admin/owner. Every session, whatever its role, passes the admin check, so this control does nothing and would grant admin to any caller that uses it.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 32,
+     "title": "Session tokens generated with non-cryptographic System.Random",
+     "description": "Tokens are two calls to Random.Next(), each a 31-bit value from an unseeded Random. The result is predictable and has at most about 62 bits of entropy. An attacker who observes a few tokens can recover the PRNG state and predict other users' tokens, including admin sessions. Random is also not thread-safe when shared across the concurrent Task.Run handlers, so it can degrade to returning zeros. The same weakness applies to Store.NewCode (Store.cs:228), which is documented as 'unguessable'.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 46,
+     "title": "Verify never checks session expiry",
+     "description": "Session.ExpiresAt is set to 12 hours ahead but Verify returns any matching session without comparing it to the current time. Tokens therefore live forever unless explicitly revoked, contradicting the doc comment, and a leaked token stays valid indefinitely. Expired sessions are also never removed from the dictionary.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 38,
+     "title": "Session tokens written to logs and echoed in error responses",
+     "description": "Issue logs the full bearer token to the console with a line saying it was issued for the owner. Program.Handle (Program.cs:51) also reflects the presented token into the 401 body. Anyone with log access can hijack sessions, and the reflected value goes into any proxy or client log.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 58,
+     "title": "Snapshot written to fixed, world-writable /tmp path (symlink/TOCTOU)",
+     "description": "WriteSnapshot writes to /tmp/linkd-snapshot.json, a predictable name in a shared directory, then moves it into place. A local attacker can pre-create that path as a symlink, so File.WriteAllText writes through it and overwrites a file the service user can write. They can also swap the file between write and move to inject snapshot contents. The move across filesystems is not atomic either, which breaks the 'never half-written' claim.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 28,
+     "title": "Reports containing every owner's links are created with default (world-readable) permissions",
+     "description": "The comment says the report is for the service user only, but StreamWriter creates the file with the process umask (typically 0644). ArchiveAll (line 42), WriteSnapshot and AppendAudit do the same. Any local user on the box can read all owners' link data and the audit log. The writers are also not disposed on exceptions, which leaks handles.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 42,
+     "title": "Owner string used as a filename in ArchiveAll (path traversal)",
+     "description": "The file name is Path.Combine(dir, entry.Key + \".csv\"), where the key is an owner name that Program.Links takes unvalidated from the ?owner= query parameter. An owner like ../../etc/x or an absolute path writes CSV files outside dir. Owner names that collide after sanitizing would also overwrite one another.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 87,
+     "title": "Link owner taken from request parameters, and delete has no ownership check",
+     "description": "On POST /links the owner comes from ?owner=, so any authenticated user can create links attributed to anyone. On DELETE the comment says only the creator may delete and that the owner is taken from the session, but store.Delete(code) is called with no owner check. Any authenticated user can delete any link by guessing or enumerating its code. Store.Delete (Store.cs:116) also never checks ownership.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 143,
+     "title": "Open redirect at /out",
+     "description": "/out issues a 301 redirect to whatever ?next= contains, with no validation of scheme or host. Crafted URLs on the service's domain can send users to phishing sites (or javascript:/data: style schemes). The permanent 301 status also lets browsers cache the redirect.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 178,
+     "title": "Report endpoint exposes every owner's links to any authenticated user",
+     "description": "/report exports store.Page(0, 1000), which is all owners' links, and returns them with no role check or per-owner filter. Any valid token can pull the whole dataset including the owner column. The CSV also puts owner and target values in unescaped, allowing CSV/formula injection (Export.cs:23, for example an owner beginning with '=').",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 188,
+     "title": "Full exception text returned to clients",
+     "description": "The 500 response includes `{e}`, the exception's full ToString(), and the configured export directory. This leaks stack traces, internal file paths and framework details to any caller, and helps refine the path traversal attack.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 47,
+     "title": "Unhandled exceptions in request handling leave requests hanging and allow cheap resource exhaustion",
+     "description": "BearerToken does header.Split(' ')[1], so a missing or malformed Authorization header throws IndexOutOfRange (Authenticator.cs:94). Likewise int.Parse on ttl/offset/size (Program.cs:90, 119, 120) throws on bad input. Handle has no try/catch, and the exception is swallowed inside Task.Run, so the response is never closed. Unauthenticated clients can leave many connections open per request.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 83,
+     "title": "Passwords hashed with unsalted single-round SHA-256",
+     "description": "HashPassword returns a bare SHA-256 hex digest. A leaked user table can be cracked quickly with rainbow tables or GPU brute force, and identical passwords give identical hashes.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 24,
+     "title": "Hardcoded fallback secret and public accessor",
+     "description": "If LINKD_SECRET is unset the service silently uses the well-known 'dev-secret-do-not-use', so a production misdeployment gets a publicly known signing secret. The secret is also exposed through the public `Secret` property.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 103,
+     "title": "SecretEquals is not constant-time despite its contract",
+     "description": "The doc says the comparison does not leak how much of the secret matched, but `presented == expected` short-circuits at the first differing character. That gives a timing side channel for guessing the secret.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 198,
+     "title": "Wildcard CORS combined with Allow-Credentials, over plain HTTP on all interfaces",
+     "description": "Every response sets Access-Control-Allow-Origin: * together with Access-Control-Allow-Credentials: true. That is an invalid and dangerous combination, and it signals intent to allow credentialed cross-origin access. The listener also binds http://*:port/ with no TLS, so bearer tokens travel in cleartext.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "Program.cs",
+     "line": 96,
+     "title": "JSON response built by string interpolation without escaping",
+     "description": "The 201 body embeds link.Target directly. Create only checks the http:// or https:// prefix, so a target containing quotes or backslashes breaks the JSON structure and lets a caller inject arbitrary JSON fields for clients that parse it.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 136,
+     "title": "ByOwner matches by substring, not exactly",
+     "description": "The doc says it returns links belonging to exactly this owner, but l.Owner.Contains(owner) also matches other users whose names contain the argument. An empty or short owner returns everyone's links, so any caller that uses it for per-user listings would leak other owners' data.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 143,
+     "title": "Extend revives expired links, contradicting the stated invariant",
+     "description": "The doc says an already-expired link stays expired and must never come back, but Extend unconditionally sets ExpiresAt = Now + ttl. Anyone able to call it can resurrect a dead link, including a code that has been revoked or expired for abuse, which re-enables redirects to a possibly malicious target.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "Store.cs",
+     "line": 156,
+     "title": "Quotas() and All() hand out the live internal dictionaries",
+     "description": "Quotas() is documented as returning a snapshot, but returns the mutable quota dictionary. All() returns the live links dictionary. Callers can mutate store state, such as resetting quotas or removing links, without any check, and concurrent handlers race on these non-thread-safe dictionaries.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "Config.cs",
+     "line": 107,
+     "title": "Validate() always returns true, so invalid configuration is accepted",
+     "description": "Validate logs problems (bad port, negative cache size, non-positive timeout) but returns true unconditionally, and Main ignores the result. A bad deploy starts with invalid limits instead of failing closed. LoadFile also swallows read errors and int.Parse can throw on bad input.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 6,
+      "output_tokens": 12624,
+      "cache_read_tokens": 108258,
+      "cache_write_tokens": 30657,
+      "cost_usd": 0.5194116,
+      "cost_known": true
+     },
+     "duration_ms": 99200,
+     "failed": false,
+     "output_bytes": 21044
+    },
+    {
+     "usage": {
+      "input_tokens": 6,
+      "output_tokens": 6371,
+      "cache_read_tokens": 100599,
+      "cache_write_tokens": 29727,
+      "cost_usd": 0.38537979999999994,
+      "cost_known": true
+     },
+     "duration_ms": 53679,
+     "failed": false,
+     "output_bytes": 11037
+    },
+    {
+     "usage": {
+      "input_tokens": 6,
+      "output_tokens": 8243,
+      "cache_read_tokens": 101169,
+      "cache_write_tokens": 30092,
+      "cost_usd": 0.42585380000000006,
+      "cost_known": true
+     },
+     "duration_ms": 70861,
+     "failed": false,
+     "output_bytes": 15798
+    }
+   ]
+  }
+ ]
+}
