@@ -242,3 +242,71 @@ func TestRunImplementStuckIgnoredDiscardStopsTheRun(t *testing.T) {
 		t.Errorf("the stop does not name the stuck path: %v", err)
 	}
 }
+
+// Review run 20260929-133423, i7, at step 6 where it bites: T01 commits
+// certs/README.md and its gate leaves the operator-style ignored certs/dev.key,
+// which is the project's from then on. T02 deletes the README and stages it, so
+// git now reports certs/ wholly ignored -- absent from T02's step 2 census, it
+// read as created, and step 6's RemoveAll deleted dev.key before the gate.
+func TestRunImplementStep6KeepsPreExistingIgnoredFilesInAnEmptiedDirectory(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "sessions")
+	coder := "n=$(cat " + counter + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + counter + "\n" +
+		"if [ \"$n\" = 1 ]; then mkdir -p certs && printf 'certs\\n' > certs/README.md; printf 'one\\n' > one.txt\n" +
+		"else git rm -q certs/README.md && printf 'two\\n' > two.txt; fi\n" +
+		reportLine(`{"status": "implemented", "notes": "done"}`)
+	f := newImplementFixture(t, coder, config.Verify{
+		Policy:  config.VerifyMustPass,
+		Timeout: config.Duration(time.Minute),
+		Commands: []config.VerifyCommand{{Name: "key", Run: []string{"sh", "-c",
+			"if [ -f certs/README.md ] && [ ! -e certs/dev.key ]; then printf 'operator secret\\n' > certs/dev.key; fi"}}},
+	})
+	f.cfg.Implement.GitignoreSeed = []string{"*.key"}
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	for _, task := range sum.Tasks {
+		if task.Outcome != outcomeImplemented {
+			t.Fatalf("%s = %q (%s), want both implemented\nlog:\n%s", task.ID, task.Outcome, task.Reason, f.logs())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.out, "certs", "README.md")); !os.IsNotExist(err) {
+		t.Fatalf("T02 did not delete the tracked file, so this proves nothing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.out, "certs", "dev.key")); err != nil {
+		t.Errorf("step 6 deleted an ignored file that existed before the attempt: %v\nlog:\n%s", err, f.logs())
+	}
+}
+
+// Review run 20260929-133423, i3: an ignored file the attempt replaced with a
+// directory was diffed as modified, so the discard removed the directory's new
+// children and kept the directory -- and the retry's gate ran against it.
+func TestRunImplementDiscardRemovesADirectoryThatReplacedAnIgnoredFile(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "sessions")
+	coder := "n=$(cat " + counter + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + counter + "\n" +
+		"if [ \"$n\" = 2 ]; then rm scratch && mkdir -p scratch/sub && printf 'x\\n' > scratch/sub/f; echo 'no contract block'; exit 0; fi\n" +
+		implementReply("printf 'work\\n' > \"src_$n.txt\"", `{"status": "implemented", "notes": "done"}`)
+	f := newImplementFixture(t, coder, config.Verify{
+		Policy:  config.VerifyMustPass,
+		Timeout: config.Duration(time.Minute),
+		// T01's gate leaves the ignored cache FILE; every gate refuses a directory.
+		Commands: []config.VerifyCommand{{Name: "no-dir", Run: []string{"sh", "-c",
+			"[ -e scratch ] || printf 'cache\\n' > scratch; test ! -d scratch"}}},
+	})
+	f.cfg.Implement.GitignoreSeed = []string{"scratch"}
+	sum, err := f.run(t)
+	if err != nil {
+		t.Fatalf("runImplement() = %v\nlog:\n%s", err, f.logs())
+	}
+	if !strings.Contains(f.logs(), "broke the output contract") {
+		t.Fatalf("T02's first attempt was not discarded, so this proves nothing\nlog:\n%s", f.logs())
+	}
+	for _, task := range sum.Tasks {
+		if task.Outcome != outcomeImplemented {
+			t.Errorf("%s = %q (%s): the retry's gate saw the discarded attempt's directory\nlog:\n%s", task.ID, task.Outcome, task.Reason, f.logs())
+		}
+	}
+	if st, err := os.Lstat(filepath.Join(f.out, "scratch")); err == nil && st.IsDir() {
+		t.Error("the discarded attempt's directory survived where an ignored file had been")
+	}
+}

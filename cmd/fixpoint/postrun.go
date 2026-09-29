@@ -519,7 +519,20 @@ func unreplayable(dir string, sum *model.RunSummary) string {
 // run directory, because review-body.md and the receipt live at the run root
 // whatever the pattern -- the summary's own directory is not that root when the
 // pattern has a subdirectory.
+//
+// A symbolic link as the argument is refused rather than followed. The directory
+// gets its provenance from committedRun, which asks git about the TARGET (git's
+// cwd is the resolved path), while the link itself may be the thing that came in
+// with a checkout -- following would pass a tracked link to an untracked directory.
+// And every later step (the walk, git, the body read, the receipt) would resolve the
+// link again on its own, so a link retargeted in between splits the directory that
+// was vetted from the one that is published. fixpoint never writes such a link, and
+// the operator loses only a realpath.
 func loadRunSummary(dir string) (*model.RunSummary, string, error) {
+	if info, err := os.Lstat(dir); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		to, _ := filepath.EvalSymlinks(dir)
+		return nil, "", fmt.Errorf("%s is a symbolic link (to %q); pass the run directory itself, so what is checked and what is published are one path", dir, to)
+	}
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		path, sum := findRunSummary(dir)
 		if sum == nil {
@@ -571,7 +584,10 @@ func findRunSummary(dir string) (string, *model.RunSummary) {
 			}
 			return nil
 		}
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".json") {
+		// Regular files only: a .json that is a link would let ReadFile publish bytes
+		// from somewhere the provenance check never looked -- the redirect
+		// reviewBodyBytes refuses for the body, refused here for the summary.
+		if err != nil || !d.Type().IsRegular() || !strings.HasSuffix(path, ".json") {
 			return nil //nolint:nilerr // an unreadable entry is not a summary; keep looking
 		}
 		raw, err := os.ReadFile(path)
