@@ -381,7 +381,7 @@ func firstSentence(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = strings.TrimSpace(s[:i])
 	}
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] != '.' || i+1 < len(s) && s[i+1] != ' ' && s[i+1] != '\t' {
 			continue
 		}

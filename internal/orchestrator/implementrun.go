@@ -43,6 +43,9 @@ const (
 	outcomeCarried     = implement.OutcomeCarried
 )
 
+// keyCreated is the journal field naming the ignored paths an attempt created.
+const keyCreated = "created"
+
 // carriedReason renders a carried record for the report: the outcome it holds
 // plus whatever reason the original run recorded, so a resumed run's summary
 // explains a failed or blocked task it never ran itself.
@@ -1351,7 +1354,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 		return res, report, attemptVerdict{}, fmt.Errorf("could not delete session-created ignored path(s) before the gate: %s -- they would be measured as part of the work and carried into the next attempt", strings.Join(stuck, ", "))
 	}
 	if len(created) > 0 || len(modified) > 0 {
-		o.journal("ignored_paths_diff", 1, map[string]any{"id": t.ID, "created": created, "modified": modified})
+		o.journal("ignored_paths_diff", 1, map[string]any{"id": t.ID, keyCreated: created, "modified": modified})
 		if len(created) > 0 {
 			o.logf("task %s: %d session-created ignored path(s) deleted before the gate; the gate recreates what it needs from committed sources", t.ID, len(created))
 		}
@@ -1731,7 +1734,7 @@ func (o *Orchestrator) cleanUpInterrupted(ctx context.Context, p *implementPrep)
 	}
 	if len(created) > 0 {
 		o.logf("the interrupted attempt's %d ignored path(s) deleted", len(created))
-		o.journal("ignored_paths_discarded", 1, map[string]any{"interrupted": true, "created": created})
+		o.journal("ignored_paths_discarded", 1, map[string]any{"interrupted": true, keyCreated: created})
 	}
 }
 
@@ -1775,7 +1778,7 @@ func (o *Orchestrator) finishDiscard(ctx context.Context, p *implementPrep, task
 		return runStopError{"the discard could not delete the attempt's ignored path(s): " + strings.Join(stuck, ", ") + " -- the next attempt would build on them unseen"}
 	}
 	if len(created) > 0 {
-		o.journal("ignored_paths_discarded", 1, map[string]any{"id": taskID, "created": created})
+		o.journal("ignored_paths_discarded", 1, map[string]any{"id": taskID, keyCreated: created})
 	}
 	return o.assertClean(ctx, p)
 }

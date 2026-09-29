@@ -675,6 +675,13 @@ func openerIndex(s, openTag, closeTag string) int {
 	if depth > 0 {
 		return open
 	}
+	return openerAfterClosedBlocks(s, openTag, from, closed)
+}
+
+// openerAfterClosedBlocks is openerIndex's answer when no block is open at the end:
+// the first line-leading opener after the last closed block, else the last opener
+// there, else the start of that closed block (its closer was part of the body).
+func openerAfterClosedBlocks(s, openTag string, from, closed int) int {
 	leading, last := -1, -1
 	for i := from; ; i += len(openTag) {
 		j := strings.Index(s[i:], openTag)

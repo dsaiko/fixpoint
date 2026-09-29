@@ -496,7 +496,7 @@ func PathWithout(env []string, root string) []string {
 // probe fixpoint makes, and asking git would run git to decide how to run git.
 // The nearest .git (a directory, or the file a linked worktree or submodule has)
 // is what git itself stops at. A core.worktree/GIT_WORK_TREE redirect is refused
-// by the preflight, so it is not modelled here. The walk climbs the RESOLVED path,
+// by the preflight, so it is not modeled here. The walk climbs the RESOLVED path,
 // as git does from its cwd: a target reached through a symlink belongs to the
 // checkout the link points into, not to whatever repository holds the link.
 func WorktreeRoot(dir string) string {
@@ -504,8 +504,8 @@ func WorktreeRoot(dir string) string {
 		dir = abs
 	}
 	start := dir
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		start = real
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		start = resolved
 	}
 	for d := start; ; {
 		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
