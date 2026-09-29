@@ -137,20 +137,30 @@ func Publish(path, content string) error {
 // on collision and opens with O_CREATE|O_EXCL|0600, so it never follows a
 // symlink and never inherits an existing file's permissions. The pattern keeps
 // the `.fixpoint-tmp` suffix so an interrupted run leaves something
-// recognizable behind. The name is returned even on a write error, so the
-// caller's deferred remove still cleans up a partial file.
+// recognizable behind. A failed write or close removes its own partial file:
+// Publish returns on this error before installing its deferred remove, so
+// handing the name back left the debris the doc comment above promises cannot
+// outlive a run.
 func writeTemp(path, content string) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.fixpoint-tmp")
 	if err != nil {
 		return "", err
 	}
 	name := f.Name()
-	if _, err := f.WriteString(content); err != nil {
-		_ = f.Close()
-		return name, err
+	_, err = writeString(f, content)
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
-	return name, f.Close()
+	if err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
 }
+
+// writeString is the temp file's write, a seam only so a test can make it fail:
+// a full disk cannot be arranged portably.
+var writeString = (*os.File).WriteString
 
 // DefaultOut is where the deliverable goes when -out is not given: DESIGN.md
 // beside the assignment.

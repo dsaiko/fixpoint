@@ -244,3 +244,108 @@ func TestShippedAgentsPinTheirEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// isCodexHarness reports whether an agent's own command drives the codex CLI.
+// Derived from the file rather than listed, so a new codex-route candidate is
+// covered the moment it lands in the bundle.
+func isCodexHarness(a Agent) bool {
+	argv := a.commandArgv()
+	return len(argv) > 0 && filepath.Base(argv[0]) == "codex"
+}
+
+// Every agent any shipped config seats in the reviewer pool must be read-only,
+// and a codex-harness one must be read-only BY ITS SANDBOX, not by declaration.
+//
+// Deliberately not a roster: who holds a seat is decided in defaults.yaml and
+// changes on bench evidence, so pinning names here would make every seat change
+// edit this test. The invariant is what a seat requires. can_edit: false alone is
+// a claim -- Validate refuses the explicit write-granting flags, but a codex
+// command that simply drops `--sandbox read-only` passes it and falls back to
+// whatever ~/.codex/config.toml says, which may be workspace-write. For a panel
+// reading hostile material that flag is the guard (review run 20260929-113519,
+// i23).
+func TestShippedReviewPoolIsReadOnly(t *testing.T) {
+	bundleDir := filepath.Join("..", "..", projectBundleDir)
+	paths, err := filepath.Glob(filepath.Join(bundleDir, "*"+configExt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := map[string]string{} // agent -> a config that seats it
+	for _, path := range paths {
+		name := strings.TrimSuffix(filepath.Base(path), configExt)
+		// The bench configs seat bench-candidate, which bench/run.sh generates per
+		// run and never ships -- see shippedAgents.
+		if strings.HasPrefix(name, "bench-") {
+			continue
+		}
+		l, err := LoadBundle(&Resolver{Bundles: []string{bundleDir}}, name, "", Overrides{})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		rv := l.Config.Roles.Review
+		for _, a := range rv.Agents {
+			pool[a] = name
+		}
+		for _, lens := range rv.Prompts {
+			if lens.Agent != "" {
+				pool[lens.Agent] = name
+			}
+		}
+	}
+	if len(pool) == 0 {
+		t.Fatal("no shipped config seats a reviewer; this test would inspect nothing")
+	}
+	agents := shippedAgents(t)
+	for name, from := range pool {
+		a, ok := agents[name]
+		if !ok {
+			t.Errorf("%s seats reviewer %q, which has no agents/%s%s", from, name, name, configExt)
+			continue
+		}
+		if a.CanEdit {
+			t.Errorf("agents/%s%s: seated as a reviewer by %s but declares can_edit: true", name, configExt, from)
+		}
+		argv := a.Argv()
+		if flag := permissionBypassFlag(argv); flag != "" {
+			t.Errorf("agents/%s%s: seated as a reviewer by %s but passes %s", name, configExt, from, flag)
+		}
+		if !isCodexHarness(a) {
+			continue
+		}
+		readOnly := slices.Contains(argv, "--sandbox=read-only")
+		for i, tok := range argv {
+			if (tok == "--sandbox" || tok == "-s") && i+1 < len(argv) && argv[i+1] == "read-only" {
+				readOnly = true
+			}
+		}
+		if !readOnly {
+			t.Errorf("agents/%s%s: codex reviewer seated by %s without --sandbox read-only; can_edit: false is then a claim the CLI does not enforce", name, configExt, from)
+		}
+	}
+}
+
+// Every codex-harness agent must name where codex puts its failure reason.
+//
+// Without usage.error_text a failed codex session is explained by its last
+// narration ("exit status 1: I'm reviewing the Maven wiring...") instead of the
+// turn.failed error -- the misreport that hid the 2026-09-23 credits blackout. The
+// key is optional in general, so nothing but this test notices it missing from a
+// new candidate or dropped from an existing file (review run 20260929-113519, i26).
+func TestShippedCodexAgentsReportTheirErrorText(t *testing.T) {
+	checked := 0
+	for name, a := range shippedAgents(t) {
+		if !isCodexHarness(a) {
+			continue
+		}
+		checked++
+		if a.Usage.Format != "jsonl" {
+			t.Errorf("agents/%s%s: usage.format = %q, want jsonl (codex --json streams JSONL)", name, configExt, a.Usage.Format)
+		}
+		if a.Usage.ErrorText != "error.message" {
+			t.Errorf("agents/%s%s: usage.error_text = %q, want error.message -- a failed session would be explained by its last narration", name, configExt, a.Usage.ErrorText)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no codex-harness agent found; the detection broke, or the bundle lost every codex route")
+	}
+}

@@ -5,16 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/dsaiko/fixpoint/internal/agent"
 	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/gitenv"
+	"github.com/dsaiko/fixpoint/internal/logstore"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -511,27 +512,89 @@ func unreplayable(dir string, sum *model.RunSummary) string {
 // input shapes are supported and only one of them is a directory: a caller that
 // reused the argument to reach a sibling artifact would build a path underneath
 // the summary FILE.
+//
+// In a directory the summary is found by CONTENT, as logstore.LoadStats finds it:
+// logs.summary_pattern is configurable, may put the summary in a subdirectory,
+// and this mode resolves no config to learn it. The directory passed in stays the
+// run directory, because review-body.md and the receipt live at the run root
+// whatever the pattern -- the summary's own directory is not that root when the
+// pattern has a subdirectory.
 func loadRunSummary(dir string) (*model.RunSummary, string, error) {
-	path := dir
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
-		matches, err := filepath.Glob(filepath.Join(dir, "summary-*.json"))
-		if err != nil || len(matches) == 0 {
-			return nil, "", fmt.Errorf("%s holds no summary-*.json; is it a run directory?", dir)
+		path, sum := findRunSummary(dir)
+		if sum == nil {
+			return nil, "", fmt.Errorf("%s holds no run summary; is it a run directory?", dir)
 		}
-		// Newest last by name, since the name carries the timestamp.
-		sort.Strings(matches)
-		path = matches[len(matches)-1]
+		if sum.ReviewBody == "" {
+			return nil, "", fmt.Errorf("that run wrote no review body (%s)", path)
+		}
+		return sum, dir, nil
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(dir)
 	if err != nil {
 		return nil, "", err
 	}
 	var sum model.RunSummary
 	if err := json.Unmarshal(raw, &sum); err != nil {
-		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+		return nil, "", fmt.Errorf("parse %s: %w", dir, err)
 	}
 	if sum.ReviewBody == "" {
 		return nil, "", errors.New("that run wrote no review body")
 	}
-	return &sum, filepath.Dir(path), nil
+	// A summary FILE names its run root only by sitting in it. One that does not
+	// (a summary_pattern with a subdirectory) would have the receipt and the
+	// provenance check look in the wrong place, so ask for the directory instead.
+	runDir := filepath.Dir(dir)
+	if _, err := os.Lstat(filepath.Join(runDir, "review-body.md")); err != nil {
+		return nil, "", fmt.Errorf("%s has no review-body.md beside it, so it is not at its run's root; pass the run directory instead", dir)
+	}
+	return &sum, runDir, nil
+}
+
+// findRunSummary returns the newest run summary anywhere under dir, or nil. The
+// per-step .json artifacts share the tree and decode into a RunSummary of zero
+// values, so a candidate must CARRY the keys a marshaled summary always writes
+// (none of them is omitempty) rather than merely parse. Newest by started_at, by
+// path on a tie -- the default name carries the timestamp, which kept the old
+// newest-by-name answer.
+//
+// The walk does not enter another run's root (a directory holding its own
+// journal): given a logs root or a project by mistake, it must not adopt some
+// nested run's summary as this directory's.
+func findRunSummary(dir string) (string, *model.RunSummary) {
+	var bestPath string
+	var best *model.RunSummary
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() && path != dir {
+			if _, jerr := os.Lstat(filepath.Join(path, logstore.JournalName)); jerr == nil {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".json") {
+			return nil //nolint:nilerr // an unreadable entry is not a summary; keep looking
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil //nolint:nilerr // as above
+		}
+		var keys map[string]json.RawMessage
+		if json.Unmarshal(raw, &keys) != nil {
+			return nil
+		}
+		for _, k := range []string{"started_at", "finished_at", "termination"} {
+			if _, ok := keys[k]; !ok {
+				return nil
+			}
+		}
+		var sum model.RunSummary
+		if json.Unmarshal(raw, &sum) != nil {
+			return nil
+		}
+		if best == nil || sum.StartedAt.After(best.StartedAt) || (sum.StartedAt.Equal(best.StartedAt) && path > bestPath) {
+			bestPath, best = path, &sum
+		}
+		return nil
+	})
+	return bestPath, best
 }
