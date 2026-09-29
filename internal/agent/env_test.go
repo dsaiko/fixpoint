@@ -500,3 +500,50 @@ func TestEnvWithoutCredentialsOperatorLists(t *testing.T) {
 		}
 	}
 }
+
+// A relative PATH entry is dropped whatever it resolves to from fixpoint's own
+// cwd. The credential-carrying child runs with cmd.Dir = the target, so `bin`
+// there is the PR's bin, while EvalSymlinks here resolves it against a cwd the
+// child never sees -- the entry used to survive as "not inside the target"
+// (review run 20260929-125352, i5/i8).
+func TestPathWithoutDropsRelativeEntries(t *testing.T) {
+	target := t.TempDir()
+	outside := t.TempDir()
+	// fixpoint's cwd holds a real `bin` and `node_modules/.bin` outside the
+	// target, so every relative entry below resolves and passes within().
+	cwd := t.TempDir()
+	for _, d := range []string{filepath.Join(cwd, "bin"), filepath.Join(cwd, "node_modules", ".bin")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(cwd)
+
+	sep := string(os.PathListSeparator)
+	relative := []string{"bin", "node_modules/.bin", ".", "./bin"}
+	env := []string{"PATH=" + strings.Join(append(relative, outside), sep)}
+	got := PathWithout(env, target)
+	if len(got) != 1 {
+		t.Fatalf("PathWithout returned %q", got)
+	}
+	entries := filepath.SplitList(strings.TrimPrefix(got[0], "PATH="))
+	if !slices.Equal(entries, []string{outside}) {
+		t.Errorf("PATH = %q, want only the absolute entry %q", entries, outside)
+	}
+}
+
+// A relative root is made absolute first: every kept entry is absolute, so a
+// relative root would otherwise match none of them and let an absolute entry
+// inside the target through.
+func TestPathWithoutRelativeRoot(t *testing.T) {
+	parent := t.TempDir()
+	inside := filepath.Join(parent, "target", "bin")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+	got := PathWithout([]string{"PATH=" + inside}, "target")
+	if !slices.Equal(got, []string{"PATH="}) {
+		t.Errorf("PathWithout(relative root) = %q, want the inside entry dropped", got)
+	}
+}

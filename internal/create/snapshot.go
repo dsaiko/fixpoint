@@ -88,7 +88,9 @@ func Snapshot(src, dst string, exclude []string, maxBytes int64) (Snapshotted, e
 	out := Snapshotted{Dir: dst}
 	budget := maxBytes
 	srcReal := canonical(src)
-	exclude = excludesWithin(src, srcReal, exclude)
+	if exclude, err = excludesWithin(src, srcReal, exclude); err != nil {
+		return Snapshotted{}, err
+	}
 	err = filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -171,23 +173,36 @@ func canonical(p string) string {
 	return filepath.Clean(p)
 }
 
-// excludesWithin returns each exclude in both spellings, dropping any that is
-// the assignment itself or an ancestor of it: such an entry names no PART of the
-// assignment, and matching it would silently empty the snapshot.
-func excludesWithin(src, srcReal string, exclude []string) []string {
+// excludesWithin returns each exclude in both spellings, dropping any that is an
+// ancestor of the assignment: such an entry names no PART of the assignment, and
+// matching it would silently empty the snapshot.
+//
+// An exclude that IS the assignment is refused instead. The only one that can be
+// is the logs.dir literal prefix (-out and the scratch dir cannot equal an
+// existing directory), and there every earlier run's prompts and raw outputs sit
+// directly under the assignment: dropping the entry copies them in as material,
+// honoring it copies nothing. Excluding the run directories one by one would
+// mean recognizing them by name, and a rendered {timestamp} segment is no
+// pattern an assignment's own entries cannot also match. An ancestor is safe to
+// drop: a run directory lies inside the assignment only if the assignment is
+// itself a run directory, which is then what the operator asked for.
+func excludesWithin(src, srcReal string, exclude []string) ([]string, error) {
 	var out []string
 	for _, e := range exclude {
 		if e == "" {
 			continue
 		}
 		for _, sp := range []string{filepath.Clean(e), canonical(e)} {
+			if sp == filepath.Clean(src) || sp == srcReal {
+				return nil, fmt.Errorf("assignment %s is also a directory its exclusions name (%s): with a logs.dir whose literal prefix is the assignment, every earlier run's prompts and outputs would be copied in as material -- put the logs under a subdirectory of the assignment, or outside it", src, e)
+			}
 			if excluded(src, "", []string{sp}) || excluded(srcReal, "", []string{sp}) {
 				continue
 			}
 			out = append(out, sp)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // excluded reports whether a source path is kept out of the snapshot. The
