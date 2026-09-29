@@ -211,14 +211,17 @@ func ClassifyGateDiff(pre, post Census, gateGenerated []string) GateDiff {
 		gg[g] = true
 	}
 	var d GateDiff
+	// Presence, not just the digest: a path missing from the post census MATCHES
+	// HEAD again, which is not the "" a deletion digests to. Defaulting it to ""
+	// let a gate regenerate a tracked file the coder deleted, byte-identical to
+	// HEAD, unseen -- and the commit then staged a HEAD-identical path and the
+	// deletion silently left an "implemented" task.
 	changed := func(path, was string) {
-		now := ""
-		if v, ok := post.Untracked[path]; ok {
-			now = v
-		} else if v, ok := post.Modified[path]; ok {
-			now = v
+		now, found := post.Untracked[path]
+		if !found {
+			now, found = post.Modified[path]
 		}
-		if now == was {
+		if found && now == was {
 			return
 		}
 		if gg[path] {

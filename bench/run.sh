@@ -178,8 +178,10 @@ while [ "$rep" -le "$last" ]; do
         # it is what every published score out of 100 means, and silently
         # widening it as languages are added would change what a comparable
         # run costs and what its total is. Name a language to measure it.
-        run_task go "$rep"
-        run_task design "$rep"
+        # Guarded like the list below, and for its reason: go failing to score
+        # must not leave design unmeasured.
+        run_task go "$rep" || echo "bench: go did not score; continuing" >&2
+        run_task design "$rep" || echo "bench: design did not score; continuing" >&2
         ;;
     *)
         # Comma- or space-separated list, so one invocation can sweep several

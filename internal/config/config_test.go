@@ -1700,6 +1700,18 @@ func TestValidateImplement(t *testing.T) {
 		{"implement keys without planner refused", func(c *Config) {
 			c.Roles.Planner = RoleRef{}
 		}, "implement.* is set but roles.planner is not"},
+		// The pool inherited from defaults is inert here (§7.3), so a reviewer whose
+		// CLI is not installed must not refuse a run that never execs it.
+		{"inherited pool with missing binary accepted", func(c *Config) {
+			c.Roles.Review.Agents = []string{"rev"}
+			c.Agents["rev"] = Agent{Command: []string{"fixpoint-no-such-reviewer-cli"}, PromptVia: "stdin"}
+		}, ""},
+		// Skipping the pool must not skip the roles that DO run: an agent serving
+		// both the pool and the coder role is still checked as the coder.
+		{"coder in the pool still checked", func(c *Config) {
+			c.Roles.Review.Agents = []string{"coder"}
+			c.Agents["coder"] = Agent{Command: []string{"fixpoint-no-such-coder-cli"}, PromptVia: "stdin", CanEdit: true}
+		}, `binary "fixpoint-no-such-coder-cli" not found`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

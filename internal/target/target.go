@@ -1802,8 +1802,13 @@ func (c *Collector) ChangedSince(ctx context.Context, base string) (map[string]b
 	// the repository root; below it, an unrelativized listing matches nothing and
 	// the answer is silently "nothing moved". It also drops changes outside
 	// target.path, which is right for both callers: those files are not in scope.
+	//
+	// --no-renames: rename detection is on by default and lists only the NEW path
+	// of a move, so a finding on the old one read as untouched -- no stale-file
+	// caution, and a published finding treated as still carried (review run
+	// 20260929-113519, i10). StashDirty passes it for the same reason.
 	if err := c.gitScanNUL(ctx, func(p string) { changed[p] = true },
-		"diff", "--name-only", "--relative", "-z", base, head); err != nil {
+		"diff", "--name-only", "--relative", "--no-renames", "-z", base, head); err != nil {
 		return nil, fmt.Errorf("list paths changed since %s: %w", base, err)
 	}
 	return changed, nil
@@ -2024,13 +2029,21 @@ func (c *Collector) ResetSoft(ctx context.Context, base string) error {
 }
 
 // DiscardClean drops every un-ignored change without touching the object
-// database: checkout for tracked paths, clean for untracked ones. It exists
-// for the byte-bound breach (DESIGN.md §5.3), where stashing the oversized
-// tree into git objects is exactly the cost the ceiling refuses; every other
-// discard prefers StashDirty, which destroys nothing.
+// database: a hard reset for the index and tracked paths, clean for untracked
+// ones. It exists for the byte-bound breach (DESIGN.md §5.3), where stashing the
+// oversized tree into git objects is exactly the cost the ceiling refuses; every
+// other discard prefers StashDirty, which destroys nothing.
+//
+// reset --hard HEAD, not `checkout -- .`: checkout restores the worktree from the
+// INDEX, and clean never removes a path the index holds, so anything staged --
+// the step 4 soft-reset of a coder commit leaves ALL of its work staged, and a
+// coder may `git add` on its own -- survived the discard, and assertClean then
+// stopped the whole run instead of failing one attempt (review run
+// 20260929-113519, i1). Every caller runs after step 0's clean-tree check and
+// the step 4 reset to base, so the index holds nothing of fixpoint's to keep.
 func (c *Collector) DiscardClean(ctx context.Context) error {
-	if out, err := c.git(ctx, "checkout", "-q", "--", "."); err != nil {
-		return fmt.Errorf("checkout: %w: %s", err, out)
+	if out, err := c.git(ctx, "reset", "-q", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("reset --hard: %w: %s", err, out)
 	}
 	if out, err := c.git(ctx, "clean", "-qfd"); err != nil {
 		return fmt.Errorf("clean: %w: %s", err, out)
@@ -2706,12 +2719,28 @@ func (c *Collector) scopedConfigKeys(ctx context.Context) ([]configEntry, error)
 // This deliberately does NOT live in gitenv.Harden: that env is also exported
 // into the reviewer/coder CLIs, which must keep the user's own locale for their
 // output encoding.
+//
+// PATH entries inside the target are dropped here, for EVERY subprocess and not
+// only the forge CLIs. gh resolves its internal `git` through PATH, and in pr mode
+// `gh pr checkout` has just written PR-authored content into the target, so a
+// PATH carrying a directory in it (direnv's PATH_add, $PWD/node_modules/.bin)
+// hands a PR-supplied `bin/git` the forge token runInput restores. git's own
+// children -- ssh on a fetch, gpg on a signed commit, a credential helper -- are
+// resolved the same way, and none of fixpoint's own probes has any use for a
+// binary the reviewed tree supplies. forge.forgeEnv applies the same step.
 func (c *Collector) probeEnv() []string {
-	if len(c.gitEnv) > 0 {
-		// Harden LAST so the config pins survive whatever the caller supplied.
-		return append(gitenv.Harden(c.gitEnv), "LC_ALL=C")
+	env := c.gitEnv
+	if len(env) == 0 {
+		env = os.Environ()
 	}
-	return append(gitenv.Harden(nil), "LC_ALL=C")
+	// Absolute, because PathWithout compares against resolved (absolute) PATH
+	// entries and a relative target.path would match none of them.
+	root, err := filepath.Abs(c.cfg.Path)
+	if err != nil {
+		root = c.cfg.Path
+	}
+	// Harden LAST so the config pins survive whatever the caller supplied.
+	return append(gitenv.Harden(agent.PathWithout(env, root)), "LC_ALL=C")
 }
 
 func (c *Collector) git(ctx context.Context, args ...string) (string, error) {
@@ -2753,7 +2782,9 @@ func (c *Collector) runInput(ctx context.Context, stdin io.Reader, name string, 
 	// pr mode did not work at all. Restoring the token here rather than widening
 	// probeEnv keeps the distinction the strip exists for: the credential a tool
 	// needs to do its job is not the same as the credentials it must not see, and
-	// git still gets none of them.
+	// git still gets none of them. The token is only safe to restore because
+	// probeEnv has already dropped every PATH entry inside the target: gh runs
+	// its own `git` by PATH lookup.
 	if agent.IsForgeCLI(name) {
 		cmd.Env = agent.WithForgeCredentials(name, cmd.Env)
 	}

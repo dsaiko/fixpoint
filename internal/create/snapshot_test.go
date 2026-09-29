@@ -129,3 +129,80 @@ func TestSnapshotRefusesAMissingAssignment(t *testing.T) {
 		t.Fatalf("Snapshot() = %v, want an assignment error", err)
 	}
 }
+
+// An assignment that IS a symlink is refused, not followed and not walked as
+// nothing. A config's target.document reaches the snapshot unchecked -- the
+// collector only ever sees the copy -- so a followed `brief.md ->
+// ~/.aws/credentials` handed the destination to every agent; and a root link to
+// a directory was walked as an empty tree, so the run designed against nothing.
+func TestSnapshotRefusesASymlinkedAssignment(t *testing.T) {
+	outside := t.TempDir()
+	secret := write(t, outside, "credentials", "aws_secret_access_key=x")
+	write(t, outside, "tree/brief.md", "a brief elsewhere")
+	src := t.TempDir()
+	fileLink := filepath.Join(src, "brief.md")
+	dirLink := filepath.Join(src, "assignment")
+	if err := os.Symlink(secret, fileLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "tree"), dirLink); err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []string{fileLink, dirLink} {
+		dst := filepath.Join(t.TempDir(), "assignment")
+		_, err := Snapshot(link, dst, nil, 1<<20)
+		if err == nil || !strings.Contains(err.Error(), "is a symlink") {
+			t.Errorf("Snapshot(%s) = %v, want the symlink refusal", link, err)
+		}
+		if b, rerr := os.ReadFile(filepath.Join(dst, "brief.md")); rerr == nil {
+			t.Errorf("the link's destination reached the snapshot: %q", b)
+		}
+	}
+	// An ancestor that leaves its directory is the same hole one level up.
+	via := filepath.Join(src, "docs")
+	if err := os.Symlink(outside, via); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Snapshot(filepath.Join(via, "credentials"), filepath.Join(t.TempDir(), "a"), nil, 1<<20); err == nil || !strings.Contains(err.Error(), "leaves the directory") {
+		t.Errorf("Snapshot() through an escaping ancestor = %v, want the refusal", err)
+	}
+}
+
+// An exclude spelled canonically still excludes when the assignment is named
+// through an alias (the /tmp -> /private/tmp shape: a relative logs.dir anchors
+// to the resolved project root, an absolute target.path stays as written). And
+// an exclude that CONTAINS the assignment names no part of it and must not
+// silently empty the snapshot.
+func TestSnapshotExcludesAcrossSpellingsAndIgnoresAncestors(t *testing.T) {
+	base := t.TempDir()
+	write(t, base, "real/proj/brief.md", "the brief")
+	write(t, base, "real/proj/runlogs/old/prompt.md", "a previous run's prompt")
+	// A link that stays inside its own directory, so it is an alias, not an escape.
+	if err := os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "alias")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	canon, err := filepath.EvalSymlinks(filepath.Join(base, "real", "proj"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(base, "alias", "proj")
+
+	snap, err := Snapshot(src, filepath.Join(t.TempDir(), "s"), []string{filepath.Join(canon, "runlogs")}, 1<<20)
+	if err != nil {
+		t.Fatalf("Snapshot() = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(snap.Dir, "runlogs")); !os.IsNotExist(err) {
+		t.Error("the logs reached the snapshot because the exclude was spelled canonically")
+	}
+	if snap.Files != 1 {
+		t.Errorf("Files = %d, want 1", snap.Files)
+	}
+
+	snap, err = Snapshot(src, filepath.Join(t.TempDir(), "s"), []string{base}, 1<<20)
+	if err != nil {
+		t.Fatalf("Snapshot() = %v", err)
+	}
+	if snap.Files != 2 {
+		t.Errorf("an exclude containing the assignment emptied the snapshot: Files = %d, want 2", snap.Files)
+	}
+}

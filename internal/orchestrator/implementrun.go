@@ -1261,7 +1261,7 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 	// Infrastructure is not an outcome (§5.4): the provider refused, or the
 	// session died leaving nothing.
 	if res.Err != nil && (res.ProviderStatus != 0 || strings.TrimSpace(res.Stdout) == "") {
-		if err := o.discardAttempt(ctx, p, t.ID, attempt); err != nil {
+		if err := o.discardAttempt(ctx, p, t.ID, attempt, before.ignored); err != nil {
 			return res, report, attemptVerdict{}, err
 		}
 		return res, report, attemptVerdict{kind: attemptInfra, why: fmt.Sprintf("provider status %d", res.ProviderStatus)}, nil
@@ -1275,13 +1275,13 @@ func (o *Orchestrator) taskAttempt(ctx context.Context, rec *model.RoundRecord, 
 			return res, report, attemptVerdict{}, err
 		}
 		o.journal("contract_deviation", 1, map[string]any{"id": t.ID, "kind": "control-artifact-edit", "paths": changed})
-		if err := o.discardAttempt(ctx, p, t.ID, attempt); err != nil {
+		if err := o.discardAttempt(ctx, p, t.ID, attempt, before.ignored); err != nil {
 			return res, report, attemptVerdict{}, err
 		}
 		return res, report, attemptVerdict{kind: attemptFailed, why: "the session edited control artifacts: " + strings.Join(changed, ", ")}, nil
 	}
 	if perr != nil {
-		if err := o.discardAttempt(ctx, p, t.ID, attempt); err != nil {
+		if err := o.discardAttempt(ctx, p, t.ID, attempt, before.ignored); err != nil {
 			return res, report, attemptVerdict{}, err
 		}
 		return res, report, attemptVerdict{kind: attemptFailed, why: "the session broke the output contract: " + perr.Error()}, nil
@@ -1297,7 +1297,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 		return res, report, attemptVerdict{}, err
 	}
 	fail := func(why string) (agent.Result, taskReport, attemptVerdict, error) {
-		if err := o.discardAttempt(ctx, p, t.ID, attempt); err != nil {
+		if err := o.discardAttempt(ctx, p, t.ID, attempt, before.ignored); err != nil {
 			return res, report, attemptVerdict{}, err
 		}
 		return res, report, attemptVerdict{kind: attemptFailed, why: why}, nil
@@ -1311,14 +1311,14 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 	}
 
 	// Step 6: the census, the byte bound, the ignored reconciliation.
-	census, why, err := o.censusPhase(ctx, p)
+	census, why, err := o.censusPhase(ctx, p, t.ID, before.ignored)
 	if err != nil {
 		return res, report, attemptVerdict{}, err
 	}
 	if why != "" {
 		return res, report, attemptVerdict{kind: attemptFailed, why: why}, nil
 	}
-	why, cerr := o.refuseCredentialShaped(ctx, p, t.ID, census)
+	why, cerr := o.refuseCredentialShaped(ctx, p, t.ID, census, before.ignored)
 	if cerr != nil {
 		return res, report, attemptVerdict{}, cerr
 	}
@@ -1351,7 +1351,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 		// Discarded like any other unfinished attempt, but recorded as
 		// infrastructure: no attempt consumed, no marker, and the breaker gets
 		// the strike so a registry that is down does not spin the whole plan.
-		if derr := o.discardAttempt(ctx, p, t.ID, attempt); derr != nil {
+		if derr := o.discardAttempt(ctx, p, t.ID, attempt, before.ignored); derr != nil {
 			return res, report, attemptVerdict{}, derr
 		}
 		return res, report, attemptVerdict{kind: attemptInfra, why: infraGate.Error()}, nil
@@ -1386,7 +1386,7 @@ func (o *Orchestrator) reconcileAttempt(ctx context.Context, p *implementPrep, p
 // refs/stash instead of main, which is not the promise. Measured while fixing
 // this: the first version routed the failure through the stash and the .env was
 // still reachable in the project's history.
-func (o *Orchestrator) refuseCredentialShaped(ctx context.Context, p *implementPrep, taskID string, census implement.Census) (string, error) {
+func (o *Orchestrator) refuseCredentialShaped(ctx context.Context, p *implementPrep, taskID string, census implement.Census, preIgnored map[string]implement.IgnoredStat) (string, error) {
 	hit, err := p.col.ExcludedPaths(census.Paths())
 	if err != nil || len(hit) == 0 {
 		return "", err
@@ -1395,7 +1395,7 @@ func (o *Orchestrator) refuseCredentialShaped(ctx context.Context, p *implementP
 	if err := p.col.DiscardClean(ctx); err != nil {
 		return "", err
 	}
-	if err := o.assertClean(ctx, p); err != nil {
+	if err := o.finishDiscard(ctx, p, taskID, preIgnored); err != nil {
 		return "", err
 	}
 	return "the session created credential-shaped file(s), discarded unstashed: " + strings.Join(hit, ", ") +
@@ -1419,14 +1419,14 @@ func removeAll(root string, paths []string) []string {
 // fails the attempt: the oversized tree is discarded by checkout-and-clean
 // rather than stashed, so the ceiling never writes it into the object database
 // (§5.3).
-func (o *Orchestrator) censusPhase(ctx context.Context, p *implementPrep) (implement.Census, string, error) {
+func (o *Orchestrator) censusPhase(ctx context.Context, p *implementPrep, taskID string, preIgnored map[string]implement.IgnoredStat) (implement.Census, string, error) {
 	census, err := p.git.TakeCensus(ctx, p.out, o.cfg.Implement.MaxTaskBytes.Int64())
 	var bb implement.ByteBoundError
 	if errors.As(err, &bb) {
 		if derr := p.col.DiscardClean(ctx); derr != nil {
 			return census, "", derr
 		}
-		if derr := o.assertClean(ctx, p); derr != nil {
+		if derr := o.finishDiscard(ctx, p, taskID, preIgnored); derr != nil {
 			return census, "", derr
 		}
 		return census, bb.Error(), nil
@@ -1711,10 +1711,35 @@ func (o *Orchestrator) cleanUpInterrupted(ctx context.Context, p *implementPrep)
 // session-created ignored paths, then assert the tree clean -- the assertion
 // is the thing that turns an incomplete discard into a loud failure instead
 // of a silent attribution bug.
-func (o *Orchestrator) discardAttempt(ctx context.Context, p *implementPrep, taskID string, attempt int) error {
+func (o *Orchestrator) discardAttempt(ctx context.Context, p *implementPrep, taskID string, attempt int, preIgnored map[string]implement.IgnoredStat) error {
 	msg := fmt.Sprintf("fixpoint %s: %s attempt %d (discarded)", o.logs.RunID(), taskID, attempt)
 	if _, err := p.col.StashDirty(ctx, msg); err != nil {
 		return err
+	}
+	return o.finishDiscard(ctx, p, taskID, preIgnored)
+}
+
+// finishDiscard is the half of §5.3's discard that the stash and the
+// checkout-and-clean variant share: delete the ignored paths that did not
+// exist at step 2, then assert the tree clean. The stash and `git clean`
+// both skip ignored files, and step 6's reconciliation is reached only by an
+// attempt that got that far -- so a dead session, a broken contract or a
+// failed gate used to leave its dist/ or node_modules/ in place, where the
+// next attempt's step 2 censused it as pre-existing and its gate could pass on
+// the previous session's build output. Runs AFTER the stash or the clean, so
+// the census reads HEAD's ignore rules rather than a session-edited
+// .gitignore. A read and plain unlinks: nothing here writes a git object.
+func (o *Orchestrator) finishDiscard(ctx context.Context, p *implementPrep, taskID string, preIgnored map[string]implement.IgnoredStat) error {
+	post, err := p.git.TakeIgnoredCensus(ctx, p.out)
+	if err != nil {
+		return err
+	}
+	created, _ := implement.DiffIgnored(preIgnored, post)
+	if stuck := removeAll(p.out, created); len(stuck) > 0 {
+		return runStopError{"the discard could not delete the attempt's ignored path(s): " + strings.Join(stuck, ", ") + " -- the next attempt would build on them unseen"}
+	}
+	if len(created) > 0 {
+		o.journal("ignored_paths_discarded", 1, map[string]any{"id": taskID, "created": created})
 	}
 	return o.assertClean(ctx, p)
 }

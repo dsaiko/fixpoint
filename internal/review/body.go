@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/dsaiko/fixpoint/internal/forge"
 	"github.com/dsaiko/fixpoint/internal/issue"
@@ -89,7 +92,14 @@ type Published struct {
 // A finding that names NO file is a statement about the change as a whole -- there
 // is no file whose stillness could vouch for it -- so it stands only while nothing
 // at all has moved since it was said.
+//
+// The path is normalized first. Moved holds git's clean paths while a finding
+// carries the reviewer's spelling, and the identity is built from the normalized
+// one -- so `./internal/x.go` matched its published marker, missed
+// moved["internal/x.go"], and a finding on a file that HAD changed was withheld
+// as already reported.
 func (p Published) Carries(id, file string) bool {
+	file = normalizePath(file)
 	for _, head := range p.At[id] {
 		moved, ok := p.Moved[head]
 		if !ok {
@@ -188,7 +198,11 @@ func RenderBody(in BodyInput) string {
 		// reasonably assume they counted.
 		fmt.Fprintf(&b, "### Advisory (%d)\n\nReported for a human; these did not affect the verdict.\n\n", len(advisory))
 		for _, f := range advisory {
-			fmt.Fprintf(&b, "- **%s** — %s\n", mdText(f.Title), mdText(firstSentence(f.Description)))
+			// One mdText call for the whole line, not one per field: the title and the
+			// sentence share a paragraph, and a backtick left unpaired at the end of the
+			// title would pair with the sentence's first on the forge -- see
+			// forge.SanitizeText.
+			fmt.Fprintf(&b, "- %s\n", mdText("**"+f.Title+"** — "+firstSentence(f.Description)))
 		}
 		b.WriteString("\n")
 	}
@@ -198,11 +212,13 @@ func RenderBody(in BodyInput) string {
 
 	b.WriteString("---\n\n")
 	if len(in.Panel) > 0 {
-		fmt.Fprintf(&b, "Reviewed by %s", strings.Join(mdTexts(in.Panel), ", "))
+		// One line, one mdText call, for the reason the advisory line gives: the panel
+		// names and the target are separate strings in one paragraph.
+		line := "Reviewed by " + strings.Join(in.Panel, ", ")
 		if in.Target != "" {
-			fmt.Fprintf(&b, " over %s", mdText(in.Target))
+			line += " over " + in.Target
 		}
-		b.WriteString(".\n\n")
+		fmt.Fprintf(&b, "%s.\n\n", mdText(line))
 	}
 	if in.Signature != "" {
 		fmt.Fprintf(&b, "%s\n", in.Signature)
@@ -292,15 +308,21 @@ func split(issues []model.Issue, d Decision) (blocking, other []model.Issue) {
 }
 
 func writeIssue(b *strings.Builder, it model.Issue) {
-	// mdCode, not mdText: the location is rendered inside a code span two lines down,
-	// and mdText deliberately leaves backticks alone. A reported path carrying one
-	// would close that span early, and everything after it becomes live markdown in a
-	// review posted under the operator's identity.
-	loc := mdCode(it.File)
-	if it.Line > 0 {
-		loc = fmt.Sprintf("%s:%d", loc, it.Line)
+	fmt.Fprintf(b, "**%s**", strings.ToUpper(mdText(it.Severity)))
+	if strings.TrimSpace(it.File) != "" {
+		// mdCode, not mdText: the location is rendered inside a code span, and mdText
+		// deliberately leaves backticks alone. A reported path carrying one would close
+		// that span early, and everything after it becomes live markdown in a review
+		// posted under the operator's identity.
+		//
+		// No file, no span: an empty one renders as two literal backticks, and a bare
+		// `:42` names a line of nothing.
+		loc := mdCode(it.File)
+		if it.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", loc, it.Line)
+		}
+		fmt.Fprintf(b, " · `%s`", loc)
 	}
-	fmt.Fprintf(b, "**%s** · `%s`", strings.ToUpper(mdText(it.Severity)), loc)
 	if agents := it.Agents(); len(agents) > 1 {
 		// Corroboration is rare enough in practice to be worth saying out loud when
 		// it happens: across 19 measured runs under 4% of findings had it.
@@ -339,20 +361,27 @@ func mdText(s string) string { return forge.SanitizeText(s) }
 // than a local escape so this and the GitLab inline-note path cannot drift.
 func mdCode(s string) string { return forge.CodeSpan(s) }
 
-func mdTexts(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		out = append(out, mdText(s))
-	}
-	return out
-}
-
 // firstSentence keeps an advisory line to one line. Advisory notes are prose and
 // often long; the full text is in the run's artifacts.
+//
+// A sentence ends at a newline, or at a '.' followed by a space and something that
+// can begin one. The first '.' anywhere was not that: it cut "the handler in
+// api/server.go leaks" to "the handler in api/server." and "v1.2" and "pkg.Func"
+// likewise, and a lowercase word after the space is "e.g." or "i.e.", not a new
+// sentence. The newline itself is not kept -- it would end the list item early.
 func firstSentence(s string) string {
 	s = strings.TrimSpace(s)
-	if i := strings.IndexAny(s, ".\n"); i > 0 {
-		return s[:i+1]
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] != '.' || i+1 < len(s) && s[i+1] != ' ' && s[i+1] != '\t' {
+			continue
+		}
+		next, _ := utf8.DecodeRuneInString(strings.TrimLeft(s[i+1:], " \t"))
+		if next == utf8.RuneError || !unicode.IsLower(next) {
+			return s[:i+1]
+		}
 	}
 	return s
 }
@@ -497,6 +526,16 @@ func withoutPublished(issues []model.Issue, published Published) (kept []model.I
 		kept = append(kept, it)
 	}
 	return kept, dropped
+}
+
+// normalizePath is the spelling a path is compared in, the one issue.Fingerprint
+// builds the identity from: forward slashes, no leading ./, no leading or trailing
+// slash. A copy of issue's rule rather than a call into it because that one is
+// unexported; the two must change together.
+func normalizePath(p string) string {
+	p = filepath.ToSlash(strings.TrimSpace(p))
+	p = strings.TrimPrefix(p, "./")
+	return strings.Trim(p, "/")
 }
 
 // advisoryWithoutPublished is the same for the advisory notes, keyed by AdvisoryID.

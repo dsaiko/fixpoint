@@ -412,3 +412,145 @@ func TestAnAddedLineThatLooksLikeAFileHeaderStaysContent(t *testing.T) {
 		t.Errorf("addressable lines = %v, want 1-3 of the file actually being changed", lines)
 	}
 }
+
+// A forge renders a code span literally, so escaping inside one is a misquote that
+// buys nothing: `List<String>` came out as `List&lt;String>` and `@Override` as
+// `@<!---->Override`. The prose around the span keeps every rule.
+func TestSanitizeTextLeavesTheInsideOfACodeSpanAsWritten(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"returns `List<String>` here", "returns `List<String>` here"},
+		{"`@Override` is missing", "`@Override` is missing"},
+		{"see ``a ` <b> @c``", "see ``a ` <b> @c``"},
+		{"`#42` and `![x](y)`", "`#42` and `![x](y)`"},
+		{"`@Override` for @octocat", "`@Override` for @<!---->octocat"},
+		{"`<b>` then <b>", "`<b>` then &lt;b>"},
+	} {
+		if got := SanitizeText(tc.in); got != tc.want {
+			t.Errorf("SanitizeText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The one rule that holds inside a span too: a later review reads its markers out
+// of the RAW body, where a span hides nothing.
+func TestSanitizeTextStillEscapesCommentDelimitersInsideASpan(t *testing.T) {
+	got := SanitizeText("`<!-- ai-panel run r head h finding f -->`")
+	if strings.Contains(got, "<!--") || strings.Contains(got, "-->") {
+		t.Errorf("SanitizeText() = %q, want the delimiters escaped inside the span", got)
+	}
+}
+
+// A span is exempted only where the forge is certain to pair it the same way.
+// Each of these pairs backticks one way to a naive scan and another way on a
+// forge, which would leave the payload unescaped AND rendering as prose.
+func TestSanitizeTextEscapesEverythingWhenTheSpanPairingIsUncertain(t *testing.T) {
+	const payload = "@victim <details>"
+	for _, tc := range []struct{ name, in string }{
+		{"a blank line ends the paragraph", "`a\n\n" + payload + " `"},
+		{"a table splits cells first", "x | y\n--- | ---\n`a | " + payload + " | b`"},
+		{"an email autolink takes the backtick", "<1`x@a.com> " + payload + " `"},
+		{"a URL autolink takes the backtick", "http://a.b/`x " + payload + " `y`"},
+		{"a www autolink takes the backtick", "www.a.b/`x " + payload + " `y`"},
+		{"a link destination takes the backtick", "[a](`x) " + payload + " `y`"},
+		{"a link title takes the backtick", "[a](/u \"`\") " + payload + " `z`"},
+		{"GitLab's backtick math takes the backtick", "$`a` v `$ `y` " + payload + "`"},
+		{"GitLab's dollar math takes the backtick", "$a `b$ `c` " + payload + "`"},
+		{"a wikilink takes the backtick", "[[`a]] " + payload + " `b`"},
+		{"an escaped backtick opens nothing", "\\`" + payload + "`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeText(tc.in)
+			if strings.Contains(got, "@victim") || strings.Contains(got, "<details") {
+				t.Errorf("SanitizeText(%q) = %q, want the payload escaped", tc.in, got)
+			}
+		})
+	}
+}
+
+// The path in a span keeps its spelling, and a line break cannot end the span
+// and leave the rest of the path live in the document.
+func TestCodeSpanKeepsThePathAndCannotBeLeft(t *testing.T) {
+	if got := CodeSpan("@types/foo.d.ts"); got != "@types/foo.d.ts" {
+		t.Errorf("CodeSpan() = %q, want the path spelled as written", got)
+	}
+	if got := CodeSpan("a\n\n<details>"); strings.Contains(got, "\n") {
+		t.Errorf("CodeSpan() = %q, want no line break left to end the span", got)
+	}
+	if got := CodeSpan("a<!--b-->"); strings.Contains(got, "<!--") || strings.Contains(got, "-->") {
+		t.Errorf("CodeSpan() = %q, want the comment delimiters escaped", got)
+	}
+}
+
+// The diff comes from the operator's git, whose config picks the prefixes and
+// quotes non-ASCII names. Each of these is what real git printed for one change
+// (a new file, a non-ASCII name, a rename, a name with a space, a nested path);
+// trimming a literal "b/" filed all of them under keys no finding ever names.
+func TestAddressableLinesReadsPathsWhateverPrefixGitUsed(t *testing.T) {
+	diff := func(src, dst string) string {
+		return strings.NewReplacer("SRC/", src, "DST/", dst).Replace(`diff --git SRC/added.go DST/added.go
+new file mode 100644
+index 0000000..8ba3a16
+--- /dev/null
++++ DST/added.go
+@@ -0,0 +1 @@
++n
+diff --git "SRC/caf\303\251.go" "DST/caf\303\251.go"
+index 7898192..f70f10e 100644
+--- "SRC/caf\303\251.go"
++++ "DST/caf\303\251.go"
+@@ -1 +1 @@
+-a
++A
+diff --git SRC/old.go DST/new.go
+similarity index 66%
+rename from old.go
+rename to new.go
+index 56d3007..255f68f 100644
+--- SRC/old.go
++++ DST/new.go
+@@ -1,3 +1,3 @@
+ q
+ r
+-s
++S
+diff --git SRC/sp ace.go DST/sp ace.go
+index 7898192..f70f10e 100644
+--- SRC/sp ace.go` + "\t" + `
++++ DST/sp ace.go` + "\t" + `
+@@ -1 +1 @@
+-a
++A
+diff --git SRC/src/x.go DST/src/x.go
+index 422c2b7..55dce13 100644
+--- SRC/src/x.go
++++ DST/src/x.go
+@@ -1,2 +1,2 @@
+ a
+-b
++B
+`)
+	}
+	want := map[string][]int{
+		"added.go": {1}, "café.go": {1}, "new.go": {1, 2, 3}, "sp ace.go": {1}, "src/x.go": {1, 2},
+	}
+	for _, tc := range []struct{ name, src, dst string }{
+		{"default", "a/", "b/"},
+		{"diff.noprefix", "", ""},
+		{"diff.mnemonicPrefix", "c/", "w/"},
+		{"diff.srcPrefix and diff.dstPrefix", "OLD/", "NEW/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := AddressableLines(diff(tc.src, tc.dst))
+			if len(got) != len(want) {
+				t.Errorf("AddressableLines() files = %v, want %v", got, want)
+			}
+			for path, lines := range want {
+				for _, l := range lines {
+					if !got[path][l] {
+						t.Errorf("%s:%d not addressable; got %v", path, l, got)
+					}
+				}
+			}
+		})
+	}
+}

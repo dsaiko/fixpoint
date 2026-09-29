@@ -15,6 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"github.com/dsaiko/fixpoint/internal/config"
 )
 
 // Snapshotted describes the copy a run's phases will work against.
@@ -54,14 +57,21 @@ type Snapshotted struct {
 // snapshot read outside itself later -- both unfreeze exactly what the copy
 // exists to freeze.
 //
+// The assignment ROOT is the one link that cannot be skipped, so it is refused
+// (see refuseLinkedAssignment). The snapshot is the choke point: every later
+// read, the collector's own document checks included, sees only the copy.
+//
 // maxBytes bounds the copy and a breach is a refusal, not a truncation: an
 // assignment too large for the prompt caps fails here, at startup, before any
 // session is paid for -- and a partial assignment silently passed on would be
 // reviewed as though it were whole.
 func Snapshot(src, dst string, exclude []string, maxBytes int64) (Snapshotted, error) {
-	info, err := os.Stat(src)
+	info, err := os.Lstat(src)
 	if err != nil {
 		return Snapshotted{}, fmt.Errorf("assignment: %w", err)
+	}
+	if err := refuseLinkedAssignment(src, info); err != nil {
+		return Snapshotted{}, err
 	}
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return Snapshotted{}, err
@@ -77,6 +87,8 @@ func Snapshot(src, dst string, exclude []string, maxBytes int64) (Snapshotted, e
 	}
 	out := Snapshotted{Dir: dst}
 	budget := maxBytes
+	srcReal := canonical(src)
+	exclude = excludesWithin(src, srcReal, exclude)
 	err = filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -88,7 +100,7 @@ func Snapshot(src, dst string, exclude []string, maxBytes int64) (Snapshotted, e
 		if rel == "." {
 			return nil
 		}
-		if excluded(path, rel, exclude) {
+		if excluded(path, rel, exclude) || excluded(filepath.Join(srcReal, rel), rel, exclude) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -120,6 +132,64 @@ func Snapshot(src, dst string, exclude []string, maxBytes int64) (Snapshotted, e
 	return out, nil
 }
 
+// refuseLinkedAssignment rejects an assignment reached through a symlink --
+// the same rule, and for the same reason, as the -target flag and the
+// collector's target.document check (config.EscapingSymlink): the bytes are
+// shown whole to every agent, so a checkout shipping `brief.md ->
+// ~/.aws/credentials` is an exfiltration primitive. The config door reached here
+// unchecked, because the create pipeline hands the collector the COPY, whose
+// entry is a regular file whatever the source was.
+//
+// Refused rather than followed, including a root symlink to a directory, which
+// before this was classified as a directory and then walked as nothing --
+// WalkDir does not descend through its own root link -- so the run designed
+// against an empty snapshot. Following it would mean deciding where a link may
+// lead; refusing names the link, and an operator who meant the destination can
+// pass the destination.
+func refuseLinkedAssignment(src string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		dest, _ := os.Readlink(src)
+		return fmt.Errorf("assignment %s is a symlink (to %q); the snapshot shows the assignment's bytes to every agent and will not follow one -- pass the real path if you meant it", src, dest)
+	}
+	if link, dest, found := config.EscapingSymlink(src); found {
+		return fmt.Errorf("assignment %s reaches its destination through %s, a symlink to %q that leaves the directory it sits in; the snapshot shows the assignment's bytes to every agent and will not follow one out of the tree -- pass the real path if you meant it", src, link, dest)
+	}
+	return nil
+}
+
+// canonical resolves p's symlinks, or its parent's when p does not exist yet
+// (an -out not yet written), so one directory under two spellings compares
+// equal: a relative logs.dir is anchored to the symlink-resolved project root,
+// while an absolute target.path stays as written (/tmp vs /private/tmp).
+func canonical(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(r, filepath.Base(p))
+	}
+	return filepath.Clean(p)
+}
+
+// excludesWithin returns each exclude in both spellings, dropping any that is
+// the assignment itself or an ancestor of it: such an entry names no PART of the
+// assignment, and matching it would silently empty the snapshot.
+func excludesWithin(src, srcReal string, exclude []string) []string {
+	var out []string
+	for _, e := range exclude {
+		if e == "" {
+			continue
+		}
+		for _, sp := range []string{filepath.Clean(e), canonical(e)} {
+			if excluded(src, "", []string{sp}) || excluded(srcReal, "", []string{sp}) {
+				continue
+			}
+			out = append(out, sp)
+		}
+	}
+	return out
+}
+
 // excluded reports whether a source path is kept out of the snapshot. The
 // built-ins are matched on any path segment by NAME (`.git`, `.fixpoint`);
 // exclude entries are absolute paths matched against this path exactly or as a
@@ -146,7 +216,9 @@ func copyFile(src, dst string, budget int64) (int64, error) {
 	if budget < 0 {
 		budget = 0
 	}
-	in, err := os.Open(src)
+	// O_NOFOLLOW: the walk classified this path as a regular file, and a swap to
+	// a link between that and the open must not be followed.
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return 0, err
 	}

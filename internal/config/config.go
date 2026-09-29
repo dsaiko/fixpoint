@@ -1511,7 +1511,13 @@ type Logs struct {
 	// value for the whole run, so every artifact of a run lands together) and
 	// {round} (the loop iteration). Three paths are derived from it, each
 	// documented on its method: StaticBase, RunPath, and RoundPath.
-	Dir             string   `yaml:"dir"`
+	Dir string `yaml:"dir"`
+	// dirTemplate is Dir as the config wrote it, captured by applyDefaults before
+	// LoadBundle's anchor() joins a relative template onto the project root. The
+	// literal-leading-segment rule is about the template: once anchored,
+	// "{timestamp}/round-{round}" has the project root as its "literal" prefix
+	// and would pass, leaving nothing but the root itself to exclude.
+	dirTemplate     string
 	Formats         []string `yaml:"formats"` // md | json | raw
 	Pattern         string   `yaml:"pattern"`
 	SummaryPattern  string   `yaml:"summary_pattern"`
@@ -1839,6 +1845,7 @@ func (c *Config) applyDefaults() {
 	if c.Logs.Dir == "" {
 		c.Logs.Dir = ".fixpoint/{timestamp}/round-{round}"
 	}
+	c.Logs.dirTemplate = c.Logs.Dir
 	if len(c.Logs.Formats) == 0 {
 		c.Logs.Formats = []string{"md", "json", "raw"}
 	}
@@ -2110,7 +2117,16 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("roles.coder: agent %q has can_edit: false -- the coder must be able to edit files", c.Roles.Coder.Agent)
 		}
 	}
-	for _, name := range c.Roles.Review.ActiveAgents() {
+	// An implement run's reviewer pool is inherited from defaults and inert
+	// (§7.3): activeAgentNames never pings it and no phase invokes it, so running
+	// check() over it made a missing reviewer CLI (codex on PATH) refuse a run
+	// that would never exec it. The planner and coder are checked in their own
+	// roles, so an agent that serves both a role and the pool is still covered.
+	var reviewers []string
+	if !c.IsImplement() {
+		reviewers = c.Roles.Review.ActiveAgents()
+	}
+	for _, name := range reviewers {
 		if err := check("roles.review", name); err != nil {
 			return err
 		}
@@ -2336,9 +2352,15 @@ func (c *Config) validateLogsDir() error {
 	// A literal leading segment is what the orchestrator excludes from round
 	// commits, clean checks, and collected material. Without one there is nothing
 	// stable to exclude and a run would sweep its own logs into a fix commit.
-	switch base := c.Logs.StaticBase(); base {
-	case "", ".", string(filepath.Separator):
-		return fmt.Errorf("logs.dir %q must begin with at least one literal path segment before its first placeholder (e.g. .fixpoint/{timestamp}/round-{round}); that literal prefix is what round commits, clean checks, and collected material exclude, so without it a run would commit and re-review its own logs", c.Logs.Dir)
+	// Both the written template and the effective value are checked: the
+	// anchored Dir alone always has the project root as its prefix, and the
+	// template alone could be stale if Dir was set after applyDefaults.
+	for _, dir := range []string{c.Logs.dirTemplate, c.Logs.Dir} {
+		switch base := (Logs{Dir: dir}).StaticBase(); {
+		case dir == "":
+		case base == "", base == ".", base == string(filepath.Separator):
+			return fmt.Errorf("logs.dir %q must begin with at least one literal path segment before its first placeholder (e.g. .fixpoint/{timestamp}/round-{round}); that literal prefix is what round commits, clean checks, and collected material exclude, so without it a run would commit and re-review its own logs", dir)
+		}
 	}
 	// The run-level part (everything before the first {round} segment) is claimed
 	// atomically at run start and holds the summary. Without {timestamp} there,

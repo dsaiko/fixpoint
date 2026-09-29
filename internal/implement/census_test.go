@@ -167,3 +167,46 @@ func TestClassifyGateDiff(t *testing.T) {
 		t.Errorf("deletion = %+v", d3)
 	}
 }
+
+// A gate that regenerates a tracked file the coder DELETED, byte-identical to
+// HEAD, drops the path out of the post census entirely. That absence means
+// "matches HEAD", not the "" a deletion digests to, so it must read as a
+// mutation -- otherwise the commit stages a HEAD-identical path and the
+// coder's deletion vanishes from an "implemented" task. Real git on both sides,
+// because the bug lived in how the two censuses spell the two states.
+func TestClassifyGateDiffRecreatedDeletion(t *testing.T) {
+	dir := censusRepo(t)
+	if err := os.Remove(filepath.Join(dir, "tracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	pre, err := testGit.TakeCensus(t.Context(), dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The deletion survives the gate: no difference to report.
+	same, err := testGit.TakeCensus(t.Context(), dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := ClassifyGateDiff(pre, same, nil); len(d.MutatedSources)+len(d.GateGenerated)+len(d.Output) != 0 {
+		t.Errorf("an untouched deletion was classified as a difference: %+v", d)
+	}
+
+	// The gate recreates it exactly as HEAD has it.
+	write(t, dir, "tracked.txt", "v1\n")
+	post, err := testGit.TakeCensus(t.Context(), dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := post.Modified["tracked.txt"]; ok {
+		t.Fatalf("precondition: a HEAD-identical file should be absent from the census: %+v", post)
+	}
+	if d := ClassifyGateDiff(pre, post, nil); !reflect.DeepEqual(d.MutatedSources, []string{"tracked.txt"}) {
+		t.Errorf("gate recreating a deleted tracked file: MutatedSources = %v, want [tracked.txt]", d.MutatedSources)
+	}
+	// A gate_generated path recreated this way is the gate's, attributed.
+	if d := ClassifyGateDiff(pre, post, []string{"tracked.txt"}); !reflect.DeepEqual(d.GateGenerated, []string{"tracked.txt"}) || len(d.MutatedSources) != 0 {
+		t.Errorf("recreated gate_generated path = %+v", d)
+	}
+}

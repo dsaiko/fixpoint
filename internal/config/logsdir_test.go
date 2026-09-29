@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -100,5 +102,54 @@ func TestLogsDirTimestampIsStablePerRun(t *testing.T) {
 		if filepath.Dir(got) != run {
 			t.Errorf("round %d dir %q is not under the run dir %q", round, got, run)
 		}
+	}
+}
+
+// The literal-leading-segment rule must see the template as written. LoadBundle
+// anchors a relative logs.dir onto the project root before Validate runs, so
+// "{timestamp}/round-{round}" arrived as "<root>/{timestamp}/round-{round}",
+// whose "literal prefix" is the root itself: the check passed, and a run
+// against a subdirectory target created a fresh top-level directory in the
+// project on every run (review run 20260929-113519, i13).
+func TestLogsDirLiteralPrefixIsCheckedBeforeAnchoring(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		dir     string
+		wantErr bool
+	}{
+		// Names without braces: t.TempDir embeds the test name, and a "{" in the
+		// project root would trip the placeholder check instead.
+		{"literal prefix accepted", "logs/{timestamp}/round-{round}", false}, // control
+		{"no literal prefix refused", "{timestamp}/round-{round}", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			body := "target: {mode: directory}\nlogs: {dir: \"" + tc.dir + "\"}\n" +
+				"roles:\n  coder: {agent: mock, prompt: fix}\n  review:\n    strategy: fixed\n    prompts:\n      - {agent: rev, prompt: review-bugs}\n"
+			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{"task": body},
+				[]string{"fix", "review-bugs"}, []string{"mock"})
+			// Not via bundle's agent helper: that writes can_edit: true, which a
+			// reviewer must not have.
+			if err := os.WriteFile(filepath.Join(dir, agentsDir, "rev"+configExt), []byte("command: [true]\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			l, err := LoadBundle(&Resolver{Bundles: []string{dir}}, "task", root, Overrides{})
+			if err != nil {
+				t.Fatalf("LoadBundle() = %v", err)
+			}
+			if !filepath.IsAbs(l.Config.Logs.Dir) {
+				t.Fatalf("logs.dir = %q, want it anchored (the premise of this test)", l.Config.Logs.Dir)
+			}
+			err = l.Validate()
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "must begin with at least one literal path segment") {
+				t.Fatalf("Validate() = %v, want the literal-prefix refusal", err)
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package create
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,5 +132,27 @@ func TestPublishDeliverableIsOwnerOnly(t *testing.T) {
 	}
 	if perm := st.Mode().Perm(); perm&0o077 != 0 {
 		t.Errorf("deliverable mode = %v, want owner-only", perm)
+	}
+}
+
+// A write that fails midway must not leave its partial temp file beside the
+// deliverable: Publish returns on that error before its deferred remove exists.
+func TestPublishFailedWriteLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	orig := writeString
+	t.Cleanup(func() { writeString = orig })
+	writeString = func(f *os.File, s string) (int, error) {
+		n, _ := f.WriteString(s[:len(s)/2])
+		return n, errors.New("no space left on device")
+	}
+	if err := Publish(filepath.Join(dir, "DESIGN.md"), "# a whole design\n"); err == nil {
+		t.Fatal("Publish() = nil, want the write error")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a failed write left debris beside the deliverable: %v", entries)
 	}
 }

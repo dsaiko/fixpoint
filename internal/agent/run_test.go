@@ -96,6 +96,44 @@ func TestRunNamesTheCLIErrorOverTheLastReply(t *testing.T) {
 	}
 }
 
+// The case every shipped codex-harness agent hits when it dies WITHOUT a
+// turn.failed line (a crash, a kill, a non-credit exit 1): error_text is
+// configured but matches nothing, and the reply must still explain the error
+// rather than leave a bare `exit status 1`. And error_text only ever explains a
+// failure -- a stream that carries one but exits 0 is still a success.
+func TestRunFallsBackToTheReplyWhenErrorTextMatchesNothing(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	crashed := write("crashed.jsonl", `{"type":"thread.started","thread_id":"019f"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'm reviewing the Maven wiring from source only."}}`)
+	a := config.Agent{
+		Command:   []string{script(t, "cat '"+crashed+"'; exit 1")},
+		PromptVia: "stdin",
+		Timeout:   config.Duration(time.Minute),
+		Usage:     codexUsage,
+	}
+	if a.Usage.ErrorText == "" {
+		t.Fatal("codexUsage must configure error_text for this test to mean anything")
+	}
+	res := Run(t.Context(), a, "", t.TempDir())
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "Maven wiring") {
+		t.Errorf("err = %v, want the reply's first line when error_text matches nothing", res.Err)
+	}
+
+	succeeded := write("succeeded.jsonl", codexOutOfCredits)
+	a.Command = []string{script(t, "cat '"+succeeded+"'; exit 0")}
+	if res := Run(t.Context(), a, "", t.TempDir()); res.Err != nil {
+		t.Errorf("err = %v on exit 0, want nil: error_text must not turn a success into a failure", res.Err)
+	}
+}
+
 func TestRunRunsInDir(t *testing.T) {
 	dir := t.TempDir()
 	a := config.Agent{

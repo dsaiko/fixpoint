@@ -229,6 +229,74 @@ func TestPostRunReadsTheBodyBesideTheSummary(t *testing.T) {
 	}
 }
 
+// logs.summary_pattern is configurable, and -post-run resolves no config to learn
+// it: the summary is found by content, under any name and in a subdirectory, and
+// the directory passed in stays the run root the body and the receipt live at.
+func TestPostRunFindsASummaryUnderAnyPattern(t *testing.T) {
+	sum := model.RunSummary{
+		Mode: "pr", PR: 3, Path: t.TempDir(),
+		ReviewedHead: head,
+		ReviewedRepo: reviewedRepo,
+		Termination:  model.TermReviewOnly,
+		Verdict:      &model.ReviewVerdict{Outcome: model.VerdictApprove},
+	}
+	// relocate moves writeRun's default-named summary to where a pattern put it.
+	relocate := func(t *testing.T, dir, rel string) string {
+		t.Helper()
+		to := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(filepath.Join(dir, "summary-20260806-120000.json"), to); err != nil {
+			t.Fatal(err)
+		}
+		return to
+	}
+	post := func(arg string) string {
+		var logs strings.Builder
+		postRun(t.Context(), arg, postFlags{}, func(f string, a ...any) { fmt.Fprintf(&logs, f+"\n", a...) })
+		return logs.String()
+	}
+	for name, rel := range map[string]string{
+		"another name":   "run-20260806.json",
+		"a subdirectory": filepath.Join("summaries", "summary-20260806-120000.json"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeRun(t, sum, "the review that was actually produced")
+			relocate(t, dir, rel)
+			// A per-step artifact decodes into a RunSummary too, and this one sorts
+			// last; it must not be taken for one.
+			if err := os.WriteFile(filepath.Join(dir, "zz-review.json"), []byte(`{"findings":[]}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Past the summary, the body read and the receipt: no GitHub remote in that
+			// temp path, so it stops at resolving the forge.
+			if logs := post(dir); !strings.Contains(logs, "no GitHub or GitLab remote") {
+				t.Errorf("want the run found and the body read from the run root:\n%s", logs)
+			}
+		})
+	}
+
+	t.Run("the summary file, below its run root", func(t *testing.T) {
+		dir := writeRun(t, sum, "body")
+		file := relocate(t, dir, filepath.Join("summaries", "s.json"))
+		if logs := post(file); !strings.Contains(logs, "pass the run directory instead") {
+			t.Errorf("want the file refused with a pointer to the directory, not a receipt and body looked for in summaries/:\n%s", logs)
+		}
+	})
+
+	t.Run("a nested run is not this directory's", func(t *testing.T) {
+		root := t.TempDir()
+		nested := writeRunAt(t, filepath.Join(root, "20260806-120000"), sum, "body")
+		if err := os.WriteFile(filepath.Join(nested, "journal.jsonl"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if logs := post(root); !strings.Contains(logs, "is it a run directory") {
+			t.Errorf("a logs root adopted a nested run's summary:\n%s", logs)
+		}
+	})
+}
+
 // A run directory is only files, so a pull request can commit one: a summary whose
 // review_body names a local secret, with a plausible review-body.md beside it for
 // the operator to read before publishing. Neither the recorded path nor a symlink

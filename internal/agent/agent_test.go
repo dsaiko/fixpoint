@@ -529,6 +529,11 @@ func TestExtractText(t *testing.T) {
 		"trailing prose refused": {output: "<design>d</design>\nand another thing", wantErr: "not the last output"},
 		"missing":                {output: "no envelope here", wantErr: "no <design> block"},
 		"empty":                  {output: "<design>   </design>", wantErr: "block is empty"},
+		// A body that MENTIONS the tag mid-sentence must not become the opener, or
+		// everything above the mention is silently lost.
+		"inline mention in body": {output: "notes\n<design>\n# T\nprose in a `<design>` envelope\nend\n</design>", want: "# T\nprose in a `<design>` envelope\nend"},
+		"indented opener":        {output: "notes\n  <design>\n# T\nsee <design> here\n</design>", want: "# T\nsee <design> here"},
+		"inline opener only":     {output: "Here it is: <design># T\nBody.</design>", want: "# T\nBody."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := ExtractText(tc.output, "design")
