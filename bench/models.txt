@@ -677,3 +677,65 @@ claude-sonnet-5-5
 # wall clock does not move. What the swap would actually buy is Claude
 # subscription quota -- about half a sweep's -- for 7 seeds of coverage.
 # That is a real trade and the operator's call, but it is not what the bar asked.
+
+# GPT-6.1 Sol -- added 2026-09-30, released 2026-09-29. The successor of the model
+# that has held the panel's ChatGPT seat since the day before its release, so the
+# question is the same free, within-seat swap gpt-6-sol answered.
+#
+# Agent file config/agents/gpt-6.1-sol.yaml is gpt-6-sol.yaml with the model line
+# changed (verified by diff); effort `high`. NEEDS codex-cli >= 0.159: 0.158.0
+# returns HTTP 400 "not supported when using Codex with a ChatGPT account", which
+# is an old CLI and not an account restriction. The Mac went 0.158.0 -> 0.159.2
+# for this row, so from here on every codex-route row on the Mac runs through the
+# newer harness.
+#
+#   gpt-6-sol    $2.00 in  $10.00 out  $0.20 cached
+#   gpt-6.1-sol  $2.00 in  $10.00 out  $0.10 cached   (launch post, 2026-09-29)
+#
+# Marketed as "near-Astra" at a fifth of astra's price. astra-high here is 265/484
+# and astra-xhigh 270, so "near-Astra" would put it ~40 seeds above gpt-6-sol's 221.
+#
+# The bar, set before the run: it can only REPLACE gpt-6-sol (one payer, one
+# seat). The seated panel [opus-5-5, gpt-6-sol, glm-5.3-flash] reads 411/484, so
+# the bar is PANEL >= 411 with this model in the ChatGPT seat, at a wall clock that
+# does not make it the slowest seat again (the other two run 2016s and 2209s;
+# gpt-6-sol 2451s). Anything above 414 would also beat the codex panel that
+# gpt-6-sol displaced.
+gpt-6.1-sol
+#
+# MEASURED 2026-09-30, full 8-target grid, 1 repeat, 0 errors, 0 contract failures:
+#
+#   gpt-6.1-sol          254/484  21st/30  ~$2.17  ~$0.009/pt  441 pts/Mtok  5463s
+#   gpt-6-sol            221/484  28th     ~$2.39  ~$0.011/pt  400 pts/Mtok  2451s
+#   codex / gpt-5.6-sol  298/484  10th     ~$8.36  ~$0.028/pt  523 pts/Mtok  6810s
+#
+#   go 30/56  design 11/34  rust 29/64  java 37/69
+#   typescript 37/63  csharp 29/68  cpp 42/64  python 39/66
+#
+# +33 over gpt-6-sol, above it on six of eight targets. The two collapses that sank
+# gpt-6-sol are half repaired (go 20 -> 30, rust 21 -> 29), but still under sol's 39
+# and 36. It is below it on design (11 vs 13) and java (37 vs 39). Not "near-Astra"
+# on this bench: 11 under astra-high, and ahead of it only on cpp.
+#
+# SEAT ARITHMETIC (parser reproduced 398 / 409 / 414 / 411 before these were read):
+#
+#   seated panel [opus-5-5, gpt-6-sol, glm-5.3-flash]   411/484
+#   gpt-6.1-sol REPLACES gpt-6-sol                      414   (+3; cpp +3, csharp
+#                                                     +1, go +1, java +1, design -3)
+#   codex in the same seat (the panel before 09-29)     414
+#   as a 4th seat                                       418   (not available)
+#   marginal over opus-5-5+glm: gpt-6.1-sol +11, codex +11, gpt-6-sol +8
+#   head to head vs gpt-6-sol: finds 69 it misses, misses 36 it finds
+#
+# COVERAGE CLEARS THE BAR (>= 411) and ties codex's panel. +3 is inside the noise
+# floor, so the honest reading is "no worse than either predecessor", not "better".
+#
+# THE CLOCK READS 5463s AND THAT IS THE ROUTE, NOT THE MODEL. The work is the same
+# as gpt-6-sol's (2.11M in / 107k out against 2.06M / 120k) at 19.5 output tok/s
+# against 48.9 on 2026-09-22. A control the same day, same CLI (0.159.2), same
+# prompt, two runs each: gpt-6-sol 16.8 / 16.6 tok/s, gpt-6.1-sol 17.5 / 16.6. The
+# INCUMBENT is equally slow today, so the ChatGPT route is slow on launch day (or on
+# 0.159.x) for both. It reasoned ~2x more than gpt-6-sol in the probe (917/784
+# against 391/233 reasoning tokens) but produced fewer output tokens on the bench, so
+# at equal serving speed the expected sweep is gpt-6-sol's ~2450s, not 5463s.
+# Re-time one target when the route recovers before quoting the clock anywhere.

@@ -1,0 +1,71 @@
+# GPT-6.1 Sol through the codex harness -- config/agents/gpt-6-sol.yaml with only
+# the model line swapped, so the comparison against the seated gpt-6-sol (and
+# against the codex baseline, gpt-5.6-sol) has one variable. Effort stays `high`.
+#
+# Bench candidate, added 2026-09-30, the day after release. It is the successor
+# of the model that holds the panel's ChatGPT seat, so like gpt-6-sol before it
+# the swap is structurally free: same payer, same harness, same yaml.
+#
+#   gpt-6-sol    $2.00 in  $10.00 out  $0.20 cached
+#   gpt-6.1-sol  $2.00 in  $10.00 out  $0.10 cached   (openai.com, 2026-09-29)
+#
+# NEEDS codex-cli >= 0.159. 0.158.0 answers every request with HTTP 400 "The
+# 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account"
+# -- which reads like an account restriction and is only an old CLI; 0.159.2
+# answered the probe below first try on ChatGPT-account auth.
+#   printf x | codex exec --sandbox read-only --skip-git-repo-check --json \
+#     --model gpt-6.1-sol -
+#
+# Read its token columns through the cached-input caveat in bench/models.txt:
+# codex reports OpenAI's usage shape, where input_tokens INCLUDES the cached
+# subset.
+model: gpt-6.1-sol
+effort: high # low | medium | high | xhigh
+command:
+  - codex
+  - exec
+  - --sandbox read-only # reviewer duty: enforced no-write sandbox
+  - --skip-git-repo-check # allow running in non-git target dirs
+  - --color never # keep raw logs clean
+  - --json # JSONL event stream: carries the turn's token usage
+  - --model {{model}}
+  - -c model_reasoning_effort={{effort}}
+  - "-" # read the prompt from stdin, keeping it off argv (ps / /proc)
+
+# codex streams one JSON object per line, so the LAST value of each path wins: the
+# reply arrives on an item.completed line and the totals on turn.completed.
+#
+# No cost_usd: codex reports tokens but no price, because ChatGPT-account auth has
+# no per-request cost to report. The scoreboard leaves its cost blank rather than
+# inventing one from a published rate card -- see config.AgentUsage.
+usage:
+  format: jsonl
+  text: item.text
+  input_tokens: usage.input_tokens
+  output_tokens: usage.output_tokens
+  cache_read_tokens: usage.cached_input_tokens
+  cache_write_tokens: usage.cache_write_input_tokens
+  error_text: error.message # turn.failed: the reason, not the last narration
+prompt_via: stdin
+# 30m: see claude.yaml. This agent was killed at 10m having emitted 1 MB of
+# exploration output and still working -- unlike a hung process, it was making
+# progress the whole time.
+timeout: 30m
+can_edit: false
+# To use codex as the coder, copy this to codex-coder.yaml with
+# --dangerously-bypass-approvals-and-sandbox instead of --sandbox read-only,
+# and can_edit: true.
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+  # codex reads ~/.codex when logged in; these cover API-key auth.
+    - OPENAI_API_KEY
+    - CODEX_API_KEY
+
+# Same ceiling as claude.yaml; measured maximum on this project is 314 kB.
+prompt_budget: 900000
