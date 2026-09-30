@@ -2,11 +2,11 @@
 # with only the model and effort lines swapped, so the comparison against the
 # codex baseline (gpt-5.6-sol) has one variable.
 #
-# SEATED 2026-09-29: this file holds the panel's ChatGPT seat in
-# config/defaults.yaml, in place of codex. The reasoning is there; in short, -3
-# panel coverage (inside the noise floor) for a round that is no longer paced by
-# codex's 6810s. Reviewer duty, so the read-only sandbox and can_edit: false below
-# are what the panel relies on -- keep them in step with codex.yaml.
+# SEATED 2026-09-29 to 2026-09-30: this file held the panel's ChatGPT seat in
+# config/defaults.yaml, in place of codex, until its own successor gpt-6.1-sol
+# took it (414 against 411 panel coverage; reasoning in defaults.yaml). It stays
+# the fallback, one word away there, so keep its read-only sandbox and
+# can_edit: false in step with codex.yaml.
 #
 # This is the SUCCESSOR of the model that holds the panel's ChatGPT seat, which
 # makes it the codex-route twin of the claude-opus-5-5 question -- and the same

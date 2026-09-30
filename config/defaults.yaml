@@ -208,8 +208,19 @@ roles:
   # (221/484, go 20/56, rust 21/64) and leans on claude to cover it, and the bench
   # does not see live novel yield. If the judge starts rejecting most of what it
   # says, or claude drops out of runs, `codex` is one word away on the line below.
+  #
+  # AND ON TO gpt-6.1-sol, 2026-09-30, the day after its release: the successor
+  # of the model it replaces, same payer, same harness, same yaml with the model
+  # line changed. 254/484 solo against gpt-6-sol's 221 (go 20 -> 30, rust 21 ->
+  # 29), and the panel reads 414/484 against 411 -- level with the codex panel of
+  # 2026-09-28, so the seat has its coverage back without codex's clock. Its
+  # sweep clocked 5463s, but a same-day control put gpt-6-sol at the same ~17
+  # output tok/s: the ChatGPT route was slow that day for both, and the token work
+  # matched gpt-6-sol's. NEEDS codex-cli >= 0.159; 0.158 answers HTTP 400 "not
+  # supported when using Codex with a ChatGPT account", which is the CLI's age,
+  # not the account. If its live clock stays slow, `gpt-6-sol` is one word away.
   review:
-    agents: [claude, gpt-6-sol, glm-5.3-flash-ollama]
+    agents: [claude, gpt-6.1-sol, glm-5.3-flash-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds

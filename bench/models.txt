@@ -739,3 +739,8 @@ gpt-6.1-sol
 # against 391/233 reasoning tokens) but produced fewer output tokens on the bench, so
 # at equal serving speed the expected sweep is gpt-6-sol's ~2450s, not 5463s.
 # Re-time one target when the route recovers before quoting the clock anywhere.
+#
+# SEATED 2026-09-30 on the operator's call, without the re-timing suggested above:
+# the panel is [claude, gpt-6.1-sol, glm-5.3-flash-ollama]. Coverage 414 against
+# 411, and the clock evidence says route, not model. Watch its live round time;
+# gpt-6-sol is the one-word fallback in defaults.yaml.
