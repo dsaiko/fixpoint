@@ -124,6 +124,11 @@ RATES = {
     # promo the input gap is 2x rather than 2.5x. Long-context rows (>272K input)
     # are 2x in / 1.5x out, which no bench session reaches.
     "gpt-6-sol": (2.00, 10.00, 0.20),
+    # GPT-6.1 Sol, added 2026-09-30 when it was benched (released 2026-09-29):
+    # gpt-6-sol's $2/$10 with cached input halved to $0.10 (openai.com launch
+    # post and press, 2026-09-29). The codex route caches most of a sweep, so
+    # that one line is most of the difference from gpt-6-sol.
+    "gpt-6.1-sol": (2.00, 10.00, 0.10),
     # GPT-5.6 Terra, from developers.openai.com on 2026-09-07 when it was added
     # as a candidate: $2/$12, cached $0.20 -- the cheap sibling of the codex
     # seat, and 20% of astra's list price. Long-context (>272K input) rows are
