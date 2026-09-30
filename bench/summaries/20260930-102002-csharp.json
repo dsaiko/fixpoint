@@ -1,0 +1,373 @@
+{
+ "run": "20260930-102002",
+ "task": "code",
+ "target": "csharp",
+ "model": "gpt-6.1-sol",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "Program.cs",
+     "line": 48,
+     "title": "No request can obtain a valid session",
+     "description": "Main creates an empty Authenticator, and no code calls Issue or exposes a session issuance endpoint. Every well-formed token is therefore rejected before any route runs, making the server unusable.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 94,
+     "title": "Missing authorization headers throw instead of returning 401",
+     "description": "Handle passes an empty string when Authorization is absent. Splitting it produces one element, so parts[1] throws IndexOutOfRangeException. The handler task faults without sending or closing the response.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 41,
+     "title": "Creating an owner's first link throws after inserting it",
+     "description": "The quota dictionary starts empty, but Create reads quota[owner] before initializing it. The first creation for every owner throws KeyNotFoundException after storing the link. The HTTP handler does not catch this exception, leaving an inserted link without a successful creation response.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 55,
+     "title": "Resolving a live link deletes it",
+     "description": "The expiry comparison is inverted. A link whose expiration is still in the future is removed and returns null, while an already-expired link is served until the janitor removes it. Following a valid link destroys it.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "Store.cs",
+     "line": 93,
+     "title": "Partial final pages request one element beyond the list",
+     "description": "When offset + size exceeds the link count, end becomes all.Count + 1. GetRange then throws. A default listing with 1\u201319 links fails, as does a report with 1\u2013999 links.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 170,
+     "title": "Statistics fail when the store is empty",
+     "description": "TotalHits is divided by store.Count without checking for zero. An empty store, including a fresh startup or a store after its last deletion, causes DivideByZeroException and no response.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 89,
+     "title": "Invalid numeric query parameters leave requests unanswered",
+     "description": "The ttl parsing happens outside the try block, and offset and size also use unchecked int.Parse. Malformed or overflowing values fault the handler. Negative paging values can additionally make GetRange throw.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 184,
+     "title": "Reports without a name read a different file than they write",
+     "description": "ExportCsv substitutes \"links\" for an empty name, but Report passes the original empty name to ReadReport. A request without name writes links.csv and then attempts to read .csv, returning 500 or an unrelated existing file.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 128,
+     "title": "Redirects cannot resolve supported uppercase codes",
+     "description": "ValidateCode accepts uppercase letters, and Rename and ImportAll preserve them in the case-sensitive dictionary. Redirect lowercases the requested code, so an imported or renamed code such as ABCD cannot resolve.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 96,
+     "title": "Creation responses do not escape JSON strings",
+     "description": "The target is interpolated directly into JSON. Store accepts any string beginning with an HTTP prefix, so a target containing a quote, backslash, or newline produces invalid JSON or changes the decoded target.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Program.cs",
+     "line": 197,
+     "title": "Text and CSV responses are labeled as JSON",
+     "description": "Respond always declares application/json, but listings, errors, and reports contain plain text or CSV. Clients that decode responses according to Content-Type fail to parse these successful responses.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 109,
+     "title": "Success percentages truncate before multiplication",
+     "description": "Integer division makes used / links.Count zero whenever only some links have been followed. For example, one followed link out of two reports 0 instead of 50.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 126,
+     "title": "Cache utilization reports zero until completely full",
+     "description": "entries.Count / limit uses integer division before multiplying by 100. A half-full cache reports 0 percent rather than 50 percent.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 66,
+     "title": "Eviction ignores the recorded access order",
+     "description": "Set evicts the first dictionary key rather than the entry with the oldest Used timestamp. Accessing the oldest inserted entry does not protect it from eviction, violating the documented LRU behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 114,
+     "title": "Zero cache capacity passes validation but causes exceptions",
+     "description": "LINKD_CACHE_SIZE=0 is accepted. Cache.Set then calls First on an empty dictionary, while Cache.Utilization divides by zero. This configuration cannot operate as an empty or disabled cache.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 122,
+     "title": "Deleting links leaves owner counts unchanged",
+     "description": "Delete removes the link but never decrements quota[link.Owner]. Quotas and CountForOwner consequently continue counting deleted links. Expiry removal paths also leave these counts stale.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 129,
+     "title": "Top returns the least-followed links",
+     "description": "The sort is ascending by Hits, so Take(n) selects the smallest counts despite the method promising the most-followed links first.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 149,
+     "title": "Extending a link can shorten its lifetime or revive it",
+     "description": "Extend replaces the expiration with now + ttl. Extending a link that still has 30 days remaining by one day shortens it to one day, and an expired link still awaiting pruning is revived.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 68,
+     "title": "Rename validates the source twice and never validates the destination",
+     "description": "The second ValidateCode call uses from again. Rename therefore accepts destination codes that other store operations reject, including empty strings and invalid characters.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 170,
+     "title": "Failed imports leave a partially modified store",
+     "description": "ImportAll writes each link immediately after validating it. If a later link has an invalid code, earlier insertions and replacements remain despite the documented all-or-nothing behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 186,
+     "title": "Prune returns the remaining count instead of the removed count",
+     "description": "The method calculates removed but returns links.Count. Pruning two entries from a three-entry store reports one removal.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 228,
+     "title": "Generated code collisions overwrite existing links",
+     "description": "NewCode does not check whether its random result already exists. Create assigns through the dictionary indexer, so a collision replaces an existing link and silently loses its target and statistics.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 44,
+     "title": "Cache TTL milliseconds are interpreted as seconds",
+     "description": "LINKD_CACHE_TTL_MS is documented in milliseconds, but Load uses FromSeconds. A value of 300000 produces an approximately 83-hour TTL instead of five minutes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 38,
+     "title": "Invalid timeout values replace the default with zero",
+     "description": "When TryParse fails, ms becomes zero. Although the log says the default is retained, the following assignment replaces the ten-second default with TimeSpan.Zero.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 56,
+     "title": "The fetch limit environment setting is ignored",
+     "description": "A valid LINKD_FETCH_LIMIT value is assigned back to the local parsed variable. Config.Load always returns the default FetchLimit of 32 regardless of the supplied positive value.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Config.cs",
+     "line": 126,
+     "title": "Validation never rejects invalid configuration",
+     "description": "Validate returns true even after collecting errors, and Main ignores its return value. Negative cache capacities and nonpositive timeouts therefore proceed past validation instead of being rejected at startup.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 23,
+     "title": "CSV fields are written without escaping",
+     "description": "Targets and owners containing commas, quotes, or newlines change the CSV column or row structure. For example, a URL with a comma produces an extra column. ArchiveAll has the same problem.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 28,
+     "title": "Export writers leak handles when writing fails",
+     "description": "ExportCsv and ArchiveAll close their writers only on the success path. An I/O exception during writing or flushing skips cleanup, leaving file handles open until finalization and potentially preventing retries.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 83,
+     "title": "Asynchronous exports discard every link",
+     "description": "ExportCsvAsync ignores its links argument and writes only a header. Exporting a nonempty list produces a report with no data rows.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 80,
+     "title": "Asynchronous export failures cannot be handled by callers",
+     "description": "ExportCsvAsync returns async void. A file-writing exception is propagated as an unhandled asynchronous exception rather than through an awaitable result, and can terminate this console process.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 54,
+     "title": "Target checks do not test reachability",
+     "description": "ProbeAsync performs no network operation: every HTTPS target passes even when unreachable, and every HTTP target fails even when reachable. CheckTargets consequently reports failures based solely on URL scheme.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 86,
+     "title": "Counting links for an absent owner throws",
+     "description": "CountForOwner directly indexes the quota dictionary. Asking for an owner with no quota entry, including any owner in a fresh store, throws KeyNotFoundException instead of returning zero.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "Store.cs",
+     "line": 40,
+     "title": "Parallel handlers and the janitor mutate an unsynchronized store",
+     "description": "Program dispatches handlers through Task.Run while the janitor enumerates and modifies the same links dictionary. If Create inserts after the janitor starts enumeration, enumeration can throw an unhandled exception on the timer thread and terminate the process. Concurrent dictionary writers can also corrupt its state, and concurrent Resolve calls can lose Hits increments.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 48,
+     "title": "Session verification races with session issuance",
+     "description": "Verify enumerates sessions.Values without synchronization. If Issue inserts a session during that enumeration, Verify can throw InvalidOperationException instead of returning an authentication result. Concurrent Issue calls also write to the same non-thread-safe dictionary.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 95,
+     "title": "Cache warming checks and inserts in separate critical sections",
+     "description": "Warm can observe that a code is absent, pause while another caller caches its current target, then overwrite that target with the older value from pairs. Peek also reads the dictionary without the lock used by its writers, so it can race with insertion or eviction.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 17,
+     "title": "Concurrent creation counter updates are lost",
+     "description": "Two AddCreated calls can both read the same created value and both write back that value plus one. The dashboard then undercounts successful creations even after both calls finish.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 28,
+     "title": "Concurrent reports compete for the same output file",
+     "description": "Two /report requests with the same name open the same file for writing. If their writes overlap, one can fail with IOException and return HTTP 500. If the second finishes between the first request's export and ReadReport call, the first request returns the second request's snapshot instead of its own.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 58,
+     "title": "Concurrent snapshots share one temporary file",
+     "description": "All WriteSnapshot calls use /tmp/linkd-snapshot.json. One call can write its payload, another can overwrite it, and the first can then move the second payload into its destination. The second move subsequently fails because the temporary file is gone. Calls targeting different directories interfere as well.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 65,
+     "title": "WarmCache returns before its background tasks finish",
+     "description": "WarmCache discards every Task.Run result and returns immediately. A caller that accesses the cache after this method returns can still see none of the requested entries, and failures from cache.Set are never propagated to that caller.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Export.cs",
+     "line": 80,
+     "title": "Async void export cannot be awaited or have failures observed",
+     "description": "ExportCsvAsync returns before its file write finishes, so callers cannot wait before reading the report or shutting down. If the asynchronous write fails, its exception cannot be caught by the caller and can terminate the console process through an unhandled async-void exception.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 94,
+     "title": "Malformed Authorization headers leave HTTP requests unclosed",
+     "description": "An unauthenticated attacker can send requests with no Authorization header or a value without a space. Accessing parts[1] throws before authentication completes. Program.Handle runs in an unobserved task and has no exception cleanup, so these requests receive no response and their response streams remain unclosed. Repeated requests can tie up connections and exhaust server resources.",
+     "lens": "review-security",
+     "severity": "high"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 91116,
+      "output_tokens": 7301,
+      "cache_read_tokens": 74496
+     },
+     "duration_ms": 361782,
+     "failed": false,
+     "output_bytes": 15588
+    },
+    {
+     "usage": {
+      "input_tokens": 75829,
+      "output_tokens": 2720,
+      "cache_read_tokens": 60800
+     },
+     "duration_ms": 141606,
+     "failed": false,
+     "output_bytes": 5217
+    },
+    {
+     "usage": {
+      "input_tokens": 75540,
+      "output_tokens": 1536,
+      "cache_read_tokens": 53632
+     },
+     "duration_ms": 85071,
+     "failed": false,
+     "output_bytes": 841
+    }
+   ]
+  }
+ ]
+}

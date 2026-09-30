@@ -1,0 +1,565 @@
+{
+ "run": "20260930-102609",
+ "task": "code",
+ "target": "cpp",
+ "model": "gpt-6.1-sol",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "Resolving a live link deletes it",
+     "description": "The expiry comparison is inverted. A newly created link has an expiry in the future, so its first resolution erases it and returns false. Already-expired links instead resolve successfully.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "main.cpp",
+     "line": 152,
+     "title": "The service exits immediately after startup",
+     "description": "main starts the janitor and prints a listening message, then returns. There is no listener or request-processing loop, and returning terminates the process and its background thread.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 75,
+     "title": "Partial pages read beyond the vector",
+     "description": "When a requested page exceeds the remaining links, end becomes all.size() + 1. The range constructor then copies past the vector's end. The report endpoint triggers this for any nonempty store with fewer than 1000 links. Negative offsets or sizes also produce invalid ranges.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 76,
+     "title": "Missing authorization delimiters cause undefined behavior",
+     "description": "strchr returns nullptr for an empty header or any header without a space. Constructing a string from space + 1 then reads an invalid address. handle explicitly passes an empty string when the authorization header is absent.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 74,
+     "title": "Long authorization headers overflow the stack buffer",
+     "description": "strcpy copies an unrestricted header into a 64-byte array. A header of 64 or more bytes writes outside the array and can corrupt memory or crash request handling.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 101,
+     "title": "Statistics divide by zero for an empty store",
+     "description": "An authenticated /stats request before any link exists, or after all links have been removed, divides total_hits() by zero and invokes undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 128,
+     "title": "Recoverable request errors escape the handler",
+     "description": "The dispatched handlers use query.at() for required parameters, and create_link calls Store::create(), which throws for invalid targets. handle catches neither out_of_range nor these validation errors, so malformed requests throw out of the request boundary instead of returning an HTTP error.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 20,
+     "title": "Janitor increments an erased iterator",
+     "description": "Erasing it invalidates the iterator, but the loop then executes ++it. Encountering an expired link therefore causes undefined behavior during ordinary janitor cleanup, even without concurrent access.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 60,
+     "title": "Rename accesses a link after destroying it",
+     "description": "link references the map value erased on the preceding line. Updating link.code and copying link afterward access a destroyed object, so renaming can corrupt data or crash.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 50,
+     "title": "Rename never validates the destination code",
+     "description": "Both validation calls check from. A destination containing invalid characters or an invalid length is accepted even though the store's code validation rejects those values.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 178,
+     "title": "last_code returns a dangling string view",
+     "description": "The returned string_view refers to newest, a local string destroyed when the function returns. Reading a nonempty result accesses expired storage.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 176,
+     "title": "last_code selects the largest code instead of the newest link",
+     "description": "The map iterates in code order, so the last assignment selects the lexicographically largest code. Randomly generated codes do not follow creation order, making the dashboard banner incorrect.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.cpp",
+     "line": 74,
+     "title": "format_row returns a pointer to a destroyed stack array",
+     "description": "row ceases to exist when format_row returns. Any caller reading the returned pointer accesses invalid storage and may display garbage or crash.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 157,
+     "title": "Pruning invalidates the loop iterator",
+     "description": "After an expired link is erased, the loop increments the invalidated iterator. Any prune operation that removes a link can therefore crash or otherwise invoke undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 161,
+     "title": "Prune returns the remaining count instead of the removed count",
+     "description": "The function tracks removed but returns links_.size(). For example, removing one of ten links reports nine removals.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 57,
+     "title": "Cache sweeping increments an erased iterator",
+     "description": "erase invalidates it, but the loop subsequently increments it. Sweeping an expired cache entry therefore invokes undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 45,
+     "title": "Cache entries leak on replacement and removal",
+     "description": "Each set allocates an Entry, but overwriting, eviction, expiration, erase, sweep, and destruction discard pointers without deleting the objects. Repeated cache updates grow memory usage without bound despite the configured entry limit.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 39,
+     "title": "A zero-capacity cache erases its end iterator",
+     "description": "With limit_ equal to zero, the first set enters the eviction branch on an empty map and calls erase(end()), which is undefined behavior. utilization also divides by zero for this capacity, and configuration accepts cache_size=0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 38,
+     "title": "Eviction ignores access recency",
+     "description": "entries_.begin() selects the lexicographically smallest code, irrespective of Entry::used. A recently accessed entry can be evicted while older entries remain, violating the advertised LRU behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 37,
+     "title": "Updating an existing cache key unnecessarily evicts another entry",
+     "description": "Capacity eviction occurs before checking whether code already exists. Updating a non-smallest key in a full cache removes an unrelated entry even though the update needs no additional slot.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 31,
+     "title": "peek reports expired entries as cached",
+     "description": "peek checks only map membership. After an entry expires but before cleanup, peek returns true while get returns false, giving callers an incorrect cache-presence result.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 64,
+     "title": "Cache utilization truncates before calculating the percentage",
+     "description": "Integer division occurs before multiplication, so every partially filled cache reports 0%. Only a full cache reports 100%.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 91,
+     "title": "Success rate reports zero for every partial success",
+     "description": "used / links_.size() performs integer division first. For example, one followed link out of two reports 0% instead of 50%.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 25,
+     "title": "Millisecond settings are interpreted as seconds",
+     "description": "LINKD_TIMEOUT_MS and LINKD_CACHE_TTL_MS are documented in milliseconds, but their numeric values are used as Seconds. Setting either to 1000 produces a 1000-second duration rather than one second.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 25,
+     "title": "Invalid timeout input overwrites the default with zero",
+     "description": "When atoi returns zero, the function logs that it is keeping the default but then unconditionally assigns Seconds{0}. An invalid timeout setting therefore disables the positive default.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 39,
+     "title": "The fetch-limit environment setting is discarded",
+     "description": "A positive LINKD_FETCH_LIMIT is parsed and then discarded. load_config always returns the default fetch_limit of 32 regardless of the supplied setting.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 91,
+     "title": "Invalid configurations are never rejected",
+     "description": "validate returns true even after detecting an invalid port, negative cache size, or nonpositive timeout. main also ignores its return value, so startup proceeds with configurations the validator says the service cannot run with.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 116,
+     "title": "Unnamed reports read a different filename than they write",
+     "description": "With no name, export_csv writes links.csv, but report passes the original empty name to read_report, which reads .csv. The default report request therefore returns an empty body or an unrelated existing file.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.cpp",
+     "line": 20,
+     "title": "CSV fields are written without quoting or escaping",
+     "description": "Targets and owners containing commas, quotes, or newlines change the column or row structure of the exported data. archive_all has the same issue, so valid stored strings cannot reliably round-trip through the reports.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.cpp",
+     "line": 29,
+     "title": "Report export reports success after file I/O failures",
+     "description": "export_csv never checks opening, writing, or closing the output stream. A missing directory, permission failure, or full disk still returns a path, and the report endpoint can return HTTP 200 with empty or stale contents.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.cpp",
+     "line": 51,
+     "title": "Snapshot replacement occurs before the data is durable",
+     "description": "rename runs while the output stream is still open and potentially buffered, with no file synchronization. A crash after replacement can leave snapshot.json empty or incomplete and destroy the previous complete snapshot.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.cpp",
+     "line": 51,
+     "title": "Snapshot rename failures are silently ignored",
+     "description": "The temporary file is always in /tmp, so replacement fails when dir is on a different filesystem. Missing destinations and permission failures also fail silently, leaving the previous snapshot unchanged while write_snapshot returns normally.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 26,
+     "title": "Generated code collisions overwrite existing links",
+     "description": "create assigns a random code without checking whether it already exists. A repeated rand result silently replaces the existing link, loses its bookkeeping, and makes its published URL point to a different target.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 101,
+     "title": "Owner counts are not maintained when links change",
+     "description": "create increments quota_, but remove never decrements it, and expiry cleanup also removes links without updating counts. import_all adds links without updating counts. Consequently quotas() and count_for_owner report values that do not match the stored links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 111,
+     "title": "Leaderboard returns the least-followed links first",
+     "description": "The comparator sorts hit counts in ascending order. Truncating to n therefore selects the least-followed links instead of the most-followed links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 112,
+     "title": "Leaderboard invents records when fewer than n links exist",
+     "description": "resize(n) grows the vector when n exceeds the store size, adding default Link objects. An empty store queried for ten results returns ten fictitious links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 120,
+     "title": "Owner lookup uses substring matching instead of equality",
+     "description": "Looking up owner ann also returns links owned by joann, and an empty owner matches every link. This contradicts the method's exact-owner selection contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 134,
+     "title": "Extending a link can shorten its lifetime or revive an expired link",
+     "description": "extend replaces the expiry with now + ttl without checking the existing expiry. Extending a link with substantial remaining lifetime can shorten it, and extending an expired link makes it live again despite the documented finality of expiration.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 148,
+     "title": "Batch import leaves partial changes after validation failure",
+     "description": "Each valid entry is stored before the next entry is validated. If a later code is invalid, earlier additions and replacements remain despite the documented all-or-nothing behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 140,
+     "title": "Quota snapshots expose the live count map",
+     "description": "quotas returns a mutable reference to quota_ rather than a snapshot. Changing the returned map changes the store's counts, contrary to the documented behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 53,
+     "title": "Counting an unknown owner creates a phantom owner",
+     "description": "operator[] inserts a zero-valued entry into the live quota map when owner is absent. A read-only count query therefore changes the owner count reported by /admin/quotas.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 43,
+     "title": "Target checking reads past the input vector",
+     "description": "The loop includes i == links.size(), where links[i] is out of bounds. Empty input fails immediately, and any list whose targets all pass the prefix check reaches the invalid access.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 49,
+     "title": "The administrator check rejects every role",
+     "description": "A role cannot equal both admin and owner, so at least one inequality is always true. require_admin therefore returns false even for an administrator.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 44,
+     "title": "TTL conversion overflows before constructing the duration",
+     "description": "atoi returns int, so multiplication by 3600 occurs in int arithmetic. A representable input such as 600000 hours overflows a 32-bit int before Seconds is constructed, invoking undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 54,
+     "title": "Redirects alter case-sensitive stored codes",
+     "description": "validate_code allows uppercase codes, which import and rename can store, but redirect lowercases the requested code before the case-sensitive map lookup. Such links return 404 or resolve to a different lowercase code.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 18,
+     "title": "Janitor accesses the store without synchronization",
+     "description": "The janitor traverses and erases the same links map used by request handlers, with no mutex in either path. A request can insert or remove a link during traversal, or the janitor can erase a node while resolve() or page() accesses it. These interleavings cause data races and potentially invalid iterator dereferences or memory corruption.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 39,
+     "title": "Cache warming destroys joinable threads",
+     "description": "For any nonempty input, warm_cache() reaches the destruction of workers with joinable std::thread objects. A thread remains joinable even after its function finishes, so the first thread destructor calls std::terminate and aborts the process.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 45,
+     "title": "Parallel cache warming races on the entries map",
+     "description": "warm_cache() explicitly launches multiple threads that call Cache::set() on the same cache. Two workers can simultaneously modify entries_, including inserting different codes or selecting and erasing the same eviction victim. std::map does not support these concurrent mutations, so warming multiple links can corrupt the container or crash. The janitor's sweep() is also unsynchronized.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 29,
+     "title": "Stopping the janitor does not wait for it to release references",
+     "description": "stop_janitor() only clears the running flag and returns. If the janitor already entered sleep_for(), it still traverses the store and sweeps the cache after waking, without rechecking the flag. A caller that stops the janitor and then destroys its Store or Cache leaves the worker accessing destroyed objects. The allocated thread is also never joined or deleted.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 74,
+     "title": "Authorization parsing permits unauthenticated stack corruption",
+     "description": "Every request reaches bearer_token before authentication. An Authorization header longer than 63 bytes overflows the stack buffer through strcpy. A missing header or one without a space also makes space + 1 an invalid pointer. An unauthenticated attacker can crash the service, and the overflow introduces potentially exploitable memory corruption.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "Resolving a live link deletes another owner's data",
+     "description": "The expiration comparison is reversed: a link whose expiration is still in the future is erased. Any authenticated user who knows another owner's code can request /l to delete that link without ownership authorization. Ordinary visits also destroy valid links, while expired links remain resolvable until cleanup.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 22,
+     "title": "Session tokens come from a predictable random sequence",
+     "description": "Tokens use two std::rand outputs, and no code seeds the generator. Its startup sequence is deterministic for a given implementation. Store::create uses the same generator and exposes its outputs as link codes, giving an authenticated attacker additional information about the sequence. Predicted session tokens let an attacker impersonate their owners.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 39,
+     "title": "Expired session tokens remain authorized indefinitely",
+     "description": "verify returns matching sessions without checking expires_at. An attacker holding a stolen token can continue accessing write and report endpoints beyond the advertised twelve-hour lifetime, until explicit revocation or process restart.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 70,
+     "title": "Any authenticated user can delete another owner's link",
+     "description": "DELETE /links passes the supplied code directly to Store::remove. The authenticated session is never compared with the link owner. A user who obtains a victim's code can delete the victim's link using their own token.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 41,
+     "title": "Link creation trusts a caller-supplied owner",
+     "description": "POST /links takes owner from the query instead of the verified session. An authenticated user can create links attributed to another user, inject records into that user's data, and inflate their recorded quota count.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 115,
+     "title": "The report endpoint exposes links belonging to every owner",
+     "description": "Any verified session can reach /report, which exports an unfiltered store page containing targets, owners, and hit counts. Once at least 1,000 links exist, an ordinary user can download other owners' records; the user can create enough links to reach that page size themselves.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.cpp",
+     "line": 15,
+     "title": "User-controlled report names escape the export directory",
+     "description": "The /report name parameter is concatenated into a filesystem path without validation. A name such as ../../other-directory/report writes outside export_dir and truncates an existing report.csv wherever the service has write permission. read_report uses the same unchecked name, allowing reads of existing CSV files outside the directory when the preceding write fails but reading succeeds.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 92,
+     "title": "A client-controlled header bypasses administrator authorization",
+     "description": "/admin/quotas accepts any authenticated user who supplies x-admin: true. It never checks the verified session's role, so an ordinary user can access the administrator-only owner-count information by adding that header.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 75,
+     "title": "Report requests trigger an out-of-bounds Link copy",
+     "description": "When a requested page extends beyond the store, end becomes all.size() + 1. /report always requests 1,000 entries, so any authenticated user can trigger copying beyond the vector by requesting a report while the store contains between 1 and 999 links. Copying the invalid Link reads nonexistent string objects and can crash the service.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 101,
+     "title": "Requesting statistics for an empty store divides by zero",
+     "description": "An authenticated caller can request /stats while the store is empty, including immediately after initialization. The integer division by g_store->size() has a zero divisor and can terminate the process, providing a direct denial-of-service path.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 20,
+     "title": "An attacker-created expired link invalidates the janitor iterator",
+     "description": "The janitor erases its current map iterator and then increments that invalid iterator. An authenticated user can create a link with ttl=0 and leave it for the next janitor tick, triggering undefined behavior that can crash the service.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 18,
+     "title": "The janitor accesses the store concurrently without synchronization",
+     "description": "The background thread iterates and modifies the same std::map that request handlers create, resolve, and delete from, with no locking. An authenticated attacker can repeatedly create and delete links during a janitor sweep to race map access, causing undefined behavior, memory corruption, or service termination.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 31,
+     "title": "Authentication logs contain usable session credentials",
+     "description": "Every issued bearer token is printed to stdout. A person or process allowed to read application logs but not use the corresponding account can copy the token into an Authorization header and impersonate its owner.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.cpp",
+     "line": 20,
+     "title": "CSV exports allow attacker-controlled spreadsheet formulas",
+     "description": "Link fields are written directly into CSV cells. An authenticated user can supply an owner beginning with = and place a spreadsheet formula in an exported report. When a victim opens the report in a spreadsheet supporting external-data formulas, the formula can send workbook cell contents to an attacker-controlled URL. Commas and newlines also let the attacker inject additional cells and rows.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.cpp",
+     "line": 26,
+     "title": "Sensitive reports are created with ambient file permissions",
+     "description": "The report contains multiple owners' data, but std::ofstream does not enforce service-user-only permissions. With a normal umask of 022 and a traversable export directory, newly created reports are readable by other local users, who can retrieve targets, owners, and hit counts without application authorization.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 81678,
+      "output_tokens": 7598,
+      "cache_read_tokens": 51712
+     },
+     "duration_ms": 374724,
+     "failed": false,
+     "output_bytes": 22251
+    },
+    {
+     "usage": {
+      "input_tokens": 91988,
+      "output_tokens": 2030,
+      "cache_read_tokens": 76928
+     },
+     "duration_ms": 109259,
+     "failed": false,
+     "output_bytes": 2971
+    },
+    {
+     "usage": {
+      "input_tokens": 75055,
+      "output_tokens": 5135,
+      "cache_read_tokens": 57728
+     },
+     "duration_ms": 260787,
+     "failed": false,
+     "output_bytes": 10410
+    }
+   ]
+  }
+ ]
+}
