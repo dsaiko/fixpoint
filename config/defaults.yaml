@@ -219,8 +219,17 @@ roles:
   # matched gpt-6-sol's. NEEDS codex-cli >= 0.159; 0.158 answers HTTP 400 "not
   # supported when using Codex with a ChatGPT account", which is the CLI's age,
   # not the account. If its live clock stays slow, `gpt-6-sol` is one word away.
+  #
+  # BACK TO gpt-6-sol, 2026-10-01, on PLUS QUOTA, not coverage. The ChatGPT seat
+  # runs on a Plus account (the Mac and mediabox share it), and the codex session
+  # logs record its 5h used_percent on every turn: gpt-6.1-sol emptied whole
+  # windows at ~$4.6 of API-priced work, ~7.4% of the window per Mtok, against
+  # gpt-6-sol's ~4.8% (thin evidence, 3 windows). Its cheaper card -- cached input
+  # halved -- does not reach the quota, because uncached input is about half the
+  # credits. The price is 3 points of coverage (414 -> 411/484), inside the noise
+  # floor. If quota stops binding, `gpt-6.1-sol` is one word away.
   review:
-    agents: [claude, gpt-6.1-sol, glm-5.3-flash-ollama]
+    agents: [claude, gpt-6-sol, glm-5.3-flash-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds

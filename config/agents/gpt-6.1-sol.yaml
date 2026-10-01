@@ -2,10 +2,11 @@
 # the model line swapped, so the comparison against the seated gpt-6-sol (and
 # against the codex baseline, gpt-5.6-sol) has one variable. Effort stays `high`.
 #
-# SEATED 2026-09-30, the day after release: this file holds the panel's ChatGPT
-# seat in config/defaults.yaml, in place of gpt-6-sol (reasoning there; panel
-# 414/484 against 411). Reviewer duty, so the read-only sandbox and can_edit:
-# false below are what the panel relies on -- keep them in step with codex.yaml.
+# SEATED 2026-09-30 to 2026-10-01: this file held the panel's ChatGPT seat in
+# config/defaults.yaml, in place of gpt-6-sol (panel 414/484 against 411), and
+# gave it back because it burned the Plus 5h quota ~1.5x faster per token
+# (reasoning there). It stays the fallback, one word away, so keep the read-only
+# sandbox and can_edit: false below in step with codex.yaml.
 # It is the successor of the model it replaced, so like gpt-6-sol before it the
 # swap is structurally free: same payer, same harness, same yaml.
 #

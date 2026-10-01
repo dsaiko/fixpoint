@@ -251,9 +251,9 @@ Requirements:
 - git (and `gh` for pull-request mode)
 - at least one agentic CLI installed and authenticated (e.g. `claude`, `codex`,
   `ollama`) — verify the flags in `config/agents/*.yaml` match what your
-  installed versions expect. The shipped panel's ChatGPT seat (`gpt-6.1-sol`)
-  needs `codex` 0.159 or newer; older versions reject the model with an HTTP 400
-  that reads like an account restriction
+  installed versions expect. The `gpt-6.1-sol` agent (the fallback for the
+  shipped panel's ChatGPT seat) needs `codex` 0.159 or newer; older versions
+  reject the model with an HTTP 400 that reads like an account restriction
 
 ```sh
 make build          # compile the fixpoint binary
