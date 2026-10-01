@@ -385,6 +385,11 @@ def main():
     tok_in = sum(s.get("usage", {}).get("input_tokens", 0) for s in steps)
     tok_out = sum(s.get("usage", {}).get("output_tokens", 0) for s in steps)
     tok_cache = sum(s.get("usage", {}).get("cache_read_tokens", 0) for s in steps)
+    # Cache WRITES are input too, and on the claude route the biggest single
+    # line of a sweep's bill: Anthropic's input_tokens excludes both cache reads
+    # and cache writes, so a row without this column priced 40-57% of every
+    # claude sweep at nothing. Routes that report no writes (codex, ollama) read 0.
+    tok_write = sum(s.get("usage", {}).get("cache_write_tokens", 0) for s in steps)
     duration_s = sum(s.get("duration_ms", 0) for s in steps) / 1000
     sessions = len(steps)
     # Contract compliance is the benchmark's disqualifier, so it reads the
@@ -471,13 +476,14 @@ def main():
             w.writerow(["run", "task", "target", "model", "repeat", "sessions", "errors",
                         "findings", "matched_seeds", "seeds", "recall", "extras",
                         "tokens_in", "tokens_out", "cache_read", "duration_s", "found_per_mtok",
-                        "instrument"])
-        # `instrument` last, so the column can be added to a results.csv that
-        # already has rows without moving anything a positional reader counts.
+                        "instrument", "cache_write"])
+        # `instrument` and then `cache_write` last, so each column could be added
+        # to a results.csv that already had rows without moving anything a
+        # positional reader counts.
         w.writerow([run_id, task, target, model, repeat, sessions, errors,
                     len(findings), found, len(active), f"{recall:.2f}", len(extras),
                     tok_in, tok_out, tok_cache, int(duration_s), eff,
-                    instrument_id()])
+                    instrument_id(), tok_write])
 
     lines = [f"# {model} · {target} · run {run_id} (repeat {repeat})", ""]
     lines.append(f"recall **{found}/{len(active)}** · {len(findings)} finding(s), "

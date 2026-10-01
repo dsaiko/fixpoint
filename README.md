@@ -366,30 +366,30 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 
 | # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | fails |
 |--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|
-| 1 | `claude` | cli | 376/484 | 78% | ~$8.61 | ~$0.023 | 97% | ~$0.043 | 3958 | 0 |
-| 2 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$8.84 | ~$0.024 | 97% | ~$0.044 | 4152 | 0 |
-| 3 | `claude-opus-5-5` | anthropic | 372/484 | 77% | ~$4.27 | ~$0.011 | 100% | ~$0.030 | 2016 | 0 |
-| 4 | `claude-sonnet-5-5` | anthropic | 369/484 | 76% | ~$2.32 | ~$0.006 | 100% | ~$0.015 | 1605 | 0 |
-| 5 | `claude-fable-5-1` | anthropic | 365/484 | 75% | ~$13.65 | ~$0.037 | 96% | ~$0.066 | 3504 | 0 |
-| 6 | `qwen/qwen3.8-max` | openrouter | 331/484 | 68% | $6.35 | $0.019 | 98% | $0.019 | 11266 | 0 |
+| 1 | `claude` | cli | 376/484 | 78% | ~$14.12 | ~$0.038 | 74% | ~$0.050 | 3958 | 0 |
+| 2 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$14.36 | ~$0.038 | 74% | ~$0.052 | 4152 | 0 |
+| 3 | `claude-opus-5-5` | anthropic | 372/484 | 77% | ~$10.02 | ~$0.027 | 72% | ~$0.038 | 2016 | 0 |
+| 4 | `claude-sonnet-5-5` | anthropic | 369/484 | 76% | ~$4.93 | ~$0.013 | 74% | ~$0.019 | 1605 | 0 |
+| 5 | `claude-fable-5-1` | anthropic | 365/484 | 75% | ~$24.62 | ~$0.067 | 64% | ~$0.081 | 3504 | 0 |
+| 6 | `qwen/qwen3.8-max` | openrouter | 331/484 | 68% | $8.26 | $0.025 | 65% | $0.025 | 11266 | 0 |
 | 7 | `kimi-k3:cloud` | ollama | 319/484 | 66% | ~$7.58 | ~$0.024 | - | ~$0.024 | 2179 | 0 |
-| 8 | `qwen/qwen3.8-27b` | openrouter | 314/484 | 65% | $2.48 | $0.008 | 54% | $0.010 | 12930 | 0 |
+| 8 | `qwen/qwen3.8-27b` | openrouter | 314/484 | 65% | $2.52 | $0.008 | 52% | $0.010 | 12930 | 0 |
 | 9 | `glm-5.3:cloud` | ollama | 313/484 | 65% | ~$7.31 | ~$0.023 | - | ~$0.023 | 2540 | 0 |
 | 10 | `deepseek-v4.1-flash:cloud` | ollama | 312/484 | 64% | ~$0.35 | ~$0.001 | 84% | ~$0.003 | 2487 | 0 |
 | 11 | `nemotron-3-ultra:cloud` | ollama | 310/484 | 64% | ~$1.66 | ~$0.005 | - | ~$0.005 | 20316 | 1 |
 | 12 | `glm-5.3-flash:cloud` | ollama | 304/484 | 63% | ~$0.78 | ~$0.003 | - | ~$0.003 | 2209 | 0 |
 | 13 | `codex` | cli | 298/484 | 62% | ~$8.36 | ~$0.028 | 75% | ~$0.045 | 6810 | 0 |
 | 14 | `glm-5.2:cloud` | ollama | 278/484 | 57% | ~$5.72 | ~$0.021 | - | ~$0.021 | 3948 | 0 |
-| 15 | `claude-fable-5` | anthropic | 277/484 | 57% | ~$13.39 | ~$0.048 | 94% | ~$0.085 | 3653 | 0 |
+| 15 | `claude-fable-5` | anthropic | 277/484 | 57% | ~$23.50 | ~$0.085 | 67% | ~$0.104 | 3653 | 0 |
 | 16 | `x-ai/grok-4.6` | openrouter | 277/484 | 57% | $6.00 | $0.022 | 41% | $0.022 | 7955 | 0 |
 | 17 | `deepseek-v4-pro:cloud` | ollama | 270/484 | 56% | ~$2.83 | ~$0.010 | - | ~$0.010 | 2551 | 0 |
 | 18 | `gpt-6-astra-xhigh` | cli | 270/484 | 56% | ~$14.94 | ~$0.055 | 83% | ~$0.125 | 5617 | 0 |
-| 19 | `claude-opus-4-8` | anthropic | 268/484 | 55% | ~$6.04 | ~$0.023 | 96% | ~$0.042 | 2912 | 0 |
+| 19 | `claude-opus-4-8` | anthropic | 268/484 | 55% | ~$11.58 | ~$0.043 | 66% | ~$0.052 | 2912 | 0 |
 | 20 | `gpt-6-astra` | cli | 265/484 | 55% | ~$10.58 | ~$0.040 | 80% | ~$0.100 | 3600 | 0 |
 | 21 | `gpt-6.1-sol` | cli | 254/484 | 52% | ~$2.17 | ~$0.009 | 78% | ~$0.021 | 5463 | 0 |
 | 22 | `minimax-m3:cloud` | ollama | 251/484 | 52% | ~$4.56 | ~$0.018 | - | ~$0.018 | 6003 | 2 |
 | 23 | `deepseek-v4-flash:0731-cloud` | ollama | 249/484 | 51% | ~$1.19 | ~$0.005 | - | ~$0.005 | 6800 | 0 |
-| 24 | `claude-sonnet-5` | anthropic | 245/484 | 51% | ~$4.89 | ~$0.020 | 99% | ~$0.049 | 4313 | 0 |
+| 24 | `claude-sonnet-5` | anthropic | 245/484 | 51% | ~$7.99 | ~$0.033 | 83% | ~$0.055 | 4313 | 0 |
 | 25 | `kimi-k2.7-code:cloud` | ollama | 242/484 | 50% | ~$2.54 | ~$0.010 | - | ~$0.010 | 2876 | 0 |
 | 26 | `gpt-oss:120b-cloud` | ollama | 236/484 | 49% | ~$1.41 | ~$0.006 | - | ~$0.006 | 3533 | 0 |
 | 27 | `gpt-5.6-terra` | cli | 221/484 | 46% | ~$3.04 | ~$0.014 | 78% | ~$0.028 | 2896 | 0 |
@@ -432,7 +432,7 @@ Recall per target, which is where a model that is strong in one language and wea
 | `qwen3.5:397b-cloud` | 17/56 | 12/34 | 28/64 | 26/68 | 31/69 | 25/66 | 26/64 | 21/63 |
 | `gemma4:31b-cloud` | 17/56 | 10/34 | 24/64 | 20/68 | 30/69 | 19/66 | 19/64 | 17/63 |
 
-`!` marks a cell that lost a lens to a contract failure: its recall is deflated, not low. `~$` is notional &mdash; the route bills a plan, not the tokens (claude, codex and ollama, which still meters session and weekly quotas); a bare `$` is money actually billed to a card, which is OpenRouter only.
+`!` marks a cell that lost a lens to a contract failure: its recall is deflated, not low. `~$` is notional &mdash; the route bills a plan, not the tokens (claude, codex and ollama, which still meters session and weekly quotas); a bare `$` is money actually billed to a card, which is OpenRouter only. A plan does not meter quota at these rates: measured on a ChatGPT Plus 5-hour window, gpt-6.1-sol drew ~3x the quota per notional dollar that gpt-5.6-sol did, about the same per token. Do not pick a subscription seat by its `~$`.
 
 <!-- END BENCH TABLE -->
 
