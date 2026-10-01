@@ -487,6 +487,14 @@ claude-opus-5-5
 # already maps it. Fixing it is a schema change plus a backfill; until then,
 # treat every dollar column in the table as a LOWER BOUND.
 #
+# FIXED 2026-10-01: results.csv gained a cache_write column (backfilled from
+# bench/summaries/, all 244 rows) and report.py bills it -- CACHE_WRITE_RATES
+# for the Anthropic rows, the input rate elsewhere. The claude rows now read
+# within 2% of the CLI's own totals (opus-5-5 exactly, $10.02); writes also
+# count as fresh tokens and as uncached input, so pts/Mtok for claude rows drops
+# ~2-4x and their "cached" share from ~98% to ~72%. Every claude-row $ and
+# pts/Mtok figure quoted in this file before this line excludes writes.
+#
 # The caching caveat still applies on top of that: this sweep cached 100% of its
 # input (tokens_in totals 144 across eight sessions), and [[ollama-route-now-caches]]
 # is the standing warning against pricing a model on routing luck. The reason to

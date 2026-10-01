@@ -82,10 +82,9 @@ RATES = {
     # exactly. Probe 2026-09-22, claude-opus-5-5, from the CLI's own modelUsage:
     #   2 in, 4 out, 21641 cache read, 14199 cache write (1h), costUSD 0.1180082
     #   2*4 + 4*20 + 21641*0.20 + 14199*8.00, /1e6  =  0.1180082  exactly
-    # The 1h cache-write rate ($8.00 = 2x input) is not in this tuple because
-    # run_cost does not bill cache writes at all; it is recorded here because it
-    # is what pinned the other three -- no other (in, out, cached) triple
-    # reproduces that cent-exact total.
+    # The 1h cache-write rate ($8.00 = 2x input) lives in CACHE_WRITE_RATES
+    # below; it is what pinned the other three -- no other (in, out, cached)
+    # triple reproduces that cent-exact total.
     "claude-opus-5-5": (4.00, 20.00, 0.20),
     "claude-opus-4-8": (5.00, 25.00, 0.50),
     "claude-fable-5": (10.00, 50.00, 1.00),
@@ -143,6 +142,35 @@ RATES = {
     "x-ai/grok-4.6": (2.00, 6.00, None),
     "qwen/qwen3.8-27b": (0.40, 3.00, 0.04),
     "qwen/qwen3.8-max": (2.00, 6.00, None),
+}
+
+# Cache-WRITE $/MTok, where it differs from the input rate. Until 2026-10-01
+# run_cost billed no cache writes at all, and they are the biggest single line
+# of a claude-route sweep: every Anthropic $ in the table was 40-57% low, by a
+# different share per model, so even the RATIOS between claude rows were wrong.
+#
+# Anthropic 1h writes are 2x base input. Not assumed: it reproduces the CLI's own
+# billed totals (summed cost_usd in bench/summaries/) -- claude-opus-5-5 exactly
+# ($10.018 against $10.0177); claude, opus-5, opus-4-8 and sonnet-5 within 2%,
+# fable-5 within 7%, the remainder being writes the CLI made at the 5-minute
+# 1.25x rate. Two CLI totals are wrong and are not used, both the same symptom:
+# a CLI that does not know the id bills it at another model's card. sonnet-5-5
+# is billed at Opus 5.5 rates (the table is half its cost_usd), and fable-5-1
+# at Opus 5 rates (its $12.53 reproduces to 1.5% that way; on its own card the
+# sweep costs ~2x that).
+#
+# Every other route bills a write at its plain input rate (run_cost's default):
+# the codex and ollama harnesses record no writes at all, and the two OpenRouter
+# qwen rows that do are priced at the floor -- an unbilled input token is the
+# defect being fixed, and no published qwen write rate says otherwise.
+CACHE_WRITE_RATES = {
+    "claude-opus-5": 10.00,
+    "claude-opus-5-5": 8.00,
+    "claude-opus-4-8": 10.00,
+    "claude-fable-5": 20.00,
+    "claude-fable-5-1": 20.00,
+    "claude-sonnet-5": 4.00,
+    "claude-sonnet-5-5": 4.00,
 }
 
 # Ollama per-token rates, $/MTok as (input, output, cached input), from
@@ -326,21 +354,27 @@ def check_caching_eras(rows):
                  + "\n".join(bad))
 
 
-def cached_share(tok_in, cache_read):
-    """Share of a sweep's INPUT that was served from cache, 0.0-1.0."""
-    total = tok_in + cache_read
+def cached_share(tok_in, cache_read, cache_write=0):
+    """Share of a sweep's INPUT that was served from cache, 0.0-1.0.
+
+    Cache writes are input that was NOT served from cache, so they belong in the
+    denominator; leaving them out read the claude rows as ~98% cached.
+    """
+    total = tok_in + cache_read + cache_write
     return (cache_read / total) if total else 0.0
 
 
-def run_cost_uncached(model, harness, tok_in, tok_out, cache_read, asof=None):
+def run_cost_uncached(model, harness, tok_in, tok_out, cache_read, asof=None,
+                      cache_write=0):
     """What the sweep would have cost with every input token billed fresh.
 
     The era-NEUTRAL figure: it is what an uncached-era row already paid, and the
     counterfactual for a cached-era one, so the two can be compared directly.
     Use it to rank cost across the switch; use run_cost() for what a sweep
-    actually costs today.
+    actually costs today. Without a cache there are no writes either, so those
+    tokens are billed as fresh input too.
     """
-    return run_cost(model, harness, tok_in + cache_read, tok_out, 0, asof)
+    return run_cost(model, harness, tok_in + cache_read + cache_write, tok_out, 0, asof)
 
 
 # The run id shape bench/run.sh records: fixpoint's run directory name.
@@ -539,14 +573,15 @@ def billing(model, harness):
     return "sub (claude)"
 
 
-def run_cost(model, harness, tok_in, tok_out, cache_read, asof=None):
+def run_cost(model, harness, tok_in, tok_out, cache_read, asof=None, cache_write=0):
     """What the whole sweep cost, in money, or None where no rate is published.
 
     Split out of cost_per_point so the total and the per-point figure cannot
     disagree: both are this one calculation. Cached input is billed at the
     cache rate where the route publishes one, and at the full input rate where
     it does not (grok and qwen3.8-max on OpenRouter, qwen3.5 and the nemotrons
-    on ollama, whose cached and fresh rates are identical anyway).
+    on ollama, whose cached and fresh rates are identical anyway). Cache writes
+    are billed at CACHE_WRITE_RATES, else at the input rate.
     """
     name, _ = agent_model(model, asof)
     rates = RATES.get(name or model) or ollama_rate(model)
@@ -555,6 +590,7 @@ def run_cost(model, harness, tok_in, tok_out, cache_read, asof=None):
     rate_in, rate_out, rate_cache = rates
     return (tok_in * rate_in
             + cache_read * (rate_in if rate_cache is None else rate_cache)
+            + cache_write * CACHE_WRITE_RATES.get(name or model, rate_in)
             + tok_out * rate_out) / 1e6
 
 
@@ -567,7 +603,8 @@ def money(harness, usd):
     return f"{'~' if notional else ''}${usd:,.2f}"
 
 
-def cost_per_point(model, harness, tok_in, tok_out, cache_read, points, asof=None):
+def cost_per_point(model, harness, tok_in, tok_out, cache_read, points, asof=None,
+                   cache_write=0):
     """What one seeded defect cost, in the currency that route actually spends.
 
     A dollar figure wherever a published rate exists, prefixed with ~ when the
@@ -581,10 +618,10 @@ def cost_per_point(model, harness, tok_in, tok_out, cache_read, points, asof=Non
     """
     if not points:
         return "-"
-    usd = run_cost(model, harness, tok_in, tok_out, cache_read, asof)
+    usd = run_cost(model, harness, tok_in, tok_out, cache_read, asof, cache_write)
     if usd is None:
         # No published rate anywhere: fall back to the quota-shaped figure.
-        return f"{(tok_in + tok_out) / 1000 / points:.1f}k"
+        return f"{(tok_in + cache_write + tok_out) / 1000 / points:.1f}k"
     # Same rule as money(): bare only where a card is charged per token.
     prefix = "" if harness.startswith("openrouter") else "~"
     return f"{prefix}${usd / points:.3f}"
@@ -621,7 +658,8 @@ def per_point_uncached(model, harness, e):
     """
     if not e["points"]:
         return "-"
-    usd = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"], _asof(e))
+    usd = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"], _asof(e),
+                            e["cache_write"])
     if usd is None:
         return "-"
     prefix = "" if harness.startswith("openrouter") else "~"
@@ -638,7 +676,7 @@ def _cost_key(model, harness, e):
     reads as two ordered groups rather than one nonsensical sequence.
     """
     raw = cost_per_point(model, harness, e["tok_in"], e["tok_out"],
-                         e["cache_read"], e["points"], _asof(e))
+                         e["cache_read"], e["points"], _asof(e), e["cache_write"])
     if raw == "-":
         return -1
     if raw.endswith("k"):
@@ -969,10 +1007,10 @@ def write_html(ranked, all_targets, out_path):
         </td>
         <td data-sort="{e['tokens']}">{e['tokens']:,}</td>
         <td data-sort="{eff:.4f}">{eff:.0f}</td>
-        <td data-sort="{run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e)) or -1:.4f}">{_esc(money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e))))}</td>
-        <td data-sort="{_cost_key(model, harness, e)}">{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e)))}</td>
+        <td data-sort="{run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e), e['cache_write']) or -1:.4f}">{_esc(money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e), e['cache_write'])))}</td>
+        <td data-sort="{_cost_key(model, harness, e)}">{_esc(cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e), e['cache_write']))}</td>
         <td class="{'zero' if e['era'] != 'cached' else ''}" data-sort="{-1 if e['era'] != 'cached' else e['cached_share']}">{_esc(cached_cell(e))}</td>
-        <td data-sort="{(run_cost_uncached(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e)) or 0) / (e['points'] or 1)}">{_esc(per_point_uncached(model, harness, e))}</td>
+        <td data-sort="{(run_cost_uncached(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e), e['cache_write']) or 0) / (e['points'] or 1)}">{_esc(per_point_uncached(model, harness, e))}</td>
         <td data-sort="{e['seconds']}">{e['seconds']:,}</td>
         <td class="{'err' if e['errors'] else 'zero'}" data-sort="{e['errors']}">{e['errors']}</td>
         <td class="sub" data-sort="{max(e['dates']) if e['dates'] else ''}">{measured_on(e['dates'])}</td>
@@ -1095,6 +1133,11 @@ def write_html(ranked, all_targets, out_path):
     and its paid &ldquo;Extra usage&rdquo; is a separate balance that starts empty. A sweep
     there spends quota, not money. Every route in this table is priced in the same unit;
     only one of them is an invoice.</p>
+    <p>A plan does not meter its quota at these rates. Measured on a ChatGPT Plus
+    5-hour window, gpt-6.1-sol drew about three times the quota per notional dollar
+    that gpt-5.6-sol did &mdash; about the same per token &mdash; although its
+    published rate is less than half. Do not pick a subscription seat by its
+    <code>~$</code>.</p>
     <p><b>Cached (this run)</b> is a fact about the sweep, not about the model.
     Prompt caching became available on the ollama route between 2026-09-02 and
     2026-09-13, and cached input there costs about 2% of fresh &mdash; but a hit is
@@ -1248,8 +1291,10 @@ def write_json(ranked, all_targets, out_path):
         e = entries[0]
         harness = route(model)
         name, effort = agent_model(model, _asof(e))
-        usd = run_cost(model, harness, e["tok_in"], e["tok_out"], e["cache_read"], _asof(e))
-        uncached = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"], _asof(e))
+        usd = run_cost(model, harness, e["tok_in"], e["tok_out"], e["cache_read"], _asof(e),
+                       e["cache_write"])
+        uncached = run_cost_uncached(model, harness, e["tok_in"], e["tok_out"], e["cache_read"],
+                                     _asof(e), e["cache_write"])
         mtok = e["tokens"] / 1e6
         for t, got in e["by_target"].items():
             pool.setdefault(t, got[1])
@@ -1349,8 +1394,8 @@ def write_markdown(ranked, all_targets, out_path):
         lines.append(
             f"| {i} | `{model}`{note} | {harness} | {e['points']}/{e['possible']} "
             f"| {pct:.0f}% "
-            f"| {money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e)))} "
-            f"| {cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e))} "
+            f"| {money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e), e['cache_write']))} "
+            f"| {cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e), e['cache_write'])} "
             f"| {cached_cell(e)} | {per_point_uncached(model, harness, e)} "
             f"| {e['seconds']} | {e['errors']} |")
     lines.append("")
@@ -1374,7 +1419,10 @@ def write_markdown(ranked, all_targets, out_path):
                  "deflated, not low. `~$` is notional &mdash; the route bills a plan, not "
                  "the tokens (claude, codex and ollama, which still meters session and "
                  "weekly quotas); a bare `$` is money actually billed to a card, which is "
-                 "OpenRouter only.")
+                 "OpenRouter only. A plan does not meter quota at these rates: measured on a "
+                 "ChatGPT Plus 5-hour window, gpt-6.1-sol drew ~3x the quota per notional "
+                 "dollar that gpt-5.6-sol did, about the same per token. Do not pick a "
+                 "subscription seat by its `~$`.")
     lines.append("")
     lines.append(README_END)
     block = "\n".join(lines)
@@ -1478,9 +1526,24 @@ def selftest():
           drop_stale_epochs({("claude-opus-5", "go"): [dict(old), dict(new)]})[("claude-opus-5", "go")],
           [old, new])
 
+    # 7. Cache writes are billed (until 2026-10-01 they were not, and every claude
+    #    $ was 40-57% low). These are claude-opus-5-5's committed sweep totals,
+    #    and the figure is the CLI's own billed costUSD for them, $10.0177 -- the
+    #    one external number this column can be held to. Without the writes the
+    #    same tokens price at the ~$4.27 the table used to publish.
+    o55 = ("claude-opus-5-5", "cli", 144, 194696, 1854658, "20260922-235959")
+    check("opus-5-5 sweep WITH its cache writes reproduces the CLI's bill",
+          round(run_cost(*o55, cache_write=719033), 2), 10.02)
+    check("the same sweep without them is the old understated figure",
+          round(run_cost(*o55), 2), 4.27)
+    check("a write on a route with no published write rate bills at input",
+          run_cost("qwen/qwen3.8-max", "openrouter", 0, 0, 0, None, 1_000_000), 2.00)
+    check("writes are input that missed the cache",
+          cached_share(0, 75, 25), 0.75)
+
     if fails:
         sys.exit("report.py --selftest FAILED:\n" + "\n".join(fails))
-    print("report.py: agent-history pricing guard OK")
+    print("report.py: agent-history pricing and cache-write guards OK")
     return 0
 
 
@@ -1533,6 +1596,9 @@ def main():
         # keeps the raw numbers; the subtraction lives here, in one place.
         if cached_is_subset(r["model"]):
             r["tokens_in"] = str(max(int(r["tokens_in"]) - int(r["cache_read"]), 0))
+        # cache_write arrived 2026-10-01 and was backfilled from bench/summaries/;
+        # a csv from before it (a path passed on the command line) reads as none.
+        r["cache_write"] = r.get("cache_write") or "0"
 
     # Before anything is aggregated or published: if a route started caching
     # earlier than ROUTE_CACHING claims, say so here rather than emit dollar
@@ -1585,8 +1651,8 @@ def main():
         rep["_deflated"] = "" if clean else "1"
         rep["_repeats"] = str(len(use))
         # cost and failures are the whole model's, not just the chosen run's
-        for col in ("tokens_in", "tokens_out", "cache_read", "duration_s",
-                    "errors", "sessions"):
+        for col in ("tokens_in", "tokens_out", "cache_read", "cache_write",
+                    "duration_s", "errors", "sessions"):
             rep[col] = str(sum(int(r[col]) for r in rs))
         rep["_dates"] = sorted({r["run"].split("-")[0] for r in rs})
         # Full run ids alongside the days: _asof needs the TIME, because a
@@ -1606,8 +1672,14 @@ def main():
             "possible": possible,
             # Cost columns cover every target measured, not just the scored
             # pair: the quota a sweep actually drew is the whole of it.
-            "tokens": sum(int(t["tokens_in"]) + int(t["tokens_out"]) for t in tasks.values()),
+            # Writes are FRESH input on the claude route (Anthropic's
+            # input_tokens leaves them out), and the codex route's fresh input
+            # already contains its equivalent -- so they count here, or every
+            # claude row's pts/Mtok is measured on a fraction of its input.
+            "tokens": sum(int(t["tokens_in"]) + int(t["cache_write"]) + int(t["tokens_out"])
+                          for t in tasks.values()),
             "tok_in": sum(int(t["tokens_in"]) for t in tasks.values()),
+            "cache_write": sum(int(t["cache_write"]) for t in tasks.values()),
             "tok_out": sum(int(t["tokens_out"]) for t in tasks.values()),
             "cache_read": sum(int(t["cache_read"]) for t in tasks.values()),
             "errors": sum(int(t["errors"]) for t in tasks.values()),
@@ -1622,7 +1694,8 @@ def main():
                                sorted({d for t in tasks.values() for d in t["_dates"]})),
             "cached_share": cached_share(
                 sum(int(t["tokens_in"]) for t in tasks.values()),
-                sum(int(t["cache_read"]) for t in tasks.values())),
+                sum(int(t["cache_read"]) for t in tasks.values()),
+                sum(int(t["cache_write"]) for t in tasks.values())),
             "missing": sorted(set(SCORED_TARGETS) - set(scored)),
             # recall per target, for the by-target matrix
             # errors per target too: a run that lost a LENS to a contract
@@ -1677,8 +1750,8 @@ def main():
             print(f"{label:30s} {(measured if measured != model else '-'):22s} "
                   f"{harness:11s} {billing(model, harness):13s} "
                   f"{e['points']:>4d}/{e['possible']:<4d} {e['tokens']:>9d} {eff:>9.1f} "
-                  f"{money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e))):>9s} "
-                  f"{cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e)):>10s} "
+                  f"{money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e), e['cache_write'])):>9s} "
+                  f"{cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e), e['cache_write']):>10s} "
                   f"{cached_cell(e):>7s} "
                   f"{per_point_uncached(model, harness, e):>9s} "
                   f"{e['seconds']:>6d} {e['errors']:>4d} "
@@ -1744,6 +1817,10 @@ def main():
           "which still meters a session and a")
     print("           weekly quota on top of its per-token rates. k = tokens, "
           "for a model with no published rate.")
+    print("           A plan does not meter quota at these rates: on ChatGPT Plus "
+          "gpt-6.1-sol drew ~3x the quota per ~$")
+    print("           that gpt-5.6-sol did. Do not pick a subscription seat by "
+          "its ~$.")
 
 
 if __name__ == "__main__":
