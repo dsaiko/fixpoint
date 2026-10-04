@@ -58,6 +58,14 @@ if [ "${SPEC:-0}" = 1 ]; then
     SPEC_ARGS='--speculative-config {"method":"mtp","num_speculative_tokens":3}'
 fi
 
+# A server already on the port would answer the readiness wait below for
+# the one being started -- which then dies on the busy port or the GPU the old
+# one holds, and the sweep measures the OLD settings under the new notes.
+if curl -fsS "http://localhost:$PORT/health" >/dev/null 2>&1; then
+    echo "vllm-serve: something already serves on port $PORT; stop it first (pkill -f 'vllm serve')" >&2
+    exit 1
+fi
+
 # --served-model-name is the bare repo id: run.sh strips vllm@ and checks the
 # server lists exactly that. --language-model-only: the reviewers send text
 # only, and skipping the vision inputs leaves that memory to the KV cache.
@@ -94,6 +102,10 @@ until curl -fsS "http://localhost:$PORT/health" >/dev/null 2>&1; do
     fi
     sleep 10
 done
+if ! kill -0 "$PID" 2>/dev/null; then
+    echo "vllm-serve: /health answered but pid $PID is gone; see $LOG" >&2
+    exit 1
+fi
 echo "vllm-serve: ready"
 curl -fsS -H "Authorization: Bearer $VLLM_API_KEY" "http://localhost:$PORT/v1/models"
 echo

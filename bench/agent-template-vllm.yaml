@@ -50,6 +50,13 @@ env:
     # a side call that silently failed is a harness the bench did not measure.
     # Their tokens land in modelUsage under the same key and are counted with
     # the session's, as on every other route.
+    #
+    # On the paired baseline these aliases were inert: every raw harness reply
+    # of the qwen/qwen3.8-27b sweep (runs 20260820-130703 / -132657) carries a
+    # single modelUsage key, the model itself -- no haiku side call, no
+    # subagent. If a vllm@ run's raw replies show a SECOND kind of work under
+    # this key, that is a harness difference from the baseline, not the model:
+    # check before quoting a token ratio between the two rows.
     ANTHROPIC_DEFAULT_HAIKU_MODEL: __MODEL__
     ANTHROPIC_DEFAULT_SONNET_MODEL: __MODEL__
     ANTHROPIC_DEFAULT_OPUS_MODEL: __MODEL__
