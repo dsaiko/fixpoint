@@ -1564,7 +1564,9 @@ def selftest():
     check("vllm@ rows are priced at the paired baseline's rates",
           run_cost(tc, "vllm", 1_000_000, 1_000_000, 0),
           run_cost("qwen/qwen3.8-27b", "openrouter", 1_000_000, 1_000_000, 0))
-    check("and that price is marked notional", money("vllm", 3.4), "~$3.40")
+    check("and that price is marked notional", money(route(tc), 3.4), "~$3.40")
+    check("per point too", cost_per_point(tc, route(tc), 1_000_000, 1_000_000, 0, 10)[0], "~")
+    check("vllm@ bills a rented GPU, not a subscription", billing(tc, route(tc)), "rented GPU")
 
     if fails:
         sys.exit("report.py --selftest FAILED:\n" + "\n".join(fails))

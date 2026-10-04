@@ -79,13 +79,17 @@ elif [ "${MODEL#vllm@}" != "$MODEL" ]; then
         echo "bench: cannot reach ${VLLM_BASE_URL%/}/v1/models -- is the server up?" >&2
         exit 2
     }
-    case $served in
-    *"\"${MODEL#vllm@}\""*) ;;
-    *)
+    # An exact match on data[].id, not a substring of the body: vLLM also
+    # lists the path the weights were loaded from as `root`, so a server
+    # running these weights under another --served-model-name still carries
+    # the repo id, and would pass -- then 404 every session.
+    if ! printf '%s' "$served" | python3 -c '
+import json, sys
+ids = [m.get("id") for m in json.load(sys.stdin).get("data", [])]
+sys.exit(0 if sys.argv[1] in ids else 1)' "${MODEL#vllm@}" 2>/dev/null; then
         echo "bench: ${VLLM_BASE_URL%/} does not serve ${MODEL#vllm@}: $served" >&2
         exit 2
-        ;;
-    esac
+    fi
     # Record what is being measured: the server's model list carries the
     # context length it was started with, which a run log should keep.
     echo "bench: serving: $served"
