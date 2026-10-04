@@ -142,6 +142,12 @@ RATES = {
     "x-ai/grok-4.6": (2.00, 6.00, None),
     "qwen/qwen3.8-27b": (0.40, 3.00, 0.04),
     "qwen/qwen3.8-max": (2.00, 6.00, None),
+    # Self-served (vllm@) rows have no per-token price: the bill is GPU hours.
+    # They are priced at the rate card of the model they are paired with, so
+    # $/point compares TOKEN efficiency on the same scale -- which is the whole
+    # claim ThinkingCap makes against its base (same answers, fewer thinking
+    # tokens). Notional (~) like every plan, never money anyone was charged.
+    "vllm@bottlecapai/ThinkingCap-Qwen3.8-27B": (0.40, 3.00, 0.04),
 }
 
 # Cache-WRITE $/MTok, where it differs from the input rate. Until 2026-10-01
@@ -520,6 +526,10 @@ def route(model):
         return "openrouter/codex"
     if model.startswith("claude-"):
         return "anthropic"
+    if model.startswith("vllm@"):
+        # Checked before the slash rule, as bench/run.sh does: a vllm@ id
+        # carries an HF repo's slash but never touches OpenRouter.
+        return "vllm"
     if "/" in model:
         return "openrouter"
     return "ollama"
@@ -550,6 +560,12 @@ def cached_is_subset(model):
 def billing(model, harness):
     if harness.startswith("openrouter"):
         return "credits"
+    if harness == "vllm":
+        # A rented GPU billed by the hour, not by the token: what a sweep cost
+        # is the pod's runtime, recorded in bench/models.txt. The per-token $
+        # in the table is the paired baseline's rate card (see RATES), so it
+        # is notional like every plan's.
+        return "rented GPU"
     if harness == "ollama":
         # CORRECTED 2026-09-02 from the operator's own usage page. The
         # 2026-09-01 move to published per-token rates did NOT remove the
@@ -1540,6 +1556,15 @@ def selftest():
           run_cost("qwen/qwen3.8-max", "openrouter", 0, 0, 0, None, 1_000_000), 2.00)
     check("writes are input that missed the cache",
           cached_share(0, 75, 25), 0.75)
+
+    # 8. A self-served model is its own route even though its id has a slash,
+    #    and its $ is notional (~): the GPU is billed by the hour, not the token.
+    tc = "vllm@bottlecapai/ThinkingCap-Qwen3.8-27B"
+    check("vllm@ is not mistaken for an OpenRouter id", route(tc), "vllm")
+    check("vllm@ rows are priced at the paired baseline's rates",
+          run_cost(tc, "vllm", 1_000_000, 1_000_000, 0),
+          run_cost("qwen/qwen3.8-27b", "openrouter", 1_000_000, 1_000_000, 0))
+    check("and that price is marked notional", money("vllm", 3.4), "~$3.40")
 
     if fails:
         sys.exit("report.py --selftest FAILED:\n" + "\n".join(fails))
