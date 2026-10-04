@@ -1,0 +1,58 @@
+# Template for a bench candidate served by our OWN vLLM instance (model ids
+# written vllm@<hf-repo>, e.g. vllm@bottlecapai/ThinkingCap-Qwen3.8-27B).
+# bench/run.sh substitutes __MODEL__ (the served model name, without the vllm@
+# prefix) and __BASE_URL__ (VLLM_BASE_URL), and forwards VLLM_API_KEY as
+# ANTHROPIC_AUTH_TOKEN. The server side is bench/vllm-serve.sh.
+#
+# It exists for open-weight models no provider hosts: ThinkingCap-Qwen3.8-27B
+# had no inference provider anywhere on 2026-10-04 (not OpenRouter, not the HF
+# router, not ollama's cloud), so the only way to measure it was to rent a GPU
+# and serve it ourselves.
+#
+# SAME HARNESS AS THE OPENROUTER ROUTE, on purpose. vLLM serves the Anthropic
+# Messages API (/v1/messages) natively, so this is the claude harness pointed at
+# a different base URL -- the harness the paired baseline qwen/qwen3.8-27b was
+# measured through. The variables that DO change are the serving stack (vLLM,
+# not whatever OpenRouter's provider ran) and wall clock (one rented GPU, not a
+# fleet); say so when quoting a vllm@ row's seconds.
+model: __MODEL__
+command:
+  - claude
+  - --model {{model}}
+  - --output-format json
+  - -p
+  - --setting-sources user
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  error_status: api_error_status
+# NO cost_usd: the harness applies Anthropic's rate card to a model Anthropic
+# does not serve. bench/report.py prices vllm@ rows itself (see RATES there).
+prompt_via: stdin
+# 30m like every other route. A rented H100/H200 decodes this class of model
+# far faster than any reviewer session needs; a session that still times out is
+# a measurement, not a reason to raise the ceiling for one candidate.
+timeout: 30m
+can_edit: false
+env:
+  pass:
+    - ANTHROPIC_AUTH_TOKEN
+  set:
+    # No /v1 suffix: the harness appends /v1/messages itself.
+    ANTHROPIC_BASE_URL: __BASE_URL__
+    # The harness makes side calls (titles, summaries, Explore subagents) on its
+    # haiku/sonnet/opus defaults. A self-hosted server serves exactly one model,
+    # so every alias points at it: an unknown model id would 404 the call, and
+    # a side call that silently failed is a harness the bench did not measure.
+    # Their tokens land in modelUsage under the same key and are counted with
+    # the session's, as on every other route.
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: __MODEL__
+    ANTHROPIC_DEFAULT_SONNET_MODEL: __MODEL__
+    ANTHROPIC_DEFAULT_OPUS_MODEL: __MODEL__
+    ANTHROPIC_SMALL_FAST_MODEL: __MODEL__
+    CLAUDE_CODE_SUBAGENT_MODEL: __MODEL__
+prompt_budget: 400000

@@ -298,13 +298,47 @@ harness cannot read (OpenRouter's Anthropic translation puts a trailing
 signature-only thinking block after some models' text, and the harness's result
 comes out empty; gemini-3.7-flash is the measured case). A codex@ number is
 comparable to the codex baseline, which shares its harness -- say so when
-quoting it. Anything else runs the ollama template. Results append
+quoting it. A `vllm@`-prefixed Hugging Face repo (`vllm@bottlecapai/ThinkingCap-Qwen3.8-27B`)
+is a model we serve ourselves, for open weights no provider hosts: the claude
+harness pointed at our own vLLM's `/v1/messages`, so it shares a harness with
+the OpenRouter rows (see "Self-served models" below). Anything else runs the
+ollama template. Results append
 to `results.csv` (committed — measurements are project knowledge); per-run
 seed tables land in `results/`. Re-score an old run without re-paying for it:
 
 ```sh
 python3 bench/score.py bench/manifest-go.yaml .fixpoint/<ts>/summary-<ts>.json <model>
 ```
+
+### Self-served models (vllm@)
+
+For open weights that no provider serves, rent a GPU and serve them with vLLM.
+Three scripts, in order:
+
+1. **On the GPU box** (e.g. a RunPod pod from the PyTorch template; an 80 GB
+   H100 holds a 27B model in BF16, a 141 GB H200 holds it with room for three
+   concurrent lens sessions): `VLLM_API_KEY=<secret> sh bench/vllm-serve.sh`.
+   It installs vLLM, pins the weights to the current commit, prints the
+   revision and the vLLM version, and serves on localhost:8000. `MODEL`,
+   `MAX_LEN`, `EFFORT` and `SPEC=1` override the defaults.
+2. **On the bench machine**, tunnel the port (`ssh -N -L 8000:localhost:8000
+   root@<pod-ip> -p <port>`) and run `bench/vllm-preflight.sh
+   vllm@<repo>` with `VLLM_BASE_URL=http://localhost:8000` and the same
+   `VLLM_API_KEY`. It forces one tool call and compares the harness's output
+   tokens with the server's own counter: if reasoning tokens are missing from
+   the usage the harness reads, a thinking-efficient model would look cheaper
+   than it is, and the sweep would measure the wrong thing.
+3. `make bench MODEL=vllm@<repo> TASK=go,design,rust,java,typescript,csharp,cpp,python`
+   with the same two variables set. `run.sh` refuses to start unless the
+   server is reachable and serves exactly that model.
+
+The tunnel, not the provider's https proxy, is the intended path: RunPod's
+proxy sits behind a ~100 s gateway timeout that a long prefill can hit before
+the first byte. A `vllm@` row's dollar figure is notional -- priced at the
+paired baseline's rate card in `report.py`, because the real bill is GPU hours
+-- and its wall clock is one rented GPU's, not a provider fleet's. Write both
+down in `models.txt`. Terminate the pod afterwards; a stopped pod still bills
+for its disk.
 
 ## History
 

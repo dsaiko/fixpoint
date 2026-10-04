@@ -136,6 +136,24 @@ x-ai/grok-4.6
 # so the per-point column is real money rather than a guess.
 qwen/qwen3.8-27b
 qwen/qwen3.8-max
+# ThinkingCap-Qwen3.8-27B (BottleCap AI, 2026-09-23): a post-train of the
+# qwen3.8-27b above that claims the same answers with ~37% fewer reasoning
+# tokens. The bench is the right instrument for that claim -- same harness, same
+# targets, one paired baseline -- but NO provider served it on 2026-10-04 (not
+# OpenRouter, not the HF router, not ollama's cloud; Featherless had only the
+# older 3.6 build, at a 32k context the harness cannot fit in). So it runs on a
+# rented GPU through the vllm@ route: bench/vllm-serve.sh on the pod, BF16
+# weights at the card's default effort (xhigh), then bench/vllm-preflight.sh,
+# then `make bench`. Record the pod's GPU, hours and $ here, with the weights
+# revision and vLLM version vllm-serve.sh prints: the table's $ for this row is
+# the baseline's rate card, not what the run cost.
+#
+# Local hardware was measured first and cannot carry a sweep (Q4_K_M, 7k-token
+# prompt): Mac M4 24 GB 5.8 tok/s decode, 56-62 tok/s prefill, and a 16k context
+# does not fit the GPU; mediabox CPU 1.9 / 4.1 tok/s; desktop-101 (i5-10600K +
+# RTX 2070 SUPER 8 GB, 28% of the weights on the GPU) 3.1 / 222 tok/s. A
+# session takes 70-220k tokens of input and the per-call timeout is 30m.
+vllm@bottlecapai/ThinkingCap-Qwen3.8-27B
 
 # Gemini 3.7 Flash -- DISQUALIFIED 2026-08-19, three routes, three distinct
 # root causes, all measured. Left listed so nobody re-derives any of them.
