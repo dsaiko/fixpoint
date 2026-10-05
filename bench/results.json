@@ -24,11 +24,11 @@
  "possible": 484,
  "measured": {
   "first": "2026-08-20",
-  "last": "2026-09-30"
+  "last": "2026-10-05"
  },
  "totals": {
-  "candidates": 30,
-  "sessions": 702,
+  "candidates": 31,
+  "sessions": 725,
   "targets": 8,
   "contract_failures": 3
  },
@@ -794,6 +794,75 @@
   },
   {
    "rank": 12,
+   "candidate": "vllm@bottlecapai/ThinkingCap-Qwen3.8-27B",
+   "baseline": false,
+   "model": "vllm@bottlecapai/ThinkingCap-Qwen3.8-27B",
+   "effort": null,
+   "route": "vllm",
+   "pays": "rented GPU",
+   "points": 307,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1113179,
+   "points_per_mtok": 275.8,
+   "cost_usd": 1.64,
+   "cost_per_point_usd": 0.005,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.666,
+   "cost_per_point_uncached_usd": 0.007,
+   "seconds": 7565,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-10-05",
+    "last": "2026-10-05"
+   },
+   "by_target": {
+    "go": {
+     "found": 37,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 34,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 47,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 40,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 38,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 50,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 47,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 13,
    "candidate": "glm-5.3-flash:cloud",
    "baseline": false,
    "model": "glm-5.3-flash:cloud",
@@ -862,7 +931,7 @@
    }
   },
   {
-   "rank": 13,
+   "rank": 14,
    "candidate": "codex",
    "baseline": true,
    "model": "gpt-5.6-sol",
@@ -931,7 +1000,7 @@
    }
   },
   {
-   "rank": 14,
+   "rank": 15,
    "candidate": "glm-5.2:cloud",
    "baseline": false,
    "model": "glm-5.2:cloud",
@@ -1000,7 +1069,7 @@
    }
   },
   {
-   "rank": 15,
+   "rank": 16,
    "candidate": "claude-fable-5",
    "baseline": false,
    "model": "claude-fable-5",
@@ -1069,7 +1138,7 @@
    }
   },
   {
-   "rank": 16,
+   "rank": 17,
    "candidate": "x-ai/grok-4.6",
    "baseline": false,
    "model": "x-ai/grok-4.6",
@@ -1138,7 +1207,7 @@
    }
   },
   {
-   "rank": 17,
+   "rank": 18,
    "candidate": "deepseek-v4-pro:cloud",
    "baseline": false,
    "model": "deepseek-v4-pro:cloud",
@@ -1207,7 +1276,7 @@
    }
   },
   {
-   "rank": 18,
+   "rank": 19,
    "candidate": "gpt-6-astra-xhigh",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -1276,7 +1345,7 @@
    }
   },
   {
-   "rank": 19,
+   "rank": 20,
    "candidate": "claude-opus-4-8",
    "baseline": false,
    "model": "claude-opus-4-8",
@@ -1345,7 +1414,7 @@
    }
   },
   {
-   "rank": 20,
+   "rank": 21,
    "candidate": "gpt-6-astra",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -1414,7 +1483,7 @@
    }
   },
   {
-   "rank": 21,
+   "rank": 22,
    "candidate": "gpt-6.1-sol",
    "baseline": false,
    "model": "gpt-6.1-sol",
@@ -1483,7 +1552,7 @@
    }
   },
   {
-   "rank": 22,
+   "rank": 23,
    "candidate": "minimax-m3:cloud",
    "baseline": false,
    "model": "minimax-m3:cloud",
@@ -1552,7 +1621,7 @@
    }
   },
   {
-   "rank": 23,
+   "rank": 24,
    "candidate": "deepseek-v4-flash:0731-cloud",
    "baseline": false,
    "model": "deepseek-v4-flash:0731-cloud",
@@ -1621,7 +1690,7 @@
    }
   },
   {
-   "rank": 24,
+   "rank": 25,
    "candidate": "claude-sonnet-5",
    "baseline": false,
    "model": "claude-sonnet-5",
@@ -1690,7 +1759,7 @@
    }
   },
   {
-   "rank": 25,
+   "rank": 26,
    "candidate": "kimi-k2.7-code:cloud",
    "baseline": false,
    "model": "kimi-k2.7-code:cloud",
@@ -1759,7 +1828,7 @@
    }
   },
   {
-   "rank": 26,
+   "rank": 27,
    "candidate": "gpt-oss:120b-cloud",
    "baseline": false,
    "model": "gpt-oss:120b-cloud",
@@ -1828,7 +1897,7 @@
    }
   },
   {
-   "rank": 27,
+   "rank": 28,
    "candidate": "gpt-5.6-terra",
    "baseline": false,
    "model": "gpt-5.6-terra",
@@ -1897,7 +1966,7 @@
    }
   },
   {
-   "rank": 28,
+   "rank": 29,
    "candidate": "gpt-6-sol",
    "baseline": false,
    "model": "gpt-6-sol",
@@ -1966,7 +2035,7 @@
    }
   },
   {
-   "rank": 29,
+   "rank": 30,
    "candidate": "qwen3.5:397b-cloud",
    "baseline": false,
    "model": "qwen3.5:397b-cloud",
@@ -2035,7 +2104,7 @@
    }
   },
   {
-   "rank": 30,
+   "rank": 31,
    "candidate": "gemma4:31b-cloud",
    "baseline": false,
    "model": "gemma4:31b-cloud",
