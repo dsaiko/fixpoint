@@ -44,6 +44,14 @@ env:
   set:
     # No /v1 suffix: the harness appends /v1/messages itself.
     ANTHROPIC_BASE_URL: __BASE_URL__
+    # The harness sends its effort level with every request, from the user
+    # settings it loads (effortLevel: high on both bench hosts), and vLLM hands
+    # it to the model's chat template as reasoning_effort. ThinkingCap's
+    # template accepts only xhigh (its default), medium and low, and answered
+    # "high" with a 400 on every call. xhigh is the card's default and the
+    # level vllm-serve.sh pins, so the request now says what the server meant.
+    # A different self-served model may want a different value here.
+    CLAUDE_CODE_EFFORT_LEVEL: xhigh
     # The harness makes side calls (titles, summaries, Explore subagents) on its
     # haiku/sonnet/opus defaults. A self-hosted server serves exactly one model,
     # so every alias points at it: an unknown model id would 404 the call, and

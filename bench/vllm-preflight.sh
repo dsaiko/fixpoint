@@ -46,7 +46,7 @@ echo "The password is $word." >"$dir/note.txt"
 
 before=$(generated) || exit 1
 out=$(cd "$dir" && printf 'Read the file note.txt and reply with the password it contains, nothing else.' |
-    env -u ANTHROPIC_API_KEY \
+    env -u ANTHROPIC_API_KEY CLAUDE_CODE_EFFORT_LEVEL=xhigh \
         ANTHROPIC_BASE_URL="$BASE" ANTHROPIC_AUTH_TOKEN="$VLLM_API_KEY" \
         ANTHROPIC_DEFAULT_HAIKU_MODEL="$SERVED" ANTHROPIC_DEFAULT_SONNET_MODEL="$SERVED" \
         ANTHROPIC_DEFAULT_OPUS_MODEL="$SERVED" ANTHROPIC_SMALL_FAST_MODEL="$SERVED" \

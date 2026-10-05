@@ -154,6 +154,27 @@ qwen/qwen3.8-max
 # RTX 2070 SUPER 8 GB, 28% of the weights on the GPU) 3.1 / 222 tok/s. A
 # session takes 70-220k tokens of input and the per-call timeout is 30m.
 vllm@bottlecapai/ThinkingCap-Qwen3.8-27B
+# MEASURED 2026-10-05: 307/484 against the baseline's 314, on 31% fewer output
+# tokens (437k against 633k) and 31% less input, 0 errors -- the card's claim
+# (~37% less thinking, accuracy within a point) holds here at about that size.
+# Per target: java and cpp tie, python +5, typescript -4 and csharp -5, the rest
+# -1; one repeat each, so a point or two per target is noise. At the
+# baseline's rate card that is ~$0.005 a point against $0.008. No seat: the
+# panel is at 414.
+#
+# Served: weights d2b4e7a599f3 (BF16), vLLM 0.30.0+cu129, one H200 SXM on
+# RunPod (on-demand, $4.62/h), max_model_len 262144, reasoning effort xhigh.
+# The sweep took ~55 min of wall clock (three lenses at once, ~120 tok/s); the
+# pod ran 01:48-03:11 including setup and cost $6.00 all in (balance $35 ->
+# $29). The pod deleted itself afterwards with its own scoped key (runpodctl
+# remove pod), from a watcher on mediabox.
+#
+# TWO DIFFERENCES FROM THE BASELINE ROW, both unavoidable. Effort: the harness
+# sends its effortLevel (high on the bench hosts) and ThinkingCap's template
+# rejects "high", so this route pins xhigh -- the card's default and its top
+# level; what OpenRouter did with "high" for the base model is not recorded.
+# Wall clock: one rented GPU against a provider fleet, so the seconds column
+# compares hardware, not models.
 
 # Gemini 3.7 Flash -- DISQUALIFIED 2026-08-19, three routes, three distinct
 # root causes, all measured. Left listed so nobody re-derives any of them.

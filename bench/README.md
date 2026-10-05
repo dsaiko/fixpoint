@@ -320,7 +320,9 @@ Three scripts, in order:
    concurrent lens sessions): `VLLM_API_KEY=<secret> sh bench/vllm-serve.sh`.
    It installs vLLM, pins the weights to the current commit, prints the
    revision and the vLLM version, and serves on localhost:8000. `MODEL`,
-   `MAX_LEN`, `EFFORT` and `SPEC=1` override the defaults.
+   `MAX_LEN`, `EFFORT` and `SPEC=1` override the defaults. A gated repo
+   (ThinkingCap's are) needs its license accepted on the model page and a
+   read token in the box's `~/.cache/huggingface/token` first.
 2. **On the bench machine**, tunnel the port (`ssh -N -L 8000:localhost:8000
    root@<pod-ip> -p <port>`) and run `bench/vllm-preflight.sh
    vllm@<repo>` with `VLLM_BASE_URL=http://localhost:8000` and the same
