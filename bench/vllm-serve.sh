@@ -32,16 +32,50 @@ PORT=${PORT:-8000}
 WORK=${WORK:-/workspace}
 : "${VLLM_API_KEY:?set VLLM_API_KEY to a long random secret; the bench sends it as a bearer token}"
 
-export HF_HOME="$WORK/hf"
-VENV="$WORK/vllm-venv"
+# HF_HUB_CACHE, not HF_HOME: only the weights move to $WORK. HF_HOME would
+# also move where the hub looks for the login token, and the ThinkingCap
+# repos are GATED (accept the license on the model page, then put a read
+# token in ~/.cache/huggingface/token or HF_TOKEN) -- a token in the usual
+# place would then be ignored and every download 401s.
+export HF_HUB_CACHE="$WORK/hf"
+# The venv defaults to the container disk, not $WORK: a RunPod volume can be a
+# network filesystem (MooseFS on the first pod used), where importing torch and
+# vLLM from thousands of small files is slow. The weights stay on $WORK.
+VENV=${VENV:-/root/vllm-venv}
 LOG="$WORK/vllm.log"
 
 if [ ! -x "$VENV/bin/vllm" ]; then
     echo "vllm-serve: installing vLLM into $VENV"
-    python3 -m pip install -q -U uv
+    # --break-system-packages only as the fallback: Ubuntu 24.04's system
+    # Python refuses pip installs without it (PEP 668), older images do not.
+    python3 -m pip install -q -U uv 2>/dev/null ||
+        python3 -m pip install -q -U --break-system-packages uv
     python3 -m uv venv -q "$VENV"
-    python3 -m uv pip install -q --python "$VENV/bin/python" vllm
+    # The PyPI wheel follows vLLM's default CUDA, which moved to 13 (driver
+    # 580+). The first pod had driver 570 (CUDA 12.8): PyPI's vllm 0.30.0
+    # installed, then died on `libcudart.so.13`. On a CUDA 12 driver, install
+    # the release's +cu129 wheel instead. --torch-backend, not
+    # --extra-index-url: the latter lets the torch index answer for EVERY
+    # package, and its stale `packaging` made the resolve unsatisfiable.
+    driver_cuda=$(nvidia-smi | sed -n 's/.*CUDA Version: *\([0-9]*\)\..*/\1/p' | head -n 1)
+    if [ "${driver_cuda:-0}" -lt 13 ]; then
+        v=${VLLM_VERSION:-$(curl -fsS https://api.github.com/repos/vllm-project/vllm/releases/latest |
+            python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')}
+        python3 -m uv pip install -q --python "$VENV/bin/python" \
+            "https://github.com/vllm-project/vllm/releases/download/v$v/vllm-$v+cu129-cp38-abi3-manylinux_2_28_$(uname -m).whl" \
+            --torch-backend=cu129
+    else
+        python3 -m uv pip install -q --python "$VENV/bin/python" --torch-backend=auto vllm
+    fi
 fi
+
+# FlashInfer JIT-compiles its sampling kernels on first use and shells out to
+# `ninja` (installed into the venv) and `nvcc` (the image's CUDA toolkit).
+# Neither is on a non-login shell's PATH, and the engine died on the first
+# pod with "No such file or directory: 'ninja'".
+[ -d /usr/local/cuda/bin ] && export CUDA_HOME=/usr/local/cuda
+PATH="$VENV/bin:${CUDA_HOME:+$CUDA_HOME/bin:}$PATH"
+export PATH
 
 # Pin the weights to the commit that exists NOW and print it: a repo can be
 # re-pushed under the same name, and a measurement of unknown weights is not a
