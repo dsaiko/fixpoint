@@ -791,3 +791,71 @@ gpt-6.1-sol
 # the panel is [claude, gpt-6.1-sol, glm-5.3-flash-ollama]. Coverage 414 against
 # 411, and the clock evidence says route, not model. Watch its live round time;
 # gpt-6-sol is the one-word fallback in defaults.yaml.
+
+# Claude Haiku 5.5 -- added 2026-10-07, the third of the 5.5 family after Opus 5.5
+# (09-22) and Sonnet 5.5 (09-28). The first Haiku on this bench.
+#
+# Reachable: `claude --model claude-haiku-5-5` answered on 2026-10-07, modelUsage
+# keyed `claude-haiku-5-5`, provider firstParty, no fallback. Claude Code 2.1.291
+# prints [claude-code:unrecognized_model] and runs it anyway -- and, as with
+# sonnet-5-5, reports `costBasis: "unknown"` and bills it at OPUS 5.5's card: the
+# probe's costUSD 0.362124 is 2*4 + 161*20 + 44862*8, /1e6 exactly. Its card is
+# ~40x below that, so every cost_usd in this model's summaries is ~40x too high.
+#
+# THE FIRST TIERED CARD ON THE BENCH (platform.claude.com pricing, 2026-10-07):
+#
+#   prompt <= 100k tokens   $0.10 in  $0.50 out  $0.01 cached  $0.20 1h write
+#   prompt  > 100k tokens   $0.50 in  $2.50 out  $0.05 cached  $1.00 1h write
+#
+# The tier is chosen PER REQUEST by prompt length, and a summary only carries the
+# session's totals, so report.py's flat RATES tuple can price it only at the lower
+# tier -- a lower bound. Where the per-request usage survives (the CLI's session
+# transcripts), price the >100k requests separately and record the true figure here.
+#
+# Seat arithmetic before the run, so the bar is set in advance: one payer, one
+# seat, so it can only REPLACE claude-opus-5-5 in the claude seat. The seated
+# panel [opus-5-5, gpt-6-sol, glm-5.3-flash] reads 411/484. The bar is panel >= 407
+# with it in that seat (inside the 4-seed noise floor), and a wall clock no slower
+# than opus-5-5's 2016s. Cost is not part of the bar: at ~1/40 of Opus it passes by
+# construction, which is exactly why it cannot be what decides.
+claude-haiku-5-5
+#
+# MEASURED 2026-10-07 on the Mac, full 8-target grid, 1 repeat, 0 errors, 0 contract
+# failures, all eight summaries keyed claude-haiku-5-5 (no fallback, no side-model work):
+#
+#   claude-haiku-5-5   356/484  6th of 31  ~$0.57  ~$0.002/pt  208 pts/Mtok  3255s
+#   claude-sonnet-5-5  369/484  4th        ~$4.93  ~$0.013/pt  436 pts/Mtok  1605s
+#   claude-opus-5-5    372/484  3rd        ~$10.02 ~$0.027/pt  407 pts/Mtok  2016s
+#
+#   go 41/56  design 21/34  rust 47/64  java 51/69
+#   typescript 51/63  csharp 47/68  cpp 47/64  python 51/66
+#
+# A HAIKU IN THE OPUS CLUSTER: 16 seeds under opus-5-5, above every non-Anthropic
+# model in the grid (qwen3.8-max 331 is next), at 1/17 of opus-5-5's cost. Design
+# 21/34 is the best design row any model has posted here.
+#
+# THE TIER DID NOT BITE, so the ~$0.57 is the real price and not a lower bound.
+# Re-priced per request from the CLI's session transcripts: 74 requests, the largest
+# prompt 88,754 tokens, none over 100k -- $0.594 against the table's $0.57, the gap
+# being the preflight pings the table does not count.
+#
+# IT IS NOT FAST. Output tokens are ~3.5x opus-5-5's (675k against 194k), so the
+# sweep runs 3255s against 2016s despite the smaller model: half the token
+# efficiency of Opus (208 against 407 pts/Mtok), the same pattern sonnet-5 showed.
+#
+# SEAT ARITHMETIC (parser reproduced 398 / 409 / 414 / 411 before these were read):
+#
+#   seated panel [opus-5-5, gpt-6-sol, glm-5.3-flash]   411/484
+#   haiku-5-5 REPLACES opus-5-5 in the claude seat      398   (-13; design +2,
+#                                                     cpp +3; go -3, rust -4,
+#                                                     typescript -4, python -4)
+#   sonnet-5-5 in the same seat, today's panel          404   (-7)
+#   marginal over opus-5-5+gpt-6-sol                    +31
+#   marginal of opus-5-5 over haiku-5-5+gpt-6-sol       +41   (the reverse test)
+#   as a 4th seat                                       428   (not available: one
+#                                                     payer, one seat)
+#   head to head vs opus-5-5: finds 40 it misses, misses 56 it finds
+#
+# NOT A SEAT. It fails both conditions of the bar set before the run: 398 against
+# >= 407, and 3255s against <= 2016s. The cost would be a 17x saving on the claude
+# seat's bill, and the bar deliberately did not count it.
