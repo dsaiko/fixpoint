@@ -105,6 +105,14 @@ RATES = {
     # 35149*0.20 + 11232*8, /1e6 = 0.0969738, its reported costUSD exactly. So
     # this model's summaries carry a cost_usd ~2x too high; this tuple is right.
     "claude-sonnet-5-5": (2.00, 10.00, 0.20),
+    # Haiku 5.5, added 2026-10-07 when it was benched: the FIRST TIERED card here.
+    # Up to 100k prompt tokens $0.10/$0.50, cached $0.01, 1h write $0.20; over 100k
+    # all five times that (platform.claude.com pricing, 2026-10-07). The tier is
+    # chosen per REQUEST and a summary holds only session totals, so this tuple is
+    # the lower tier and the row is a LOWER BOUND -- see bench/models.txt for the
+    # figure re-priced from the per-request transcripts. The CLI does not know the
+    # id either: its cost_usd is Opus 5.5's card, ~40x too high.
+    "claude-haiku-5-5": (0.10, 0.50, 0.01),
     # NOTE 2026-09-07: developers.openai.com now shows sol at $4/$20, cached
     # $0.40, footnoted as "promotional pricing ... at least through November 21,
     # 2026". The row keeps the list price it was measured at so the codex
@@ -177,6 +185,7 @@ CACHE_WRITE_RATES = {
     "claude-fable-5-1": 20.00,
     "claude-sonnet-5": 4.00,
     "claude-sonnet-5-5": 4.00,
+    "claude-haiku-5-5": 0.20,
 }
 
 # Ollama per-token rates, $/MTok as (input, output, cached input), from
