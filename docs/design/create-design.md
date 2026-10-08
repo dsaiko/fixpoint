@@ -135,7 +135,7 @@ phase exists to close.
 ```yaml
 # create-design.yaml
 roles:
-  editor: { agent: claude, prompt: design-editor }   # read-only, validated
+  editor: { agent: claude-opus, prompt: design-editor }   # read-only, validated
 
 create:
   propose: design-propose

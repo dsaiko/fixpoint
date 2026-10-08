@@ -7,7 +7,7 @@ import (
 	"github.com/dsaiko/fixpoint/internal/config"
 )
 
-// claudeUsage mirrors config/agents/claude.yaml. Keeping the shipped paths in the
+// claudeUsage mirrors config/agents/claude-opus.yaml. Keeping the shipped paths in the
 // test is the point: a typo there is a silent accounting failure, not a crash.
 var claudeUsage = config.AgentUsage{
 	Format:           config.UsageFormatJSON,

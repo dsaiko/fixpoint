@@ -43,7 +43,7 @@ roles:
   #
   # Read-only by validation, for the same reason as the judge: the agent deciding
   # what untrusted text commissions must not be able to act on it itself.
-  triage: { agent: claude, prompt: triage }
+  triage: { agent: claude-opus, prompt: triage }
   review:
     # rotate, not `all`: this is a LOOP, so a lens a reviewer missed this round is
     # seen by a different one next round. The review- configs fan out because they

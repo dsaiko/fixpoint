@@ -1008,7 +1008,7 @@ description: Implement a reviewed design as a new Go project, one task per commi
 extends: defaults
 
 roles:
-  planner: { agent: claude, prompt: implement-plan }   # read-only
+  planner: { agent: claude-opus, prompt: implement-plan }   # read-only
   coder:   { agent: claude-coder, prompt: implement-task }
 
 implement:

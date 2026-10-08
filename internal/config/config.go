@@ -718,7 +718,7 @@ func (a Agent) placeholderValues() map[string]string {
 // always exactly one argv element however it is spelled. Splitting afterwards
 // would let a model/effort value carry its own arguments -- `model: claude-opus-5
 // --setting-sources target` would append a second --setting-sources after the one
-// config/agents/claude.yaml hardcodes, and the CLI's last-flag-wins parsing would
+// config/agents/claude-opus.yaml hardcodes, and the CLI's last-flag-wins parsing would
 // load the target's settings, hooks and MCP servers after all. Validate refuses
 // such a value outright (see validCommandValue); this keeps the refusal from
 // being the only thing between a config field and the argument list.
@@ -2529,7 +2529,7 @@ func validPathIdent(kind, name string) error {
 // value carrying whitespace is trying to be more than one argv element, and one
 // starting with '-' is trying to be a flag: `--model --setting-sources` is parsed
 // by some CLIs as a bare --setting-sources with --model left to default, which is
-// exactly the hardcoded flag config/agents/claude.yaml exists to guarantee.
+// exactly the hardcoded flag config/agents/claude-opus.yaml exists to guarantee.
 //
 // Neither shape has a legitimate use -- no CLI names a model or an effort level
 // with a space or a leading dash -- so this costs nothing and closes the field as

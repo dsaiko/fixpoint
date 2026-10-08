@@ -444,6 +444,26 @@ AGENT_MODEL_HISTORY = {
     "claude": [("2026-09-22 23:27:01", "claude-opus-5", "high")],
 }
 
+# Agent files renamed after rows were recorded under the old name, as
+# {name in results.csv: file it lives in now}. results.csv and the summaries keep
+# the name a row was MEASURED under, so a rename must not orphan it: without this
+# the `claude` baseline rows -- the August sweep the whole table is read against --
+# would lose their model, their route and their price the day claude.yaml went
+# away. AGENT_MODEL_HISTORY stays keyed by the RECORDED name, because that is
+# what a row carries.
+#
+# `claude` became claude-opus.yaml on 2026-10-08, when the reviewer seat moved to
+# claude-sonnet.yaml and the judge, triage and planner stayed on Opus. Every
+# `claude` row predates its 2026-09-22 change, so the history above prices them.
+AGENT_RENAMES = {
+    "claude": "claude-opus",
+}
+
+
+def agent_file(model):
+    """The agent yaml a candidate name resolves through, following AGENT_RENAMES."""
+    return AGENTS / f"{AGENT_RENAMES.get(model, model)}.yaml"
+
 
 def _stamp(s):
     """Any of a run id, a day, or a dated time -> one sortable YYYYMMDDHHMMSS.
@@ -484,7 +504,7 @@ def agent_model(model, asof=None):
     YYYYMMDD-HHMMSS or YYYY-MM-DD -- to resolve it as of when it was MEASURED
     rather than as of today. See AGENT_MODEL_HISTORY.
     """
-    path = AGENTS / f"{model}.yaml"
+    path = agent_file(model)
     if not path.exists():
         return None, None
     if asof is not None:
@@ -529,7 +549,7 @@ def route(model):
     flag, like the peak/off-peak one deepseek already wants); until then the
     caveat lives here and in bench/models.txt.
     """
-    if (AGENTS / f"{model}.yaml").exists():
+    if agent_file(model).exists():
         return "cli"
     if model.startswith("codex@"):
         return "openrouter/codex"
@@ -546,7 +566,7 @@ def route(model):
 
 def runs_codex(model):
     """True when this candidate's agent file invokes the codex CLI."""
-    path = AGENTS / f"{model}.yaml"
+    path = agent_file(model)
     if not path.exists():
         return False
     for line in path.read_text().splitlines():
@@ -1500,6 +1520,15 @@ def selftest():
     check("resolve('claude', <august run id>)",
           resolve("claude", "20260901-120000"), "claude-opus-5 (high)")
 
+
+    # 2b. A renamed agent file must not orphan the rows recorded under its old
+    #     name: `claude` has no yaml of its own any more, and its rows must keep
+    #     their route and their model through the file it became.
+    for old, new in AGENT_RENAMES.items():
+        check(f"renamed agent {old!r} has no file of its own",
+              (AGENTS / f"{old}.yaml").exists(), False)
+        check(f"renamed agent {old!r} -> {new!r} exists", agent_file(old).exists(), True)
+    check("route('claude') after the rename", route("claude"), "cli")
 
     # 3. Every shape _asof can hand over must mean the same instant. The run-id
     #    form is the live path; the others are what a future caller may pass.
