@@ -1,25 +1,32 @@
-# Reviewer-duty claude: good quality/cost balance.
-# Exact model id, not the `opus` alias -- see claude-coder.yaml.
+# The panel's Anthropic reviewer seat: Sonnet 5.5, since 2026-10-08.
+# Exact model id, not the `sonnet` alias -- see claude-coder.yaml.
 #
-# Opus 5 -> Opus 5.5 on 2026-09-22, on a full 8-target bench grid (bench/models.txt
-# has the row and the arithmetic). The swap does NOT buy recall and was not made
-# for it: 372/484 against Opus 5's 373 and the `claude` agent's 376 is a spread
-# inside this bench's own noise floor, which those last two rows are what define.
-# It buys the two columns recall does not cover -- 2016s against 3958s, which is
-# PANEL latency because a round runs at its slowest reviewer's pace, and a lower
-# cost per point. The panel reads 414 with it against 409 shipped.
+# Split out of what was `claude` (now claude-opus.yaml), which used to be BOTH this
+# seat and every deciding role. Only the seat moved; the judge, triage, planner and
+# design editor stay on Opus 5.5 in claude-opus.yaml, and the coder in
+# claude-coder.yaml. Everything below the model line is claude-opus.yaml's, for its
+# reasons -- read the comments there.
 #
-# ON THAT COST FIGURE, read bench/models.txt before quoting a number. The
-# generated table says ~$0.011 against ~$0.023 per point, i.e. half; the sweeps'
-# own CLI-reported spend says $0.027 against $0.037, i.e. ~28% less. The table is
-# the one that is wrong: report.py does not bill cache-WRITE tokens, which are
-# 40-57% of these two bills. The direction survives the correction and the seat
-# does not rest on the magnitude, but the magnitude published today is overstated.
+# Taken on cost, with the coverage price measured first (bench/models.txt has the
+# row and the arithmetic):
 #
-# To revert, put `claude-opus-5` back on the line below: it is still measured, and
-# nothing else in this file changes. Effort stays `high` so the model is the only
-# variable, which is also what makes the bench rows comparable.
-model: claude-opus-5-5
+#   seated panel [opus-5-5, gpt-6-sol, glm-5.3-flash]     411/484
+#   sonnet-5-5 in this seat                               404   (-7)
+#   haiku-5-5 in this seat (considered, not taken)        398   (-13)
+#
+#   claude-sonnet-5-5  369/484  ~$4.93 a sweep  1605s
+#   claude-opus-5-5    372/484  ~$10.02         2016s
+#
+# Solo the two are a tie; in the panel they are not interchangeable -- each finds
+# ~40 seeds the other misses, and opus-5-5's are the ones gpt-6-sol and glm do not
+# cover. That is the -7, and it is the whole cost of the swap. It does not slow a
+# round: gpt-6-sol (2451s) stays the panel's slowest seat. haiku-5-5 was rejected
+# because it would: 3255s, ~3.5x the output tokens.
+#
+# PROBATION: the bench measures single-round seeded recall, not live yield. Watch
+# the judge's rejection rate on this seat across live runs. To revert, put
+# `claude-opus` back in defaults.yaml's review.agents -- one word.
+model: claude-sonnet-5-5
 effort: high # low | medium | high | xhigh | max
 command:
   - claude

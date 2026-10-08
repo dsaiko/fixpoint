@@ -1725,7 +1725,7 @@ func TestDesignSuppliedPolicyNeedsTheNarrowFlag(t *testing.T) {
 			Config: &config.Config{
 				Target: config.Target{Mode: config.ModeDirectory, Path: design, Document: "DESIGN.md"},
 				Roles: config.Roles{
-					Planner: config.RoleRef{Agent: "claude", Prompt: "implement-plan"},
+					Planner: config.RoleRef{Agent: "claude-opus", Prompt: "implement-plan"},
 					Coder:   config.RoleRef{Agent: "claude-coder", Prompt: "implement-task"},
 				},
 				Loop: config.Loop{TrustedTarget: trustTarget, TrustedBundle: trustBundle},

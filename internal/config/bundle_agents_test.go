@@ -91,7 +91,9 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 	// A rename or an extension change must not turn this into a test that
 	// silently inspects nothing.
 	//
-	// 11: claude, claude-coder, six ollama-routed reviewers (minimax, deepseek,
+	// 12: claude-opus (judge, triage, planner, editor), claude-sonnet (the panel's
+	// Anthropic seat; both were one file, `claude`, until 2026-10-08),
+	// claude-coder, six ollama-routed reviewers (minimax, deepseek,
 	// kimi, glm-5.2, glm-5.3-flash, gemma4) and three OpenRouter-routed ones
 	// (kimi, glm, qwen). glm-5.3-flash-ollama took the panel's ollama seat from
 	// minimax on 2026-09-14 and is a SEPARATE file from glm-ollama, which is
@@ -101,7 +103,7 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 	// routes drive the claude CLI, so both must carry --setting-sources. Agents
 	// that lost their panel seat stay in the bundle: the seat is decided in
 	// defaults.yaml, and a measured alternative is worth keeping ready.
-	if want := 11; checked != want {
+	if want := 12; checked != want {
 		t.Errorf("checked %d claude-backed agents, want %d -- update this test if the bundle gained or lost one", checked, want)
 	}
 }
@@ -119,7 +121,7 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 	const (
 		// In-house CLIs, run against a first-party endpoint: 900 kB against a
-		// measured 434 kB maximum on this project. See claude.yaml.
+		// measured 434 kB maximum on this project. See claude-opus.yaml.
 		local = 900_000
 		// Agents served over someone else's HTTP endpoint, where a huge prompt is
 		// also someone else's bill and rate limit. See kimi-ollama.yaml.
@@ -131,9 +133,10 @@ func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 	// Keyed by file name, so a new agent file has to be added here -- the same
 	// guard the claude-backed count above provides.
 	want := map[string]int{
-		"claude":       local,
-		"claude-coder": local,
-		"codex":        local,
+		"claude-opus":   local,
+		"claude-sonnet": local,
+		"claude-coder":  local,
+		"codex":         local,
 		// Bench candidates through the codex harness: codex.yaml with the model
 		// swapped, so codex's budget. See bench/models.txt.
 		"gpt-6-astra":       local,
@@ -200,9 +203,10 @@ func TestShippedAgentsPinTheirEnvironment(t *testing.T) {
 		pass []string
 		set  map[string]string
 	}{
-		"claude":       {pass: []string{"ANTHROPIC_API_KEY"}},
-		"claude-coder": {pass: []string{"ANTHROPIC_API_KEY"}},
-		"codex":        {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+		"claude-opus":   {pass: []string{"ANTHROPIC_API_KEY"}},
+		"claude-sonnet": {pass: []string{"ANTHROPIC_API_KEY"}},
+		"claude-coder":  {pass: []string{"ANTHROPIC_API_KEY"}},
+		"codex":         {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
 		// The Astra, Terra and GPT-6 Sol bench candidates are codex.yaml with the
 		// model swapped, and see exactly what codex sees.
 		"gpt-6-astra":       {pass: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},

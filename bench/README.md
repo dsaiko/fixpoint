@@ -290,7 +290,7 @@ seed's clothes, and retiring it would have hidden the bug and kept the noise.
 
 Candidates for the current sweep are listed in `models.txt`. Model names route
 the harness: an existing agent name (`claude`, `codex`) runs through its own
-yaml; a `claude-*` id runs claude.yaml with the model swapped; an id with a
+yaml; a `claude-*` id runs claude-opus.yaml with the model swapped; an id with a
 slash (`x-ai/grok-4.6`) runs the OpenRouter template (card-billed, cached;
 needs `OPENROUTER_API_KEY`); a `codex@`-prefixed OpenRouter id runs the same
 route through the CODEX harness instead -- for models whose replies the claude

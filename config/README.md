@@ -3,10 +3,10 @@
 A bundle is a directory holding task configs at its root plus three
 subdirectories, so one bare name resolves in one category:
 
-    fix-code.yaml          a task config, referenced as `fix-code`
-    prompts/fix.md         a prompt, referenced as `fix`
-    agents/claude.yaml     an agent, referenced as `claude`
-    gates/go.yaml          a verify gate, referenced as `go` (see "The verify gate")
+    fix-code.yaml            a task config, referenced as `fix-code`
+    prompts/fix.md           a prompt, referenced as `fix`
+    agents/claude-opus.yaml  an agent, referenced as `claude-opus`
+    gates/go.yaml            a verify gate, referenced as `go` (see "The verify gate")
 
 Run one with `fixpoint <name>`; list what's available with `fixpoint --list`. A
 config's optional one-line `description:` appears in that listing and in shell
@@ -327,7 +327,7 @@ tool where a reader could be misled about who they are talking to.
 
 ```yaml
 roles:
-  judge: { agent: claude, prompt: judge }   # read-only; validation refuses can_edit
+  judge: { agent: claude-opus, prompt: judge }   # read-only; validation refuses can_edit
 review:
   refute: refute                            # naming the prompt enables the round
 ```
@@ -366,7 +366,7 @@ A `review-` config needs no `roles.coder` at all.
 
 ```yaml
 roles:
-  triage: { agent: claude, prompt: triage }   # read-only; validation refuses can_edit
+  triage: { agent: claude-opus, prompt: triage }   # read-only; validation refuses can_edit
 ```
 
 Without `roles.triage` a comment is context and nothing more: the coder reads the

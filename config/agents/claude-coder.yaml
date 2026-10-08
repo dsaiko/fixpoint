@@ -4,8 +4,11 @@
 # resolves to claude-opus-4-8 and re-points whenever the CLI ships a new alias
 # table, which would silently change which model fixes your code mid-project.
 #
-# Opus 5 -> Opus 5.5 on 2026-09-22, alongside the reviewer seat in claude.yaml,
-# so the two halves of a run do not drift onto different model generations.
+# Opus 5 -> Opus 5.5 on 2026-09-22, alongside the reviewer seat in what was then
+# claude.yaml (now claude-opus.yaml, the judge), so the two halves of a run do not
+# drift onto different model generations. The coder stays on Opus 5.5 when the
+# reviewer seat moved to Sonnet 5.5 on 2026-10-08 (claude-sonnet.yaml): no bench
+# here measures coder duty, so there is no evidence to move it on.
 #
 # BE HONEST ABOUT THE EVIDENCE FOR THIS ONE: the bench behind the reviewer swap
 # measures REVIEWER duty -- single-round recall of seeded defects -- and says
@@ -48,7 +51,7 @@ usage:
 
 prompt_via: stdin
 # 30m, and no longer LONGER than a reviewer's -- the panel was raised to match it
-# (see claude.yaml). Kept explicit rather than dropped: implement-go's verify
+# (see claude-opus.yaml). Kept explicit rather than dropped: implement-go's verify
 # arithmetic quotes this number against the gate's, and rule 7's fit depends on
 # it, so it is not a value to inherit silently.
 timeout: 30m
@@ -79,7 +82,7 @@ env:
   # needed if you use an API key instead. An unset name is simply not passed.
     - ANTHROPIC_API_KEY
 
-# Same ceiling as claude.yaml, and for the same reason -- a coder prompt is far
+# Same ceiling as claude-opus.yaml, and for the same reason -- a coder prompt is far
 # smaller in practice (25 kB measured here, since it carries one issue rather than
 # the whole diff), so this only ever fires on something that has gone wrong.
 prompt_budget: 900000

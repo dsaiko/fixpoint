@@ -17,10 +17,10 @@ import (
 // Layout of a config bundle. A bundle is a directory holding task configs at its
 // root plus these two subdirectories, so one name resolves in one category:
 //
-//	<bundle>/fix-code.yaml        a task config, referenced as "fix-code"
-//	<bundle>/prompts/fix.md       a prompt, referenced as "fix"
-//	<bundle>/agents/claude.yaml   an agent, referenced as "claude"
-//	<bundle>/gates/go.yaml        a verify gate, referenced as "go"
+//	<bundle>/fix-code.yaml            a task config, referenced as "fix-code"
+//	<bundle>/prompts/fix.md           a prompt, referenced as "fix"
+//	<bundle>/agents/claude-opus.yaml  an agent, referenced as "claude-opus"
+//	<bundle>/gates/go.yaml            a verify gate, referenced as "go"
 const (
 	promptsDir = "prompts"
 	agentsDir  = "agents"

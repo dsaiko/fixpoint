@@ -11,7 +11,7 @@
 # `ollama show` resolves at run time; prefer dated tags where the library
 # offers them (see config/agents/deepseek-ollama.yaml for why).
 # Anthropic tier comparison: is the newer model worth its price as a
-# reviewer? claude-* names run through claude.yaml with the model swapped;
+# reviewer? claude-* names run through claude-opus.yaml with the model swapped;
 # effort stays "high" for all three. claude-opus-5 duplicates the `claude`
 # baseline on purpose -- same yaml, so the pair doubles as a variance probe.
 claude-opus-4-8

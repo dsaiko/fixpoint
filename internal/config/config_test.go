@@ -263,7 +263,7 @@ func TestValidate(t *testing.T) {
 		// model/effort are substituted into the command template. A value that is
 		// several words, or that starts like a flag, is trying to add arguments the
 		// agent file did not write -- `--setting-sources target` appended after the
-		// one config/agents/claude.yaml hardcodes is the target's own settings file,
+		// one config/agents/claude-opus.yaml hardcodes is the target's own settings file,
 		// hooks included, loaded by a reviewer that trusts nothing.
 		{"model with whitespace", func(c *Config) {
 			a := c.Agents["rev"]
