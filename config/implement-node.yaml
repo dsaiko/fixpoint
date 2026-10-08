@@ -11,7 +11,7 @@ description: Implement a reviewed design as a new Node project, one task per com
 extends: defaults
 
 roles:
-  planner: { agent: claude, prompt: implement-plan }
+  planner: { agent: claude-opus, prompt: implement-plan }
   coder: { agent: claude-coder, prompt: implement-task }
 
 implement:

@@ -228,8 +228,20 @@ roles:
   # halved -- does not reach the quota, because uncached input is about half the
   # credits. The price is 3 points of coverage (414 -> 411/484), inside the noise
   # floor. If quota stops binding, `gpt-6.1-sol` is one word away.
+  #
+  # THE ANTHROPIC SEAT MOVED TO SONNET 5.5, 2026-10-08, on cost -- and `claude` is
+  # gone as a name. It used to be both this seat and every deciding role (judge,
+  # triage, planner, design editor), so a cheaper seat by editing its model line
+  # would have taken the judge along. It is split: claude-sonnet.yaml is this seat,
+  # claude-opus.yaml (Opus 5.5, unchanged) is every deciding role, and the coder
+  # stays claude-coder.yaml on Opus 5.5. The price is 7 points of coverage
+  # (411 -> 404/484) for about half the seat's notional cost (~$4.93 against
+  # ~$10.02 a sweep); it does not slow a round, gpt-6-sol stays the slowest seat.
+  # haiku-5-5 was measured for the same seat and refused: 398, and 3255s would make
+  # it the slowest. If the judge starts rejecting most of what the seat says,
+  # `claude-opus` is one word away on the line below.
   review:
-    agents: [claude, gpt-6-sol, glm-5.3-flash-ollama]
+    agents: [claude-sonnet, gpt-6-sol, glm-5.3-flash-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds

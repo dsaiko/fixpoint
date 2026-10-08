@@ -28,7 +28,7 @@ roles:
   # claude for the same measured reason. The proposal/critique pool is
   # roles.review.agents, inherited from defaults -- who designs is the same
   # one-edit decision as who reviews.
-  editor: { agent: claude, prompt: design-editor }
+  editor: { agent: claude-opus, prompt: design-editor }
 
 create:
   propose: design-propose
