@@ -150,6 +150,14 @@ RATES = {
     "x-ai/grok-4.6": (2.00, 6.00, None),
     "qwen/qwen3.8-27b": (0.40, 3.00, 0.04),
     "qwen/qwen3.8-max": (2.00, 6.00, None),
+    # Gemini 4 Argon, introductory pricing from Google's 2026-09-30 launch post
+    # (confirmed live on OpenRouter 2026-10-13): $2/$10 per MTok, cached input
+    # at Google's stated 95% discount ($0.10/MTok). Google has said the intro
+    # rate doubles to $4/$20 ($0.20 cached) with no end date announced -- re-check
+    # before trusting this row long after the measurement date. Routed through
+    # codex@ (see the codex@ note in bench/models.txt): the claude harness 400s
+    # on every call, including the preflight ping, with no session ever starting.
+    "codex@google/gemini-4-argon": (2.00, 10.00, 0.10),
     # Self-served (vllm@) rows have no per-token price: the bill is GPU hours.
     # They are priced at the rate card of the model they are paired with, so
     # $/point compares TOKEN efficiency on the same scale -- which is the whole
@@ -250,6 +258,7 @@ OLLAMA_RATES = {
     "minimax-m2.7":      (0.30, 1.20, 0.06),
     "minimax-m3":        (0.60, 2.40, 0.12),
     "mistral-large-3":   (0.50, 1.50, 0.50),
+    "mistral-large-4":   (0.68, 2.09, 0.07),
     "nemotron-3-nano":   (0.06, 0.24, 0.06),
     "nemotron-3-super":  (0.015, 0.60, 0.015),
     "nemotron-3-ultra":  (0.10, 3.00, 0.10),
