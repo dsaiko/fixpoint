@@ -125,6 +125,25 @@ gemma4:31b-cloud
 # not spend a full grid on them before they clear the contract.
 #   mistral-large-3:675b-cloud   3/100, 2 contract failures, 5127s
 #   nemotron-3-super:cloud      19/100, 1 contract failure, 2.67M tokens
+#
+# mistral-large-4:cloud, ABANDONED 2026-10-11 at 4 clean targets of 8 (operator:
+# "this model is really bad"). 1.05T params, 1M context, 0 contract failures --
+# it clears the bar its predecessor failed -- but it is the SLOWEST model measured
+# on 5 of the 6 targets it ran (rust: one model is slower), and mid-to-weak on recall. Not in results.csv: a half
+# grid would distort the field medians. Partial data kept outside the repo, in
+# ~/.fixpoint/bench-partial/mistral-large-4/.
+#
+#   go 38/56 (3150s)   design 16/34 (1906s)   java 49/69 (2595s)   cpp 43/64 (2691s)
+#   rust 28/64 and python 24/66: ONE lens each hit the 30m timeout, scores deflated
+#   typescript: not a measurement (both failures were 429s); csharp: never ran
+#
+#   clean four: 146/223 seeds = 65%, against 160/223 = 72% for claude-haiku-5-5 on the same four
+#   go 3150s vs field median 486s (6.5x, past the field max 3041s);
+#   design 1906s vs 311s (6.1x, past the max 1109s)
+#
+# The sweep ended on the ollama WEEKLY limit (429) at 23:22: Mac + mediabox in
+# parallel drew the one quota at twice the rate. Rate card in report.py's
+# OLLAMA_RATES (0.68 / 2.09 / 0.07, from the library page) is kept for a retry.
 # OpenRouter candidates (a slash in the id selects the OpenRouter template;
 # bills a card at the listed per-token price -- x-ai/grok-4.6 is $2/M in,
 # $6/M out. This route caches, unlike ollama).
@@ -859,3 +878,100 @@ claude-haiku-5-5
 # NOT A SEAT. It fails both conditions of the bar set before the run: 398 against
 # >= 407, and 3255s against <= 2016s. The cost would be a 17x saving on the claude
 # seat's bill, and the bar deliberately did not count it.
+
+# Gemini 4 Argon -- announced 2026-09-30 (Fairwind-only), opened on OpenRouter
+# 2026-10-13 (slug google/gemini-4-argon, providers Google AI Studio + Vertex).
+# Measured the day it went live. Introductory card: $2/M in, $10/M out, $0.10/M
+# cached (Google's stated 95%-off cache discount) -- doubling to $4/$20/$0.20 is
+# announced but undated, so re-check before quoting this row's $ far from
+# 2026-10-13. report.py's RATES entry carries the same caveat.
+#
+# TWO ROUTES, ONE HARD BLOCKER. The claude harness over OpenRouter 400s on the
+# PREFLIGHT PING -- no session ever starts, reproduced twice with a one-word
+# prompt:
+#   API Error: 400 * GenerateContentRequest.tools[0].function_declarations[3]
+#   .parameters.properties[query].properties[where].items.items: missing field.
+# This is a THIRD, DISTINCT failure mode in the Gemini-on-OpenRouter-via-claude
+# family (see the gemini-3.7-flash DISQUALIFIED note above for the other two):
+# Google's function-declaration schema validator rejects one of Claude Code's
+# built-in tool schemas outright (looks like Grep/Glob's nested array schema),
+# rather than the empty-result / block-ordering bug 3.7-flash hit. Do not
+# re-probe the claude route on a future Gemini model expecting a different
+# outcome -- three releases, three ways the same translation layer breaks.
+#
+# codex@ (Responses API wire format) works: probe and every target replied
+# clean. Routed through codex@google/gemini-4-argon, same as the gemini-3.7-flash
+# attempt, but this one actually completes real review sessions -- the content-
+# filter mid-stream truncation that killed every 3.7-flash session (5/5) did NOT
+# reproduce here, on 8 targets.
+codex@google/gemini-4-argon
+#
+# OPENROUTER CREDIT EXHAUSTION, not a quota or rate limit, stopped the first
+# sweep attempt cold: go's third lens and every target after it failed
+#   402 Payment Required: ... You requested up to 65536 tokens, but can only
+#   afford 49043. To increase, visit https://openrouter.ai/settings/credits
+# Argon's declared max_tokens ceiling is 65,536 per OpenRouter's listing, and the
+# preflight ping checks affordability against THAT ceiling, not against what a
+# turn actually uses -- so a sweep can die on a balance that would have covered
+# every token it was about to spend. The account had ~$0.49 of a $25 balance
+# left (most of it already spent across this file's other OpenRouter rows:
+# grok-4.6, both qwen3.8 tiers). Operator topped up to $50 and the re-run (go
+# repeat 2, then the other six targets) completed with 0 further errors.
+#
+# THE PARTIAL GO ROW (21/56, one lens lost to the 402) IS NOT IN results.csv,
+# unlike the usual re-run convention above. That convention exists so a
+# CONTRACT failure -- the model itself producing something the harness
+# rejects -- cannot be erased by re-running until clean; the failed row stays
+# and counts against the model on purpose. This was never that: the 402 names
+# its own cause in plain text (an account balance, checked against a ceiling
+# the call never got near spending), with nothing for the model or the codex
+# harness to have done differently. Same call the gpt-6-astra note already
+# made for its Plus-quota 0/68 rows -- "a provider refusal is indistinguishable
+# from a contract failure" so where the cause is this legible, treat it as the
+# non-measurement it is rather than let `errors` carry it as if it were one.
+# The raw session (bench/results/codex@google_gemini-4-argon-go-20261013-222158.md,
+# bench/summaries/20261013-222158-go.json) stays on disk as the record of what
+# happened; only the scored ledger drops it.
+#
+# MEASURED 2026-10-13, full 8-target grid, 0 contract failures:
+#
+#   codex@google/gemini-4-argon  348/484  7th of 33  $13.62  $0.039/pt  45% cached  3701s
+#   codex / gpt-5.6-sol          298/484  16th       ~$8.36  ~$0.028/pt  75%        6810s
+#   gpt-6-sol (seated)           221/484  28th       ~$2.39  ~$0.011/pt  -          2451s
+#
+#   go 42/56  design 14/34  rust 50/64  java 53/69
+#   typescript 49/63  csharp 44/68  cpp 48/64  python 48/66
+#
+# SOLO IT IS STRONG -- above every ollama candidate, above codex itself (298),
+# and the best non-Anthropic score on the board by a wide margin (qwen3.8-max
+# next at 331). It is also a BILLED route, same as grok-4.6 and both qwen3.8
+# tiers: unlike the three subscription seats, there is no quota underneath it,
+# so every point of recall it buys in production costs a card charge, not
+# plan headroom already paid for.
+#
+# SEAT ARITHMETIC (panel today, from the 2026-10-08 split: [claude-sonnet
+# (5.5), gpt-6-sol, glm-5.3-flash-ollama], parser reproduced 404/484 exactly
+# before these were read):
+#
+#   seated panel                                   404/484
+#   argon REPLACES glm-5.3-flash (ollama seat)     411   (+7)
+#   argon REPLACES claude-sonnet (Anthropic seat)  388   (-16)
+#   argon REPLACES gpt-6-sol (ChatGPT seat)        409   (+5)
+#   argon as a 4th seat (added, not swapped)        416   (+12)
+#   marginal over claude-sonnet+gpt-6-sol pair      +21
+#   head to head vs the seated panel: finds 12 seeds the panel misses,
+#                                      misses 68 the panel already finds
+#
+# NOT A SEAT, on the economics rather than the recall. It LOSES ground swapped
+# into either subscription seat (-16 Anthropic, and +5 on the ChatGPT seat is
+# not enough to give up a quota-covered seat for a billed one). The two cases
+# with a positive number are the ones that cost real money every round, which
+# none of the three seated candidates do: swapping the ollama seat trades a
+# quota-covered reviewer for a card-billed one for +7 (1.4 points), and adding
+# it as a 4th seat is the best number (+12) but also the most expensive --
+# a wholly new recurring bill -- for a candidate that duplicates 68 of what the
+# panel already covers against 12 it uniquely adds. Read against deepseek-v4.1-
+# flash's and glm-5.3-flash's own 4th-seat attempts (+4 to +7, also rejected):
+# this is the biggest 4th-seat number measured on this bench, and still not
+# obviously worth a standing per-round charge for 12 seeds. Operator call, same
+# as every seat decision in this file -- the arithmetic says "thin", not "no".
