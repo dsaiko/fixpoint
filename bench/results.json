@@ -24,11 +24,11 @@
  "possible": 484,
  "measured": {
   "first": "2026-08-20",
-  "last": "2026-10-13"
+  "last": "2026-10-16"
  },
  "totals": {
-  "candidates": 33,
-  "sessions": 771,
+  "candidates": 34,
+  "sessions": 794,
   "targets": 8,
   "contract_failures": 3
  },
@@ -2305,6 +2305,75 @@
     },
     "python": {
      "found": 19,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 34,
+   "candidate": "muse-spark-open:cloud",
+   "baseline": false,
+   "model": "muse-spark-open:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 143,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1412477,
+   "points_per_mtok": 101.2,
+   "cost_usd": 2.54,
+   "cost_per_point_usd": 0.018,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.721,
+   "cost_per_point_uncached_usd": 0.044,
+   "seconds": 941,
+   "sessions": 23,
+   "errors": 0,
+   "measured": {
+    "first": "2026-10-16",
+    "last": "2026-10-16"
+   },
+   "by_target": {
+    "go": {
+     "found": 10,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 13,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 27,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 35,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 5,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 22,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 17,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 14,
      "of": 66,
      "deflated": false
     }

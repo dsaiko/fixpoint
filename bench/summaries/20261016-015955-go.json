@@ -1,0 +1,157 @@
+{
+ "run": "20261016-015955",
+ "task": "code",
+ "target": "go",
+ "model": "muse-spark-open:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.go",
+     "line": 65,
+     "title": "Resolve deletes valid links and returns expired ones (inverted condition)",
+     "description": "Resolve checks `time.Now().Before(l.ExpiresAt)` and deletes/returns ErrNotFound. That is the non-expired case. Valid links are deleted on first resolve and expired links are returned with Hits++.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.go",
+     "line": 31,
+     "title": "NewStore leaves quota nil so Create panics on write",
+     "description": "NewStore initializes `links` but not `quota`. Create does `s.quota[owner]++` which panics with assignment to nil map on the first link.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.go",
+     "line": 84,
+     "title": "RequireAdmin condition is always true so no one passes",
+     "description": "Uses `s.Role != \"admin\" || s.Role != \"owner\"` which is true for every string (a value cannot be both). Even admins are rejected.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.go",
+     "line": 78,
+     "title": "BearerToken panics on missing or malformed Authorization header",
+     "description": "Splits header and unconditionally returns parts[1] without checking length. Empty or single-token header causes index-out-of-range panic, crashing the handler.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 59,
+     "title": "Verify never checks expiry so expired tokens remain valid",
+     "description": "Verify iterates sessions and returns match without comparing ExpiresAt to Now. Expired sessions never become unknown.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 174,
+     "title": "stats panics on divide-by-zero when store is empty",
+     "description": "Computes `hits / int64(len(links))` without guarding len==0. With no links this is a runtime panic.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 106,
+     "title": "Page off-by-one causes out-of-bounds slice panic",
+     "description": "When end > len, sets `end = len(all)+1` then slices all[offset:end] which is past the slice capacity and panics.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.go",
+     "line": 116,
+     "title": "Validate always returns nil so invalid config is never rejected",
+     "description": "Collects problems and logs but unconditionally returns nil. Bad port/timeout/cache size passes startup.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 20,
+     "title": "Metrics.AddResolved has value receiver so increment is lost",
+     "description": "Defined as `func (m Metrics) AddResolved()` \u2014 increments a copy. Resolved counter never advances; Snapshot always sees 0.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 67,
+     "title": "WarmCache calls wg.Add inside goroutine causing race and missed Wait",
+     "description": "wg.Add(1) is inside the goroutine after `go` starts. Wait can return before Add, and concurrent Add/Wait is a race.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 107,
+     "title": "mustHead returns nil on error causing client.Do(nil) panic",
+     "description": "On NewRequest error it logs and returns nil. Callers pass that nil to client.Do which panics (nil dereference).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.go",
+     "line": 54,
+     "title": "LINKD_CACHE_TTL_MS multiplied by seconds not milliseconds",
+     "description": "Comment says milliseconds but code does `time.Duration(n) * time.Second`. A value of 1000 becomes 1000s instead of 1s.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 89,
+     "title": "Cache.Delete leaks lock on early return causing deadlock",
+     "description": "Locks, then if entry not found does bare `return` without Unlock. Any delete of missing key permanently holds the mutex.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 113,
+     "title": "SuccessRate integer division always yields 0 unless 100%",
+     "description": "Computes `used / len(s.links) * 100` \u2014 integer division truncates to 0 when used < total. Only full usage reports correctly.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 44859,
+      "output_tokens": 5121,
+      "cache_read_tokens": 178656
+     },
+     "duration_ms": 47447,
+     "failed": false,
+     "output_bytes": 6038
+    },
+    {
+     "usage": {
+      "input_tokens": 100937,
+      "output_tokens": 1108,
+      "cache_read_tokens": 34592
+     },
+     "duration_ms": 26136,
+     "failed": false,
+     "output_bytes": 1902
+    },
+    {
+     "usage": {
+      "input_tokens": 100517,
+      "output_tokens": 935,
+      "cache_read_tokens": 34992
+     },
+     "duration_ms": 25710,
+     "failed": false,
+     "output_bytes": 1902
+    }
+   ]
+  }
+ ]
+}

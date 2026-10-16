@@ -259,6 +259,7 @@ OLLAMA_RATES = {
     "minimax-m3":        (0.60, 2.40, 0.12),
     "mistral-large-3":   (0.50, 1.50, 0.50),
     "mistral-large-4":   (0.68, 2.09, 0.07),
+    "muse-spark-open":   (1.25, 4.25, 0.15),
     "nemotron-3-nano":   (0.06, 0.24, 0.06),
     "nemotron-3-super":  (0.015, 0.60, 0.015),
     "nemotron-3-ultra":  (0.10, 3.00, 0.10),

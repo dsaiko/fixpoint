@@ -1,0 +1,157 @@
+{
+ "run": "20261016-020745",
+ "task": "code",
+ "target": "python",
+ "model": "muse-spark-open:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.py",
+     "line": 57,
+     "title": "resolve deletes valid links, keeps expired ones",
+     "description": "Condition `time.time() < link.expires_at` is inverted: it deletes and returns None when the link is still valid (now < expiry) and counts a hit when it is already expired. Every successful resolve corrupts the store.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "auth.py",
+     "line": 50,
+     "title": "require_admin always denies due to or instead of and",
+     "description": "`session.role != \"admin\" or session.role != \"owner\"` is a tautology (every string is not equal to at least one of them), so the method always returns False and no caller can ever pass the admin check.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.py",
+     "line": 63,
+     "title": "sweep mutates dict while iterating \u2014 RuntimeError",
+     "description": "`for code in self.entries: del self.entries[code]` raises RuntimeError: dictionary changed size during iteration as soon as any expired entry exists. Janitor tick crashes.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 142,
+     "title": "prune mutates dict while iterating \u2014 RuntimeError",
+     "description": "`for code in self.links: del self.links[code]` same pattern as cache.sweep; any prune with an expired link crashes with RuntimeError.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 46,
+     "title": "create crashes on first link for an owner \u2014 quota KeyError",
+     "description": "`self.quota[owner] + 1` raises KeyError when owner has no entry yet. No owner can create their first link.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.py",
+     "line": 61,
+     "title": "parse_report mutable default accumulates across calls",
+     "description": "`def parse_report(body, rows=[])` shares one list across invocations, so the second call returns rows from the first call plus its own. Also splits trailing newline into an extra empty row.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 43,
+     "title": "verify never checks expiry despite docstring",
+     "description": "Doc says return None if lifetime has run out, but code only compares token equality and returns the session even after 12h. Expired sessions remain valid forever.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.py",
+     "line": 130,
+     "title": "stats ZeroDivisionError on empty store",
+     "description": "`store.total_hits() / store.size()` divides by zero when no links exist. The dashboard endpoint crashes on a fresh deploy.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 69,
+     "title": "check_targets crashes on happy path \u2014 IndexError",
+     "description": "When every target starts with https://, `problems` stays empty and `return problems[0]` raises IndexError. The success case always crashes.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.py",
+     "line": 57,
+     "title": "warm_cache iterates dict incorrectly and never joins threads",
+     "description": "`for code, target in pairs:` where pairs is a dict yields keys (strings), so unpacking into two variables raises ValueError; should be `pairs.items()`. Also doc says 'returns once every probe is done' but spawned threads are never joined, so caller returns immediately while work is in-flight.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.py",
+     "line": 65,
+     "title": "bearer_token crashes on missing/empty Authorization header",
+     "description": "`header.split(\" \")[1]` raises IndexError when header is \"\" (the default when the client sends no Authorization) or has no space. Every unauthenticated request crashes handle() instead of returning 401.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.py",
+     "line": 105,
+     "title": "top returns least-followed links, not most-followed",
+     "description": "Sorted ascending by hits and sliced `[:n]` gives the bottom-n; leaderboard is inverted.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.py",
+     "line": 99,
+     "title": "validate always returns True even on failure",
+     "description": "Collects problems, prints them, but unconditionally `return True`. Callers cannot detect a bad deploy; service starts with port 0 or negative cache_size.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.py",
+     "line": 77,
+     "title": "flush deadlocks by re-acquiring non-reentrant lock",
+     "description": "Holds `self.lock` and calls `self.delete(\"__sentinel__\")` which tries to acquire the same Lock again \u2014 deadlock forever on the admin flush endpoint.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 43640,
+      "output_tokens": 5972,
+      "cache_read_tokens": 176288
+     },
+     "duration_ms": 48126,
+     "failed": false,
+     "output_bytes": 6740
+    },
+    {
+     "usage": {
+      "input_tokens": 33656,
+      "output_tokens": 593,
+      "cache_read_tokens": 102288
+     },
+     "duration_ms": 17936,
+     "failed": false,
+     "output_bytes": 1721
+    },
+    {
+     "usage": {
+      "input_tokens": 66804,
+      "output_tokens": 644,
+      "cache_read_tokens": 69120
+     },
+     "duration_ms": 17640,
+     "failed": false,
+     "output_bytes": 1721
+    }
+   ]
+  }
+ ]
+}

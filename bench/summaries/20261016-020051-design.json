@@ -1,0 +1,179 @@
+{
+ "run": "20261016-020051",
+ "task": "design",
+ "target": "design",
+ "model": "muse-spark-open:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 71,
+     "title": "401 handling wipes unsynced outbox \u2014 violates 'never lost' invariant",
+     "description": "On refresh 401 the client 'signs the user out and wipes local state, including notes.db' (line 72). An offline device with a full outbox (lines 31-35) that then hits revocation/password-change loses every unacknowledged edit. Design simultaneously promises 'A note edited offline is never lost' (line 10) and 'no acknowledged edit is ever lost' (line 98) but deletes unacknowledged edits that are by definition not recoverable after wipe. A stolen-device remote revocation thus becomes a data-loss trigger for the legitimate user's offline work; token corruption (line 71) triggers same wipe.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 78,
+     "title": "Partial-commit on validation failure contradicts transaction and breaks idempotency",
+     "description": "Section 5 claims '/sync runs in a single transaction per request' then states 'if row N fails validation, rows 1..N-1 stay applied' (lines 78-81). Section 6 then claims 'crash mid-sync on the server: the transaction rolls back' (lines 104-105). Both cannot be true. As written, a batch is partially applied with no idempotency key; retry of the same POST (line 57) will re-apply rows 1..N-1. Combined with LWW on client clock (line 61), retries can silently overwrite newer server state or create duplicates when note_id is not the client id (lines 25-26). No compensating cleanup or exactly-once mechanism is defined.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 117,
+     "title": "/healthz divorced from DB makes outage invisible to LB and operator",
+     "description": "Health check 'returns 200 while the process is running' and 'does not gate' on DB connectivity/replication/disk (lines 117-121). LB removes only after 3 failed probes, so a Postgres outage leaves all instances healthy, receiving traffic, returning 500 (line 108) until clients exhaust retries. Operator has no signal distinguishing 'quiet' from 'broken' \u2014 DB metrics are dashboards only (line 119). This turns a single dependency failure into a full fleet serving errors with green health.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 83,
+     "title": "Unbounded SELECT * with no index, pagination, or timeout will saturate DB at 10x",
+     "description": "Changes query is 'SELECT * WHERE user_id=$1 AND modified_at > $2' returning 'every matching row' with 'no pagination' and 'no index beyond primary key' (lines 83-86). Server also has 'no request timeout' (lines 88-91). After regional outage (lines 143-144) every client syncs at once; plus outbox batches are 'entire outbox in one request' (line 46) with uncapped body (line 28) and uncapped outbox (lines 32-33). Postgres seq-scans, holds no timeout, and LV holds connection. Bottleneck component is unnamed and backpressure is nobody's job \u2014 design says 'add instances' but DB is the singleton.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 52,
+     "title": "Cursor on client wall-clock loses data and diverges per device",
+     "description": "Cursor is 'modified_at of newest change client has seen' where modified_at is 'client wall clock' (line 22) and server returns 'strictly newer than cursor' (lines 52-53). Clock skew causes missed or duplicated changes; equal timestamps are skipped. 'One cursor per user account' (line 54) with offline multi-device means device A advancing cursor hides changes device B has not yet seen. Combined with LWW 'newer modified_at wins' (lines 61-63), a skewed clock silently discards the other copy with no recovery (line 111-113).",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 56,
+     "title": "Identical fixed backoff with no jitter guarantees thundering herd on recovery",
+     "description": "Retry 'doubles from one second up to a minute, and every client uses that same schedule' (lines 58-59). Section 8 expects 'all clients come back after regional outage, they sync at once' (line 143). With identical schedule and no jitter, no decorrelated backoff, and no per-user rate limit (lines 146-148), recovery hammers the single Postgres simultaneously, re-triggering 500s and synchronized retries. Operator sees only 5xx (line 124) with no client-side observability (lines 123-126).",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 128,
+     "title": "Rolling deploy assumes no concurrent versions; migration-before-code breaks old instances",
+     "description": "Schema migrations 'run before new version starts; old and new versions never run concurrently because deploys are quick' (lines 128-130). Rolling deploys by definition run both versions concurrently. Old code reading a new schema column/constraint can crash or corrupt writes. 'In-flight requests are not drained' (line 130) means in-flight /sync batches are killed during rollout, relying on client retry which is unsafe given the partial-commit bug above.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 133,
+     "title": "Recovery untested with 24h RPO contradicts durability promise",
+     "description": "Backups are 'nightly pg_dump to object storage, retained 14 days. Restore has not been rehearsed' (lines 133-134). Design promises 'no acknowledged edit is ever lost' where acknowledged = client received response (lines 98-100), but a Postgres failure between dumps loses up to 24h of acknowledged edits with no WAL/PITR, no rehearsed RTO. Server keeps 'only latest version overwritten in place' (lines 93-94) so even logical corruption cannot be unwound.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 20,
+     "title": "Two processes sharing one SQLite file with no concurrency or crash story",
+     "description": "Desktop client and CLI 'both open this file directly; whichever process starts first creates it' (lines 20-21). No WAL mode, file locking, or single-writer story. Concurrent writes corrupt SQLite; crash mid-write to outbox or note table leaves torn pages. No recovery path stated; Section 6 only covers crash mid-sync network level, not storage level. Default-plain file at app data dir with 'default file permissions' (line 37) also lacks durability guarantees across OS suspend (line 140).",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "bench/testdata/target-design/DESIGN.md",
+     "line": 28,
+     "title": "No input or cost caps \u2014 unbounded body, outbox, and request enable abuse and OOM",
+     "description": "Body is 'free text. We do not cap its length' (lines 28-29), outbox has 'no cap' and each row 'carries a full copy' (lines 32-35), sync POSTs 'entire outbox in one request' (line 46), there is 'no per-user rate limit' (lines 146-148), note ids are 32-bit random (line 24, ~50k collision at scale), and notes.db is unencrypted with default perms (line 37). A single malicious or buggy client can exhaust device disk, server memory/DB, or drive cost without operator signal \u2014 Operations tracks only aggregate rate/error/p99 (line 123).",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "32-bit random note id guarantees collisions across devices",
+     "description": "Note id is a random 32-bit integer generated independently on each device with no coordination and no uniqueness constraint described. Birthday bound is ~65k notes per user; across 50k users collisions are certain. Two different notes that collide on (user_id, client id) silently overwrite each other via the server's secondary-column lookup, or create ambiguous ownership. The server's own BIGSERIAL PK does not prevent this because clients address notes by client id.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Cursor and conflict resolution both trust client wall clock",
+     "description": "modified_at is client wall clock (line 22) and is simultaneously the sync cursor (line 52, strictly newer than cursor) and the LWW conflict winner (line 61). Clock skew, NTP step, manual clock change, or two edits in the same millisecond cause: (a) newer edit losing to older wall time, (b) edits with equal timestamps being invisible to cursor query and never syncing, (c) cursor advancing past a skew-future timestamp then hiding all subsequent legitimate edits. Data is silently lost/discarded under normal offline multi-device use.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "Atomic transaction claim contradicts partial-commit + non-idempotent retry",
+     "description": "/sync is described as a single transaction per request (line 78) but also as row-by-row where rows 1..N-1 stay applied when row N fails validation (line 80). Both cannot hold. Worse, client retry resends the same POST until acknowledged (line 57) with no idempotency key. After a partial success the retry re-applies already-committed edits, duplicating side effects or advancing modified_at, and after a server-side rollback the client cannot know which prefix succeeded. The 'no acknowledged edit ever lost' guarantee is undermined by duplicate/missing edits on the normal failure path.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 20,
+     "title": "Two local processes open same SQLite file with no concurrency control",
+     "description": "Desktop client and CLI tool both open notes.db directly, whichever starts first creates it (line 20). No WAL mode, locking, or single-writer ownership is named. Concurrent writers to the same SQLite file from separate processes cause SQLITE_BUSY, torn outbox/note table states, or corruption. The outbox (full body copy) and note table can diverge because they are updated without a described transaction boundary, and the 'whichever starts first creates it' race has no DDL guard.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 53,
+     "title": "One cursor per user cannot serve multiple devices",
+     "description": "Line 53 stores one cursor per user account, but the product is explicitly multi-device (line 3). If the cursor is server-side, device B's cursor is advanced by device A's sync and device B skips changes. If it is client-side, new-device bootstrap and cursor divergence after offline periods are undefined, and round-robin stateless routing (line 88) has nowhere to keep per-device cursor without shared state. Incremental sync and recovery cannot converge as specified.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 92,
+     "title": "Last-version-only storage with silent discard makes 'never lost' and debuggability unachievable",
+     "description": "Server overwrites superseded bodies in place (line 93), conflict loser is discarded immediately with no retention (line 111), and there is explicitly no audit trail of which device sent which batch (line 159). Combined with LWW on wall clock, a user's edit can vanish with no record. Support cannot answer 'why does this device not have my note' from dashboards alone (line 14) because the data needed to answer it was intentionally not kept. Undo, incident forensics, and the 'offline edit never lost' goal are incompatible with this retention policy.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 45,
+     "title": "Unbounded bulk sync with no pagination, index, or limit breaks scale and SLO",
+     "description": "Client sends entire outbox in one POST with no cap (lines 31, 46) and server returns every matching row via SELECT * WHERE modified_at > $2 ORDER BY modified_at with no pagination and no index beyond PK (lines 83-85). Outbox and body are both uncapped (lines 28, 32). At 50k users, post-outage thundering herd (line 143), or a long-offline device, a single sync can be gigabytes, hold a connection forever (no server timeout, line 90), and trigger full table scans. The 30-second sync SLO and horizontal scaling claim cannot hold without reworking data movement.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 65,
+     "title": "No protocol versioning or migration story despite rolling deploys and future fields",
+     "description": "Wire format carries no version number because adding a field is claimed backwards compatible (line 65), but the document also reserves shared_with for future sharing (line 168), plans attachments via URL in note row (line 163), and asserts old and new versions never run concurrently because deploys are quick (line 129) \u2014 false for rolling deploys (line 128). There is no migration plan for outbox rows, cursor format, or id changes, and no compatibility matrix. A schema or protocol change will require reworking how data is held and moved.",
+     "lens": "design-data",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 40202,
+      "output_tokens": 6510,
+      "cache_read_tokens": 245712
+     },
+     "duration_ms": 52037,
+     "failed": false,
+     "output_bytes": 10795
+    },
+    {
+     "usage": {
+      "input_tokens": 40910,
+      "output_tokens": 4270,
+      "cache_read_tokens": 205888
+     },
+     "duration_ms": 38794,
+     "failed": false,
+     "output_bytes": 8659
+    }
+   ]
+  }
+ ]
+}
