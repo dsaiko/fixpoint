@@ -975,3 +975,29 @@ codex@google/gemini-4-argon
 # this is the biggest 4th-seat number measured on this bench, and still not
 # obviously worth a standing per-round charge for 12 seeds. Operator call, same
 # as every seat decision in this file -- the arithmetic says "thin", not "no".
+
+muse-spark-open:cloud
+# muse-spark-open:cloud, MEASURED 2026-10-16, full 8-target grid (two invocations:
+# `TASK=all` is only go+design, the other six ran as a second sweep), 0 errors,
+# 0 contract failures, no 429s. 143/484, LAST of 34 (gemma4 156, qwen3.5 186).
+#
+#   go 10/56  design 13/34  rust 27/64  java 35/69
+#   typescript 5/63  csharp 22/68  cpp 17/64  python 14/66
+#
+# 822B total (42B active), FP8, 1M context, `muse-spark` architecture, thinking
+# (default high, but ollama drops the effort knob -- see _README.md), tools, vision.
+# ollama rates 1.25 / 4.25 / 0.15 per MTok (in/out/cached-in). A single floating
+# `:cloud` tag, pinned only by the `ollama show` fingerprint run.sh recorded. The
+# route was staged-rollout on 2026-10-15 (403 "being rolled out and is not yet
+# available to you"); that is a non-measurement and never reached results.csv.
+#
+# Totals: 941s wall clock, 23 sessions, 1.33M tokens in, 85k out, 3.43M cache read.
+# It is the FASTEST sweep in the grid (next: qwen3.5 1187s) at 83-194s per target,
+# on ~10.6k output tokens per target (third lowest; gpt-6-astra and qwen3.5 are
+# lower). Spread is wide: typescript 5/63 and go 10/56 against java 35/69 and
+# rust 27/64. Whether the shallow, quick passes come from the model or from the
+# route dropping its thinking depth was not isolated.
+#
+# NOT A SEAT, and no panel arithmetic was run: last on solo recall and below
+# every seated candidate (the panel is 404/484), so a marginal could only come
+# from seeds the panel already misses.

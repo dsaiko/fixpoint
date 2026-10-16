@@ -1,0 +1,189 @@
+{
+ "run": "20261016-020645",
+ "task": "code",
+ "target": "cpp",
+ "model": "muse-spark-open:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "resolve() expiry check is inverted \u2014 deletes valid links",
+     "description": "Condition `Clock::now() < expires_at` is true when the link has NOT yet expired, but the branch erases the link and returns false. Every valid resolve deletes the link; expired links fall through to increment hits and return the target. The comparison must be `>` (or `>=`).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 49,
+     "title": "require_admin() uses || instead of && \u2014 always denies",
+     "description": "`session.role != \"admin\" || session.role != \"owner\"` is a tautology: any string is not equal to at least one of the two values, so every session is rejected including admins. The intent is to allow either role.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 175,
+     "title": "last_code() returns dangling string_view to local",
+     "description": "`newest` is a local std::string destroyed on return; the returned string_view dangles and any use is undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.cpp",
+     "line": 71,
+     "title": "format_row() returns dangling pointer to stack array",
+     "description": "`row` is a local `char[128]`; returning `const char*` to it dangles on return. Callers reading the pointer get undefined behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 43,
+     "title": "check_targets() off-by-one reads past vector end",
+     "description": "Loop condition `i <= links.size()` allows `i == links.size()`, accessing `links[links.size()]` out of bounds. On an empty vector this crashes on the first iteration.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 75,
+     "title": "page() end computed as size+1 causes out-of-range iterator",
+     "description": "When `offset+size` exceeds the collection, `end` is set to `all.size() + 1`, then `all.begin() + end` is past `all.end()`, which is undefined behavior in the range constructor.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.cpp",
+     "line": 91,
+     "title": "validate() always returns true even when problems found",
+     "description": "Problems are collected and logged but the function unconditionally returns true, so `main()` never fails startup on invalid config (e.g. port out of range).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 76,
+     "title": "bearer_token() null-dereferences when header has no space",
+     "description": "If `header` contains no space (empty or malformed Authorization value), `strchr` returns nullptr and `space + 1` dereferences null, crashing.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 101,
+     "title": "stats() divides by zero when store is empty",
+     "description": "`g_store->total_hits() / g_store->size()` divides by zero when no links exist, causing a crash (integer division) or floating-point exception depending on types.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 91,
+     "title": "success_rate() integer division always yields 0 or 100",
+     "description": "`used / links_.size() * 100` performs integer division first; e.g. 3/4 == 0, so result is 0 unless every link was used. Same pattern in cache.cpp utilization().",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 64,
+     "title": "utilization() integer division always yields 0 or 100",
+     "description": "`entries_.size() / limit_ * 100` does integer division first; for any non-full cache the result is 0.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 50,
+     "title": "rename() validates 'from' twice, never validates 'to'",
+     "description": "`validate_code(from)` is called twice; `to` is never validated, so an invalid destination code (wrong length or characters) is accepted.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 25,
+     "title": "LINKD_TIMEOUT_MS treated as seconds \u2014 1000x error",
+     "description": "Env var is documented as milliseconds but assigned as `Seconds{ms}` directly, making a 5000ms timeout become 5000 seconds.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 29,
+     "title": "LINKD_CACHE_TTL_MS treated as seconds \u2014 1000x error",
+     "description": "Same as timeout: millisecond env var assigned directly to Seconds.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.cpp",
+     "line": 36,
+     "title": "LINKD_FETCH_LIMIT parsed but never stored",
+     "description": "The parsed value is cast to void and discarded; `cfg.fetch_limit` keeps its default regardless of the env var.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 155,
+     "title": "prune() iterator invalidation and returns wrong value",
+     "description": "Erasing via `links_.erase(it)` then `++it` in the for-loop increment uses an invalidated iterator (UB). Also returns `links_.size()` instead of `removed`, contradicting the doc comment.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 54,
+     "title": "sweep() iterator invalidation on erase",
+     "description": "Same pattern as prune: `entries_.erase(it)` invalidates `it` but the for-loop does `++it`, causing undefined behavior and skipped entries.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "linkd.h",
+     "line": 141,
+     "title": "Metrics::errors_ never initialized",
+     "description": "`resolved_` and `created_` have default initializers but `errors_` does not, so `errors()` returns an indeterminate value.",
+     "lens": "review-bugs",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 43779,
+      "output_tokens": 4573,
+      "cache_read_tokens": 178592
+     },
+     "duration_ms": 41072,
+     "failed": false,
+     "output_bytes": 7894
+    },
+    {
+     "usage": {
+      "input_tokens": 67120,
+      "output_tokens": 459,
+      "cache_read_tokens": 68576
+     },
+     "duration_ms": 23195,
+     "failed": false,
+     "output_bytes": 1065
+    },
+    {
+     "usage": {
+      "input_tokens": 66437,
+      "output_tokens": 691,
+      "cache_read_tokens": 69488
+     },
+     "duration_ms": 25726,
+     "failed": false,
+     "output_bytes": 1918
+    }
+   ]
+  }
+ ]
+}

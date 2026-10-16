@@ -1,0 +1,277 @@
+{
+ "run": "20261016-020201",
+ "task": "code",
+ "target": "rust",
+ "model": "muse-spark-open:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "panic on first link for any new owner",
+     "description": "Store::new() creates an empty quota map, but create() does quota.get_mut(owner).unwrap() \u2014 any owner not already in the map causes an unconditional panic, so the very first link creation for every owner crashes the process.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 56,
+     "title": "inverted expiry check in resolve()",
+     "description": "resolve() sets expired = SystemTime::now() < link.expires_at, which is true when the link is still valid (now before expiry). It then deletes the link when expired is true, so valid links are deleted and expired links are kept and have their hit counter incremented \u2014 exact opposite of the documented behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "off-by-one in page() causes panic",
+     "description": "When offset+size exceeds all.len(), end is set to all.len()+1, then all[offset..end] indexes one past the end of the Vec and panics. Any listing request near the end of the collection crashes.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "require_admin always denies due to || instead of &&",
+     "description": "Condition session.role != \"admin\" || session.role != \"owner\" is a tautology \u2014 for any string at least one side is true \u2014 so require_admin always returns Err, even for admins. All admin-gated operations are permanently denied.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 94,
+     "title": "bearer_token panics on malformed Authorization header",
+     "description": "bearer_token splits on ' ' and unconditionally indexes parts[1]. An empty header, a header without a space (e.g. \"Bearer\"), or any malformed value panics with index-out-of-bounds and crashes the handler thread.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 71,
+     "title": "rename validates `from` twice, never validates `to`",
+     "description": "rename() calls validate_code(from) twice and never validates the `to` code, so an invalid destination code (too short, bad characters, too long) is accepted and inserted into the store, violating the code invariant.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 104,
+     "title": "validate() never returns an error",
+     "description": "validate() collects problems into a Vec but unconditionally returns Ok(()) at line 113, even when problems is non-empty. Invalid configs (port 0, zero timeout) silently pass startup and cause runtime failures.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 164,
+     "title": "prune returns remaining count instead of removed count",
+     "description": "prune is documented to report how many it removed. It saves before=len, then does let _ = before (discarding it) and returns self.links.len() (the remaining count). Callers see the wrong number and cannot tell how many expired links were cleaned.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "division by zero in stats() when store is empty",
+     "description": "stats() computes hits / guard.len() as i64 without guarding against len==0. When the store has no links, this is integer division by zero and panics, crashing the stats endpoint handler.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "utilization always reports 0% until cache is full",
+     "description": "utilization() computes guard.len() / self.limit * 100 using integer division \u2014 when len < limit the division truncates to 0, so the result is always 0 until the cache is exactly full. The dashboard metric is useless.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 102,
+     "title": "success_rate always 0% unless every link was used",
+     "description": "success_rate does used / self.links.len() * 100 with integer division before the multiply. When used < len the division is 0, so the result is 0 for any partial usage. Only 100% usage reports correctly.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 52,
+     "title": "LINKD_CACHE_TTL_MS treated as seconds",
+     "description": "The env var is documented as milliseconds (LINKD_CACHE_TTL_MS) but the value is passed to Duration::from_secs(n), making the TTL 1000x too large. A 5000ms setting becomes 5000 seconds.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 61,
+     "title": "cache eviction picks arbitrary entry, not LRU",
+     "description": "When the cache is full, set() evicts guard.keys().next() \u2014 an arbitrary HashMap iteration order \u2014 not the least-recently-used entry. The doc comment claims LRU eviction but the implementation ignores the used timestamps entirely.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 121,
+     "title": "count_by_owner deadlocks on second Mutex lock",
+     "description": "count_by_owner acquires store.lock() into `guard` and then attempts a second store.lock() into `second` while `guard` is still live. std::sync::Mutex is non-reentrant, so the second lock blocks forever and the thread never makes progress. Any caller of count_by_owner hangs permanently.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 115,
+     "title": "Lock-order inversion between Cache::get and Cache::flush causes deadlock",
+     "description": "Cache::get acquires entries.write() then hits.lock(), while Cache::flush acquires hits.lock() then entries.write(). Interleaving: T1 in get holds entries and waits for hits, T2 in flush holds hits and waits for entries \u2014 circular wait, both block forever. Reproduces under concurrent get + flush.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 28,
+     "title": "Metrics::add_resolved lost updates via non-atomic RMW",
+     "description": "add_resolved does load(Ordering::Relaxed) then store(current+1) \u2014 not an atomic increment. Two concurrent threads both load N and both store N+1, losing one increment. add_created/add_error correctly use fetch_add.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 215,
+     "title": "Store Mutex held across blocking file I/O in report()",
+     "description": "report() locks store, clones a page, then calls export_csv (fs::write) and read_report (fs::read_to_string) while still holding the guard. All other handlers (create_link, redirect, list_links, etc.) block on store.lock() for the duration of disk I/O, causing excessive contention/DoS under load or slow filesystem.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "warm_cache spawns threads but never joins them",
+     "description": "warm_cache collects JoinHandles into Vec then does `let _ = handles;`, dropping without joining. The doc-claim 'Returns after every probe has finished' is false; threads run detached. Caller cannot know when warming is complete, and errors/panics are silently lost \u2014 a thread/goroutine leak pattern.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 53,
+     "title": "Janitor stop signal delayed up to full interval",
+     "description": "start_janitor checks rx.try_recv() only before sleeping, then does thread::sleep(interval) unconditionally. A stop() sent during the 60s sleep is not observed until after sleep completes, so shutdown is delayed up to interval and cancellation is not promptly propagated.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 13,
+     "title": "Path traversal via report name allows arbitrary file read/write",
+     "description": "export_csv and read_report join the user-supplied query parameter `name` directly into a filesystem path with Path::new(dir).join(format!(\"{}.csv\", name)) with no sanitization. An attacker calling GET /report?name=../../etc/passwd%00 or GET /report?name=../../tmp/pwned can traverse out of export_dir, overwriting arbitrary files on write and reading them back via the subsequent read_report call. The write path (fs::write) will create files outside the intended directory and the read path leaks their contents in the 200 response body, including the verbose error path disclosure on failure at export.rs:68 and main.rs:223.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 174,
+     "title": "Open redirect on /out enables phishing and OAuth token theft",
+     "description": "The /out handler takes the query parameter `next` without any validation and issues a 301 redirect to it via redirect_to. An attacker can craft https://linkd.example/out?next=https://evil.example/phish or https://evil.example%2F%2E%2E and the victim sees a trusted linkd.example URL in email; the server then 301s to the attacker site. This bypasses phishing filters, can steal OAuth authorization codes if linkd is used as a redirect_uri, and combined with the reflected Location header can enable header-splitting if CRLF is ever introduced via query parsing.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 163,
+     "title": "IDOR: any authenticated user can delete any link",
+     "description": "delete_link's doc comment states a link may only be deleted by its owner taken from the authenticated session, but the implementation calls guard.delete(&code) without checking link.owner against the session owner. Any valid bearer token can delete every link in the store by guessing or enumerating short codes, causing targeted and bulk data loss. The store.delete itself also discards the owner check (store.rs:110 discards link.owner with let _ = link.owner).",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 186,
+     "title": "Admin authorization bypassed via client-controlled X-Admin header",
+     "description": "admin_quotas gates access by checking headers.get(\"x-admin\") == Some(\"true\"), a header fully controlled by the caller, instead of checking the verified session role. Any authenticated (or even deterministically guessed) caller can set X-Admin: true and retrieve the per-owner quotas map, and because Store::quotas returns &mut HashMap the caller can also mutate quota counts. The correct Authenticator::require_admin exists but is never called from this handler.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "require_admin logic error denies all admins",
+     "description": "The condition session.role != \"admin\" || session.role != \"owner\" is a tautology: any string is not equal to at least one of the two literals, so the branch always returns Err and every caller is rejected, including legitimate admins. This is the dual of the previous finding: while admin_quotas is wide open via the header bypass, the intended centralized check is permanently broken, so any future code that correctly calls require_admin will lock out its own administrators.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 35,
+     "title": "Session tokens are predictable from wall-clock time",
+     "description": "issue() seeds a linear congruential generator with SystemTime::now().as_secs() (one-second granularity) and emits 16 bytes of deterministic output. An attacker who knows or guesses the issuance second (trivially within a small window) can reproduce the exact token, hijack any session, and bypass all authentication. The same pattern appears in store.rs new_code() which seeds from subsec_nanos, making short codes enumerable. Neither uses a CSPRNG.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 85,
+     "title": "Passwords hashed with reversible DJB2, not a password KDF",
+     "description": "hash_password uses a single pass of DJB2 (acc = acc * 33 ^ byte) and outputs a 64-bit hex string. This is not a password hash: it is fast, unsalted, has 64-bit output, and is trivially brute-forced with GPUs. An attacker who obtains the user table can recover all passwords near-instantly, then reuse them for credential stuffing.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 22,
+     "title": "Hardcoded default secret and missing token expiry enforcement",
+     "description": "Authenticator::new falls back to the hardcoded string \"dev-secret-do-not-use\" when LINKD_SECRET is unset, which will be the case in any environment where the variable is forgotten. Additionally verify() iterates sessions and returns a match without ever comparing SystemTime::now() against session.expires_at, so tokens never expire despite having an expires_at field, giving an attacker indefinite use of a stolen token.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 94,
+     "title": "Malformed Authorization header panics the handler thread (DoS)",
+     "description": "bearer_token splits on ' ' and unconditionally indexes parts[1]. A request with Authorization: Bearer (no token), Authorization: <empty>, or any value without a space triggers an out-of-bounds panic, killing the per-connection thread. An unauthenticated attacker can repeatedly send malformed headers to churn threads and exhaust resources. The verbose error response at main.rs:99 also echoes the attacker-supplied token back, aiding probing.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 243,
+     "title": "Permissive CORS: wildcard origin with credentials allowed",
+     "description": "Every response includes Access-Control-Allow-Origin: * together with Access-Control-Allow-Credentials: true, which violates the CORS spec and misconfigures browsers. If any endpoint ever returns sensitive data (quotas, reports, by_owner listings), a malicious site can issue credentialed cross-origin fetches to exfiltrate it. The combination also signals to future maintainers that cross-origin credentialed access is intentional.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 47742,
+      "output_tokens": 6901,
+      "cache_read_tokens": 261888
+     },
+     "duration_ms": 70618,
+     "failed": false,
+     "output_bytes": 6724
+    },
+    {
+     "usage": {
+      "input_tokens": 46403,
+      "output_tokens": 5045,
+      "cache_read_tokens": 258640
+     },
+     "duration_ms": 58564,
+     "failed": false,
+     "output_bytes": 4085
+    },
+    {
+     "usage": {
+      "input_tokens": 46616,
+      "output_tokens": 5945,
+      "cache_read_tokens": 259440
+     },
+     "duration_ms": 65649,
+     "failed": false,
+     "output_bytes": 9266
+    }
+   ]
+  }
+ ]
+}

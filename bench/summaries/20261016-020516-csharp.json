@@ -1,0 +1,245 @@
+{
+ "run": "20261016-020516",
+ "task": "code",
+ "target": "csharp",
+ "model": "muse-spark-open:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "Cache.cs",
+     "line": 51,
+     "title": "Cache.Peek reads Dictionary without synchronization",
+     "description": "Peek calls entries.ContainsKey without lock(this) while Get/Set/Delete/Sweep/Warm mutate entries under lock. Dictionary is not thread-safe for concurrent read+write. Interleaving: Thread A in Get holds lock and rehashes bucket on Set, Thread B in Peek/Warm reads entries concurrently -> torn internal state, NullReferenceException, infinite loop, or IndexOutOfRangeException inside Dictionary. Violates doc comment 'safe to call from any number of threads'.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 31,
+     "title": "Janitor Timer mutates Store Dictionary during enumeration without synchronization",
+     "description": "StartJanitor callback iterates store.All().Keys and calls store.All().Remove(code) inside the same foreach, which throws InvalidOperationException: Collection was modified. It also accesses Store.links with no lock while Program.Handle dispatches each request via Task.Run(() => Handle) that concurrently calls store.Create/Resolve/Delete/Page. Interleaving: janitor enumerates Keys while a request thread inserts via Create -> either the janitor throws and the Timer stops firing, or Dictionary internal arrays tear.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 107,
+     "title": "Cache.Sweep removes entries while enumerating Keys under lock",
+     "description": "Sweep holds lock(this) then does foreach(var code in entries.Keys) { entries.Remove(code); }. Modifying a Dictionary during enumeration invalidates the enumerator and throws InvalidOperationException even though the lock is held. First call that finds an expired entry kills the janitor Timer thread (unhandled exception on ThreadPool). Interleaving not needed: single janitor tick with any expired entry triggers it.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 62,
+     "title": "WarmCache fire-and-forgets Task.Run and never awaits completion",
+     "description": "WarmCache loops links and calls Task.Run(() => cache.Set(...)) without storing or awaiting Tasks. Method returns immediately, contradicting doc 'Returns after every probe has finished'. Exceptions are unobserved (UnobservedTaskException) and cache may still be cold when caller proceeds. Under load this leaks unbounded ThreadPool work with no backpressure or cancellation.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "Worker.cs",
+     "line": 16,
+     "title": "Metrics.AddCreated uses non-atomic increment, losing updates",
+     "description": "Metrics claims 'safe for concurrent use' and AddResolved correctly uses Interlocked.Increment(ref resolved), but AddCreated does plain created++. Program.Handle dispatches each request on Task.Run, so concurrent POST /links calls race: Thread A and B both read created, increment locally, write back -> one increment lost. Snapshot then under-reports created count.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 91,
+     "title": "Cache.Warm check-then-act TOCTOU between unsynchronized Peek and locked Set",
+     "description": "Warm does if(!Peek(key)) Set(key,value) with no atomicity. Peek is unlocked and Set is locked separately. Interleaving: Thread A Warm and Thread B Warm (or Set) both Peek same missing key -> both see false -> both Set -> second Set evicts First() unnecessarily and overwrites first's Used/Expires. Called from janitor while handlers serve, so race is reachable on every warm cycle.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Cache.cs",
+     "line": 118,
+     "title": "Cache.Stats and Utilization read shared state without lock",
+     "description": "Stats returns hits (written as hits++ under lock in Get) without lock/Volatile/Interlocked, and Utilization reads entries.Count without lock. Concurrent Get/Warm/Set can update hits and entries while Stats/Utilization read -> torn 64-bit read on 32-bit, stale value, or Dictionary count race. Dashboard can show inconsistent hit count or throw if Dictionary is mid-resize.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 62,
+     "title": "RequireAdmin always returns true - authorization bypass",
+     "description": "RequireAdmin checks if role is in allowed[] and returns true on match, but the fallthrough on line 69 also returns true. Any caller with any role (including empty/guest) passes the admin gate. Attacker authenticates as low-privilege user and then accesses admin- gated functionality.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Program.cs",
+     "line": 159,
+     "title": "AdminQuotas authorized by client-controlled X-Admin header",
+     "description": "AdminQuotas checks Request.Headers[\"X-Admin\"]==\"true\" instead of session.Role/RequireAdmin. Any authenticated client can add header X-Admin: true and retrieve per-owner quotas (and any other logic gated this way). Trivial privilege escalation.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Export.cs",
+     "line": 18,
+     "title": "Path traversal file write via user-controlled report name",
+     "description": "ExportCsv builds Path.Combine(dir, name + \".csv\") with name from query string \"name\" (Program.Report line 181) without sanitization. Attacker supplies name=../../etc/cron.d/pwn or ../.ssh/authorized_keys substrings to write arbitrary files relative to cfg.ExportDir or to traverse out via \"../\". Same pattern in ReadReport line 75 (read) and ArchiveAll line 42 via owner key.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Program.cs",
+     "line": 109,
+     "title": "DELETE /links missing ownership check (IDOR)",
+     "description": "Comment says deletion is owner-gated, but code calls store.Delete(code) for any authenticated session without comparing link.Owner to session.Owner. Any authenticated user can delete any other owner's short link, causing data loss and denial of service.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 32,
+     "title": "Predictable session tokens from System.Random",
+     "description": "Tokens are random.Next().ToString(\"x8\")*2 using System.Random (time-seeded, 32-bit state). Attacker can brute-force or predict future tokens after observing one, hijacking sessions. Not cryptographically unguessable despite doc comment.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 38,
+     "title": "Session token written to stdout/logs",
+     "description": "Issue logs \"auth: issued token {token} for {owner}\" to Console. Tokens are bearer secrets; log aggregation, console capture, or verbose error paths expose them to operators and attackers with log read access, enabling session hijack.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 46,
+     "title": "Verify never checks ExpiresAt - expired sessions live forever",
+     "description": "Verify iterates sessions and returns match on Token equality only, ignoring ExpiresAt. Doc says null if lifetime ran out, but implementation never enforces 12h expiry. Stolen or intentionally long-lived tokens remain valid indefinitely.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 24,
+     "title": "Hardcoded fallback secret when LINKD_SECRET unset",
+     "description": "If LINKD_SECRET env is empty, secret defaults to \"dev-secret-do-not-use\". Any deployment forgetting the env var shares a publicly known secret, allowing an attacker who knows the codebase to forge or verify secrets depending on its use.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 83,
+     "title": "Passwords hashed with single SHA256 without salt",
+     "description": "HashPassword computes one SHA256(password) with no salt, pepper, or iteration. Fast hash enables offline brute-force and rainbow-table attacks if the user table leaks; identical passwords produce identical hashes.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 143,
+     "title": "Open redirect via /out?next= attacker URL",
+     "description": "Out reads query \"next\" and unconditionally sets Location to that value with 301. Attacker crafts https://victim.linkd/out?next=https://evil.phish to launder a trusted-domain link, stealing clicks counted before redirect and enabling phishing.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 88,
+     "title": "Link owner spoofing via query param instead of session",
+     "description": "POST /links takes owner from query[\"owner\"], not from authenticated session. Attacker creates links attributed to any owner, polluting quotas/reports and potentially framing victims.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 55,
+     "title": "Resolve expiry check inverted - expired links stay valid",
+     "description": "Resolve removes the link when DateTime.Now < ExpiresAt (i.e., still valid) and returns the target when DateTime.Now >= ExpiresAt. Valid links are deleted on first resolve; expired links remain resolvable forever, violating expiry as a security boundary.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Store.cs",
+     "line": 208,
+     "title": "Store.All() exposes mutable internal dictionary",
+     "description": "All() returns the live Dictionary<string,Link> reference. Callers (Worker.StartJanitor, any future handler) can Add/Remove/overwrite entries bypassing validation, quota, and lifecycle checks. Combined with Quotas() (line 158) returning the live quota map, privilege state can be mutated externally.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 58,
+     "title": "Predictable /tmp snapshot path enables symlink/hijack",
+     "description": "WriteSnapshot always writes to /tmp/linkd-snapshot.json then Move into dir/snapshot.json. Attacker pre-creates a symlink at that fixed path to a sensitive file; File.WriteAllText follows the link and Move may overwrite attacker-chosen location. No exclusive create or random temp name, and /tmp is world-writable. Leads to arbitrary file overwrite as service user.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Program.cs",
+     "line": 198,
+     "title": "Permissive CORS: wildcard origin with credentials",
+     "description": "Respond sets Access-Control-Allow-Origin: * together with Access-Control-Allow-Credentials: true on every response. Any origin can issue credentialed cross-site requests to read stats, links, or reports, enabling CSRF and cross-origin data exfiltration after authentication.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Export.cs",
+     "line": 75,
+     "title": "Path traversal file read via report name",
+     "description": "ReadReport reads Path.Combine(dir, name + \".csv\") with attacker-controlled name (Program.Report line 184). Supplying name=../../etc/passwd%00 or ../secrets bypasses the .csv suffix expectation and allows reading arbitrary files readable by the service user, disclosing data outside export dir.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "Config.cs",
+     "line": 126,
+     "title": "Config.Validate always returns true - bad config starts service",
+     "description": "Validate collects problems (port out of range, negative cache size, zero timeout) but unconditionally returns true and caller in Program.Main ignores the result. Service starts on an invalid/misconfigured port or with timeout=0, which can disable timeouts or cause downstream DoS/availability issues instead of failing closed at startup.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "Authenticator.cs",
+     "line": 101,
+     "title": "Timing-unsafe secret comparison",
+     "description": "SecretEquals uses == (early-exit string comparison) despite doc claiming constant-time behavior. Byte-at-a-time timing difference allows attacker to brute-force expected secret character-by-character over many requests.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 66756,
+      "output_tokens": 658,
+      "cache_read_tokens": 69120
+     },
+     "duration_ms": 17664,
+     "failed": false,
+     "output_bytes": 1952
+    },
+    {
+     "usage": {
+      "input_tokens": 42971,
+      "output_tokens": 4190,
+      "cache_read_tokens": 178240
+     },
+     "duration_ms": 54853,
+     "failed": false,
+     "output_bytes": 5667
+    },
+    {
+     "usage": {
+      "input_tokens": 46608,
+      "output_tokens": 7961,
+      "cache_read_tokens": 178192
+     },
+     "duration_ms": 81522,
+     "failed": false,
+     "output_bytes": 11091
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,93 @@
+{
+ "run": "20261016-020423",
+ "task": "code",
+ "target": "typescript",
+ "model": "muse-spark-open:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/cache.ts",
+     "line": 57,
+     "title": "Cache.set overwrites entry without cancelling prior timer causing premature deletion",
+     "description": "Cache.set schedules setTimeout(() => delete(code), ttlMs) and stores id in timers map but never clears a previous timer for the same code. Interleaving: set('a', v1) schedules T1 to fire at t+ttl, then set('a', v2) 1ms later overwrites entry and schedules T2 for t+ttl+1ms. T1 fires at original ttl and deletes the refreshed entry, making it disappear ~ttl early despite just being written. This is a time-of-check/time-of-use race between timer callbacks and synchronous mutations.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 48,
+     "title": "warmCache uses forEach with async callback and never awaits probes",
+     "description": "warmCache does pairs.forEach(async ([code,target]) => { await probe(target); cache.set(...); }). forEach ignores returned promises, so warmCache returns immediately while probes are still in flight. Any caller doing await warmCache(...) proceeds assuming cache is warm but gets cache misses and thundering-herd to store. Rejections are unhandled (promise leak / unhandledRejection crash). This is goroutine/promise leak: work started but never awaited.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 24,
+     "title": "startJanitor TOCTOU crash and never-stopped interval leak",
+     "description": "startJanitor captures snapshot store.codes() then for each code calls store.expiresAt(code) which does this.links.get(code)!.expiresAt. Between snapshot and check, a concurrent request handler (create/delete/extend) can delete that code. The next tick janitor dereferences undefined and throws TypeError. Interval callback is scheduled via setInterval and its stopper is discarded in main.ts (startJanitor(store,cache,60000) return ignored), so janitor never stops, holds store/cache alive, and keeps mutating after intended shutdown.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 141,
+     "title": "quotas() returns internal mutable object allowing unsynchronized shared-state corruption",
+     "description": "quotas() returns this.quota directly. Callers receive a live reference to store's internal quota map and can mutate it without going through store methods. Two async request handlers interleaving at await points that both read-modify this shared object cause lost updates / data races (e.g., both decrement, one overwrite). Even single-threaded event loop has races at await yields; exposed mutable state breaks encapsulation and memory-visibility guarantees.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 70,
+     "title": "flushAudit fire-and-forget promise leak with no retry or error handling",
+     "description": "flushAudit(write) calls write() which returns Promise<void> but neither awaits nor returns nor catches it. If write rejects (disk full, permission), the rejection is unhandled and in modern Node crashes the process. Caller cannot know when flush completes or whether retry is needed, despite comment claiming retry-until-success. Concurrent flushAudit calls also interleave writes without coordination.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 64,
+     "title": "Cache.delete does not clearTimeout leaving dangling timer and timers-map leak",
+     "description": "Cache.delete only does entries.delete(code) but never clearTimeout for the timer scheduled in set() and never removes the entry from timers map. Timers accumulate indefinitely (resource leak) and expired-entry check in get() that deletes entries also leaves orphan timers that later fire no-op deletes.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 101163,
+      "output_tokens": 980,
+      "cache_read_tokens": 34720
+     },
+     "duration_ms": 20467,
+     "failed": false,
+     "output_bytes": 2228
+    },
+    {
+     "usage": {
+      "input_tokens": 45603,
+      "output_tokens": 5927,
+      "cache_read_tokens": 177904
+     },
+     "duration_ms": 46456,
+     "failed": false,
+     "output_bytes": 5176
+    },
+    {
+     "usage": {
+      "input_tokens": 67273,
+      "output_tokens": 768,
+      "cache_read_tokens": 68608
+     },
+     "duration_ms": 18898,
+     "failed": false,
+     "output_bytes": 2228
+    }
+   ]
+  }
+ ]
+}
