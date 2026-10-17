@@ -1001,3 +1001,52 @@ muse-spark-open:cloud
 # NOT A SEAT, and no panel arithmetic was run: last on solo recall and below
 # every seated candidate (the panel is 404/484), so a marginal could only come
 # from seeds the panel already misses.
+
+deepseek/deepseek-v4.1-flash-1017
+# deepseek/deepseek-v4.1-flash-1017, MEASURED 2026-10-17, the day OpenRouter
+# listed it (08:27 UTC). The October checkpoint of deepseek-v4.1-flash, whose
+# September release is the `deepseek-v4.1-flash:cloud` row above (measured
+# 2026-09-13 on ollama). No ollama tag exists for 1017, so this row is the
+# OpenRouter claude-harness route: a card-billed real invoice, not notional.
+# report.py's MEASURED_RELEASE labels the two rows so they do not read as one
+# model. Same card as the September release, 0.15 / 0.60 / 0.003 per MTok;
+# weekdays 01-04 and 06-10 UTC bill 2x. The sweep ran on a Saturday.
+#
+# Full 8-target grid, 1 repeat, 0 errors, 0 contract failures, no 402/429.
+# 346/484, 8th of 35 (Gemini 4 Argon 348 is 7th), +34 over the Sep release:
+#
+#                1017     Sep release
+#   go          37/56     35/56
+#   design      20/34     16/34
+#   rust        45/64     38/64
+#   java        52/69     49/69
+#   typescript  49/63     46/63
+#   csharp      41/68     41/68
+#   cpp         54/64     45/64
+#   python      48/66     42/66
+#
+# Better or level on every target; head to head it finds 64 seeds the Sep
+# release misses, which finds 30 this one misses.
+#
+# Cost: the table reads $0.54. OpenRouter's credit balance moved $0.47 for the
+# WHOLE session, which also includes a probe and a design run aborted when the
+# sweep moved hosts -- so the table overstates this route's bill by ~15-20%,
+# the opposite direction from every earlier cost error here. Not investigated.
+#
+# Wall clock 9048s, 3.6x the Sep release's 2487s, and bimodal: go 1776s (Mac),
+# then design 1081, rust 2374, java 1991 (mediabox) against typescript 363,
+# csharp 370, cpp 544, python 549 (mediabox, after ~21:55 local). The host
+# changed after go and the slow stretch did not, so it is provider throughput
+# on launch day, not the host. Re-time one target before quoting the clock.
+#
+# NOT A SEAT. Panel today [claude-sonnet, gpt-6-sol, glm-5.3-flash] 404/484:
+#   REPLACES glm-5.3-flash (ollama seat)    408  (+4)
+#   REPLACES gpt-6-sol                      409  (+5)
+#   REPLACES claude-sonnet                  387  (-17)
+#   AS A 4th SEAT                           414  (+10; the Sep release gives 415)
+#   marginal over the claude-sonnet+gpt-6-sol pair +18; vs the seated panel +10/-68
+# Every swap is inside reach of the noise floor, and like Argon it would
+# trade a quota-covered seat for a card-billed one. It is the cheapest
+# strong reviewer measured (~$0.002/point, really billed), which makes it
+# the best 4th-seat CANDIDATE on cost, not on coverage: +10 is Argon's +12
+# at ~4% of the price.
