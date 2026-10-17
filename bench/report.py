@@ -158,6 +158,11 @@ RATES = {
     # codex@ (see the codex@ note in bench/models.txt): the claude harness 400s
     # on every call, including the preflight ping, with no session ever starting.
     "codex@google/gemini-4-argon": (2.00, 10.00, 0.10),
+    # DeepSeek V4.1 Flash 1017, the 2026-10-17 checkpoint of the model measured on
+    # the ollama route as deepseek-v4.1-flash:cloud. OpenRouter-only (no ollama
+    # tag), at the same card: 0.15 / 0.60 / 0.003 standard. Weekdays 01-04 and
+    # 06-10 UTC bill 2x, like every deepseek row; the sweep ran on a Saturday.
+    "deepseek/deepseek-v4.1-flash-1017": (0.15, 0.60, 0.003),
     # Self-served (vllm@) rows have no per-token price: the bill is GPU hours.
     # They are priced at the rate card of the model they are paired with, so
     # $/point compares TOKEN efficiency on the same scale -- which is the whole
@@ -531,11 +536,23 @@ def agent_model(model, asof=None):
     return name, effort
 
 
+# Which RELEASE a candidate name measured, where the name alone does not say.
+# Display only: pricing, routing and results.csv keep the name the bench
+# invoked. Needed once a vendor ships a second checkpoint under the same model
+# name -- deepseek-v4.1-flash:cloud is a floating ollama tag measured 2026-09-13,
+# when the September release was the only one; the 1017 checkpoint is a
+# separate row on OpenRouter, and without this the two read as one model.
+MEASURED_RELEASE = {
+    "deepseek-v4.1-flash:cloud": "deepseek-v4.1-flash, Sep 2026 release",
+    "deepseek/deepseek-v4.1-flash-1017": "deepseek-v4.1-flash 1017, Oct 2026 release",
+}
+
+
 def resolve(model, asof=None):
     """Display name for the model actually measured."""
     name, effort = agent_model(model, asof)
     if name is None:
-        return model
+        return MEASURED_RELEASE.get(model, model)
     return f"{name} ({effort})" if effort else name
 
 
@@ -1358,7 +1375,7 @@ def write_json(ranked, all_targets, out_path):
             "candidate": model,
             # The html tags claude and codex as the calibration pair.
             "baseline": model in ("claude", "codex"),
-            "model": name or model,
+            "model": name or MEASURED_RELEASE.get(model, model),
             "effort": effort,
             "route": harness,
             "pays": billing(model, harness),
@@ -1446,6 +1463,8 @@ def write_markdown(ranked, all_targets, out_path):
         harness = route(model)
         pct = 100 * e["points"] / e["possible"] if e["possible"] else 0
         note = " *(incomplete)*" if e["missing"] else ""
+        if model in MEASURED_RELEASE:
+            note = f" *({MEASURED_RELEASE[model]})*" + note
         lines.append(
             f"| {i} | `{model}`{note} | {harness} | {e['points']}/{e['possible']} "
             f"| {pct:.0f}% "
@@ -1468,7 +1487,8 @@ def write_markdown(ranked, all_targets, out_path):
             else:
                 mark = "!" if len(got) > 2 and got[2] else ""
                 cells.append(f"{got[0]}/{got[1]}{mark}")
-        lines.append(f"| `{model}` | " + " | ".join(cells) + " |")
+        release = f" *({MEASURED_RELEASE[model]})*" if model in MEASURED_RELEASE else ""
+        lines.append(f"| `{model}`{release} | " + " | ".join(cells) + " |")
     lines.append("")
     lines.append("`!` marks a cell that lost a lens to a contract failure: its recall is "
                  "deflated, not low. `~$` is notional &mdash; the route bills a plan, not "
@@ -1529,6 +1549,10 @@ def selftest():
           agent_model("claude", "20260901-120000"), ("claude-opus-5", "high"))
     check("resolve('claude', <august run id>)",
           resolve("claude", "20260901-120000"), "claude-opus-5 (high)")
+    # Two releases of deepseek-v4.1-flash must not render as one model.
+    check("resolve tells the deepseek-v4.1-flash releases apart",
+          resolve("deepseek-v4.1-flash:cloud") != resolve("deepseek/deepseek-v4.1-flash-1017"),
+          True)
 
 
     # 2b. A renamed agent file must not orphan the rows recorded under its old
