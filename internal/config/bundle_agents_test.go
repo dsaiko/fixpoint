@@ -96,9 +96,11 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 	// claude-coder, seven ollama-routed reviewers (minimax, deepseek,
 	// kimi, glm-5.2, glm-5.3-flash, gemma4, beam) and three OpenRouter-routed ones
 	// (kimi, glm, qwen). beam-ollama took the panel's ollama seat from
-	// glm-5.3-flash on 2026-10-19, which had taken it from minimax on
-	// 2026-09-14. glm-5.3-flash-ollama is a SEPARATE file from glm-ollama, which is
-	// glm-5.2 and stays off the panel -- two tiers of one family, not a rename. The
+	// glm-5.3-flash on 2026-10-19 (v0.16.0), which had taken it from minimax on
+	// 2026-09-14; the seat is now beam-ollama-codex, which runs the codex CLI and
+	// so is not counted here. glm-5.3-flash-ollama is a SEPARATE file from
+	// glm-ollama, which is glm-5.2 and stays off the panel -- two tiers of one
+	// family, not a rename. The
 	// same model appearing under two routes is deliberate -- the route changes
 	// caching and reasoning behavior that no other field records -- and both
 	// routes drive the claude CLI, so both must carry --setting-sources. Agents
@@ -151,8 +153,10 @@ func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 		"glm-ollama":        remote,
 		"kimi-ollama":       remote,
 		"minimax-ollama":    remote,
-		// The panel's ollama seat since 2026-10-19; same route and same failure
-		// mode as the others, so the same budget.
+		// The panel's ollama seat since v0.17.0 (2026-10-19): beam through the
+		// codex harness. The budget is per ROUTE, so the ollama one.
+		"beam-ollama-codex": remote,
+		// beam through the claude harness: the ollama seat in v0.16.0 only.
 		"beam-ollama": remote,
 		// The ollama seat 2026-09-14 .. 2026-10-19, kept ready one word away.
 		"glm-5.3-flash-ollama": remote,
@@ -223,8 +227,12 @@ func TestShippedAgentsPinTheirEnvironment(t *testing.T) {
 		"glm-ollama":        {pass: ollama},
 		"kimi-ollama":       {pass: ollama},
 		"minimax-ollama":    {pass: ollama},
-		// The panel's ollama seat since 2026-10-19. Sees OLLAMA_HOST and nothing
-		// else, exactly like every other agent on this route.
+		// The panel's ollama seat since v0.17.0. Sees OLLAMA_HOST and nothing
+		// else -- no OpenAI credential, although it runs the codex CLI: ollama
+		// configures the provider, and codex must not be able to fall back to a
+		// first-party endpoint billed to the ChatGPT seat's account.
+		"beam-ollama-codex": {pass: ollama},
+		// beam through the claude harness: the ollama seat in v0.16.0 only.
 		"beam-ollama": {pass: ollama},
 		// The ollama seat 2026-09-14 .. 2026-10-19.
 		"glm-5.3-flash-ollama": {pass: ollama},

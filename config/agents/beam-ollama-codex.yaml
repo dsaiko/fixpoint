@@ -1,0 +1,91 @@
+
+# Beam via ollama, driven by the CODEX harness (`ollama launch codex`).
+# ON THE PANEL since 2026-10-19 (v0.17.0), in the ollama seat -- replacing
+# beam-ollama.yaml, the same model through the claude harness, which held the
+# seat for one release (v0.16.0) and stays in the bundle one word away.
+#
+# Same model and same payer as beam-ollama.yaml; see that file for what beam is,
+# why it took the seat from glm-5.3-flash, and its open cost question (no
+# published rate, not shown on the ollama usage page). This file is about why the
+# HARNESS changed. Measured the same evening, two full 8-target grids per route
+# (bench/results.csv, bench/models.txt):
+#
+#                          solo        ollama seat (panel 404 with glm-5.3-flash)
+#   claude harness         335 / 327   420 / 414
+#   codex harness (this)   353 / 349   420 / 425
+#
+#   contract failures      claude route 1 in 17 runs (its own tool-call syntax
+#                          leaking into the reply as `</rfl:parameter>review>`,
+#                          not recovered by the reformat); this route 0 in 16.
+#   repeat spread          1.3 seeds per code target here, 2.1 on the claude route.
+#   wall clock             same class: 48-268 s summed lens time per target.
+#   spend                  ~50% more output and ~65% more uncached input than the
+#                          claude route. Quota cost is still unknown (see above).
+#
+# TWO VARIABLES CHANGED, not one: the harness, and the thinking depth. ollama
+# drops the claude harness's thinking budget, so beam-ollama.yaml runs beam at its
+# default, max; on this route codex's model_reasoning_effort reaches the model
+# (probed: low 649 output tokens, medium 942, high 1074, xhigh 1509 on one prompt).
+# codex accepts `max` and the result reads medium-like (926), so xhigh is the
+# deepest level that reaches beam here. Which variable bought the +20 is not
+# separated; the seat is bought with the measured whole.
+#
+# WHAT THE BENCH CANNOT SEE, as with every seat: single-round seeded recall, not
+# live multi-round novel yield. If the judge starts rejecting most of what this
+# seat says, `beam-ollama` or `glm-5.3-flash-ollama` is one word away.
+#
+# `ollama launch codex` writes its provider into a separate
+# ~/.codex/ollama-launch.config.toml (base_url http://127.0.0.1:11434/v1/,
+# wire_api responses) and leaves ~/.codex/config.toml alone, so this seat does not
+# re-route the gpt-6-sol seat, which uses the same codex CLI. The local ollama
+# SERVER proxies every request: a stale one (server older than the client after a
+# brew upgrade) was measured to cache far worse; check `ollama --version`.
+model: beam:cloud
+effort: xhigh # the deepest level that reaches beam on this route; see above
+command:
+  - ollama
+  - launch
+  - codex
+  - --model {{model}}
+  - --
+  - exec
+  - --sandbox read-only # reviewer duty: enforced no-write sandbox
+  - --skip-git-repo-check # allow running in non-git target dirs
+  - --color never # keep raw logs clean
+  - --json # JSONL event stream: carries the turn's token usage
+  - -c model_reasoning_effort={{effort}}
+  - "-" # read the prompt from stdin, keeping it off argv (ps / /proc)
+
+# The same JSONL envelope as codex.yaml: last value of each path wins, reply on
+# item.completed, totals on turn.completed. input_tokens INCLUDES the cached
+# subset (OpenAI usage shape).
+#
+# NO cost_usd, for beam-ollama.yaml's reason: nothing bills this per token at a
+# rate anyone published.
+usage:
+  format: jsonl
+  text: item.text
+  input_tokens: usage.input_tokens
+  output_tokens: usage.output_tokens
+  cache_read_tokens: usage.cached_input_tokens
+  cache_write_tokens: usage.cache_write_input_tokens
+  error_text: error.message # turn.failed: the reason, not the last narration
+
+prompt_via: stdin
+timeout: 30m # cloud-served models are slower; matched to the panel (see claude-opus.yaml)
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). `ollama launch` configures codex's
+# provider itself, so no OpenAI credential is passed: codex cannot fall back to a
+# first-party endpoint and bill the ChatGPT seat's account for this one. See
+# config/README.md.
+env:
+  pass:
+    # ollama needs to find its server; the wrapped codex harness needs nothing more.
+    - OLLAMA_HOST
+
+# 400 kB, matching the other ollama agents: same route, same failure mode --
+# `Prompt is too long`, returned after a full round of wall clock has already
+# been spent. The budget is per ROUTE, not per harness.
+prompt_budget: 400000
