@@ -240,8 +240,17 @@ roles:
   # haiku-5-5 was measured for the same seat and refused: 398, and 3255s would make
   # it the slowest. If the judge starts rejecting most of what the seat says,
   # `claude-opus` is one word away on the line below.
+  #
+  # THE OLLAMA SEAT MOVED FROM glm-5.3-flash TO beam, 2026-10-19, on coverage
+  # this time, not clock: same payer, and the panel reads 420 and 414/484 on
+  # beam's two full grids against 404 with glm-5.3-flash -- read it as ~+10. It is
+  # also faster per lens. Two open caveats, both in beam-ollama.yaml: one
+  # contract failure in 17 runs (a mangled closing tag the reformat did not
+  # recover), and no published rate, so what it draws from the ollama quota is
+  # not yet known. If either bites, `glm-5.3-flash-ollama` is one word away on
+  # the line below.
   review:
-    agents: [claude-sonnet, gpt-6-sol, glm-5.3-flash-ollama]
+    agents: [claude-sonnet, gpt-6-sol, beam-ollama]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
