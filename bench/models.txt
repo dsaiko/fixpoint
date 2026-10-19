@@ -1140,3 +1140,50 @@ minimax-m3.1-flash:cloud
 # out at the limit, and an agent with a failed gating lens does not count
 # toward quorum. Head to head with beam: 64 seeds only minimax finds, 61 only
 # beam finds.
+
+ollama-codex@beam:cloud
+# beam:cloud through the CODEX harness (`ollama launch codex`, the
+# ollama-codex@ route), MEASURED 2026-10-19 the same evening as the claude-route
+# row above. Same model, same ollama plan; the harness is the variable, and so
+# is thinking depth: effort reaches the model on this route and the template
+# pins xhigh, while the claude route runs beam at its default, max.
+#
+# Two full grids (Mac + mediabox in parallel), 16 rows, 0 errors, 0 contract
+# failures, no 429. The table reads the median, 348/484, 8th of 38 -- level with
+# Gemini 4 Argon, +20 over the claude route:
+#
+#                codex r1  codex r2   claude r1  claude r2
+#   go            40/56     38/56      39         36
+#   design        17/34     16/34      17         14
+#   rust          46/64     46/64      40         39
+#   java          52/69     51/69      52         53
+#   typescript    50/63     51/63      47         50
+#   csharp        51/68     48/68      44         45
+#   cpp           48/64     49/64      44         40
+#   python        49/66     50/66      52         50
+#   total          353       349       335        327
+#
+# Repeat-to-repeat spread 1.3 seeds per code target, 1 on design -- tighter
+# than the claude route's 2.1. Head to head it finds 54 seeds the claude route
+# misses, which finds 32 it misses. Speed is the same class: 48-268 s summed
+# lens time per target. It DOES spend more: over its 16 runs 1.74M uncached
+# input and 548k output tokens, against the claude route's 1.06M and 364k over
+# 17 (report.py nets codex's cached input out, so the columns compare). xhigh
+# through codex writes ~50% more than max through claude.
+#
+# SEATED 2026-10-19 (v0.17.0, config/agents/beam-ollama-codex.yaml), replacing
+# the claude-route beam seated hours earlier in v0.16.0. Panel
+# [claude-sonnet, gpt-6-sol, X] with X in the ollama seat:
+#
+#                                 codex r1  codex r2   claude r1  claude r2
+#   ollama seat                    420       425        420        414
+#   REPLACES gpt-6-sol             420       423        420        413
+#   REPLACES claude-sonnet         401       407        402        395
+#   AS A 4th SEAT                  425       429        426        420
+#
+# glm-5.3-flash in that seat read 404. The repeat 1 claude/codex tie at 420 is
+# the noise floor; the decisive differences are the solo +20, the tighter
+# spread, and 0 contract failures against 1.
+#
+# Neither route publishes a rate for beam, so the cost column is tokens per
+# point: 6.6k here against 4.3k on the claude route -- the extra spend above.
