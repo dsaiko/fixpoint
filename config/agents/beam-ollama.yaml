@@ -1,6 +1,10 @@
 
 # Beam via ollama, same claude-harness wrapping as glm-5.3-flash-ollama.
-# ON THE PANEL since 2026-10-19, in the ollama seat glm-5.3-flash held.
+# Held the ollama seat in v0.16.0 only (2026-10-19), taking it from
+# glm-5.3-flash; replaced the same evening by beam-ollama-codex.yaml, the same
+# model through the codex harness, which measured better (that file says how
+# much). Kept in the bundle one word away. The case below for beam over
+# glm-5.3-flash still holds, and is what the codex seat inherits.
 #
 # Reflection AI's open model: 501B sparse MoE, ~23B active, 1M context, text
 # only. One `:cloud` tag and no dated variant -- the repeatability weakness
