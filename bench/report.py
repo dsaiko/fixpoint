@@ -977,8 +977,6 @@ td {
 }
 tbody tr:hover { background: var(--rule-soft); }
 td.rank { color: var(--muted); width: 34px; padding-left: 10px; }
-tr.failed td.rank { box-shadow: inset 3px 0 0 var(--critical); }
-tr.failed { background: var(--critical-fill); }
 .name { font-family: "IBM Plex Sans", sans-serif; font-size: 14px; font-weight: 600; }
 .sub { color: var(--muted); font-size: 12px; font-family: "IBM Plex Mono", monospace; }
 .tag {
@@ -1040,6 +1038,12 @@ def _esc(text):
     return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+def _fail_cell(n):
+    """One failure-count cell: red only when non-zero, so the eye lands on the
+    failing value rather than on the whole row."""
+    return f'<td class="{"err" if n else "zero"}" data-sort="{n}">{n}</td>'
+
+
 def write_html(ranked, all_targets, out_path):
     """Emit the standings as one self-contained page, for sharing."""
     top = max((max(e["points"] for e in entries) for _, entries in ranked), default=100)
@@ -1056,14 +1060,17 @@ def write_html(ranked, all_targets, out_path):
     def _day(d):
         return f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
     when = _day(days[0]) if len(days) < 2 else f"{_day(days[0])} &ndash; {_day(days[-1])}"
-    failures = 0
+    # The failure columns are failed SESSIONS per candidate, so the tiles sum
+    # them; a tile once counted candidates with any failure and disagreed with
+    # the column it sits above (review run 20260907-150029). A row is no
+    # longer tinted for a failure: the reader is pointed at the CELL that
+    # failed, and the kind of failure is the column it sits in.
+    contract = sum(entries[0]["contract_failures"] for _, entries in ranked)
+    timeouts = sum(entries[0]["timeouts"] for _, entries in ranked)
+    other = sum(entries[0]["other_failures"] for _, entries in ranked)
     rows_html = []
     for i, (model, entries) in enumerate(ranked, 1):
         e = entries[0]
-        # The Err column is failed SESSIONS per candidate, so the tile sums it;
-        # it used to count candidates with any failure and disagreed with the
-        # column it sits above (review run 20260907-150029).
-        failures += e["errors"]
         mtok = e["tokens"] / 1e6
         eff = e["points"] / mtok if mtok else 0.0
         harness = route(model)
@@ -1074,7 +1081,7 @@ def write_html(ranked, all_targets, out_path):
         # be short of any of the eight, so name what is actually missing.
         incomplete = ("  (no " + ", ".join(e["missing"]) + ")"
                       if e["missing"] else "")
-        rows_html.append(f"""      <tr class="{'failed' if e['errors'] else ''}">
+        rows_html.append(f"""      <tr>
         <td class="rank">{i}</td>
         <td class="left">
           <div class="name">{_esc(model)}{'<span class="tag">baseline</span>' if baseline else ''}</div>
@@ -1093,7 +1100,9 @@ def write_html(ranked, all_targets, out_path):
         <td class="{'zero' if e['era'] != 'cached' else ''}" data-sort="{-1 if e['era'] != 'cached' else e['cached_share']}">{_esc(cached_cell(e))}</td>
         <td data-sort="{(run_cost_uncached(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e), e['cache_write']) or 0) / (e['points'] or 1)}">{_esc(per_point_uncached(model, harness, e))}</td>
         <td data-sort="{e['seconds']}">{e['seconds']:,}</td>
-        <td class="{'err' if e['errors'] else 'zero'}" data-sort="{e['errors']}">{e['errors']}</td>
+        {_fail_cell(e['contract_failures'])}
+        {_fail_cell(e['timeouts'])}
+        {_fail_cell(e['other_failures']) if other else ''}
         <td class="sub" data-sort="{max(e['dates']) if e['dates'] else ''}">{measured_on(e['dates'])}</td>
       </tr>""")
 
@@ -1172,7 +1181,9 @@ def write_html(ranked, all_targets, out_path):
     <div class="fact"><dt>Sessions</dt><dd>{sessions}</dd></div>
     <div class="fact"><dt>Targets</dt><dd>{len(all_targets)}</dd></div>
     <div class="fact"><dt>Repeats</dt><dd>{repeats}</dd></div>
-    <div class="fact"><dt>Contract failures</dt><dd>{failures}</dd></div>
+    <div class="fact"><dt>Contract failures</dt><dd>{contract}</dd></div>
+    <div class="fact"><dt>Timeouts</dt><dd>{timeouts}</dd></div>
+    {f'<div class="fact"><dt>Other failures</dt><dd>{other}</dd></div>' if other else ''}
   </dl>
 
   <div class="scroller">
@@ -1192,7 +1203,9 @@ def write_html(ranked, all_targets, out_path):
           <th scope="col">Cached (this run)</th>
           <th scope="col">Per point (uncached-eq)</th>
           <th scope="col">Wall (s)</th>
-          <th scope="col">Err</th>
+          <th scope="col">Contract</th>
+          <th scope="col">Timeouts</th>
+          {'<th scope="col">Other</th>' if other else ''}
           <th scope="col">Measured</th>
         </tr>
       </thead>
@@ -1239,11 +1252,15 @@ def write_html(ranked, all_targets, out_path):
     three times cheaper than their neighbours read level on it. <em>Scores are not
     affected</em> &mdash; caching changes what a run costs, not what it finds.</p>
     <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
-    returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
-    Both models that failed here have failed before.</p>
+    returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.</p>
+    <p><b>Timeout</b> is a session that did not finish within the 30-minute lens budget. It
+    says nothing about the format &mdash; the model was too slow &mdash; but it costs the same
+    lens, and a panel round waits the full 30 minutes for it. Both kinds are counted per failed
+    session, across every run of the model, re-runs included.</p>
     <p><b>Wall clock</b> matters as much as tokens: a panel round runs at the pace of its
     slowest reviewer.</p>
-    <p><b>!</b> marks a cell whose run lost a lens to a contract failure. That recall is
+    <p><b>!</b> marks a cell whose run lost a lens to a contract failure or a timeout, with no
+    clean re-run to replace it. That recall is
     <em>deflated, not low</em> &mdash; the findings the failed lens would have contributed were
     never parsed &mdash; so it is not comparable to a clean cell and is excluded from the field
     median. Re-run the target to get a real number; the failure itself still counts against the
@@ -1413,6 +1430,10 @@ def write_json(ranked, all_targets, out_path):
             "seconds": e["seconds"],
             "sessions": e["sessions"],
             "errors": e["errors"],
+            # errors split by kind; errors == the three summed
+            "contract_failures": e["contract_failures"],
+            "timeouts": e["timeouts"],
+            "other_failures": e["other_failures"],
             "measured": {"first": _day(min(e["dates"])), "last": _day(max(e["dates"]))}
                         if e["dates"] else None,
             "by_target": {t: {"found": got[0], "of": got[1],
@@ -1431,7 +1452,11 @@ def write_json(ranked, all_targets, out_path):
             "candidates": len(ranked),
             "sessions": sum(e["sessions"] for _, entries in ranked for e in entries),
             "targets": len(all_targets),
-            "contract_failures": sum(entries[0]["errors"] for _, entries in ranked),
+            # Was every failed session until 2026-10-19, timeouts included, under
+            # this name; now it counts contract failures only.
+            "contract_failures": sum(entries[0]["contract_failures"] for _, entries in ranked),
+            "timeouts": sum(entries[0]["timeouts"] for _, entries in ranked),
+            "other_failures": sum(entries[0]["other_failures"] for _, entries in ranked),
         },
         "candidates": cands,
     }
@@ -1465,8 +1490,10 @@ def write_markdown(ranked, all_targets, out_path):
     lines.append(f"{len(ranked)} candidates, scored on {len(all_targets)} targets "
                  f"({', '.join(all_targets)}).")
     lines.append("")
-    lines.append("| # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | fails |")
-    lines.append("|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|")
+    other = any(entries[0]["other_failures"] for _, entries in ranked)
+    lines.append("| # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | contract | timeouts |"
+                 + (" other |" if other else ""))
+    lines.append("|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|" + ("--:|" if other else ""))
     for i, (model, entries) in enumerate(ranked, 1):
         e = entries[0]
         harness = route(model)
@@ -1480,7 +1507,8 @@ def write_markdown(ranked, all_targets, out_path):
             f"| {money(harness, run_cost(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], _asof(e), e['cache_write']))} "
             f"| {cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e), e['cache_write'])} "
             f"| {cached_cell(e)} | {per_point_uncached(model, harness, e)} "
-            f"| {e['seconds']} | {e['errors']} |")
+            f"| {e['seconds']} | {e['contract_failures']} | {e['timeouts']} |"
+            + (f" {e['other_failures']} |" if other else ""))
     lines.append("")
     lines.append("Recall per target, which is where a model that is strong in one "
                  "language and weak in another shows up:")
@@ -1499,8 +1527,11 @@ def write_markdown(ranked, all_targets, out_path):
         release = f" *({MEASURED_RELEASE[model]})*" if model in MEASURED_RELEASE else ""
         lines.append(f"| `{model}`{release} | " + " | ".join(cells) + " |")
     lines.append("")
-    lines.append("`!` marks a cell that lost a lens to a contract failure: its recall is "
-                 "deflated, not low. `~$` is notional &mdash; the route bills a plan, not "
+    lines.append("`contract` counts sessions whose output could not be parsed, the "
+                 "disqualifier; `timeouts` counts sessions that did not finish within the "
+                 "30-minute lens budget -- slow, not malformed. Both cover every run of the "
+                 "model, re-runs included. `!` marks a cell that lost a lens to either, with "
+                 "no clean re-run: its recall is deflated, not low. `~$` is notional &mdash; the route bills a plan, not "
                  "the tokens (claude, codex and ollama, which still meters session and "
                  "weekly quotas); a bare `$` is money actually billed to a card, which is "
                  "OpenRouter only. A plan does not meter quota at these rates: measured on a "
@@ -1772,8 +1803,8 @@ def main():
         rep["_repeats"] = str(len(use))
         # cost and failures are the whole model's, not just the chosen run's
         for col in ("tokens_in", "tokens_out", "cache_read", "cache_write",
-                    "duration_s", "errors", "sessions"):
-            rep[col] = str(sum(int(r[col]) for r in rs))
+                    "duration_s", "errors", "sessions", "contract_failures", "timeouts"):
+            rep[col] = str(sum(int(r.get(col) or 0) for r in rs))
         rep["_dates"] = sorted({r["run"].split("-")[0] for r in rs})
         # Full run ids alongside the days: _asof needs the TIME, because a
         # seat can change on a day that also has runs. `dates` stays
@@ -1803,6 +1834,14 @@ def main():
             "tok_out": sum(int(t["tokens_out"]) for t in tasks.values()),
             "cache_read": sum(int(t["cache_read"]) for t in tasks.values()),
             "errors": sum(int(t["errors"]) for t in tasks.values()),
+            # WHY those sessions failed (score.py classify_errors). A contract
+            # failure is unreadable output, the disqualifier; a timeout is a
+            # model too slow for the lens budget; `other` is anything else (a
+            # crashed CLI), shown only when some row has one.
+            "contract_failures": sum(int(t["contract_failures"]) for t in tasks.values()),
+            "timeouts": sum(int(t["timeouts"]) for t in tasks.values()),
+            "other_failures": sum(int(t["errors"]) - int(t["contract_failures"]) - int(t["timeouts"])
+                                  for t in tasks.values()),
             "seconds": sum(int(t["duration_s"]) for t in tasks.values()),
             "sessions": sum(int(t["sessions"]) for t in tasks.values()),
             "dates": sorted({d for t in tasks.values() for d in t["_dates"]}),
@@ -1854,7 +1893,7 @@ def main():
     print(f"{'candidate':30s} {'model measured':22s} {'route':11s} {'pays':13s} "
           f"{'score':>9s} {'tok':>9s} {'pts/Mtok':>9s} {'total $':>9s} "
           f"{'per point':>10s} {'cached*':>7s} {'/pt unca':>9s} "
-          f"{'sec':>6s} {'err':>4s} {'measured on':>17s}")
+          f"{'sec':>6s} {'c/t':>5s} {'measured on':>17s}")
     print("-" * 196)
     for model, entries in ranked:
         median = statistics.median(e["points"] for e in entries)
@@ -1874,7 +1913,7 @@ def main():
                   f"{cost_per_point(model, harness, e['tok_in'], e['tok_out'], e['cache_read'], e['points'], _asof(e), e['cache_write']):>10s} "
                   f"{cached_cell(e):>7s} "
                   f"{per_point_uncached(model, harness, e):>9s} "
-                  f"{e['seconds']:>6d} {e['errors']:>4d} "
+                  f"{e['seconds']:>6d} {str(e['contract_failures']) + '/' + str(e['timeouts']):>5s} "
                   f"{measured_on(e['dates']):>17s}{flag}")
         if len(entries) > 1:
             print(f"{'  median':30s} {'':22s} {'':11s} {'':13s} {median:>4.0f}/100")

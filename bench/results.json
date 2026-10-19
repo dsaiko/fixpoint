@@ -30,7 +30,9 @@
   "candidates": 38,
   "sessions": 941,
   "targets": 8,
-  "contract_failures": 7
+  "contract_failures": 4,
+  "timeouts": 3,
+  "other_failures": 0
  },
  "candidates": [
   {
@@ -55,6 +57,9 @@
    "seconds": 3958,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-08-20",
     "last": "2026-09-01"
@@ -124,6 +129,9 @@
    "seconds": 4152,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-01"
@@ -193,6 +201,9 @@
    "seconds": 2016,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-22",
     "last": "2026-09-22"
@@ -262,6 +273,9 @@
    "seconds": 1605,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-29",
     "last": "2026-09-29"
@@ -331,6 +345,9 @@
    "seconds": 3504,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-02"
@@ -400,6 +417,9 @@
    "seconds": 3255,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-10-07",
     "last": "2026-10-07"
@@ -469,6 +489,9 @@
    "seconds": 3701,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-10-13",
     "last": "2026-10-13"
@@ -538,6 +561,9 @@
    "seconds": 2258,
    "sessions": 46,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-10-19",
     "last": "2026-10-19"
@@ -607,6 +633,9 @@
    "seconds": 9048,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-10-17",
     "last": "2026-10-17"
@@ -676,6 +705,9 @@
    "seconds": 11266,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-08-20",
     "last": "2026-09-01"
@@ -745,6 +777,9 @@
    "seconds": 32418,
    "sessions": 29,
    "errors": 3,
+   "contract_failures": 0,
+   "timeouts": 3,
+   "other_failures": 0,
    "measured": {
     "first": "2026-10-19",
     "last": "2026-10-19"
@@ -814,6 +849,9 @@
    "seconds": 2665,
    "sessions": 49,
    "errors": 1,
+   "contract_failures": 1,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-10-19",
     "last": "2026-10-19"
@@ -883,6 +921,9 @@
    "seconds": 2179,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-02",
     "last": "2026-09-02"
@@ -952,6 +993,9 @@
    "seconds": 12930,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-08-20",
     "last": "2026-09-01"
@@ -1021,6 +1065,9 @@
    "seconds": 2540,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-08-31",
     "last": "2026-09-01"
@@ -1090,6 +1137,9 @@
    "seconds": 2487,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-13",
     "last": "2026-09-13"
@@ -1159,6 +1209,9 @@
    "seconds": 20316,
    "sessions": 26,
    "errors": 1,
+   "contract_failures": 1,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-02",
     "last": "2026-09-02"
@@ -1228,6 +1281,9 @@
    "seconds": 7565,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-10-05",
     "last": "2026-10-05"
@@ -1297,6 +1353,9 @@
    "seconds": 2209,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-08-28",
     "last": "2026-09-01"
@@ -1366,6 +1425,9 @@
    "seconds": 6810,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-08-20",
     "last": "2026-09-01"
@@ -1435,6 +1497,9 @@
    "seconds": 3948,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-01"
@@ -1504,6 +1569,9 @@
    "seconds": 3653,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-01"
@@ -1573,6 +1641,9 @@
    "seconds": 7955,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-08-20",
     "last": "2026-09-01"
@@ -1642,6 +1713,9 @@
    "seconds": 2551,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-01"
@@ -1711,6 +1785,9 @@
    "seconds": 5617,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-05",
     "last": "2026-09-05"
@@ -1780,6 +1857,9 @@
    "seconds": 2912,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-01"
@@ -1849,6 +1929,9 @@
    "seconds": 3600,
    "sessions": 26,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-05",
     "last": "2026-09-07"
@@ -1918,6 +2001,9 @@
    "seconds": 5463,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-30",
     "last": "2026-09-30"
@@ -1987,6 +2073,9 @@
    "seconds": 6003,
    "sessions": 29,
    "errors": 2,
+   "contract_failures": 2,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-01"
@@ -2056,6 +2145,9 @@
    "seconds": 6800,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-02",
     "last": "2026-09-02"
@@ -2125,6 +2217,9 @@
    "seconds": 4313,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-05",
     "last": "2026-09-05"
@@ -2194,6 +2289,9 @@
    "seconds": 2876,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-01"
@@ -2263,6 +2361,9 @@
    "seconds": 3533,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-02",
     "last": "2026-09-02"
@@ -2332,6 +2433,9 @@
    "seconds": 2896,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-07",
     "last": "2026-09-07"
@@ -2401,6 +2505,9 @@
    "seconds": 2451,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-22",
     "last": "2026-09-22"
@@ -2470,6 +2577,9 @@
    "seconds": 1187,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-02",
     "last": "2026-09-02"
@@ -2539,6 +2649,9 @@
    "seconds": 1598,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-09-01",
     "last": "2026-09-01"
@@ -2608,6 +2721,9 @@
    "seconds": 941,
    "sessions": 23,
    "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
    "measured": {
     "first": "2026-10-16",
     "last": "2026-10-16"

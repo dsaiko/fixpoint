@@ -292,6 +292,9 @@
      "failed": true,
      "output_bytes": 27464
     }
+   ],
+   "review_errors": [
+    "bench-candidate via review-security: invalid JSON in <review> block: invalid escape sequence \"\\\\`\" in string"
    ]
   }
  ]

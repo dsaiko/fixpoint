@@ -364,46 +364,46 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 
 38 candidates, scored on 8 targets (go, design, cpp, csharp, java, python, rust, typescript).
 
-| # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | fails |
-|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|
-| 1 | `claude` | cli | 376/484 | 78% | ~$14.12 | ~$0.038 | 74% | ~$0.050 | 3958 | 0 |
-| 2 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$14.36 | ~$0.038 | 74% | ~$0.052 | 4152 | 0 |
-| 3 | `claude-opus-5-5` | anthropic | 372/484 | 77% | ~$10.02 | ~$0.027 | 72% | ~$0.038 | 2016 | 0 |
-| 4 | `claude-sonnet-5-5` | anthropic | 369/484 | 76% | ~$4.93 | ~$0.013 | 74% | ~$0.019 | 1605 | 0 |
-| 5 | `claude-fable-5-1` | anthropic | 365/484 | 75% | ~$24.62 | ~$0.067 | 64% | ~$0.081 | 3504 | 0 |
-| 6 | `claude-haiku-5-5` | anthropic | 356/484 | 74% | ~$0.57 | ~$0.002 | 71% | ~$0.002 | 3255 | 0 |
-| 7 | `codex@google/gemini-4-argon` | openrouter/codex | 348/484 | 72% | $13.62 | $0.039 | 45% | $0.059 | 3701 | 0 |
-| 8 | `ollama-codex@beam:cloud` | ollama/codex | 348/484 | 72% | - | 6.6k | 91% | - | 2258 | 0 |
-| 9 | `deepseek/deepseek-v4.1-flash-1017` *(deepseek-v4.1-flash 1017, Oct 2026 release)* | openrouter | 346/484 | 71% | $0.54 | $0.002 | 64% | $0.003 | 9048 | 0 |
-| 10 | `qwen/qwen3.8-max` | openrouter | 331/484 | 68% | $8.26 | $0.025 | 65% | $0.025 | 11266 | 0 |
-| 11 | `minimax-m3.1-flash:cloud` | ollama | 330/484 | 68% | ~$2.27 | ~$0.007 | 97% | ~$0.014 | 32418 | 3 |
-| 12 | `beam:cloud` | ollama | 328/484 | 68% | - | 4.3k | 87% | - | 2665 | 1 |
-| 13 | `kimi-k3:cloud` | ollama | 319/484 | 66% | ~$7.58 | ~$0.024 | - | ~$0.024 | 2179 | 0 |
-| 14 | `qwen/qwen3.8-27b` | openrouter | 314/484 | 65% | $2.52 | $0.008 | 52% | $0.010 | 12930 | 0 |
-| 15 | `glm-5.3:cloud` | ollama | 313/484 | 65% | ~$7.31 | ~$0.023 | - | ~$0.023 | 2540 | 0 |
-| 16 | `deepseek-v4.1-flash:cloud` *(deepseek-v4.1-flash, Sep 2026 release)* | ollama | 312/484 | 64% | ~$0.35 | ~$0.001 | 84% | ~$0.003 | 2487 | 0 |
-| 17 | `nemotron-3-ultra:cloud` | ollama | 310/484 | 64% | ~$1.66 | ~$0.005 | - | ~$0.005 | 20316 | 1 |
-| 18 | `vllm@bottlecapai/ThinkingCap-Qwen3.8-27B` | vllm | 307/484 | 63% | ~$1.64 | ~$0.005 | 67% | ~$0.007 | 7565 | 0 |
-| 19 | `glm-5.3-flash:cloud` | ollama | 304/484 | 63% | ~$0.78 | ~$0.003 | - | ~$0.003 | 2209 | 0 |
-| 20 | `codex` | cli | 298/484 | 62% | ~$8.36 | ~$0.028 | 75% | ~$0.045 | 6810 | 0 |
-| 21 | `glm-5.2:cloud` | ollama | 278/484 | 57% | ~$5.72 | ~$0.021 | - | ~$0.021 | 3948 | 0 |
-| 22 | `claude-fable-5` | anthropic | 277/484 | 57% | ~$23.50 | ~$0.085 | 67% | ~$0.104 | 3653 | 0 |
-| 23 | `x-ai/grok-4.6` | openrouter | 277/484 | 57% | $6.00 | $0.022 | 41% | $0.022 | 7955 | 0 |
-| 24 | `deepseek-v4-pro:cloud` | ollama | 270/484 | 56% | ~$2.83 | ~$0.010 | - | ~$0.010 | 2551 | 0 |
-| 25 | `gpt-6-astra-xhigh` | cli | 270/484 | 56% | ~$14.94 | ~$0.055 | 83% | ~$0.125 | 5617 | 0 |
-| 26 | `claude-opus-4-8` | anthropic | 268/484 | 55% | ~$11.58 | ~$0.043 | 66% | ~$0.052 | 2912 | 0 |
-| 27 | `gpt-6-astra` | cli | 265/484 | 55% | ~$10.58 | ~$0.040 | 80% | ~$0.100 | 3600 | 0 |
-| 28 | `gpt-6.1-sol` | cli | 254/484 | 52% | ~$2.17 | ~$0.009 | 78% | ~$0.021 | 5463 | 0 |
-| 29 | `minimax-m3:cloud` | ollama | 251/484 | 52% | ~$4.56 | ~$0.018 | - | ~$0.018 | 6003 | 2 |
-| 30 | `deepseek-v4-flash:0731-cloud` | ollama | 249/484 | 51% | ~$1.19 | ~$0.005 | - | ~$0.005 | 6800 | 0 |
-| 31 | `claude-sonnet-5` | anthropic | 245/484 | 51% | ~$7.99 | ~$0.033 | 83% | ~$0.055 | 4313 | 0 |
-| 32 | `kimi-k2.7-code:cloud` | ollama | 242/484 | 50% | ~$2.54 | ~$0.010 | - | ~$0.010 | 2876 | 0 |
-| 33 | `gpt-oss:120b-cloud` | ollama | 236/484 | 49% | ~$1.41 | ~$0.006 | - | ~$0.006 | 3533 | 0 |
-| 34 | `gpt-5.6-terra` | cli | 221/484 | 46% | ~$3.04 | ~$0.014 | 78% | ~$0.028 | 2896 | 0 |
-| 35 | `gpt-6-sol` | cli | 221/484 | 46% | ~$2.39 | ~$0.011 | 79% | ~$0.024 | 2451 | 0 |
-| 36 | `qwen3.5:397b-cloud` | ollama | 186/484 | 38% | ~$1.66 | ~$0.009 | - | ~$0.009 | 1187 | 0 |
-| 37 | `gemma4:31b-cloud` | ollama | 156/484 | 32% | ~$0.66 | ~$0.004 | - | ~$0.004 | 1598 | 0 |
-| 38 | `muse-spark-open:cloud` | ollama | 143/484 | 30% | ~$2.54 | ~$0.018 | 72% | ~$0.044 | 941 | 0 |
+| # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | contract | timeouts |
+|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| 1 | `claude` | cli | 376/484 | 78% | ~$14.12 | ~$0.038 | 74% | ~$0.050 | 3958 | 0 | 0 |
+| 2 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$14.36 | ~$0.038 | 74% | ~$0.052 | 4152 | 0 | 0 |
+| 3 | `claude-opus-5-5` | anthropic | 372/484 | 77% | ~$10.02 | ~$0.027 | 72% | ~$0.038 | 2016 | 0 | 0 |
+| 4 | `claude-sonnet-5-5` | anthropic | 369/484 | 76% | ~$4.93 | ~$0.013 | 74% | ~$0.019 | 1605 | 0 | 0 |
+| 5 | `claude-fable-5-1` | anthropic | 365/484 | 75% | ~$24.62 | ~$0.067 | 64% | ~$0.081 | 3504 | 0 | 0 |
+| 6 | `claude-haiku-5-5` | anthropic | 356/484 | 74% | ~$0.57 | ~$0.002 | 71% | ~$0.002 | 3255 | 0 | 0 |
+| 7 | `codex@google/gemini-4-argon` | openrouter/codex | 348/484 | 72% | $13.62 | $0.039 | 45% | $0.059 | 3701 | 0 | 0 |
+| 8 | `ollama-codex@beam:cloud` | ollama/codex | 348/484 | 72% | - | 6.6k | 91% | - | 2258 | 0 | 0 |
+| 9 | `deepseek/deepseek-v4.1-flash-1017` *(deepseek-v4.1-flash 1017, Oct 2026 release)* | openrouter | 346/484 | 71% | $0.54 | $0.002 | 64% | $0.003 | 9048 | 0 | 0 |
+| 10 | `qwen/qwen3.8-max` | openrouter | 331/484 | 68% | $8.26 | $0.025 | 65% | $0.025 | 11266 | 0 | 0 |
+| 11 | `minimax-m3.1-flash:cloud` | ollama | 330/484 | 68% | ~$2.27 | ~$0.007 | 97% | ~$0.014 | 32418 | 0 | 3 |
+| 12 | `beam:cloud` | ollama | 328/484 | 68% | - | 4.3k | 87% | - | 2665 | 1 | 0 |
+| 13 | `kimi-k3:cloud` | ollama | 319/484 | 66% | ~$7.58 | ~$0.024 | - | ~$0.024 | 2179 | 0 | 0 |
+| 14 | `qwen/qwen3.8-27b` | openrouter | 314/484 | 65% | $2.52 | $0.008 | 52% | $0.010 | 12930 | 0 | 0 |
+| 15 | `glm-5.3:cloud` | ollama | 313/484 | 65% | ~$7.31 | ~$0.023 | - | ~$0.023 | 2540 | 0 | 0 |
+| 16 | `deepseek-v4.1-flash:cloud` *(deepseek-v4.1-flash, Sep 2026 release)* | ollama | 312/484 | 64% | ~$0.35 | ~$0.001 | 84% | ~$0.003 | 2487 | 0 | 0 |
+| 17 | `nemotron-3-ultra:cloud` | ollama | 310/484 | 64% | ~$1.66 | ~$0.005 | - | ~$0.005 | 20316 | 1 | 0 |
+| 18 | `vllm@bottlecapai/ThinkingCap-Qwen3.8-27B` | vllm | 307/484 | 63% | ~$1.64 | ~$0.005 | 67% | ~$0.007 | 7565 | 0 | 0 |
+| 19 | `glm-5.3-flash:cloud` | ollama | 304/484 | 63% | ~$0.78 | ~$0.003 | - | ~$0.003 | 2209 | 0 | 0 |
+| 20 | `codex` | cli | 298/484 | 62% | ~$8.36 | ~$0.028 | 75% | ~$0.045 | 6810 | 0 | 0 |
+| 21 | `glm-5.2:cloud` | ollama | 278/484 | 57% | ~$5.72 | ~$0.021 | - | ~$0.021 | 3948 | 0 | 0 |
+| 22 | `claude-fable-5` | anthropic | 277/484 | 57% | ~$23.50 | ~$0.085 | 67% | ~$0.104 | 3653 | 0 | 0 |
+| 23 | `x-ai/grok-4.6` | openrouter | 277/484 | 57% | $6.00 | $0.022 | 41% | $0.022 | 7955 | 0 | 0 |
+| 24 | `deepseek-v4-pro:cloud` | ollama | 270/484 | 56% | ~$2.83 | ~$0.010 | - | ~$0.010 | 2551 | 0 | 0 |
+| 25 | `gpt-6-astra-xhigh` | cli | 270/484 | 56% | ~$14.94 | ~$0.055 | 83% | ~$0.125 | 5617 | 0 | 0 |
+| 26 | `claude-opus-4-8` | anthropic | 268/484 | 55% | ~$11.58 | ~$0.043 | 66% | ~$0.052 | 2912 | 0 | 0 |
+| 27 | `gpt-6-astra` | cli | 265/484 | 55% | ~$10.58 | ~$0.040 | 80% | ~$0.100 | 3600 | 0 | 0 |
+| 28 | `gpt-6.1-sol` | cli | 254/484 | 52% | ~$2.17 | ~$0.009 | 78% | ~$0.021 | 5463 | 0 | 0 |
+| 29 | `minimax-m3:cloud` | ollama | 251/484 | 52% | ~$4.56 | ~$0.018 | - | ~$0.018 | 6003 | 2 | 0 |
+| 30 | `deepseek-v4-flash:0731-cloud` | ollama | 249/484 | 51% | ~$1.19 | ~$0.005 | - | ~$0.005 | 6800 | 0 | 0 |
+| 31 | `claude-sonnet-5` | anthropic | 245/484 | 51% | ~$7.99 | ~$0.033 | 83% | ~$0.055 | 4313 | 0 | 0 |
+| 32 | `kimi-k2.7-code:cloud` | ollama | 242/484 | 50% | ~$2.54 | ~$0.010 | - | ~$0.010 | 2876 | 0 | 0 |
+| 33 | `gpt-oss:120b-cloud` | ollama | 236/484 | 49% | ~$1.41 | ~$0.006 | - | ~$0.006 | 3533 | 0 | 0 |
+| 34 | `gpt-5.6-terra` | cli | 221/484 | 46% | ~$3.04 | ~$0.014 | 78% | ~$0.028 | 2896 | 0 | 0 |
+| 35 | `gpt-6-sol` | cli | 221/484 | 46% | ~$2.39 | ~$0.011 | 79% | ~$0.024 | 2451 | 0 | 0 |
+| 36 | `qwen3.5:397b-cloud` | ollama | 186/484 | 38% | ~$1.66 | ~$0.009 | - | ~$0.009 | 1187 | 0 | 0 |
+| 37 | `gemma4:31b-cloud` | ollama | 156/484 | 32% | ~$0.66 | ~$0.004 | - | ~$0.004 | 1598 | 0 | 0 |
+| 38 | `muse-spark-open:cloud` | ollama | 143/484 | 30% | ~$2.54 | ~$0.018 | 72% | ~$0.044 | 941 | 0 | 0 |
 
 Recall per target, which is where a model that is strong in one language and weak in another shows up:
 
@@ -448,7 +448,7 @@ Recall per target, which is where a model that is strong in one language and wea
 | `gemma4:31b-cloud` | 17/56 | 10/34 | 24/64 | 20/68 | 30/69 | 19/66 | 19/64 | 17/63 |
 | `muse-spark-open:cloud` | 10/56 | 13/34 | 17/64 | 22/68 | 35/69 | 14/66 | 27/64 | 5/63 |
 
-`!` marks a cell that lost a lens to a contract failure: its recall is deflated, not low. `~$` is notional &mdash; the route bills a plan, not the tokens (claude, codex and ollama, which still meters session and weekly quotas); a bare `$` is money actually billed to a card, which is OpenRouter only. A plan does not meter quota at these rates: measured on a ChatGPT Plus 5-hour window, gpt-6.1-sol drew ~3x the quota per notional dollar that gpt-5.6-sol did, about the same per token. Do not pick a subscription seat by its `~$`.
+`contract` counts sessions whose output could not be parsed, the disqualifier; `timeouts` counts sessions that did not finish within the 30-minute lens budget -- slow, not malformed. Both cover every run of the model, re-runs included. `!` marks a cell that lost a lens to either, with no clean re-run: its recall is deflated, not low. `~$` is notional &mdash; the route bills a plan, not the tokens (claude, codex and ollama, which still meters session and weekly quotas); a bare `$` is money actually billed to a card, which is OpenRouter only. A plan does not meter quota at these rates: measured on a ChatGPT Plus 5-hour window, gpt-6.1-sol drew ~3x the quota per notional dollar that gpt-5.6-sol did, about the same per token. Do not pick a subscription seat by its `~$`.
 
 <!-- END BENCH TABLE -->
 
