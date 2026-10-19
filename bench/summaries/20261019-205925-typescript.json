@@ -1,0 +1,597 @@
+{
+ "run": "20261019-205925",
+ "task": "code",
+ "target": "typescript",
+ "model": "ollama-codex@beam:cloud",
+ "repeat": "2",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/auth.ts",
+     "line": 36,
+     "title": "verify never checks session expiry",
+     "description": "verify returns any session whose token matches, ignoring expiresAt, contradicting its documented contract that expired sessions are rejected.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "requireAdmin rejects admins",
+     "description": "allowed.indexOf(session.role) returns 0 for admin, which is falsy, so admin sessions are rejected while owner (index 1) passes.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 77,
+     "title": "bearerToken crashes on missing/short header",
+     "description": "Non-null assertions on header and parts[1] dereference undefined input instead of letting handle() return 401.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 46,
+     "title": "Cache eviction is FIFO, not LRU",
+     "description": "Eviction picks the first inserted key and never consults the used timestamp, despite docs saying LRU eviction; the used field is recorded but unused.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 64,
+     "title": "delete leaks the scheduled expiry timer",
+     "description": "delete removes the entry but neither clearTimeouts its timer nor removes it from timers; timers keep firing and the map grows unbounded.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 83,
+     "title": "utilization percentage is almost always zero",
+     "description": "Math.floor(size/limit)*100 floors the ratio before scaling; should scale first. Also divides by zero when limit is 0.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 89,
+     "title": "keys() returns an empty array",
+     "description": "for...in over a Map does not enumerate entries, so keys() always returns [].",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 31,
+     "title": "loadConfig mutates the shared DEFAULT_CONFIG",
+     "description": "cfg is DEFAULT_CONFIG itself, so environment overrides leak into the default object across calls/tests.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 37,
+     "title": "Invalid timeout is assigned after being logged",
+     "description": "When LINKD_TIMEOUT_MS is NaN the code logs but still sets cfg.timeoutMs = NaN, and validate doesn't reject NaN.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 46,
+     "title": "Cache TTL multiplied as if seconds",
+     "description": "Docs state LINKD_CACHE_TTL_MS is in milliseconds, but code multiplies by 1000.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 53,
+     "title": "LINKD_FETCH_LIMIT is ignored",
+     "description": "The parsed limit is validated but never assigned to cfg.fetchLimit.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 112,
+     "title": "validate always returns true",
+     "description": "Even when problems are collected, validate returns true, so bad configs are not caught at startup.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 69,
+     "title": "parseReport emits a trailing empty row",
+     "description": "Splitting the body leaves a final empty line, which becomes a row with undefined cells.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 97,
+     "title": "redirect crashes on missing code query",
+     "description": "Non-null assertion on req.query['code'] throws instead of returning 404 when absent.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 85,
+     "title": "createLink does not handle invalid JSON",
+     "description": "JSON.parse can throw on malformed body, surfacing as an unhandled exception rather than a 400 response.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 149,
+     "title": "stats divides by zero on empty store",
+     "description": "totalHits()/size() yields NaN when there are no links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 159,
+     "title": "report reads a different file than it writes",
+     "description": "exportCsv defaults an empty name to 'links', but readReport is called with the original empty name, so it reads '.csv' instead of 'links.csv'.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 33,
+     "title": "create computes quota as NaN",
+     "description": "this.quota[owner] is undefined initially, so undefined + 1 is NaN and poisons quota counts.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 47,
+     "title": "resolve deletes non-expired links and never returns them",
+     "description": "Condition is inverted: links are deleted when Date.now() < expiresAt, so valid links can never resolve; only expired ones fall through to hits++.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 57,
+     "title": "rename validates from twice and never validates to",
+     "description": "The second validation repeats from; the destination code 'to' is not validated at all.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 79,
+     "title": "page end index is off by one",
+     "description": "When offset+size exceeds length, end is set to all.length + 1; slice clamps, but the intent is all.length.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 98,
+     "title": "successRate is truncated to 0 unless all links used",
+     "description": "Math.floor(used/size)*100 floors the ratio before scaling; any partial usage rounds to 0%.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 105,
+     "title": "delete does not refund the owner's quota",
+     "description": "Documented behavior refunds the slot, but quota is never decremented.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 116,
+     "title": "top sorts ascending despite docs",
+     "description": "Comparator returns positive when a.hits > b.hits, so the least-used links come first.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 122,
+     "title": "byOwner uses substring match instead of exact owner",
+     "description": "l.owner.includes(owner) matches any owner containing the string, leaking other owners' links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 134,
+     "title": "extend revives expired links",
+     "description": "Sets expiresAt to now+ttl unconditionally, contradicting the documented finality of expiry for dead codes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 142,
+     "title": "quotas returns mutable internal state",
+     "description": "Documents a snapshot, but returns the live quota object.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 149,
+     "title": "importAll is not atomic",
+     "description": "An invalid code mid-batch leaves earlier entries stored, violating the all-or-none contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 165,
+     "title": "prune reports size instead of removed count",
+     "description": "Function documents the number of removed links but returns this.links.size.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 185,
+     "title": "expiresAt dereferences possibly missing link",
+     "description": "Non-null assertion on an entry that may not exist crashes instead of signaling absence.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "warmCache does not await all probes",
+     "description": "forEach with async callbacks returns immediately, so warmCache resolves before probing/caching completes and rejections are unhandled.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 60,
+     "title": "checkTargets runs every probe despite doc",
+     "description": "Promise.all runs all probes in parallel, not abandoning remaining work after the first failure as documented.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 71,
+     "title": "flushAudit does not retry until success",
+     "description": "It calls write() once and ignores the returned promise/retries, contrary to its contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 77,
+     "title": "countForOwner can return NaN",
+     "description": "quotas[owner] may be undefined, so adding 0 yields NaN for owners without links.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 64,
+     "title": "Expired/stale timers outlive their cache entries and delete newer ones",
+     "description": "set() schedules a setTimeout that calls delete(code), but delete() never calls clearTimeout, and set() overwrites the timers map entry without clearing the previous timer. Scenario: an entry for code is set and its timer scheduled; the entry is then deleted and later re-set under the same code with a fresh TTL, so two timers now target the same code. When the original, shorter-lived timer fires it delete()s the newer entry, evicting a live cached value prematurely (and timers keep references, leaking work).",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "warmCache fire-and-forgets its async probes, so it resolves before work finishes",
+     "description": "warmCache uses pairs.forEach(async ...) and returns void, discarding every returned promise. The caller's await therefore completes before any probe/cache write has finished, and a rejecting probe becomes an unhandled promise rejection instead of propagating. Concurrent cache.set writes also interleave with the event loop without any completion guarantee.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 70,
+     "title": "flushAudit drops the write promise and never retries",
+     "description": "flushAudit(write) is documented to retry until success but calls write() without awaiting or chaining .then/.catch, and returns void. A rejected write is silently lost as an unhandled rejection, and the 'retried until it succeeds' contract is not implemented, so concurrent/rapid callers cannot tell whether their sync was persisted.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 59,
+     "title": "checkTargets does not abandon remaining probes after a failure",
+     "description": "checkTargets awaits Promise.all over every target, so all probes run to completion even after one is known to have failed, contradicting the 'remaining probes are abandoned once a failure is seen' contract. On slow or failing targets this wastes resources and delays reporting the first failure.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 32,
+     "title": "Janitor interval handle is discarded, so the timer is never cleared",
+     "description": "startJanitor returns a stopper, but main.ts ignores it. The setInterval therefore runs for the lifetime of the process and cannot be stopped during shutdown or a hot reload, leaking a repeating timer that keeps mutating the store and cache.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 16,
+     "title": "Hardcoded fallback authentication secret",
+     "description": "When LINKD_SECRET is unset, the service uses the embedded default secret, so a deployment without that variable shares a known credential value.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 22,
+     "title": "Session token generated with Math.random",
+     "description": "Tokens are minted from Math.random() plus a timestamp, so they are neither cryptographically random nor effectively unguessable.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 28,
+     "title": "Session token logged in full",
+     "description": "issue() writes the complete bearer token to the console, exposing credentials to anyone with access to logs.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 36,
+     "title": "verify() never enforces session expiration",
+     "description": "Sessions set expiresAt, but verify() returns them without checking the time, allowing expired sessions to remain valid indefinitely.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "requireAdmin authorization check uses indexOf incorrectly",
+     "description": "allowed.indexOf(session.role) is truthy only at index 1, so the admin role is rejected while owner is accepted, producing unintended authorization behavior.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 73,
+     "title": "Passwords hashed with fast unsalted SHA-256",
+     "description": "hashPassword() uses an unmodified SHA-256 hash with no salt, enabling efficient dictionary and rainbow-table attacks against stored digests.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 78,
+     "title": "bearerToken assumes a present Authorization header",
+     "description": "The function dereferences an possibly undefined header and crashes on malformed or missing authentication instead of returning a clean auth failure.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 87,
+     "title": "secretEquals leaks timing information",
+     "description": "Direct string equality can expose how much of a presented secret matched through timing variation.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 91,
+     "title": "parseLifetimeHours does not validate numeric input",
+     "description": "parseInt() can yield NaN or extreme values, allowing malformed or unbounded lifetime requests to propagate into expiry calculations.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 42,
+     "title": "Invalid timeout value is accepted despite logged validation failure",
+     "description": "A nonnumeric LINKD_TIMEOUT_MS is logged but still assigned to cfg.timeoutMs as NaN, and validate() always returns true, so the invalid configuration is never rejected.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 12,
+     "title": "Path traversal through export report name",
+     "description": "exportCsv() joins a user-controlled name into the target directory without confinement, so ../ segments can write a CSV outside the intended export directory.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 21,
+     "title": "Export reports written with default file permissions",
+     "description": "writeFileSync() does not apply the restrictive mode promised in the comment, leaving generated reports readable according to the process umask.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 35,
+     "title": "Path traversal through owner name in archiveAll",
+     "description": "archiveAll() uses an owner value directly as a filename component, so an owner such as ../../etc/passwd escapes the export directory.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 45,
+     "title": "Predictable temporary snapshot path enables overwrite race",
+     "description": "writeSnapshot() always uses /tmp/linkd-snapshot.json, allowing a local attacker to replace it with a symlink and redirect the write.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 60,
+     "title": "Path traversal when reading reports",
+     "description": "readReport() joins a user-controlled name into the directory, allowing ../ segments to read arbitrary paths ending in .csv.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 65,
+     "title": "Unescaped CSV output allows formula injection",
+     "description": "Owner and target values are written unquoted, so an owner value beginning with formula characters can execute when the report is opened in spreadsheet software.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 39,
+     "title": "Permissive CORS combined with credentialed responses",
+     "description": "The JSON handler advertises Access-Control-Allow-Origin: * together with Access-Control-Allow-Credentials: true, an insecure combination for authenticated browser traffic.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 88,
+     "title": "Client-controlled owner allows ownership spoofing",
+     "description": "createLink() takes owner from the request body instead of the authenticated session, allowing a caller to create links under another user's identity and quota.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 117,
+     "title": "Any authenticated user can delete another user's link",
+     "description": "deleteLink() removes the supplied code without checking that its owner matches the authenticated session, causing unauthorized deletion of other users' links.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 128,
+     "title": "Open redirect through next query parameter",
+     "description": "out() redirects directly to the user-supplied next URL without validation, supporting phishing and open-redirect abuse.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 139,
+     "title": "Admin endpoint guarded only by spoofable header",
+     "description": "adminQuotas() trusts the client-sent x-admin: true header instead of the authenticated session role, bypassing administrator authorization.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 106,
+     "title": "Link listing is not scoped to an owner",
+     "description": "listLinks() returns store results without filtering by the authenticated user, exposing other owners' link data.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 159,
+     "title": "Report endpoint exports all owners' data without access scoping",
+     "description": "report() builds its CSV from every link and allows any authenticated user to export data belonging to other owners.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 34,
+     "title": "Plain object quotas keyed by untrusted owner risk prototype mutation",
+     "description": "create() uses owner as a dynamic property key on a plain object, so dangerous keys such as __proto__ can mutate object behavior rather than merely storing a quota.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 47,
+     "title": "Expired link expiry comparison is inverted",
+     "description": "resolve() deletes links only when the current time is before expiry and leaves expired links resolvable, bypassing link lifetime controls.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 56,
+     "title": "rename() does not validate the destination code",
+     "description": "validateCode() is called twice on the source code but never on to, allowing callers to bypass format validation for the destination code.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 122,
+     "title": "byOwner() matches owners by substring",
+     "description": "Using includes() instead of equality returns links for all owners whose names contain the query, leaking other owners' data.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 129,
+     "title": "extend() can revive an expired link",
+     "description": "The method unconditionally pushes expiry forward even after the link has expired, violating the documented finality of expiry.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 142,
+     "title": "quotas() exposes the mutable internal object",
+     "description": "Despite being documented as a snapshot, the method returns the live quota object, allowing recipients to alter stored counts.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 207,
+     "title": "Short codes use Math.random",
+     "description": "newCode() relies on non-cryptographic randomness, making generated codes less unpredictable than a cryptographic random source.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 354577,
+      "output_tokens": 12473,
+      "cache_read_tokens": 304384
+     },
+     "duration_ms": 48310,
+     "failed": false,
+     "output_bytes": 25132
+    },
+    {
+     "usage": {
+      "input_tokens": 455740,
+      "output_tokens": 4759,
+      "cache_read_tokens": 435072
+     },
+     "duration_ms": 43739,
+     "failed": false,
+     "output_bytes": 3965
+    },
+    {
+     "usage": {
+      "input_tokens": 328405,
+      "output_tokens": 20209,
+      "cache_read_tokens": 268288
+     },
+     "duration_ms": 56394,
+     "failed": false,
+     "output_bytes": 13011
+    }
+   ]
+  }
+ ]
+}
