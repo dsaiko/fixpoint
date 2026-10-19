@@ -1,0 +1,107 @@
+
+# Beam via ollama, same claude-harness wrapping as glm-5.3-flash-ollama.
+# ON THE PANEL since 2026-10-19, in the ollama seat glm-5.3-flash held.
+#
+# Reflection AI's open model: 501B sparse MoE, ~23B active, 1M context, text
+# only. One `:cloud` tag and no dated variant -- the repeatability weakness
+# deepseek-ollama.yaml explains at length; the bench rows are pinned only by the
+# `ollama show` fingerprint run.sh recorded. Re-bench when a dated tag appears.
+#
+# WHY IT TAKES THE SEAT: coverage, at the same payer and a faster clock. It was
+# measured twice on the full 8-target grid (bench/results.csv, bench/models.txt):
+#
+#   panel [claude-sonnet, gpt-6-sol, glm-5.3-flash]   404/484
+#   this model in that seat, repeat 1                 420/484   (+16)
+#   this model in that seat, repeat 2                 414/484   (+10)
+#
+# Read it as ~+10 -- the second repeat -- and note that glm-5.3-flash's own row
+# is a single August run, so its variance is not in the comparison. The gain is
+# spread over most targets rather than one outlier: over the claude-sonnet +
+# gpt-6-sol pair it adds 24-30 seeds where glm-5.3-flash adds 14.
+#
+#   wall clock       70-230s summed lens time per target, lenses 20-50s each,
+#                    on 13k-28k output tokens per target, against glm-5.3-flash's
+#                    160-350s (measured in August, before this route cached).
+#                    A full grid took 864s and 1801s; one launch-day target ran
+#                    4-5 minute lenses with 25-47s preflight pings: provider
+#                    throughput, not the model.
+#   contract failures 1 in 17 runs (51 lens calls): it closed a complete, valid
+#                    findings block with `</rfl:parameter>review>` -- its own
+#                    tool-call syntax leaking -- and the reformat repeated it. A
+#                    failed lens costs this seat its quorum vote for that round.
+#                    glm-5.3-flash had 0 in 8. Watch for it live.
+#
+# WHAT THE BENCH CANNOT SEE, as with every seat before it: this is single-round
+# seeded RECALL. Live multi-round NOVEL yield, the metric that cost kimi and
+# gemma4 their seats, is not measured. If the judge starts rejecting most of
+# what this seat says, or its lenses start failing on the closing tag,
+# glm-5.3-flash-ollama is one word away in defaults.yaml.
+#
+# COST IS UNKNOWN, NOT ZERO. ollama publishes no per-token rate for beam, and
+# during the ~70 bench sessions its requests never appeared under "Models used
+# this week" on the account's usage page, while minimax-m3.1-flash's did. Whether
+# that is a launch promotion or only an unlisted model is not known; check the
+# usage page after the first live runs.
+#
+# Capabilities per `ollama show`: completion, thinking (levels low..max, default
+# max), tools. No vision, which is not a loss for a reviewer reading source.
+model: beam:cloud
+# No `effort`, deliberately, although beam advertises thinking levels: effort is
+# Anthropic's setting, and ollama drops the thinking budget the harness
+# translates it into, so the model runs at its own default. Setting it would
+# validate, run, and lie. See "effort (claude)" in _README.md.
+#
+# That default is MAX, so the bench measured -- and the panel gets -- beam at its
+# deepest thinking. Probed 2026-10-19 on ollama's native /api/chat, one prompt:
+# no `think` field 2526 tokens (6369 chars of thinking), think=max 2493 (6392),
+# think=low 1149 (1829). Even at max it writes 13k-28k output tokens per target.
+command:
+  - ollama
+  - launch
+  - claude
+  - --model {{model}}
+  - --
+  - --output-format json # machine-readable envelope: carries usage + cost
+  - -p # no permission-skip flag: reads work, edit tools are denied
+  - --setting-sources user # target-supplied hooks/MCP/skills stay out; see claude-opus.yaml
+# The CLI reports what it actually spent; fixpoint reads it from here rather than
+# estimating from the bytes it exchanged. modelUsage is keyed by model id and
+# aggregates the WHOLE session; the top-level `usage` object is only the final
+# turn.
+#
+# NO cost_usd: ollama-served models are not billed by Anthropic, but the wrapped
+# claude harness applies Anthropic's rate card anyway (it reported $0.32 for one
+# beam lens) and labels them provider "firstParty". The scoreboard shows "-"
+# rather than money nobody was charged.
+#
+# The cache_* paths carry real numbers on this route, but are not reliable per
+# run -- a cache hit is not guaranteed (bench/report.py, ROUTE_CACHING).
+usage:
+  format: json
+  text: result
+  input_tokens: modelUsage.*.inputTokens
+  output_tokens: modelUsage.*.outputTokens
+  cache_read_tokens: modelUsage.*.cacheReadInputTokens
+  cache_write_tokens: modelUsage.*.cacheCreationInputTokens
+  # Set when the API refused the call rather than the CLI failing (429, 5xx);
+  # without it a provider refusal is indistinguishable from a broken agent.
+  error_status: api_error_status
+
+prompt_via: stdin
+timeout: 30m # cloud-served models are slower; matched to the panel (see claude-opus.yaml)
+can_edit: false
+
+# Only these variables reach the agent, on top of a non-secret baseline (PATH,
+# HOME, locale, TLS trust, proxy settings). Everything else in fixpoint's
+# environment -- your GitHub token, cloud credentials, database passwords -- is
+# absent from the process, so a prompt-injected reviewer cannot quote what it
+# cannot see. See config/README.md.
+env:
+  pass:
+    # ollama needs to find its server; the wrapped claude harness needs nothing more.
+    - OLLAMA_HOST
+
+# 400 kB, matching the other ollama agents: same route, same failure mode --
+# `exit status 1: Prompt is too long`, returned after a full round of wall clock
+# has already been spent.
+prompt_budget: 400000
