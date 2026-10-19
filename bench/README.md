@@ -301,8 +301,13 @@ comparable to the codex baseline, which shares its harness -- say so when
 quoting it. A `vllm@`-prefixed Hugging Face repo (`vllm@bottlecapai/ThinkingCap-Qwen3.8-27B`)
 is a model we serve ourselves, for open weights no provider hosts: the claude
 harness pointed at our own vLLM's `/v1/messages`, so it shares a harness with
-the OpenRouter rows (see "Self-served models" below). Anything else runs the
-ollama template. Results append
+the OpenRouter rows (see "Self-served models" below). An
+`ollama-codex@`-prefixed ollama tag (`ollama-codex@beam:cloud`) runs an ollama
+model through the CODEX harness (`ollama launch codex`): same model, same plan,
+different harness. Effort reaches the model on that route, unlike the claude
+one, so the template pins `xhigh`, the deepest level codex can express there;
+an ollama-codex@ row differs from the plain ollama row in harness and possibly
+thinking depth. Anything else runs the ollama template. Results append
 to `results.csv` (committed — measurements are project knowledge); per-run
 seed tables land in `results/`. Re-score an old run without re-paying for it:
 
