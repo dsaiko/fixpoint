@@ -421,8 +421,9 @@ def ollama_rate(model):
     `deepseek-v4-flash`, and `gemma4:31b-cloud` as `gemma4` -- but `gpt-oss:120b`
     and `qwen3.5:397b` ARE priced per size, so the size tag cannot simply be
     stripped. Try the full name, then the name with `-cloud` removed, then the
-    stem.
+    stem. An ollama-codex@ row is the same model on the same card.
     """
+    model = model.removeprefix("ollama-codex@")
     cands = [model]
     if ":" in model:
         stem, tag = model.split(":", 1)
@@ -581,6 +582,10 @@ def route(model):
     """
     if agent_file(model).exists():
         return "cli"
+    if model.startswith("ollama-codex@"):
+        # An ollama model through the codex harness (bench/run.sh). Checked
+        # before every other rule so the tag is never read as a plain ollama row.
+        return "ollama/codex"
     if model.startswith("codex@"):
         return "openrouter/codex"
     if model.startswith("claude-"):
@@ -611,9 +616,10 @@ def cached_is_subset(model):
     """True where the harness reports cached input INSIDE its input total.
 
     The codex CLI does (OpenAI usage shape), on every route it drives: the
-    bundled codex-harness agents and the codex@ OpenRouter template alike.
+    bundled codex-harness agents, the codex@ OpenRouter template and the
+    ollama-codex@ template alike.
     """
-    return runs_codex(model) or model.startswith("codex@")
+    return runs_codex(model) or model.startswith(("codex@", "ollama-codex@"))
 
 
 def billing(model, harness):
@@ -625,7 +631,7 @@ def billing(model, harness):
         # in the table is the paired baseline's rate card (see RATES), so it
         # is notional like every plan's.
         return "rented GPU"
-    if harness == "ollama":
+    if harness in ("ollama", "ollama/codex"):
         # CORRECTED 2026-09-02 from the operator's own usage page. The
         # 2026-09-01 move to published per-token rates did NOT remove the
         # plan's quotas: the page still shows a SESSION limit (3h reset) and a
@@ -1642,6 +1648,18 @@ def selftest():
     check("and that price is marked notional", money(route(tc), 3.4), "~$3.40")
     check("per point too", cost_per_point(tc, route(tc), 1_000_000, 1_000_000, 0, 10)[0], "~")
     check("vllm@ bills a rented GPU, not a subscription", billing(tc, route(tc)), "rented GPU")
+
+    # 9. An ollama model through the codex harness is its own route, bills the
+    #    ollama plan, reports cached input inside its input total (codex's
+    #    usage shape), and is priced on the plain tag's card.
+    tc = "ollama-codex@minimax-m3.1-flash:cloud"
+    check("ollama-codex@ is its own route", route(tc), "ollama/codex")
+    check("ollama-codex@ is not read as codex@ OpenRouter", route(tc) != "openrouter/codex", True)
+    check("ollama-codex@ bills the ollama plan", billing(tc, route(tc)), "sub (ollama)")
+    check("ollama-codex@ reports cached inside input", cached_is_subset(tc), True)
+    check("ollama-codex@ is priced on the plain tag's card",
+          ollama_rate(tc), ollama_rate("minimax-m3.1-flash:cloud"))
+    check("and that card exists", ollama_rate(tc) is not None, True)
 
     if fails:
         sys.exit("report.py --selftest FAILED:\n" + "\n".join(fails))

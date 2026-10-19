@@ -1,0 +1,62 @@
+# Bench candidate over OLLAMA, driven by the CODEX harness: `ollama launch codex`
+# instead of `ollama launch claude`. Same model, same payer (the ollama plan),
+# different harness -- the variable this route exists to isolate.
+#
+# Why it exists (2026-10-19): beam's one contract failure on the claude route was
+# its own tool-call syntax leaking into the reply (`</rfl:parameter>review>`).
+# That is the shape of a model whose native tool format is not the Anthropic one
+# ollama translates into, and codex speaks the OpenAI responses API instead.
+# Whether that helps is a measurement, not an assumption.
+#
+# EFFORT IS LIVE ON THIS ROUTE, unlike the claude one. ollama drops the claude
+# harness's thinking budget, but it honors codex's model_reasoning_effort --
+# probed on beam with one prompt: low 649 output tokens, medium 942, high 1074,
+# xhigh 1509. `max`, beam's own default and what the claude route therefore
+# runs at, is accepted by codex and then lost (926, medium-like), so xhigh is the
+# deepest level this route can express. A row from here therefore differs from
+# the claude-route row in harness AND possibly thinking depth; say so when
+# quoting it.
+#
+# COMPARABILITY: shares its harness with the codex baseline and its provider
+# with the ollama candidates -- the one-variable rule holds against neither
+# exactly.
+model: __MODEL__
+effort: xhigh # the deepest level that reaches the model on this route; see above
+command:
+  - ollama
+  - launch
+  - codex
+  - --model {{model}}
+  - --
+  - exec
+  - --sandbox read-only # reviewer duty: enforced no-write sandbox
+  - --skip-git-repo-check
+  - --color never
+  - --json
+  - -c model_reasoning_effort={{effort}}
+  - "-" # prompt from stdin, keeping it off argv (ps / /proc)
+
+# The same JSONL envelope as codex.yaml: last value of each path wins, reply on
+# item.completed, totals on turn.completed. input_tokens INCLUDES the cached
+# subset here (OpenAI usage shape) -- report.py's cached_is_subset knows.
+usage:
+  format: jsonl
+  text: item.text
+  input_tokens: usage.input_tokens
+  output_tokens: usage.output_tokens
+  cache_read_tokens: usage.cached_input_tokens
+  cache_write_tokens: usage.cache_write_input_tokens
+  error_text: error.message # turn.failed: the reason, not the last narration
+prompt_via: stdin
+timeout: 30m
+can_edit: false
+
+# ollama needs to find its server; `ollama launch` configures codex's provider
+# itself, so no OpenAI credential is passed and codex cannot fall back to a
+# first-party endpoint.
+env:
+  pass:
+    - OLLAMA_HOST
+
+# Matched to the other remote-served templates: 400k is per ROUTE.
+prompt_budget: 400000
