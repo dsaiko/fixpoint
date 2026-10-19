@@ -1,0 +1,267 @@
+{
+ "run": "20261019-170419",
+ "task": "design",
+ "target": "design",
+ "model": "beam:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 54,
+     "title": "A single cursor stored per user account breaks multi-device sync",
+     "description": "The cursor is shared across every device of one account instead of being per-device. A second device that lags behind sees its cursor already advanced by the other device and skips notes; a freshly enrolled device can inherit a cursor past all historical notes, so first sync omits them. This directly contradicts the 'one code path for first sync' goal and causes silent, irreversible data absence on a device.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 71,
+     "title": "Remote 401 wipes unsynced offline edits, violating 'never lost'",
+     "description": "On any refresh failure (revocation, password change, corruption) the client wipes notes.db outright. A device that edited notes while offline and has not yet synced loses those edits permanently despite the stated guarantee that offline edits are never lost. The wipe also runs on token corruption that may be transient recoverable.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Cursor keyed on client wall-clock milliseconds misses equal-timestamp changes",
+     "description": "The cursor is a modified_at timestamp and the query is strictly newer-than. Two edits sharing a millisecond, or a change whose modified_at equals an already-seen cursor, are never returned; skewed clocks compound this. The result is permanently missed changes that no retry repairs.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Last-writer-wins by client clock silently discards edits",
+     "description": "Conflicts resolve solely by modified_at from the device clock, with no retention of the losing body. Clock skew (common, even with NTP) can discard the edit the user actually made last, and there is no recovery because superseded bodies are overwritten in place and discarded edits are not kept.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 28,
+     "title": "Uncapped note body plus full-body outbox rows allow unbounded memory",
+     "description": "There is no size cap on body on the client, in the outbox (which stores a full copy per edit), or on the server, and the entire outbox ships in one POST. A single huge note or a busy offline device can exhaust client/server memory and produce requests with no bound, with no stated mitigation or backpressure.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "Partial apply on validation failure plus unspecified idempotency makes retries unsafe",
+     "description": "When row N fails validation, rows 1..N-1 remain applied and the failing row is reported. Yet retries resend the whole batch, and 'single transaction per request' is contradicted by this partial commit. Whether re-applying already-accepted rows duplicates, errors, or is silently ignored is unspecified, so a failed sync can wedge or corrupt state.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "Changes query has no pagination, index, or ordering tie-breaker",
+     "description": "SELECT * WHERE user_id = $1 AND modified_at > $2 ORDER BY modified_at returns every matching row with full bodies and no pagination, and only the primary-key index is planned. A user with a large note set (or the first sync) loads the whole working set into one response; ordering on modified_at alone is unstable on ties, which feeds the missed-change cursor bug. Under the post-outage spike this is the component that saturates first (database).",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 90,
+     "title": "No server request timeout lets syncs hold connections indefinitely",
+     "description": "The server imposes no timeout on /sync while request bodies and responses are uncapped. Slow or abusive clients hold connections and memory for as long as they like, which compounds with the post-outage spike and leaves no bound on resource use per request.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deploy assumes old and new never run together, which rolling deploys violate",
+     "description": "The design asserts old and new versions never run concurrently because deploys are quick, and assumes migrations make old code readable. During a rolling deploy both versions are live, and there is no protocol version, so data written by the new version may be read or rejected by the old. In-flight requests are not drained on shutdown, relying entirely on client retry.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 147,
+     "title": "No per-user or per-device rate limit makes tight-loop clients and abuse uncapped",
+     "description": "A misbehaving or malicious client syncing continuously has no throttle; the only response is a support conversation. Combined with uncapped bodies and no server timeout, one client can saturate a shared instance and degrade other users.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 19,
+     "title": "Desktop and CLI open the same SQLite file without specified concurrency control",
+     "description": "Two processes open notes.db directly with no stated locking/WAL/busy-timeout policy. Concurrent writers can hit SQLITE_BUSY or lose an edit, and 'whichever starts first creates it' says nothing about initialization races.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "32-bit random note ids risk collisions across devices",
+     "description": "Note ids are random 32-bit integers generated on the device creating the note, with the server storing its own key and the client id only as a secondary column. Over a user's lifetime across devices collisions are plausible; the design gives no collision handling, so two notes could be merged or overwritten during reconciliation.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 117,
+     "title": "Health check reports liveness only, so load balancers route to DB-broken instances",
+     "description": "/healthz returns 200 whenever the process runs and explicitly excludes database connectivity; those instances keep receiving traffic and every /sync fails until manual removal, prolonging an outage that an instance restart could sometimes shed.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 124,
+     "title": "A client that never syncs is not an alertable signal",
+     "description": "The design declares nonsyncing clients (requests stop arriving) unalertable and relies on support tickets, yet goal 15 requires a support engineer to answer 'why does this device not have my note' from dashboards alone. There is no signal distinguishing 'quiet device' from 'broken sync', so incidents are invisible until reported.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Backups are unrehearsed and retention is only 14 days",
+     "description": "Restore has never been rehearsed and the procedure is ad hoc; nightly pg_dump with 14-day retention leaves no verified recovery path and no point-in-time recovery, so a corruption or bad migration can become irreversible data loss.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 37,
+     "title": "notes.db is written in the clear with default file permissions",
+     "description": "The database file containing all note bodies sits in the clear under default permissions; on shared or unlocked machines a local attacker can read it. Device-level encryption is assumed but not guaranteed, and auth-initiated remote wipe (line 71) shows the threat model considers stolen devices.",
+     "lens": "design-failure",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 152,
+     "title": "Deleted rows retained forever plus orphaned account-deletion rows grow unbounded",
+     "description": "Deleted notes are never purged and account deletion leaves notes rows behind with only an optional nightly cleanup. Storage grows without bound and deleted/abandoned account data lingers, with potential reassociation risk if user ids are reused.",
+     "lens": "design-failure",
+     "severity": "low"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 54,
+     "title": "A single shared account cursor cannot represent multiple devices' sync state",
+     "description": "The cursor is described as one value per user account, but each device has independently advanced a view of the same account's changes. Advancing it from one device makes another device skip changes whose modified_at is no longer strictly newer than the shared cursor, so notes can silently fail to propagate. This violates the stated goal that a note edited offline is never lost and that every device can answer why it lacks a note.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 111,
+     "title": "Conflict resolution overwrites and discards a losing acknowledged edit",
+     "description": "The design promises that no acknowledged edit is ever lost, but in a conflict the losing body is discarded immediately and only the winning copy is retained. If both edits were accepted by their clients in separate syncs, the later-synced but older-timestamp edit is silently lost with no retained body, no merge, and no tombstone. This also removes the evidence needed for later debugging or support.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 80,
+     "title": "Partial application contradicts the stated single-transaction sync",
+     "description": "The document says /sync runs in a single transaction per request, but also says that if row N fails validation, rows 1..N-1 remain applied while the failing row is reported. A retry of the whole outbox can therefore reapply earlier rows, collide with intervening changes, or leave the database in a state a client cannot reconstruct from the response alone. The commit/visibility and retry boundary is unspecified.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 62,
+     "title": "Client wall clocks are treated as a shared ordering source",
+     "description": "modified_at is captured on each device and is used both for cursor advancement and conflict resolution. The cursor uses strictly-newer comparisons, so changes with equal timestamps can be omitted permanently, and skewed or duplicate clocks can let an older logical edit win. The assumption that NTP handles the common case does not address ties or skew as a correctness property.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "No audit trail or provenance is retained despite the support requirement",
+     "description": "The stated operational goal is that support can determine from dashboards why a device lacks a note, but the design retains only the latest note body, overwrites superseded bodies, keeps no sync record, no device identity, and no conflict history. The available metrics are aggregate request rates/errors, which cannot answer which device saw which version or whether a change was applied.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion orphans note rows and leaves user data in place",
+     "description": "Deleting an account removes only the user row while note rows remain with their user_id and, per the design, are only optionally cleaned up later. That leaves note bodies queryable after deletion, creates dangling references, and leaves the lifecycle, ownership, and garbage-collection point of account-owned data undefined.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "Refresh-token revocation wipes local state and can destroy unsynced edits",
+     "description": "On a 401 refresh failure the client deletes notes.db, including offline edits that have not been acknowledged by the server. This directly conflicts with the goal that a note edited offline is never lost whenever revocation, password change, or token corruption occurs while edits are pending.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 25,
+     "title": "Client-generated 32-bit note IDs can collide without a global uniqueness rule",
+     "description": "Notes use a 32-bit random integer as the client-facing identity while the server maintains a separate BIGSERIAL key. At the stated scale, collisions are plausible, and the design names no uniqueness constraint, collision handling, or mapping invariant. A collision can route edits, deletions, or conflicts to the wrong note or conflate two notes across devices.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 20,
+     "title": "Desktop and CLI concurrently open the same SQLite file without an ownership or locking contract",
+     "description": "Both processes open notes.db directly, and the design only says whichever starts first creates it. There is no specified concurrency mode, WAL/journal strategy, writer ownership, or recovery rule, so concurrent edits from the two interfaces can contend for locks or corrupt user expectations about which process owns state.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 32,
+     "title": "The outbox is unbounded and stores a full body copy per edit",
+     "description": "There is no cap, compaction, or de-duplication of outbox rows, and each row carries a full note-body snapshot. A device that stays offline for a long time, or a user with very large notes, can grow the local database and the sync request without bound, increasing failure and memory risk until sync succeeds.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 85,
+     "title": "Change fetches have no pagination or supporting index",
+     "description": "The changes query returns every matching row ordered only by modified_at, and the design explicitly plans no pagination and no index beyond the primary key. Large first syncs, regional outage recovery, and repeated giant requests can hold connections for unbounded time and perform expensive scans under the stated scale and spike behavior.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 153,
+     "title": "Deleted notes and tombstones are retained forever",
+     "description": "Rows with deleted=true remain in both databases indefinitely, including their bodies. That makes deletion non-compacting and creates unbounded long-term growth; over time the table accumulates sensitive deleted content with no lifecycle, compaction, or eventual removal plan.",
+     "lens": "design-data",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 6219,
+      "output_tokens": 5639,
+      "cache_read_tokens": 53376
+     },
+     "duration_ms": 48398,
+     "failed": false,
+     "output_bytes": 11826
+    },
+    {
+     "usage": {
+      "input_tokens": 24818,
+      "output_tokens": 7219,
+      "cache_read_tokens": 36800
+     },
+     "duration_ms": 41903,
+     "failed": false,
+     "output_bytes": 9457
+    }
+   ]
+  }
+ ]
+}
