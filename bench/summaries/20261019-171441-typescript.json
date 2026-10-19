@@ -359,6 +359,9 @@
      "failed": true,
      "output_bytes": 14684
     }
+   ],
+   "review_errors": [
+    "bench-candidate via review-security: no <review> block found in agent output"
    ]
   }
  ]

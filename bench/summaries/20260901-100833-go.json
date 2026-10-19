@@ -372,6 +372,9 @@
      "failed": true,
      "output_bytes": 25148
     }
+   ],
+   "review_errors": [
+    "bench-candidate via review-security: invalid JSON in <review> block: invalid character '.' after object key:value pair"
    ]
   }
  ]

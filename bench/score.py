@@ -114,6 +114,36 @@ def instrument_id(root=None):
     return h.hexdigest()[:12]
 
 
+def classify_errors(rounds):
+    """(contract_failures, timeouts) from the rounds' review_errors.
+
+    `errors` counts every failed session; these two say WHY, because the
+    reasons mean different things to a reader. A contract failure is a model
+    that answered with output the harness could not read -- an unreliable
+    format, the bench's disqualifier. A timeout is a model that did not finish
+    within the lens budget -- slow, which costs a round its pace but says
+    nothing about the format. Anything else (a crashed CLI, a non-zero exit)
+    stays in `errors` only.
+
+    The messages are fixpoint's own (internal/agent/agent.go and
+    validateReviewFindings in internal/orchestrator): `timed out after ...`,
+    `no <review> block found ...`, `invalid JSON in <review> block ...`, and
+    a finding that fails validation (`finding ...`). A reformat that also
+    fails reports the ORIGINAL error, so a salvaged-then-failed lens still
+    classifies by what the model first did wrong.
+    """
+    contract = timeouts = 0
+    for r in rounds:
+        for e in r.get("review_errors") or []:
+            # "<agent> via <lens>: <message>"
+            msg = e.split(": ", 1)[1] if ": " in e else e
+            if msg.startswith("timed out after"):
+                timeouts += 1
+            elif "<review>" in msg or msg.startswith("finding "):
+                contract += 1
+    return contract, timeouts
+
+
 def parse_list(val):
     """Split a YAML flow list into its items, honouring quotes.
 
@@ -346,6 +376,18 @@ def selftest(manifest_path):
           f"recover their own finding, {len(extras)} unmatched")
     for line in stolen:
         print(f"  COLLISION {line}")
+    # The error-kind classifier, on the messages fixpoint actually emits. Not
+    # manifest-specific, but this is the selftest `make bench-check` runs.
+    kinds = classify_errors([{"review_errors": [
+        "a via review-bugs: timed out after 30m0s",
+        "a via review-security: no <review> block found in agent output",
+        "a via review-security: invalid JSON in <review> block: invalid character",
+        'a via review-bugs: finding "x" has invalid severity "y" (want critical)',
+        "a via review-bugs: exit status 1",
+    ]}])
+    if kinds != (3, 1):
+        print(f"  CLASSIFY classify_errors gave {kinds}, want (3, 1)")
+        return 1
     return 1 if stolen else 0
 
 
@@ -400,6 +442,7 @@ def main():
     # exactly what the disqualifier exists to prevent (review run
     # 20260813-124710).
     errors = sum(1 for s in steps if s.get("failed") or s.get("output_bytes", 0) == 0)
+    contract_failures, timeouts = classify_errors(rounds)
     # ZERO SESSIONS IS NOT A MEASUREMENT, whatever the cause. The panel never
     # ran, so there is no recall to record, and a row reading 0/66 is a false
     # claim that the model scored nothing.
@@ -461,6 +504,9 @@ def main():
                        "failed": s_.get("failed", False),
                        "output_bytes": s_.get("output_bytes", 0)}
                       for s_ in (r.get("steps") or [])],
+            # Why a session failed, so a re-score can still tell a contract
+            # failure from a timeout (classify_errors). One line per failure.
+            "review_errors": list(r.get("review_errors") or []),
         })
     keepdir = pathlib.Path(__file__).parent / "summaries"
     keepdir.mkdir(exist_ok=True)
@@ -476,14 +522,14 @@ def main():
             w.writerow(["run", "task", "target", "model", "repeat", "sessions", "errors",
                         "findings", "matched_seeds", "seeds", "recall", "extras",
                         "tokens_in", "tokens_out", "cache_read", "duration_s", "found_per_mtok",
-                        "instrument", "cache_write"])
-        # `instrument` and then `cache_write` last, so each column could be added
-        # to a results.csv that already had rows without moving anything a
-        # positional reader counts.
+                        "instrument", "cache_write", "contract_failures", "timeouts"])
+        # `instrument`, `cache_write`, then the two error kinds last, so each
+        # column could be added to a results.csv that already had rows without
+        # moving anything a positional reader counts.
         w.writerow([run_id, task, target, model, repeat, sessions, errors,
                     len(findings), found, len(active), f"{recall:.2f}", len(extras),
                     tok_in, tok_out, tok_cache, int(duration_s), eff,
-                    instrument_id(), tok_write])
+                    instrument_id(), tok_write, contract_failures, timeouts])
 
     lines = [f"# {model} · {target} · run {run_id} (repeat {repeat})", ""]
     lines.append(f"recall **{found}/{len(active)}** · {len(findings)} finding(s), "

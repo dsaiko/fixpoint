@@ -140,8 +140,6 @@ td {
 }
 tbody tr:hover { background: var(--rule-soft); }
 td.rank { color: var(--muted); width: 34px; padding-left: 10px; }
-tr.failed td.rank { box-shadow: inset 3px 0 0 var(--critical); }
-tr.failed { background: var(--critical-fill); }
 .name { font-family: "IBM Plex Sans", sans-serif; font-size: 14px; font-weight: 600; }
 .sub { color: var(--muted); font-size: 12px; font-family: "IBM Plex Mono", monospace; }
 .tag {
@@ -217,7 +215,9 @@ code {
     <div class="fact"><dt>Sessions</dt><dd>941</dd></div>
     <div class="fact"><dt>Targets</dt><dd>8</dd></div>
     <div class="fact"><dt>Repeats</dt><dd>1</dd></div>
-    <div class="fact"><dt>Contract failures</dt><dd>7</dd></div>
+    <div class="fact"><dt>Contract failures</dt><dd>4</dd></div>
+    <div class="fact"><dt>Timeouts</dt><dd>3</dd></div>
+    
   </dl>
 
   <div class="scroller">
@@ -237,12 +237,14 @@ code {
           <th scope="col">Cached (this run)</th>
           <th scope="col">Per point (uncached-eq)</th>
           <th scope="col">Wall (s)</th>
-          <th scope="col">Err</th>
+          <th scope="col">Contract</th>
+          <th scope="col">Timeouts</th>
+          
           <th scope="col">Measured</th>
         </tr>
       </thead>
       <tbody>
-      <tr class="">
+      <tr>
         <td class="rank">1</td>
         <td class="left">
           <div class="name">claude<span class="tag">baseline</span></div>
@@ -262,9 +264,11 @@ code {
         <td data-sort="0.050462699468085105">~$0.050</td>
         <td data-sort="3958">3,958</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">2</td>
         <td class="left">
           <div class="name">claude-opus-5</div>
@@ -284,9 +288,11 @@ code {
         <td data-sort="0.05188132707774799">~$0.052</td>
         <td data-sort="4152">4,152</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">3</td>
         <td class="left">
           <div class="name">claude-opus-5-5</div>
@@ -306,9 +312,11 @@ code {
         <td data-sort="0.03814317204301076">~$0.038</td>
         <td data-sort="2016">2,016</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260922">2026-09-22</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">4</td>
         <td class="left">
           <div class="name">claude-sonnet-5-5</div>
@@ -328,9 +336,11 @@ code {
         <td data-sort="0.018751653116531167">~$0.019</td>
         <td data-sort="1605">1,605</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260929">2026-09-29</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">5</td>
         <td class="left">
           <div class="name">claude-fable-5-1</div>
@@ -350,9 +360,11 @@ code {
         <td data-sort="0.08116706849315068">~$0.081</td>
         <td data-sort="3504">3,504</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260902">09-01…2026-09-02</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">6</td>
         <td class="left">
           <div class="name">claude-haiku-5-5</div>
@@ -372,9 +384,11 @@ code {
         <td data-sort="0.0019456084269662923">~$0.002</td>
         <td data-sort="3255">3,255</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20261007">2026-10-07</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">7</td>
         <td class="left">
           <div class="name">codex@google/gemini-4-argon</div>
@@ -394,9 +408,11 @@ code {
         <td data-sort="0.05946715517241379">$0.059</td>
         <td data-sort="3701">3,701</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20261013">2026-10-13</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">8</td>
         <td class="left">
           <div class="name">ollama-codex@beam:cloud</div>
@@ -416,9 +432,11 @@ code {
         <td data-sort="0.0">-</td>
         <td data-sort="2258">2,258</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20261019">2026-10-19</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">9</td>
         <td class="left">
           <div class="name">deepseek/deepseek-v4.1-flash-1017</div>
@@ -438,9 +456,11 @@ code {
         <td data-sort="0.0026882878612716765">$0.003</td>
         <td data-sort="9048">9,048</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20261017">2026-10-17</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">10</td>
         <td class="left">
           <div class="name">qwen/qwen3.8-max</div>
@@ -460,9 +480,11 @@ code {
         <td data-sort="0.024941776435045315">$0.025</td>
         <td data-sort="11266">11,266</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
       </tr>
-      <tr class="failed">
+      <tr>
         <td class="rank">11</td>
         <td class="left">
           <div class="name">minimax-m3.1-flash:cloud</div>
@@ -481,10 +503,12 @@ code {
         <td class="" data-sort="0.9669942805335968">97%</td>
         <td data-sort="0.01406663590909091">~$0.014</td>
         <td data-sort="32418">32,418</td>
+        <td class="zero" data-sort="0">0</td>
         <td class="err" data-sort="3">3</td>
+        
         <td class="sub" data-sort="20261019">2026-10-19</td>
       </tr>
-      <tr class="failed">
+      <tr>
         <td class="rank">12</td>
         <td class="left">
           <div class="name">beam:cloud</div>
@@ -504,9 +528,11 @@ code {
         <td data-sort="0.0">-</td>
         <td data-sort="2665">2,665</td>
         <td class="err" data-sort="1">1</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20261019">2026-10-19</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">13</td>
         <td class="left">
           <div class="name">kimi-k3:cloud</div>
@@ -526,9 +552,11 @@ code {
         <td data-sort="0.02374821630094044">~$0.024</td>
         <td data-sort="2179">2,179</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260902">2026-09-02</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">14</td>
         <td class="left">
           <div class="name">qwen/qwen3.8-27b</div>
@@ -548,9 +576,11 @@ code {
         <td data-sort="0.009782162420382165">$0.010</td>
         <td data-sort="12930">12,930</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">15</td>
         <td class="left">
           <div class="name">glm-5.3:cloud</div>
@@ -570,9 +600,11 @@ code {
         <td data-sort="0.023363883067092653">~$0.023</td>
         <td data-sort="2540">2,540</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">08-31…2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">16</td>
         <td class="left">
           <div class="name">deepseek-v4.1-flash:cloud</div>
@@ -592,9 +624,11 @@ code {
         <td data-sort="0.0029348548076923073">~$0.003</td>
         <td data-sort="2487">2,487</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260913">2026-09-13</td>
       </tr>
-      <tr class="failed">
+      <tr>
         <td class="rank">17</td>
         <td class="left">
           <div class="name">nemotron-3-ultra:cloud</div>
@@ -614,9 +648,11 @@ code {
         <td data-sort="0.0053449729032258066">~$0.005</td>
         <td data-sort="20316">20,316</td>
         <td class="err" data-sort="1">1</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260902">2026-09-02</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">18</td>
         <td class="left">
           <div class="name">vllm@bottlecapai/ThinkingCap-Qwen3.8-27B</div>
@@ -636,9 +672,11 @@ code {
         <td data-sort="0.006911748534201953">~$0.007</td>
         <td data-sort="7565">7,565</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20261005">2026-10-05</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">19</td>
         <td class="left">
           <div class="name">glm-5.3-flash:cloud</div>
@@ -658,9 +696,11 @@ code {
         <td data-sort="0.0025578922697368418">~$0.003</td>
         <td data-sort="2209">2,209</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">08-28…2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">20</td>
         <td class="left">
           <div class="name">codex<span class="tag">baseline</span></div>
@@ -680,9 +720,11 @@ code {
         <td data-sort="0.045051040268456376">~$0.045</td>
         <td data-sort="6810">6,810</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">21</td>
         <td class="left">
           <div class="name">glm-5.2:cloud</div>
@@ -702,9 +744,11 @@ code {
         <td data-sort="0.020583963309352513">~$0.021</td>
         <td data-sort="3948">3,948</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">22</td>
         <td class="left">
           <div class="name">claude-fable-5</div>
@@ -724,9 +768,11 @@ code {
         <td data-sort="0.10370371841155235">~$0.104</td>
         <td data-sort="3653">3,653</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">23</td>
         <td class="left">
           <div class="name">x-ai/grok-4.6</div>
@@ -746,9 +792,11 @@ code {
         <td data-sort="0.021664815884476534">$0.022</td>
         <td data-sort="7955">7,955</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">08-20…2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">24</td>
         <td class="left">
           <div class="name">deepseek-v4-pro:cloud</div>
@@ -768,9 +816,11 @@ code {
         <td data-sort="0.010481044444444445">~$0.010</td>
         <td data-sort="2551">2,551</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">25</td>
         <td class="left">
           <div class="name">gpt-6-astra-xhigh</div>
@@ -790,9 +840,11 @@ code {
         <td data-sort="0.12544207407407407">~$0.125</td>
         <td data-sort="5617">5,617</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260905">2026-09-05</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">26</td>
         <td class="left">
           <div class="name">claude-opus-4-8</div>
@@ -812,9 +864,11 @@ code {
         <td data-sort="0.052148731343283586">~$0.052</td>
         <td data-sort="2912">2,912</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">27</td>
         <td class="left">
           <div class="name">gpt-6-astra</div>
@@ -834,9 +888,11 @@ code {
         <td data-sort="0.10010422641509434">~$0.100</td>
         <td data-sort="3600">3,600</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260907">09-05…2026-09-07</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">28</td>
         <td class="left">
           <div class="name">gpt-6.1-sol</div>
@@ -856,9 +912,11 @@ code {
         <td data-sort="0.020805622047244093">~$0.021</td>
         <td data-sort="5463">5,463</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260930">2026-09-30</td>
       </tr>
-      <tr class="failed">
+      <tr>
         <td class="rank">29</td>
         <td class="left">
           <div class="name">minimax-m3:cloud</div>
@@ -878,9 +936,11 @@ code {
         <td data-sort="0.018151957768924306">~$0.018</td>
         <td data-sort="6003">6,003</td>
         <td class="err" data-sort="2">2</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">30</td>
         <td class="left">
           <div class="name">deepseek-v4-flash:0731-cloud</div>
@@ -900,9 +960,11 @@ code {
         <td data-sort="0.004778355823293173">~$0.005</td>
         <td data-sort="6800">6,800</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260902">2026-09-02</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">31</td>
         <td class="left">
           <div class="name">claude-sonnet-5</div>
@@ -922,9 +984,11 @@ code {
         <td data-sort="0.05492898775510204">~$0.055</td>
         <td data-sort="4313">4,313</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260905">2026-09-05</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">32</td>
         <td class="left">
           <div class="name">kimi-k2.7-code:cloud</div>
@@ -944,9 +1008,11 @@ code {
         <td data-sort="0.010483958884297519">~$0.010</td>
         <td data-sort="2876">2,876</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">33</td>
         <td class="left">
           <div class="name">gpt-oss:120b-cloud</div>
@@ -966,9 +1032,11 @@ code {
         <td data-sort="0.005980173940677966">~$0.006</td>
         <td data-sort="3533">3,533</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260902">2026-09-02</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">34</td>
         <td class="left">
           <div class="name">gpt-5.6-terra</div>
@@ -988,9 +1056,11 @@ code {
         <td data-sort="0.027578832579185523">~$0.028</td>
         <td data-sort="2896">2,896</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260907">2026-09-07</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">35</td>
         <td class="left">
           <div class="name">gpt-6-sol</div>
@@ -1010,9 +1080,11 @@ code {
         <td data-sort="0.02408733031674208">~$0.024</td>
         <td data-sort="2451">2,451</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260922">2026-09-22</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">36</td>
         <td class="left">
           <div class="name">qwen3.5:397b-cloud</div>
@@ -1032,9 +1104,11 @@ code {
         <td data-sort="0.008922848387096774">~$0.009</td>
         <td data-sort="1187">1,187</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260902">2026-09-02</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">37</td>
         <td class="left">
           <div class="name">gemma4:31b-cloud</div>
@@ -1054,9 +1128,11 @@ code {
         <td data-sort="0.004242326153846154">~$0.004</td>
         <td data-sort="1598">1,598</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20260901">2026-09-01</td>
       </tr>
-      <tr class="">
+      <tr>
         <td class="rank">38</td>
         <td class="left">
           <div class="name">muse-spark-open:cloud</div>
@@ -1076,6 +1152,8 @@ code {
         <td data-sort="0.044125309440559445">~$0.044</td>
         <td data-sort="941">941</td>
         <td class="zero" data-sort="0">0</td>
+        <td class="zero" data-sort="0">0</td>
+        
         <td class="sub" data-sort="20261016">2026-10-16</td>
       </tr>
       </tbody>
@@ -1170,11 +1248,15 @@ code {
     three times cheaper than their neighbours read level on it. <em>Scores are not
     affected</em> &mdash; caching changes what a run costs, not what it finds.</p>
     <p><b>Contract failure</b> is the disqualifier, independent of score: a session that
-    returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.
-    Both models that failed here have failed before.</p>
+    returns unparseable output burns a full slot and can flip a panel verdict to inconclusive.</p>
+    <p><b>Timeout</b> is a session that did not finish within the 30-minute lens budget. It
+    says nothing about the format &mdash; the model was too slow &mdash; but it costs the same
+    lens, and a panel round waits the full 30 minutes for it. Both kinds are counted per failed
+    session, across every run of the model, re-runs included.</p>
     <p><b>Wall clock</b> matters as much as tokens: a panel round runs at the pace of its
     slowest reviewer.</p>
-    <p><b>!</b> marks a cell whose run lost a lens to a contract failure. That recall is
+    <p><b>!</b> marks a cell whose run lost a lens to a contract failure or a timeout, with no
+    clean re-run to replace it. That recall is
     <em>deflated, not low</em> &mdash; the findings the failed lens would have contributed were
     never parsed &mdash; so it is not comparable to a clean cell and is excluded from the field
     median. Re-run the target to get a real number; the failure itself still counts against the
