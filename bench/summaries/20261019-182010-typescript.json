@@ -1,0 +1,597 @@
+{
+ "run": "20261019-182010",
+ "task": "code",
+ "target": "typescript",
+ "model": "minimax-m3.1-flash:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/store.ts",
+     "line": 47,
+     "title": "resolve() has an inverted expiry check: live links 404 and are deleted, expired links resolve",
+     "description": "The condition reads `if (Date.now() < link.expiresAt) { this.links.delete(code); return undefined; }`. `Date.now() < expiresAt` means the link has NOT expired, so a freshly created link is deleted from the map and reported as missing on its very first redirect (GET /l returns 404 and the link is destroyed). Conversely a link whose deadline has passed falls through to `link.hits++` and returns the target, so expired codes keep redirecting and keep counting hits. The docstring states the opposite intent (expired links resolve to undefined so dead codes cannot be revived). The janitor in worker.ts uses the correct polarity (`now > expiresAt`), so the two disagree about which links are alive.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "requireAdmin admits every role except admin: indexOf returns -1 (truthy) for an unknown role",
+     "description": "`const allowed = [\"admin\", \"owner\"]; if (allowed.indexOf(session.role))` uses the index as a boolean. For role \"admin\" indexOf returns 0, which is falsy, so the admin is DENIED. For any unknown role (\"user\", \"guest\", \"\") indexOf returns -1, which is truthy, so the request is ALLOWED. The function therefore does the exact opposite of its contract (admin-only gate). Note also that main.ts never calls it: adminQuotas() gates on the client-supplied header `x-admin: true` instead of the session role, so this helper is the only place the role check lives and it is both inverted and unused.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 78,
+     "title": "bearerToken throws TypeError on a request with no Authorization header",
+     "description": "`const parts = header!.split(\" \")` \u2014 the non-null assertion is erased at runtime, so when `header` is undefined this evaluates `undefined.split` and throws TypeError: Cannot read properties of undefined. `handle()` calls `bearerToken(req.headers[\"authorization\"])`, and the Request interface types that value as `string | undefined`, so any unauthenticated request (no header) crashes instead of getting the intended 401. handle() has no try/catch, so the exception propagates to the caller (and would kill the process in a default Node server).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 36,
+     "title": "verify() never checks expiresAt, so expired sessions stay valid forever",
+     "description": "The contract states: \"Returns the session behind a token, or undefined if the token is unknown or its lifetime has run out.\" The implementation only matches the token in the map and never looks at `session.expiresAt`, which is set to now + 12h by issue(). A token therefore keeps authenticating indefinitely, and handle() accepts it on every route. The revocation window is unbounded.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 85,
+     "title": "createLink parses JSON outside the try block, so a malformed body throws out of handle()",
+     "description": "`const payload = JSON.parse(req.body) as any;` sits above `try { ... } catch (e) { return text(400, ...) }`, so the catch only covers store.create(). A POST /links with a body that is not valid JSON (or empty) raises a SyntaxError that escapes handle() \u2014 the client gets no response and, in a default Node HTTP server, an uncaught exception takes the process down. The existing 400 handler shows the intent was to report bad input.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 97,
+     "title": "redirect() calls .toLowerCase() on an optional query param and throws when it is absent",
+     "description": "`store.resolve(req.query[\"code\"]!.toLowerCase())` \u2014 the `!` is erased at runtime, so a GET /l with no `code` query parameter dereferences undefined and throws TypeError: Cannot read properties of undefined (reading 'toLowerCase'). The exception escapes handle(), which has no guard, so the request crashes the handler rather than returning 404/400.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 34,
+     "title": "Quota counter becomes NaN for every new owner (undefined + 1)",
+     "description": "`this.quota[owner] = this.quota[owner]! + 1;` \u2014 the index signature makes the type `number`, so the `!` silences the compiler, but at runtime a first-time owner has no entry and `undefined + 1` is NaN. Every owner's quota is NaN from the first link onward (and stays NaN, since NaN + 1 is NaN). The admin quota view (`store.quotas()`), `countForOwner()` in worker.ts and the quota slot accounting all report NaN, which JSON.stringify turns into null. Compounding this, `delete()` (store.ts:110) never decrements the owner's counter even though its docstring says it gives the slot back, so quotas only ever grow.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 117,
+     "title": "deleteLink performs no ownership check, so any authenticated user can delete any link",
+     "description": "The docstring promises \"A link may only be deleted by the user who created it; the owner is taken from the authenticated session\", but the body only calls `store.delete(req.query[\"code\"]!)` \u2014 the session is never consulted and the link's owner is never compared. Any holder of a valid token (any role) can delete any other user's link by code, and the response is 204, so the deletion is silent. Related: createLink takes the owner from the request body (`payload.owner`), not from the session, so the ownership model the docstring describes does not exist anywhere in the path.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "warmCache resolves before the probes finish and leaks unhandled rejections",
+     "description": "`pairs.forEach(async ([code, target]) => { await probe(target); cache.set(code, target); })` \u2014 forEach discards the promise returned by the async callback, so warmCache's own promise resolves immediately, long before any entry is cached (the docstring says \"Resolves once every probe has finished\"). Worse, probe() throws for any non-https target, and store.create() explicitly permits http:// targets, so warming a list containing an http link produces a rejected promise that nothing handles \u2014 under Node's default policy an unhandled rejection terminates the process.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 12,
+     "title": "The user-supplied report name is not confined to the export directory",
+     "description": "`const path = join(dir, `${reportName}.csv`)` with reportName taken straight from the caller. The comment states \"The report name comes from the user, so it is confined to dir\", which is false: join() normalizes the traversal away from dir, so a name like \"../../etc/evil\" writes outside the export directory (and readReport() at export.ts:60 reads back the same escaping path, so the file contents are also returned to the caller). In main.ts the name comes from `req.query[\"name\"]` on the /report route.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 21,
+     "title": "The report is written with default 0644 permissions although it is documented as service-user-only",
+     "description": "The comment above the call says \"The report carries every owner's links, so it is written for the service user only -- nobody else on the box may read it\", but writeFileSync() creates the file with the process umask (0644 in the usual case), so every local user can read the CSV containing every owner's links. runtime.d.ts even declares `chmodSync` (and nothing calls it), which suggests a restrictive mode was intended but never applied.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 45,
+     "title": "writeSnapshot uses a fixed temp path in /tmp: writers race, the rename can fail with EXDEV, and the temp file is left behind",
+     "description": "`const tmp = join(\"/tmp\", \"linkd-snapshot.json\")` is a single fixed name shared by every process and every concurrent call. Two writers interleave on the same file, and one process can rename away a file another process is still writing. On any host where /tmp is a separate mount (tmpfs is the common Linux default) renameSync() from /tmp to the export dir fails with EXDEV, so no snapshot is ever written. The temp file is also never removed when the write or rename fails, and it is created world-readable with a predictable name.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 66,
+     "title": "parseReport returns a spurious empty row for every file exportCsv wrote, and mis-splits targets containing commas",
+     "description": "exportCsv's body always ends with a newline, so body.split(\"\\n\") yields a trailing \"\" element; lines.slice(1) then includes that empty string and the loop pushes a row whose four values are all undefined (typed as string by the `as string` casts but undefined at runtime). So parseReport(readReport(...)) returns one extra bogus row for every report the service writes. Separately, neither function quotes CSV fields: a target such as `https://x.test/?a=1,2` produces five cells, so parseReport truncates the target at the comma and shifts the owner and hits columns.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 159,
+     "title": "/report without a name parameter exports links.csv but then reads .csv, so it always returns 500",
+     "description": "`const name = req.query[\"name\"] || \"\"` yields an empty name when the parameter is absent. exportCsv substitutes its own default (\"links\") and writes `<dir>/links.csv`, but readReport(cfg.exportDir, name) is called with the raw empty name and reads `<dir>/.csv`, which does not exist \u2014 the ENOENT is caught and turned into `500 export to ... failed`. The export itself succeeded, so a successful report is reported as a server error.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 84,
+     "title": "utilization() floors before multiplying, so it reports 0% for any partially filled cache",
+     "description": "`Math.floor(this.entries.size / this.limit) * 100` floors the ratio first: any fill below 100% gives a ratio < 1, which floors to 0, so the dashboard shows 0% until the cache is completely full (and a limit of 0 yields Infinity). The intent is a percentage of the limit.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 98,
+     "title": "successRate() floors before multiplying, so it reports 0% unless every link has hits",
+     "description": "`Math.floor(used / this.links.size) * 100` floors the fraction first. With 1 of 2 links followed the fraction is 0.5, which floors to 0, so the reported success rate is 0% instead of 50%; only a 100% rate is ever reported as non-zero. This feeds the `success_rate` field of the /stats response.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 165,
+     "title": "prune() returns the number of links remaining, not the number it removed",
+     "description": "The docstring says \"Drops every link that expired before cutoff and reports how many it removed\", but the function counts removals in `removed` and then returns `this.links.size` \u2014 the count still in the store. The `removed` counter is computed and thrown away, so a caller (a sweeper reporting how much was cleaned) gets the wrong number.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 151,
+     "title": "importAll() is not atomic: validation happens inside the mutation loop, so a bad code leaves a partial import",
+     "description": "The docstring promises \"either every link in the batch is stored, or none of them is and the store is untouched\", but validateCode(link.code) throws from inside the loop, after earlier links have already been written into the map. A batch whose third entry has an invalid code leaves the first two stored, contradicting the contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 58,
+     "title": "rename() validates `from` twice and never validates `to`",
+     "description": "`validateCode(from); validateCode(from);` \u2014 the second call was clearly meant to be `validateCode(to)`. As a result the destination code is never checked for length or character set, so rename() accepts codes that validateCode() exists to reject (including codes with path separators or other arbitrary characters) and stores them as map keys.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 134,
+     "title": "extend() resurrects an already-expired link despite the documented final-expiry rule",
+     "description": "The docstring states \"An already-expired link stays expired: expiry is final, and a dead code must never come back to life\", but the body unconditionally assigns `link.expiresAt = Date.now() + ttlMs`, which brings a dead link back with a fresh deadline. The same docstring is contradicted by the fact that the method can only ever move the deadline forward from now.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 122,
+     "title": "byOwner() uses a substring match, so it returns other owners' links",
+     "description": "The docstring says \"Returns every link belonging to exactly this owner\", but `l.owner.includes(owner)` is a substring test: owner \"alice\" also matches links owned by \"alice2\", \"malice\" or \"not-alice\". A caller asking for one owner's links receives a superset that includes other users' data.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 198,
+     "title": "validateCode()'s regex is unanchored, so codes with invalid characters pass validation",
+     "description": "`const ok = /[A-Za-z0-9_-]/.test(c)` tests whether the character occurs anywhere in the string, so `c` = \"a!\" or \"a b\" matches and is accepted, even though the error message says \"code contains invalid characters\". The guard therefore lets through codes with punctuation, spaces or path separators \u2014 exactly what importAll() and rename() rely on it to block.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 110,
+     "title": "delete() never gives the owner's quota slot back",
+     "description": "The docstring says \"Removes a link and gives the owner their quota slot back, so a user who deletes a link can always create another one\", but the method only removes the map entry \u2014 `this.quota[owner]` is left untouched. Quota counts therefore only ever grow and no slot is ever returned.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 47,
+     "title": "Eviction picks the oldest inserted entry, not the least recently used one",
+     "description": "`const victim = this.entries.keys().next().value` takes the first key in Map insertion order, so the cache evicts FIFO. The `used` timestamp that get() maintains (and the docstrings \"the least recently used entry is the one eviction picks\" and \"evicting the least recently used entry when the cache is full\") is never consulted. A code that is read constantly is still evicted ahead of a code that was never touched, and because Map.set() on an existing key keeps the original insertion position, re-setting a code does not make it recent either.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 57,
+     "title": "Cache timers are never cleared: a stale timer deletes a refreshed entry and the timers map grows without bound",
+     "description": "`set()` schedules `setTimeout(() => this.delete(code), this.ttlMs)` and stores the handle, but `delete()` never calls clearTimeout, so the scheduled work still runs \u2014 the docstring \"Removes one entry and stops the work that was scheduled for it\" is false. Two consequences: (1) re-setting a code replaces the handle in `this.timers` but leaves the first timer live, so the old timer fires later and deletes the freshly written entry early; (2) `this.timers` is never pruned, so it grows with the number of distinct codes ever cached while `this.entries` stays bounded by the limit \u2014 the memory bound the class advertises does not hold. The expired-entry path in get() has the same problem.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 90,
+     "title": "keys() iterates a Map with for...in, so it always returns an empty array",
+     "description": "Map instances expose no enumerable own properties (the entries live in an internal slot), and Map.prototype methods are non-enumerable, so `for (const key in this.entries)` never enters the loop and keys() returns [] for every cache state. The admin view that is supposed to list the cached codes therefore shows nothing, and the documented ordering (\"newest first\") is not implemented either.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 31,
+     "title": "loadConfig() mutates the exported DEFAULT_CONFIG object instead of a copy",
+     "description": "`const cfg = DEFAULT_CONFIG` takes the module-level constant by reference, so every assignment writes into the exported object. After one call, DEFAULT_CONFIG no longer holds the documented defaults (port 8080, cacheSize 1024, ...), a second loadConfig() call with the environment cleared returns the previous run's values instead of the defaults, and loadFile(path, loadConfig()) mutates the same shared object as well.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 42,
+     "title": "A bad LINKD_TIMEOUT_MS is logged as \"keeping default\" but the NaN is assigned anyway",
+     "description": "The isNaN branch only logs; `cfg.timeoutMs = ms` runs unconditionally, so a typo such as LINKD_TIMEOUT_MS=10s leaves timeoutMs as NaN. validate() cannot catch it either, because `NaN <= 0` is false, so the value passes startup validation and every later comparison against timeoutMs is false \u2014 timeouts silently never fire. The log message claims the default is kept, which is not what happens.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 46,
+     "title": "LINKD_CACHE_TTL_MS is multiplied by 1000 although the documented unit is milliseconds",
+     "description": "The docstring states \"LINKD_TIMEOUT_MS and LINKD_CACHE_TTL_MS are durations in MILLISECONDS\", but the code does `Number(env) * 1000`, i.e. it treats the value as seconds. A deployment that sets 300000 expecting 5 minutes gets 300000000 ms \u2014 about 3.5 days \u2014 and cached entries then live far longer than the operator intended. There is also no NaN check here, so a bad value yields a NaN TTL that makes every cache entry immediately expired.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 56,
+     "title": "LINKD_FETCH_LIMIT is parsed, checked, then discarded: fetchLimit is never configurable",
+     "description": "`const limit = Number(process.env.LINKD_FETCH_LIMIT); if (limit > 0) { void limit; }` computes the value and throws it away \u2014 cfg.fetchLimit is never assigned, so the setting has no effect and stays at the default 32. The operator's configured limit is accepted silently and ignored.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 112,
+     "title": "validate() always returns true, so an invalid configuration is never rejected",
+     "description": "The function collects problems and logs them but ends with `return true` regardless, so it never refuses anything \u2014 the opposite of its contract (\"Refuses a configuration the service cannot run with, so a bad deploy fails at startup instead of at the first request\"). A port outside 1..65535, a negative cacheSize or a non-positive timeout are all logged and then accepted. main.ts also discards the return value (`validate(cfg);`), so even a correct implementation would not stop startup.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 60,
+     "title": "checkTargets() can never report a failing target: probe() throws instead of returning false, and Promise.all does not abandon the rest",
+     "description": "The docstring promises \"the first failure\" and that \"the remaining probes are abandoned once a failure is seen\". probe() either returns true or throws (it rejects any non-https target), so the `if (!results[i])` scan is dead code, and a non-https target makes Promise.all reject \u2014 the caller gets an exception rather than the failing URL. Promise.all also waits for every probe, so nothing is abandoned.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 71,
+     "title": "flushAudit() never retries and drops the write promise, swallowing audit failures",
+     "description": "The docstring says \"Records one sync of the audit log, retried until it succeeds\", but the body is a single `write();` \u2014 the promise is discarded, so there is no retry and no error handling. If the write rejects, the failure is silently lost and the rejected promise is unhandled (which under Node's default policy terminates the process). The audit trail is supposed to be the durable record.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 116,
+     "title": "top()'s sort comparator never returns 0 for equal hit counts",
+     "description": "`(a, b) => (a.hits > b.hits ? 1 : -1)` returns -1 for equal hits, including when a and b are the same element. The comparator is therefore inconsistent (it claims both a < b and b < a), which is undefined behaviour for Array.prototype.sort and yields an arbitrary, unstable order for the leaderboard instead of a stable one.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 149,
+     "title": "hits_per_link is NaN (serialized as null) when the store is empty",
+     "description": "`store.totalHits() / store.size()` divides by zero on a server with no links yet, producing NaN, which JSON.stringify turns into null. The sibling metric successRate() explicitly guards the empty case (store.ts:89), so the asymmetry looks like a missing guard rather than an intended null.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 142,
+     "title": "quotas() returns the store's live quota object, not a snapshot",
+     "description": "The docstring promises \"The object is a snapshot: mutating it must not affect the store\", but the method returns `this.quota` directly, so a caller that writes to the returned object changes the store's internal counters (and countForOwner() in worker.ts hands this object out).",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "warmCache resolves before any probe finishes and swallows probe rejections",
+     "description": "pairs.forEach(async ([code, target]) => { await probe(target); cache.set(code, target); }) discards the promise returned by each async callback. The enclosing async function therefore resolves as soon as the synchronous forEach loop finishes, not when the probes have completed, so the documented contract 'Resolves once every probe has finished' is violated. Separately, probe() throws for any target that does not start with 'https://'; because the inner promise is never awaited, that rejection is unhandled and never reaches the caller. A caller that does `await warmCache(pairs, cache)` gets a resolved promise and no error, while the cache has been left un-warmed. If a caller ever attaches .catch to the outer promise it still will not catch these, because the rejection lives in a separate, unobserved promise chain; Node reports an unhandled rejection, and under the default --unhandled-rejections=strict mode since Node 15 that terminates the process.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 71,
+     "title": "flushAudit drops the write promise, so audit failures become unhandled rejections",
+     "description": "flushAudit is declared as returning void and simply calls write(), discarding the returned promise. The caller cannot await the audit write, so if it rejects the rejection is unhandled: Node emits an unhandled rejection and, with the default --unhandled-rejections=strict behaviour since Node 15, the process exits. The doc comment promises the log is 'retried until it succeeds', but there is no retry loop at all, so a failed write is simply lost. The audit record the function exists to guarantee is exactly the one that disappears.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 60,
+     "title": "checkTargets waits for every probe instead of abandoning the rest after the first failure",
+     "description": "Promise.all resolves only after every probe has settled, so the function cannot 'report the first failure' and abandon the remaining probes as the doc comment states. A single slow probe delays the return of an already-known failure by its full duration. The concurrent case is worse: if one probe rejects, Promise.all rejects immediately but the other probes keep running in the background with no way to cancel them, and the function rejects rather than returning the first failing target as its `string | undefined` signature promises.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 64,
+     "title": "Cache.delete never cancels the TTL timer, so a stale timer deletes a re-cached entry",
+     "description": "set() stores the timer id in this.timers (line 57), but delete() only removes the map entry and never calls clearTimeout on the stored id. The doc comment on delete() claims it 'stops the work that was scheduled for it' \u2014 it does not. Two concrete consequences. (1) A stale timer outlives its entry: set('X') is evicted by the LRU path at line 48, then set('X') is called again for a new target; the first timer is still armed and fires at the old TTL, calling this.delete('X') and destroying the fresh entry early. The cache then reports a miss for a code that was legitimately cached, and the target is not resolvable until something re-caches it. (2) Every evicted entry leaves an armed timer behind, so a long-lived process accumulates one timer handle per entry ever set \u2014 the classic unbounded-handle leak. this.timers also grows without bound because nothing ever removes its entries.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 32,
+     "title": "The janitor's setInterval handle is discarded, keeping the event loop alive forever",
+     "description": "startJanitor returns a stopper (worker.ts:33) that clears the interval, but main.ts calls startJanitor(store, cache, 60_000) and throws the returned function away. The interval therefore runs for the lifetime of the process with no way to stop it: the process can never exit cleanly because a live interval handle keeps the Node event loop alive, and the sweep keeps running after a shutdown signal instead of being cancelled as part of graceful shutdown.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 47,
+     "title": "resolve() inverts its expiry test, and the janitor's read-then-act sweep disagrees with it",
+     "description": "The condition is `if (Date.now() < link.expiresAt) { this.links.delete(code); return undefined; }` \u2014 a link is treated as expired while it is still valid, and links that are actually past their expiry resolve normally and keep counting hits. That is the exact opposite of the documented behaviour ('Expired links resolve to undefined so dead codes cannot be revived by traffic'). The concurrency consequence: the janitor in worker.ts:25-32 sweeps with three separate calls \u2014 store.codes() to snapshot the keys, store.expiresAt(code) to read, then store.remove(code) to delete. Between the snapshot and the read, a link can be created or removed by a request handler, and store.expiresAt (store.ts:185) dereferences `this.links.get(code)!` with a non-null assertion, so a concurrently removed code throws a TypeError inside the setInterval callback. An uncaught exception thrown from a setInterval callback terminates the process, so a single delete/expire race during a sweep takes the service down.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 185,
+     "title": "expiresAt() uses a non-null assertion on a lookup that the janitor can race",
+     "description": "expiresAt(code) returns `this.links.get(code)!.expiresAt`. It is called from the janitor loop in worker.ts:28 on a code list captured earlier by store.codes(), so the key may have been deleted by a concurrent request (DELETE /links) or by a previous janitor pass in between the two calls. The non-null assertion then dereferences undefined and throws a TypeError inside the setInterval callback, which is an uncaught exception and terminates the process. A request handler deleting a link while the janitor is mid-sweep is an ordinary interleaving, not an exotic one.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 142,
+     "title": "quotas() returns the live internal quota object, not a snapshot",
+     "description": "The doc comment states 'The object is a snapshot: mutating it must not affect the store', but the method returns `this.quota` by reference, so the store's internal counter object escapes to callers. main.ts:142 hands it straight to JSON.stringify for the /admin/quotas response, and worker.ts:76 reads it in countForOwner. Any caller that mutates the returned object writes through to the store's quota counters, and because the object is shared, a mutation is visible to every other reader of the same map.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 31,
+     "title": "loadConfig() mutates the shared DEFAULT_CONFIG object instead of copying it",
+     "description": "`const cfg = DEFAULT_CONFIG;` binds an alias to the module-level exported object, and the function then writes cfg.port, cfg.timeoutMs, cfg.cacheTtlMs, cfg.cacheSize and cfg.exportDir into it. Because DEFAULT_CONFIG is exported, the process-wide default object is permanently mutated by the first call, and every later loadConfig() call starts from the already-mutated values instead of the documented defaults. The same aliasing applies to loadFile(path, cfg) at line 71, which mutates the caller's config object in place. This is a shared-mutable-global defect: two independent loads in one process (or a test that reloads config) see each other's values.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 42,
+     "title": "A NaN LINKD_TIMEOUT_MS is assigned even though the code logs that it is keeping the default",
+     "description": "When Number(process.env.LINKD_TIMEOUT_MS) is NaN the code logs 'config: bad LINKD_TIMEOUT_MS, keeping default' and then falls through to `cfg.timeoutMs = ms;`, which stores the NaN. validate() (line 106) only checks `cfg.timeoutMs <= 0`, and NaN <= 0 is false, so a NaN timeout passes validation. Any later comparison against this timeout is false for every value, silently disabling whatever deadline was meant to be enforced instead of keeping the 10s default.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 47,
+     "title": "Eviction picks the insertion-order first key, not the least recently used one",
+     "description": "The doc comment on get() says 'the least recently used entry is the one eviction picks', and set() claims to 'evict the least recently used entry when the cache is full'. Neither is true: eviction takes `this.entries.keys().next().value`, which is the first key in Map insertion order, i.e. the oldest-inserted entry. The get() path updates entry.used (line 31) but never reorders the map, and re-setting an existing key does not move it to the end of the insertion order either. The 'used' field is written but never read by anything, so the LRU policy is not implemented and hot entries are evicted while cold ones survive.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 84,
+     "title": "utilization() computes floor(ratio) * 100, yielding only 0 or 100",
+     "description": "`Math.floor(this.entries.size / this.limit) * 100` floors the ratio to 0 or 1 and then multiplies, so the result is 0 until the cache is completely full and then jumps to 100. The same pattern appears in store.ts:98 (`Math.floor(used / this.links.size) * 100` for successRate), which likewise yields only 0 or 100 instead of a percentage. Both feed the dashboard: main.ts:150-151 reports success_rate and cache utilisation from these values, so the stats endpoint reports meaningless numbers for every intermediate fill level.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 58,
+     "title": "rename() validates `from` twice and never validates `to`",
+     "description": "`validateCode(from); validateCode(from);` \u2014 the second call should be validateCode(to). The destination code is therefore never checked, so a rename can install a code that violates the 4-32 character rule or contains characters outside [A-Za-z0-9_-]. rename() is also not atomic with respect to the quota bookkeeping: it moves the link between codes without adjusting this.quota for either owner, so the per-owner counts drift from the actual link set.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 166,
+     "title": "prune() returns the post-prune size instead of the number of links removed",
+     "description": "prune() counts removed links in the `removed` variable but returns `this.links.size`, the size after pruning, while the doc comment says it 'reports how many it removed'. The return value is therefore wrong for any caller that uses it, and the `removed` counter is dead code. Separately, the janitor in worker.ts does not use prune() at all \u2014 it re-implements the sweep with three separate Store calls (codes / expiresAt / remove), which is the check-then-act race described in the store.ts:47 and store.ts:185 findings.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 110,
+     "title": "delete() never returns the owner's quota slot, and deleteLink ignores the session owner",
+     "description": "The doc comment says 'Removes a link and gives the owner their quota slot back', but delete() removes only the map entry; this.quota[owner] is never decremented, so the counter grows without bound and the promised 'a user who deletes a link can always create another one' behaviour does not hold. Compounding this, main.ts:115-122 passes only `req.query[\"code\"]` to store.delete and never consults the authenticated session, despite the doc comment saying 'A link may only be deleted by the user who created it' \u2014 any authenticated caller can delete any other user's link.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 12,
+     "title": "The report name from the user escapes the export directory (path traversal)",
+     "description": "`join(dir, `${reportName}.csv`)` with reportName taken from the request query does not confine the result to dir: join('/var/lib/linkd/exports', '../../etc/passwd.csv') resolves to '/var/lib/etc/passwd.csv'. The doc comment asserts 'The report name comes from the user, so it is confined to dir', which is false. readReport (line 60) has the same flaw, so an attacker can both write and read files outside the export directory. main.ts:157-159 passes the user-supplied name straight to both functions.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 45,
+     "title": "writeSnapshot uses a fixed temp path, so concurrent snapshots race on the same file",
+     "description": "Every caller writes to the same '/tmp/linkd-snapshot.json' temp file. Two concurrent writeSnapshot calls interleave: the second writeFileSync truncates the file the first is about to rename, and the first renameSync can move the second's partially written bytes into place, or fail with ENOENT because the other writer already renamed the shared temp file away. The doc comment claims the temp-file-then-rename dance means 'a crash can never leave a half-written snapshot behind', but with a shared fixed path that guarantee does not hold.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 21,
+     "title": "The export is written with the default 0666 mode despite the comment claiming service-user-only access",
+     "description": "The comment above writeFileSync says the report 'is written for the service user only \u2014 nobody else on the box may read it', but writeFileSync creates the file with the default mode 0666 (masked by umask, typically 0644), so the report is world-readable. runtime.d.ts:24 even declares chmodSync, which is never used, suggesting the intent was to restrict the mode.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 38,
+     "title": "verify() ignores the session expiry, so expired tokens keep working",
+     "description": "verify() scans the session map and returns the first session whose token matches, comparing only the token. It never checks session.expiresAt, although the doc comment says it returns undefined when 'its lifetime has run out'. A session issued 13 hours ago still authenticates every request for the life of the process, and the sessions map is never pruned, so the map grows without bound as sessions accumulate.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "requireAdmin returns true for every role, so the admin check never rejects anyone",
+     "description": "`if (allowed.indexOf(session.role))` uses the array index as a boolean. indexOf returns 0 for 'admin' (falsy), 1 for 'owner' (truthy), and -1 for any unknown role (also truthy). The result is that 'admin' is rejected while every other role, including roles that are not in the list at all, is allowed. The function therefore does the opposite of its contract, and since the correct check would be `indexOf(session.role) !== -1`, the bug is a two-part inversion.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 139,
+     "title": "The admin endpoint is gated on a client-supplied header instead of the session role",
+     "description": "adminQuotas checks only `req.headers[\"x-admin\"] !== \"true\"`, a header any client can set to the literal string 'true'. The session's role is never consulted and Authenticator.requireAdmin is never called, so the gate offers no protection: the doc comment 'Administrators only' is not enforced. The endpoint returns store.quotas(), the per-owner link counts for every owner in the system.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 85,
+     "title": "createLink parses the request body outside the try block, so a malformed body throws out of handle()",
+     "description": "`const payload = JSON.parse(req.body) as any;` sits above the try block that wraps store.create. A request with a non-JSON body throws a SyntaxError out of handle() instead of returning the 400 that the surrounding catch was written to produce. Depending on the caller's error handling this surfaces as an unhandled exception per request. The same unguarded-dereference pattern appears at main.ts:97 and main.ts:117, where req.query[\"code\"]! is used without checking that the parameter is present.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 87,
+     "title": "secretEquals compares with ===, so it leaks match length through timing",
+     "description": "The doc comment claims the comparison does 'not leak how much of it matched', but `presented === expected` short-circuits at the first differing byte, so the comparison takes measurably longer for a longer common prefix. A caller that can measure the comparison time can recover the length of the expected secret byte by byte. The function is also not used anywhere in the target, so the practical impact today is limited to the misleading contract.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 78,
+     "title": "bearerToken throws a TypeError when the Authorization header is absent",
+     "description": "`header!.split(\" \")` uses a non-null assertion on a parameter that is explicitly typed `string | undefined`, so an unauthenticated request without an Authorization header throws a TypeError inside handle() (main.ts:51) before the 401 path can run. The same function returns `parts[1]!`, which is undefined for a header with no space, and that undefined is then interpolated into the 401 message as 'token undefined'.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 46,
+     "title": "LINKD_CACHE_TTL_MS is multiplied by 1000 although it is documented as already being in milliseconds",
+     "description": "The doc comment above loadConfig states 'LINKD_TIMEOUT_MS and LINKD_CACHE_TTL_MS are durations in MILLISECONDS', but the cache TTL is multiplied by 1000 while the timeout is not. A value of 300000 (five minutes in ms) becomes 300,000,000 ms, roughly 3.5 days, so cached entries live far longer than configured. Because the cache's TTL timer is also never cancelled (see the cache.ts:64 finding), each entry holds a live timer handle for that whole period.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "requireAdmin() returns true for any role, because indexOf() miss (-1) is truthy",
+     "description": "The check is `const allowed = [\"admin\", \"owner\"]; if (allowed.indexOf(session.role)) { return true; }`. Array.prototype.indexOf returns -1 when the element is absent, and -1 is truthy, so the guard passes for every role \u2014 including roles that are not in the allow-list at all. The intended negative case (an unrecognized role) is the one case that is allowed through. The function's doc comment states it \"Lets a request through only for sessions carrying the admin role; everyone else is rejected\", which is the opposite of what the code does. Any caller that relies on requireAdmin() to gate an administrative action is therefore unprotected: a session with role 'guest', 'user', or any arbitrary string satisfies the check. The role field is currently not consulted anywhere else in the service, so the defect is presently latent, but it is the sole role-based authorization primitive in the codebase and it is broken.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 12,
+     "title": "Path traversal: unvalidated report name escapes exportDir on write and on read",
+     "description": "`exportCsv` builds the path as `join(dir, `${reportName}.csv`)` with reportName taken directly from the user-supplied `name` query parameter, and `readReport` (`src/export.ts:60`) repeats the same construction with the same unvalidated name. path.join normalizes '..' segments, so a name such as `../../../../etc/passwd` resolves outside `cfg.exportDir` entirely. The write side (`src/main.ts:159`, via exportCsv) lets an authenticated user create or overwrite an arbitrary .csv file anywhere the service user can write, including overwriting a file that already exists at that path. The read side is the more damaging half: `readReport` is called at `src/main.ts:160` and its contents are returned verbatim to the caller, so `name=../../../../etc/shadow` (or any file the service user can read) is exfiltrated in the 200 response body. Neither function performs any check that the resolved path remains inside `dir`.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 139,
+     "title": "Administrative endpoint authorized by a client-supplied header instead of the session role",
+     "description": "`adminQuotas` grants access to the per-owner link-count dashboard when the request carries the header `x-admin: true`, a value any client can set. The authenticated session's `role` field, which is exactly what this check should consult, is never read. Any holder of a valid bearer token can therefore read `store.quotas()` \u2014 the full per-owner link counts for every owner on the instance \u2014 by adding a single header. There is also no role distinction for the rest of the API: every authenticated user reaches `/links`, `/report`, and `/stats` regardless of role.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 115,
+     "title": "deleteLink deletes any link by code, ignoring the owner's session",
+     "description": "The function's doc comment states \"A link may only be deleted by the user who created it; the owner is taken from the authenticated session\", but the body only calls `store.delete(req.query[\"code\"]!)`. The session is never consulted and the link's `owner` field is never compared against `session.owner`. Any authenticated user who learns or guesses a short code can delete another user's link. The code space is only 8 base-36 characters from Math.random, and `listLinks` (`src/main.ts:105`) returns the full store including each link's owner and code to any authenticated caller, so obtaining another user's code requires only one call.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 134,
+     "title": "Open redirect: /out reflects an arbitrary attacker-chosen URL in Location",
+     "description": "`out()` takes `next` from the query string and returns it unchanged in the `Location` header of a 301 response. There is no scheme allow-list and no host check, so `next=javascript:...`, `next=data:...`, or `next=https://evil.example/phish` all pass through. The doc comment frames this as a click-counting hop for the email templates, so a victim clicking a link in a trusted-looking mail lands on a 301 to a destination the attacker chose, with the trusted host serving as the redirector. The `metrics.addResolved()` call on the way in also inflates the hit counters for a redirect the service does not own.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 28,
+     "title": "Every issued session token is written to stdout",
+     "description": "`issue()` logs `auth: issued token ${session.token} for ${owner}` on every call. Session tokens are bearer credentials: anyone who can read the service's stdout (a log aggregator, a container log driver, a shared log file, an operator tailing the process) can impersonate that user for the token's 12-hour lifetime. Because the service is stateless-ish and there is no binding of the token to a client address, replay from a log sink is a full account takeover. The same sink would also capture the `owner` field, so the log contains both the credential and the identity it maps to.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 22,
+     "title": "Session tokens minted from Math.random() are predictable",
+     "description": "`token: [REDACTED] + Date.now().toString(16)` builds the bearer credential out of a non-cryptographic PRNG plus the wall clock. Math.random is not seeded from a CSPRNG and its output space is small; an attacker who can observe a handful of issued tokens (for example from the stdout log written at `src/auth.ts:28`, or by timing) can narrow the state and forecast future tokens. The Date.now suffix is fully public and also discloses the token's issuance time. The doc comment for `issue` claims it \"Mints an unguessable session token\", which the implementation does not deliver.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 78,
+     "title": "bearerToken dereferences a missing Authorization header, throwing instead of returning 401",
+     "description": "`bearerToken(header)` does `header!.split(\" \")` on a parameter typed `string | undefined`. `handle()` (`src/main.ts:51`) calls it unconditionally with `req.headers[\"authorization\"]`, so a request with no Authorization header makes the non-null assertion fail at runtime with a TypeError, which escapes `handle()` instead of producing the intended 401. Every unauthenticated request without a header therefore hits an unhandled exception path rather than the auth check. A malformed header of the form \"Bearer\" (no space) likewise yields `parts[1]!` as undefined, and that undefined is then compared with `==` against session tokens in `verify()` (`src/auth.ts:38`), where a non-string on either side would coerce and compare loosely rather than fail closed.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 12558,
+      "output_tokens": 59114,
+      "cache_read_tokens": 365636
+     },
+     "duration_ms": 445133,
+     "failed": false,
+     "output_bytes": 31286
+    },
+    {
+     "usage": {
+      "input_tokens": 13615,
+      "output_tokens": 88953,
+      "cache_read_tokens": 777637
+     },
+     "duration_ms": 680724,
+     "failed": false,
+     "output_bytes": 28046
+    },
+    {
+     "usage": {
+      "input_tokens": 12740,
+      "output_tokens": 114724,
+      "cache_read_tokens": 775491
+     },
+     "duration_ms": 952084,
+     "failed": false,
+     "output_bytes": 11894
+    }
+   ]
+  }
+ ]
+}

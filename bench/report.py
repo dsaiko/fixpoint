@@ -262,6 +262,9 @@ OLLAMA_RATES = {
     "kimi-k3":           (3.00, 15.00, 0.30),
     "minimax-m2.7":      (0.30, 1.20, 0.06),
     "minimax-m3":        (0.60, 2.40, 0.12),
+    # minimax-m3.1-flash, added 2026-10-19 the day it was benched: a quarter of
+    # minimax-m3's card on every line (ollama.com/pricing, no off-peak row).
+    "minimax-m3.1-flash": (0.15, 0.60, 0.015),
     "mistral-large-3":   (0.50, 1.50, 0.50),
     "mistral-large-4":   (0.68, 2.09, 0.07),
     "muse-spark-open":   (1.25, 4.25, 0.15),

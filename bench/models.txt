@@ -1050,3 +1050,93 @@ deepseek/deepseek-v4.1-flash-1017
 # strong reviewer measured (~$0.002/point, really billed), which makes it
 # the best 4th-seat CANDIDATE on cost, not on coverage: +10 is Argon's +12
 # at ~4% of the price.
+
+beam:cloud
+# beam:cloud, MEASURED 2026-10-19, three days after ollama listed it. Reflection
+# AI's open model: 501B sparse MoE, ~23B active, 1M context, text only. The
+# library page publishes NO per-token rate, so report.py prices it in tokens
+# per point (4.3k), not dollars. Its requests did not appear under "Models
+# used this week" on the account's usage page at any point during ~70
+# sessions, while minimax-m3.1-flash's did -- whether it is unmetered for now
+# or only unlisted is unknown; treat its quota cost as unknown, not zero.
+#
+# Two full grids (repeat 1 and 2; typescript repeats 2 and 3 because repeat 1
+# failed), 17 rows, 1 contract failure, 0 timeouts, no 429. The table reads the
+# median, 328/484, 11th of 37:
+#
+#                rep 1   rep 2
+#   go          39/56   36/56
+#   design      17/34   14/34
+#   rust        40/64   39/64
+#   java        52/69   53/69
+#   typescript  47/63   50/63   (rep 1 proper failed: 33/63, errors=1)
+#   csharp      44/68   45/68
+#   cpp         44/64   40/64
+#   python      52/66   50/66
+#   total        335     327
+#
+# Repeat-to-repeat spread is 2.1 seeds per code target and 3 on design, about
+# twice the measured noise floor of claude vs claude-opus-5 (1.0 / 4).
+#
+# The contract failure is the model's own: typescript review-security wrote a
+# complete, valid findings list and closed it `</rfl:parameter>review>` instead
+# of `</review>` -- its native tool-call syntax leaking into the text -- and the
+# reformat repeated the same tag. 1 lost lens in 51.
+#
+# FAST: 70-230 s summed lens time per target on a normal stretch (lenses 20-50 s
+# each), 13k-28k output tokens per target. Repeat 1's rust took 848 s with
+# preflight pings at 25-47 s: provider throughput on the day, not the host.
+#
+# BEST PANEL CANDIDATE MEASURED. Panel [claude-sonnet, gpt-6-sol,
+# glm-5.3-flash] 404/484:
+#
+#                                         rep 1   rep 2
+#   REPLACES glm-5.3-flash (ollama seat)   420     414   (+16 / +10)
+#   REPLACES gpt-6-sol                     420     413   (+16 / +9)
+#   REPLACES claude-sonnet                 402     395   (-2 / -9)
+#   AS A 4th SEAT                          426     420   (+22 / +16)
+#   marginal over the sonnet+sol pair       +30     +24   (glm-5.3-flash: +14)
+#
+# The ollama-seat swap keeps one seat per payer and holds on both repeats; read
+# it as ~+10, not +16. glm-5.3-flash has a single August run, so its own
+# variance is not in this comparison. Not seated yet: that is the operator's
+# call, open on cost (unknown) and launch-day throughput.
+
+minimax-m3.1-flash:cloud
+# minimax-m3.1-flash:cloud, MEASURED 2026-10-19, the day ollama listed it. 428B,
+# 976K context, vision + tools + thinking. 0.15 / 0.60 / 0.015 per MTok, a
+# quarter of minimax-m3 on every line (ollama.com/pricing, no off-peak row).
+#
+# Full grid, 1 repeat, plus two csharp re-runs. 330/484, 10th of 37 -- 79 over
+# minimax-m3 (251):
+#
+#   go 45/56, design 13/34, rust 38/64, java 53/69, typescript 41/63,
+#   csharp 34/68 (repeat 3), cpp 51/64, python 55/66
+#
+# go 45 and python 55 are the BEST in the grid on those targets (claude-sonnet
+# 44, claude-fable-5-1 52); design 13 and csharp 34 sit near the bottom.
+#
+# 3 ERRORS, ALL 30-MINUTE LENS TIMEOUTS, kept as the model's: csharp repeat 1
+# lost review-concurrency (37/68 on two lenses), repeat 2 lost two lenses
+# (27/68). Two more lenses (cpp review-bugs, review-security) broke the JSON
+# contract and were recovered by the reformat.
+#
+# SLOW, and it is the model, not the host: 200k-550k OUTPUT tokens per target
+# against beam's 13k-28k, at a steady ~126 tok/s -- 32418 s summed lens time,
+# the SLOWEST in the grid (next: nemotron-3-ultra 20316). The repeat-2 csharp ran on mediabox and
+# timed out worse than the Mac.
+#
+# HOST CAVEAT ON ITS TIMES: every Mac row here went through a stale local
+# ollama SERVER (0.34.3, running since 2026-09-29 under a 0.40.6 client) which
+# `ollama launch claude` proxies through. A paired beam python run measured that
+# server sending ~3x the uncached input of mediabox's 0.40.6 for the same turns
+# (281 s vs 196 s); after `brew services restart ollama` the Mac matched
+# mediabox (93 s, 41k uncached). So minimax's Mac seconds are somewhat
+# inflated. Recall is unaffected.
+#
+# NOT A SEAT despite the arithmetic: REPLACES glm-5.3-flash 417 (+13),
+# gpt-6-sol 416 (+12), claude-sonnet 395 (-9), 4th seat 423 (+19). A round runs
+# at its slowest reviewer's pace, and its lenses take 10-30 minutes and time
+# out at the limit, and an agent with a failed gating lens does not count
+# toward quorum. Head to head with beam: 64 seeds only minimax finds, 61 only
+# beam finds.

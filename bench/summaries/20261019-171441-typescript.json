@@ -1,0 +1,365 @@
+{
+ "run": "20261019-171441",
+ "task": "code",
+ "target": "typescript",
+ "model": "beam:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/auth.ts",
+     "line": 36,
+     "title": "verify ignores session expiry",
+     "description": "verify scans sessions and returns a match without checking expiresAt, so expired tokens remain valid.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 51,
+     "title": "requireAdmin rejects admins",
+     "description": "allowed.indexOf returns 0 for 'admin', which is falsy, so the condition fails for the very role it should allow.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 78,
+     "title": "bearerToken dereferences possibly undefined header",
+     "description": "header! and parts[1]! crash when the Authorization header is missing or malformed instead of yielding an empty/invalid token.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.ts",
+     "line": 92,
+     "title": "parseLifetimeHours produces NaN without radix",
+     "description": "parseInt(raw) can return NaN for invalid input and uses default radix.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 46,
+     "title": "LRU eviction picks insertion order, not LRU",
+     "description": "Victim selection uses entries.keys().next(), evicting the oldest insertion rather than the least recently used entry despite the used counter.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 57,
+     "title": "set leaks/replaces timers on overwrite",
+     "description": "A new setTimeout is registered without clearing any prior timer for the same code, leaking timers and deleting the newer entry on expiry.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 64,
+     "title": "delete does not cancel scheduled timer",
+     "description": "delete removes the entry but leaves the setTimeout running, a resource leak that may resurrect stale handling.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 37,
+     "title": "peek does not account for expiry",
+     "description": "peek reports true for entries whose TTL has elapsed.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 84,
+     "title": "utilization truncates to zero for partial fullness",
+     "description": "Math.floor(size / limit) * 100 truncates the ratio before scaling, so any cache below 100% reports 0%.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 89,
+     "title": "keys() always returns an empty array",
+     "description": "Iterating a Map with for...in does not enumerate entries, so the admin view never sees cached codes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 31,
+     "title": "loadConfig mutates the shared DEFAULT_CONFIG",
+     "description": "cfg aliases DEFAULT_CONFIG, so env overrides permanently alter the defaults for all later calls.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 38,
+     "title": "Bad LINKD_TIMEOUT_MS sets NaN instead of default",
+     "description": "When ms is NaN the code logs a warning but still assigns cfg.timeoutMs = ms.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 46,
+     "title": "Cache TTL multiplied by 1000 despite being milliseconds",
+     "description": "Documentation says LINKD_CACHE_TTL_MS is already milliseconds, but the loader multiplies by 1000, inflating TTL 1000x.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 53,
+     "title": "LINKD_FETCH_LIMIT parsed but never applied",
+     "description": "cfg.fetchLimit stays at its default because the parsed value is discarded.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.ts",
+     "line": 112,
+     "title": "validate always returns true even with problems",
+     "description": "The function collects problems but returns true regardless, failing to refuse bad configuration.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.ts",
+     "line": 69,
+     "title": "parseReport emits a bogus empty row for trailing newline",
+     "description": "A trailing newline splits into an empty final line, which is converted into a row of undefined cells.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 85,
+     "title": "createLink lets JSON.parse throw unhandled",
+     "description": "Malformed request bodies crash the handler instead of producing a 400 response.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 97,
+     "title": "redirect crashes when code is missing",
+     "description": "req.query['code']! is asserted non-null then .toLowerCase() is called, throwing on undefined.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 149,
+     "title": "stats divides by zero when store is empty",
+     "description": "store.totalHits() / store.size() yields NaN/Infinity for an empty store.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 47,
+     "title": "resolve expiry condition is inverted",
+     "description": "Non-expired links are deleted and return undefined while expired links stay resolvable, the opposite of intended behavior.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 34,
+     "title": "quota bookkeeping produces NaN",
+     "description": "this.quota[owner] is undefined on first creation, so +1 yields NaN.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 98,
+     "title": "successRate truncates to zero below 100%",
+     "description": "Math.floor(used / size) * 100 truncates the ratio before scaling.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 116,
+     "title": "top sorts ascending instead of descending",
+     "description": "The comparator returns -1 when a.hits <= b.hits, ordering least-followed first.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 122,
+     "title": "byOwner uses substring match",
+     "description": "l.owner.includes(owner) returns links for owners whose names merely contain the query string.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 134,
+     "title": "extend revives/sets expiry on expired links",
+     "description": "extend always sets expiresAt = now + ttl, resurrecting links that should stay expired.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 142,
+     "title": "quotas returns internal mutable reference",
+     "description": "Returning this.quota lets callers mutate store state despite the snapshot contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 106,
+     "title": "delete does not refund owner quota",
+     "description": "The documented quota slot return never happens, so deleted links still count against the owner.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 149,
+     "title": "importAll is not atomic and skips quota accounting",
+     "description": "Links are added incrementally with validation mid-way, and quotas are never updated.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 165,
+     "title": "prune returns store size instead of removed count",
+     "description": "The method counts removed but returns this.links.size.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 58,
+     "title": "rename validates 'from' twice, never 'to'",
+     "description": "validateCode is called twice on from while to is unchecked, allowing invalid destination codes.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "src/store.ts",
+     "line": 185,
+     "title": "expiresAt dereferences missing link",
+     "description": "this.links.get(code)! throws when code is absent instead of signaling missing.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 49,
+     "title": "warmCache does not await probes",
+     "description": "forEach with async callbacks returns immediately, so callers cannot know when priming finished.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 71,
+     "title": "flushAudit neither awaits nor retries",
+     "description": "The registered function's returned promise is ignored, contradicting the retry-until-success contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 77,
+     "title": "countForOwner can return NaN",
+     "description": "quotas[owner] may be undefined, producing NaN when incremented/added.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 60,
+     "title": "checkTargets rejects on probe throw instead of reporting failure",
+     "description": "probe throws for insecure targets, so Promise.all rejects rather than returning the first failing target.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.ts",
+     "line": 45,
+     "title": "Cache.set schedules expiry timers it never cancels, so stale timers delete newer entries",
+     "description": "set() overwrites an entry for a code (and evicts a victim) while leaving any previously scheduled setTimeout for that code/victim armed. When the old timer later fires it calls delete(code) on whatever entry now occupies that code, evicting a fresh value prematurely and, for reused codes, nuking a newer cache entry. delete() also never clears its own timer. Interleaving: set(A), wait, set(A) again, then the first timer fires and removes the second value.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 48,
+     "title": "warmCache fire-and-forgets its async probes, so it resolves before the cache is primed",
+     "description": "pairs.forEach(async ...) creates one promise per entry but never awaits them, and forEach returns void. Callers see warmCache resolve immediately while probes/cache writes are still pending; a probe rejection becomes an unhandled promise rejection instead of propagating. Downstream reads can race the in-flight priming writes.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 59,
+     "title": "checkTargets cannot cancel remaining probes after a failure",
+     "description": "It awaits Promise.all over all probes, so every probe runs to completion even after an earlier one fails, contradicting the documented 'remaining probes abandoned once a failure is seen'. There is no AbortSignal/timeout threaded into probe(), so in-flight work keeps running and can mutate shared state after the result is returned.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.ts",
+     "line": 70,
+     "title": "flushAudit discards its promise, so writes are never awaited or retried",
+     "description": "write() returns a Promise<void>, but flushAudit invokes write() and drops the result. Rejections are unhandled, and the documented 'retried until it succeeds' never happens, so an audit sync failure is silently lost.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.ts",
+     "line": 32,
+     "title": "The janitor interval handle is discarded, so the timer can never be stopped",
+     "description": "startJanitor returns a stop function, but main() ignores it. The interval keeps firing for the process lifetime and cannot be cleared on shutdown or reconfiguration, leaking a background task that mutates the store.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 13864,
+      "output_tokens": 7317,
+      "cache_read_tokens": 90112
+     },
+     "duration_ms": 39814,
+     "failed": false,
+     "output_bytes": 10542
+    },
+    {
+     "usage": {
+      "input_tokens": 17510,
+      "output_tokens": 5464,
+      "cache_read_tokens": 139328
+     },
+     "duration_ms": 51888,
+     "failed": false,
+     "output_bytes": 3564
+    },
+    {
+     "usage": {
+      "input_tokens": 34743,
+      "output_tokens": 14853,
+      "cache_read_tokens": 358272
+     },
+     "duration_ms": 76239,
+     "failed": true,
+     "output_bytes": 14684
+    }
+   ]
+  }
+ ]
+}
