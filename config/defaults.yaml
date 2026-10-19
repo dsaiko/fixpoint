@@ -249,8 +249,16 @@ roles:
   # recover), and no published rate, so what it draws from the ollama quota is
   # not yet known. If either bites, `glm-5.3-flash-ollama` is one word away on
   # the line below.
+  #
+  # SAME MODEL, CODEX HARNESS, the same evening (v0.17.0): beam-ollama-codex runs
+  # beam through `ollama launch codex` instead of `ollama launch claude`. Two full
+  # grids per route: solo 353/349 against 335/327, the ollama seat 420/425 against
+  # 420/414, and 0 contract failures in 16 runs against 1 in 17. Two variables
+  # moved -- harness and thinking depth (xhigh here, max on the claude route) --
+  # and the seat is bought with the measured whole; see beam-ollama-codex.yaml.
+  # `beam-ollama` is one word away on the line below.
   review:
-    agents: [claude-sonnet, gpt-6-sol, beam-ollama]
+    agents: [claude-sonnet, gpt-6-sol, beam-ollama-codex]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
