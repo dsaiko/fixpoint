@@ -633,6 +633,14 @@ that reports its failure outside the reply. codex does this: its stream ends on
 `turn.failed` with the reason in `error.message`, and the last `item.text` is only
 whatever it narrated before failing (`error_text: error.message`).
 
+`text_when` is optional and narrows `text` to the objects that hold the answer,
+as `path=value`. Set it for a CLI whose stream puts other prose at the same path.
+codex does: reasoning notes and answers are both `item.text`, and only `item.type`
+tells them apart (`text_when: item.type=agent_message`). With the filter, a stream
+that holds no answer yields an empty reply, and fixpoint runs the review again
+instead of asking the agent to restate one it never wrote. Without it, the last
+reasoning note would be read as the reply.
+
 Paths are dotted, with `*` matching every key at a level. Within one object a
 wildcard's matches are **summed** (a session that used two models spent both);
 across the lines of a `jsonl` stream the **last** value wins (successive lines are

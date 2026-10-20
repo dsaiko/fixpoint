@@ -51,7 +51,14 @@ func parseEnvelope(u config.AgentUsage, stdout string) envelope {
 	// the final mention of a path is the settled one. For a single object it is
 	// simply the only value.
 	text := stdout
-	if s, ok := lastString(objs, u.Text); ok {
+	if path, want, ok := u.TextFilter(); ok {
+		// A filtered reply that matches nothing is an EMPTY reply, not a parse
+		// failure: the stream decoded, so the CLI spoke its own format, and no object
+		// in it was an answer. Falling back to the raw stream here would hand the
+		// extractor a JSONL dump and misreport a turn that ended without an answer as
+		// one that broke the output contract. See config.AgentUsage.TextWhen.
+		text, _ = lastString(objsWhere(objs, path, want), u.Text)
+	} else if s, ok := lastString(objs, u.Text); ok {
 		text = s
 	}
 	usage.InputTokens = lastInt(objs, u.InputTokens)
@@ -127,6 +134,20 @@ func lookup(obj map[string]any, path string) []any {
 		cur = next
 	}
 	return cur
+}
+
+// objsWhere keeps the objects whose dotted path holds the string want.
+func objsWhere(objs []map[string]any, path, want string) []map[string]any {
+	var out []map[string]any
+	for _, o := range objs {
+		for _, v := range lookup(o, path) {
+			if s, ok := v.(string); ok && s == want {
+				out = append(out, o)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // lastString returns the final string value at path. Later objects win, and

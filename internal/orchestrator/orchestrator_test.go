@@ -655,6 +655,131 @@ func TestRunReportsTheOriginalContractErrorWhenReformatAlsoFails(t *testing.T) {
 	}
 }
 
+// A reviewer that exits cleanly with NO reply never reviewed anything, so asking
+// it to restate its findings is the wrong remedy: the review itself is run once
+// more. Seen live as a codex turn closed by an empty model response.
+func TestRunRerunsAReviewerThatReturnedNoReply(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.respond(1, "")
+	reply := reviewResponse(t, aFinding("off by one"))
+	f.respond(2, reply)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	r := sum.Rounds[0]
+	if len(r.ReviewErrors) != 0 {
+		t.Errorf("review errors = %v, want none: the rerun answered", r.ReviewErrors)
+	}
+	if len(r.Findings) != 1 || r.Findings[0].Title != "off by one" {
+		t.Fatalf("findings = %+v, want the rerun's", r.Findings)
+	}
+	if got := f.invocations(); got != 2 {
+		t.Errorf("agent invocations = %d, want 2: the review and one rerun, no reformat", got)
+	}
+	dir := strings.NewReplacer("{timestamp}", "*", "{round}", "*").Replace(f.cfg.Logs.Dir)
+	if m, _ := filepath.Glob(filepath.Join(dir, "*"+config.ReformatLensSuffix+"*")); len(m) != 0 {
+		t.Errorf("reformat logs %v written: an empty reply has nothing to restate", m)
+	}
+	var steps []model.StepStat
+	for _, st := range r.Steps {
+		if st.Role == "review" {
+			steps = append(steps, st)
+		}
+	}
+	if len(steps) != 1 {
+		t.Fatalf("review steps = %d, want 1 covering both attempts", len(steps))
+	}
+	// The same prompt went out twice, and both sends are the step's. (The two
+	// prompt logs may share a file -- identical bytes, same lens -- so the size of
+	// one is the unit.)
+	logs, _ := filepath.Glob(filepath.Join(dir, "review-*.prompt"))
+	if len(logs) == 0 {
+		t.Fatal("no review prompt log")
+	}
+	fi, err := os.Stat(logs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 2 * int(fi.Size()); steps[0].PromptBytes != want {
+		t.Errorf("step prompt bytes = %d, want %d (the prompt, sent twice)", steps[0].PromptBytes, want)
+	}
+	if steps[0].OutputBytes != len(reply) {
+		t.Errorf("step output bytes = %d, want %d", steps[0].OutputBytes, len(reply))
+	}
+	raw := f.stepRaw("review")
+	for _, banner := range []string{"=== attempt 1 (ended without a reply) ===", "=== attempt 2 (rerun; duration below is the step total) ==="} {
+		if !strings.Contains(raw, banner) {
+			t.Errorf("review .raw lacks %q:\n%s", banner, raw)
+		}
+	}
+}
+
+// One rerun, not a loop: when it comes back empty too, the reviewer fails, with a
+// reason that says what happened rather than "no <review> block found".
+func TestRunFailsAReviewerWhoseRerunIsEmptyToo(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.respond(1, "")
+	f.respond(2, "  \n")
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v: in a review run a dead reviewer is a verdict, not a run failure", err)
+	}
+	if sum.Verdict == nil || sum.Verdict.Outcome != model.VerdictInconclusive {
+		t.Fatalf("verdict = %+v, want inconclusive", sum.Verdict)
+	}
+	if got := f.invocations(); got != 2 {
+		t.Errorf("agent invocations = %d, want 2: one rerun, and no reformat of nothing", got)
+	}
+	if len(sum.Rounds) != 1 || len(sum.Rounds[0].ReviewErrors) != 1 {
+		t.Fatalf("want exactly one reviewer error, got %+v", sum.Rounds)
+	}
+	got := sum.Rounds[0].ReviewErrors[0]
+	if !strings.Contains(got, "no reply") || !strings.Contains(got, "rerun came back empty") {
+		t.Errorf("review error = %q, want the empty reply named, and the rerun", got)
+	}
+}
+
+// A rerun that answers but breaks the contract still gets the reformat, and the
+// step's .raw holds all three attempts in the order they ran.
+func TestRunReformatsARerunThatBrokeTheContract(t *testing.T) {
+	f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1, ReviewOnly: true})
+	f.respond(1, "")
+	malformed := "found it <review>{not json}</review>"
+	f.respond(2, malformed)
+	restated := reviewResponse(t, aFinding("off by one"))
+	f.respond(3, restated)
+
+	sum, err := f.orchestrator().Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run() err = %v", err)
+	}
+	r := sum.Rounds[0]
+	if len(r.ReviewErrors) != 0 || len(r.Findings) != 1 {
+		t.Fatalf("errors = %v, findings = %+v; want the reformat's one finding", r.ReviewErrors, r.Findings)
+	}
+	if got := f.invocations(); got != 3 {
+		t.Errorf("agent invocations = %d, want 3", got)
+	}
+	raw := f.stepRaw("review")
+	last := -1
+	for _, banner := range []string{
+		"=== attempt 1 (ended without a reply) ===",
+		"=== attempt 2 (output did not meet the contract) ===",
+		malformed,
+		"=== attempt 3 (reformat; duration below is the step total) ===",
+		restated,
+	} {
+		i := strings.Index(raw, banner)
+		if i < 0 || i < last {
+			t.Fatalf("review .raw lacks %q in order (at %d, previous at %d):\n%s", banner, i, last, raw)
+		}
+		last = i
+	}
+}
+
 func TestRunCoderContractViolationFailsRound(t *testing.T) {
 	f := newFixture(t, config.Loop{MaxIterations: 3, CleanRoundsToStop: 1})
 	f.respond(1, reviewResponse(t, aFinding("bug")))
@@ -11135,5 +11260,37 @@ func TestABodyWriteFailureFailsTheRunOnlyWhenSomethingWouldBePublished(t *testin
 				t.Error("something was published although the bytes to publish could not be written")
 			}
 		})
+	}
+}
+
+// A step with earlier attempts is billed for all of them: tokens, cost and wall
+// clock. The mock agent reports no usage, so the end-to-end salvage tests above
+// cannot see this; a rerun that billed only its own half would make a lens that
+// paid for two sessions look like one.
+func TestSalvageCostBillsEveryEarlierAttempt(t *testing.T) {
+	var c salvageCost
+	first := agent.Result{Duration: 3 * time.Second, Usage: model.Usage{InputTokens: 100, OutputTokens: 10, CostUSD: 0.5, CostKnown: true}}
+	second := agent.Result{Stdout: "broken", Duration: 2 * time.Second, Usage: model.Usage{InputTokens: 40, OutputTokens: 4}}
+	c.absorb("ended without a reply", "rerun", first, []string{"agent"}, 7)
+	c.absorb("output did not meet the contract", "reformat", second, []string{"agent"}, 5)
+	final := c.bill(agent.Result{Duration: time.Second, Usage: model.Usage{InputTokens: 1, OutputTokens: 1}})
+
+	if final.Usage.InputTokens != 141 || final.Usage.OutputTokens != 15 {
+		t.Errorf("usage = %+v, want 141 in / 15 out across three attempts", final.Usage)
+	}
+	if !final.Usage.CostKnown || final.Usage.CostUSD != 0.5 {
+		t.Errorf("cost = %v (known=%v), want the first attempt's 0.5 carried", final.Usage.CostUSD, final.Usage.CostKnown)
+	}
+	if final.Duration != 6*time.Second {
+		t.Errorf("duration = %s, want 6s", final.Duration)
+	}
+	if c.promptBytes != 12 || c.outputBytes != len("broken") {
+		t.Errorf("bytes = %d prompt / %d output, want 12 / %d", c.promptBytes, c.outputBytes, len("broken"))
+	}
+	if raw := c.priorRaw(); !strings.HasSuffix(raw, "=== attempt 3 (reformat; duration below is the step total) ===\n") {
+		t.Errorf("priorRaw does not end on the final attempt's banner:\n%s", raw)
+	}
+	if (salvageCost{}).priorRaw() != "" {
+		t.Error("a step that ran once must get no banner")
 	}
 }

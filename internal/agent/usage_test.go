@@ -149,6 +149,68 @@ func TestParseUsageReadsCodexJSONLStream(t *testing.T) {
 	}
 }
 
+// codexAnswerUsage is codexUsage with the shipped text_when filter.
+var codexAnswerUsage = func() config.AgentUsage {
+	u := codexUsage
+	u.TextWhen = "item.type=agent_message"
+	return u
+}()
+
+// codex puts its reasoning notes and its answer at the same path, item.text. The
+// shape is a real beam session's (2026-10-20), trimmed: the turn completed after a
+// command with no answer, because the model's last response came back empty.
+const codexTurnWithNoAnswer = `{"type":"thread.started","thread_id":"01a1"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"rs_1","type":"reasoning","text":"Let me look at the modified files."}}
+{"type":"item.completed","item":{"id":"call_1","type":"command_execution","command":"grep -n restFill LiveState.java","aggregated_output":"105: public boolean"}}
+{"type":"item.completed","item":{"id":"rs_2","type":"reasoning","text":"Need to inspect the constructor. Let's explore repo."}}
+{"type":"turn.completed","usage":{"input_tokens":569570,"cached_input_tokens":255952,"output_tokens":5844}}`
+
+// Without the filter, the last reasoning note IS the reply -- which is how a turn
+// that never answered reached the reformat as a broken output contract.
+func TestParseUsageUnfilteredCodexTakesAReasoningNoteForTheReply(t *testing.T) {
+	text, _ := ParseUsage(codexUsage, codexTurnWithNoAnswer)
+	if !strings.Contains(text, "Let's explore repo.") {
+		t.Fatalf("text = %q; this test pins the unfiltered behavior the filter exists to replace", text)
+	}
+}
+
+// With the filter, a stream with no answer yields an EMPTY reply -- not the raw
+// stream, which the fail-open fallback would otherwise hand the extractor -- and
+// its usage is still read: the session cost real tokens.
+func TestParseUsageFilteredCodexStreamWithNoAnswerIsAnEmptyReply(t *testing.T) {
+	text, u := ParseUsage(codexAnswerUsage, codexTurnWithNoAnswer)
+	if text != "" {
+		t.Errorf("text = %q, want empty: no item in the stream was an answer", text)
+	}
+	if u.InputTokens != 569570 || u.OutputTokens != 5844 {
+		t.Errorf("usage = %+v, want the session's 569570 in / 5844 out", u)
+	}
+}
+
+// The filter picks the LAST answer, past reasoning notes and interim messages on
+// either side of it.
+func TestParseUsageFilteredCodexStreamReadsTheLastAnswer(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"type":"agent_message","text":"I'll start with the diff."}}
+{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"<review>{\"findings\":[]}</review>"}}
+{"type":"item.completed","item":{"type":"reasoning","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}`
+	text, _ := ParseUsage(codexAnswerUsage, stream)
+	if text != `<review>{"findings":[]}</review>` {
+		t.Errorf("text = %q, want the final answer", text)
+	}
+}
+
+// The filter must not disturb the fail-open path: output that does not decode at
+// all is still passed through raw.
+func TestParseUsageFilteredFailsOpenOnUndecodableOutput(t *testing.T) {
+	const out = "codex: panic before any JSON"
+	if text, _ := ParseUsage(codexAnswerUsage, out); text != out {
+		t.Errorf("text = %q, want the raw output passed through", text)
+	}
+}
+
 // A stream reports running totals for ONE session, so the newest line supersedes
 // the last. Adding them would count every earlier partial again.
 func TestParseUsageStreamSupersedesRatherThanAccumulates(t *testing.T) {

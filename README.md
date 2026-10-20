@@ -345,6 +345,17 @@ convergence streak. Both attempts' usage is billed to the one step. A crashed,
 timed-out or rate-limited agent is *not* retried this way — it has nothing to
 restate.
 
+**A reply that is empty gets the review run once more instead.** An agent that
+exits cleanly with no reply at all never reviewed anything, so there is nothing
+to restate. That is what a codex turn looks like when one model response comes
+back empty: codex reads it as the end of the turn. fixpoint sends the same prompt
+again, once. If the second reply breaks the format, it still gets the restate
+retry. If it is empty too, the reviewer fails with that reason. Every attempt is
+billed to the one step, and its `.raw` log holds each attempt under its own
+banner. For codex agents this depends on `usage.text_when` (see
+[config/README.md](config/README.md#reporting-what-a-run-cost)). Without it, the
+last reasoning note in the stream would be read as the reply.
+
 ## Which model is worth a panel seat
 
 Every candidate reviews the **same frozen targets** — one link-shortener service
