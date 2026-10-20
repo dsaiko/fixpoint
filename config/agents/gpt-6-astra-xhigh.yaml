@@ -35,6 +35,7 @@ command:
 usage:
   format: jsonl
   text: item.text
+  text_when: item.type=agent_message # the answer, not a reasoning note: a turn that ends with no answer is an empty reply
   input_tokens: usage.input_tokens
   output_tokens: usage.output_tokens
   cache_read_tokens: usage.cached_input_tokens

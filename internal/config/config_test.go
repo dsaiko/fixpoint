@@ -630,6 +630,28 @@ func TestValidate(t *testing.T) {
 			a.Usage = AgentUsage{Format: UsageFormatJSON}
 			c.Agents["rev"] = a
 		}, "usage.text is not"},
+		{"usage.text_when without format", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{TextWhen: "item.type=agent_message"}
+			c.Agents["rev"] = a
+		}, "usage.format is empty"},
+		// A filter that cannot be split matches nothing, and nothing reads as "the
+		// agent never replied" -- every step rerun and failed, for a config typo.
+		{"usage.text_when without =", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{Format: UsageFormatJSONL, Text: "item.text", TextWhen: "item.type"}
+			c.Agents["rev"] = a
+		}, "not path=value"},
+		{"usage.text_when with an empty value", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{Format: UsageFormatJSONL, Text: "item.text", TextWhen: "item.type="}
+			c.Agents["rev"] = a
+		}, "not path=value"},
+		{"usage.text_when accepted", func(c *Config) {
+			a := c.Agents["rev"]
+			a.Usage = AgentUsage{Format: UsageFormatJSONL, Text: "item.text", TextWhen: "item.type=agent_message"}
+			c.Agents["rev"] = a
+		}, ""},
 		{"usage block with format and text accepted", func(c *Config) {
 			a := c.Agents["rev"]
 			a.Usage = AgentUsage{Format: UsageFormatJSON, Text: "result", ErrorStatus: "error.status"}

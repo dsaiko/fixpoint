@@ -592,6 +592,20 @@ type AgentUsage struct {
 	// extractor and every round would fail to parse.
 	Text string `yaml:"text"`
 
+	// TextWhen narrows Text to the stream objects that carry the agent's REPLY, as
+	// `path=value`: only an object whose dotted path holds that string is read for
+	// the reply. Optional, for a CLI whose stream puts other prose at the same path.
+	//
+	// codex does: its reasoning notes and its final answer are both `item.text`,
+	// told apart only by `item.type`. Without the filter, a turn that ended with no
+	// answer -- a real beam session whose last response came back empty, which codex
+	// reads as the end of the turn -- handed fixpoint its last reasoning note as the
+	// reply. That read as a broken output contract, so fixpoint asked the agent to
+	// restate a review it never wrote. With the filter such a stream yields an
+	// EMPTY reply, which is what it was, and the orchestrator reruns the step
+	// instead (see orchestrator.runReviewAssignment).
+	TextWhen string `yaml:"text_when"`
+
 	// Dotted paths to the numbers. Each is optional: a CLI that reports tokens
 	// but not cost simply leaves cost_usd unset, and the scoreboard shows no cost
 	// for it rather than a fabricated one.
@@ -628,6 +642,17 @@ type AgentUsage struct {
 // Enabled reports whether this agent's output carries usage fixpoint can read.
 func (u AgentUsage) Enabled() bool { return u.Format != "" }
 
+// TextFilter splits TextWhen into its path and the value that path must hold. ok
+// is false when no filter is configured; validate rejects a malformed one.
+func (u AgentUsage) TextFilter() (path, value string, ok bool) {
+	path, value, found := strings.Cut(u.TextWhen, "=")
+	path, value = strings.TrimSpace(path), strings.TrimSpace(value)
+	if !found || path == "" || value == "" {
+		return "", "", false
+	}
+	return path, value, true
+}
+
 // validate rejects a usage block that would silently do nothing, or worse. The
 // missing-text case is the dangerous one: the CLI would be switched to
 // machine-readable output while fixpoint kept extracting the contract from the
@@ -637,7 +662,7 @@ func (u AgentUsage) validate(name string) error {
 	if u.Format == "" {
 		// No usage block. A stray path without a format is a typo worth naming,
 		// since it reads as configured and does nothing.
-		if u.Text != "" || u.InputTokens != "" || u.OutputTokens != "" ||
+		if u.Text != "" || u.TextWhen != "" || u.InputTokens != "" || u.OutputTokens != "" ||
 			u.CacheReadTokens != "" || u.CacheWriteTokens != "" || u.CostUSD != "" ||
 			u.ErrorStatus != "" || u.ErrorText != "" {
 			return fmt.Errorf("agents.%s: usage paths are set but usage.format is empty, so none of them are read; set format to %s",
@@ -650,6 +675,12 @@ func (u AgentUsage) validate(name string) error {
 	}
 	if u.Text == "" {
 		return fmt.Errorf("agents.%s: usage.format is set but usage.text is not; fixpoint would hand the raw envelope to the output-contract extractor and every round would fail to parse", name)
+	}
+	// A filter that cannot be split would match nothing, and matching nothing reads
+	// as "the agent never replied" on every invocation -- each step rerun, then
+	// failed, with the cause in a config file rather than the agent.
+	if _, _, ok := u.TextFilter(); u.TextWhen != "" && !ok {
+		return fmt.Errorf("agents.%s: usage.text_when %q is not path=value (e.g. item.type=agent_message)", name, u.TextWhen)
 	}
 	return nil
 }
