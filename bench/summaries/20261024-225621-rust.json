@@ -1,0 +1,454 @@
+{
+ "run": "20261024-225621",
+ "task": "code",
+ "target": "rust",
+ "model": "codex@moonshotai/kimi-k3.1-pro#xhigh",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "HTTP requests wait for client disconnect instead of being handled",
+     "description": "read_to_end waits for EOF, but normal HTTP clients keep the connection open after sending headers and the declared body. Requests therefore stall until the client closes or times out; parsing Content-Length or using read_line for headers never gets a chance to run.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 56,
+     "title": "Expired sessions continue to verify successfully",
+     "description": "verify searches only for a matching token and never examines expires_at. Tokens therefore remain valid indefinitely until explicitly revoked, contrary to the session lifetime contract.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 68,
+     "title": "Admin role check rejects every role",
+     "description": "The condition uses OR, so it is true for both admin (role != owner) and owner (role != admin), as well as every other role. No session can pass require_admin.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 95,
+     "title": "Malformed Authorization headers panic the request thread",
+     "description": "bearer_token indexes parts[1] without checking that a second component exists. handle calls it even when Authorization is absent, so an empty or malformed header panics instead of producing a 401 response.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 53,
+     "title": "peek reports expired cache entries as present",
+     "description": "peek checks only key membership. Until get or sweep removes an expired entry, callers such as warm treat it as live and skip refreshing it.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 61,
+     "title": "Cache eviction ignores least-recently-used ordering",
+     "description": "When full, set removes an arbitrary HashMap key rather than the entry with the oldest used timestamp. Frequently used entries can be evicted while stale entries remain, contrary to the documented LRU behavior.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "Cache utilization is wrong and zero-sized caches panic stats",
+     "description": "Integer division before multiplication makes utilization zero for every nonempty cache below its limit. A configured cache_size of zero also divides by zero when /stats calls utilization, panicking the request thread.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 52,
+     "title": "Cache TTL milliseconds are interpreted as seconds",
+     "description": "LINKD_CACHE_TTL_MS is documented as milliseconds but passed to Duration::from_secs. Configured entries live 1000 times longer than requested.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 65,
+     "title": "Fetch limit configuration is discarded",
+     "description": "A valid positive LINKD_FETCH_LIMIT is assigned to a local variable and then ignored, leaving cfg.fetch_limit at its default regardless of the environment.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 113,
+     "title": "Configuration validation always returns success",
+     "description": "validate collects invalid port and timeout errors but unconditionally returns Ok. Invalid configurations consequently proceed to bind or run with a zero timeout instead of failing startup as documented.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 121,
+     "title": "Malformed and overflowing TTL values create incorrect links",
+     "description": "A nonnumeric ttl silently becomes zero hours, immediately expiring the new link. Multiplying a large parsed value by 3600 can also overflow and panic in debug builds or wrap the duration in release builds.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "Stats panics when the store is empty",
+     "description": "hits_per_link divides by guard.len() without handling zero. A fresh server, or one whose links were deleted, panics on GET /stats instead of returning statistics.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Every link creation panics on the missing quota entry",
+     "description": "create inserts the link and then calls quota.get_mut(owner).unwrap(), but no quota entry is initialized for the owner. The normal POST /links path panics after partially mutating the store, and the poisoned mutex can disrupt later requests.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 59,
+     "title": "Resolution removes live links and retains expired ones",
+     "description": "expired is assigned SystemTime::now() < expires_at, which is actually the live-link condition. The subsequent branch deletes every valid link on first resolution, while expired links proceed to be counted and returned.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 71,
+     "title": "Rename validates the source twice and never validates destination",
+     "description": "validate_code(from) is called twice, so an invalid destination can become a stored code if it does not already exist. Such codes bypass the length and character restrictions.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "Pagination slices past the end of the link list",
+     "description": "When offset + size exceeds all.len(), end is set to all.len() + 1. Any non-final page whose requested size extends beyond the available items then panics on the slice; reports also hit this once more than 1000 links exist.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 102,
+     "title": "Success rate rounds down to zero for partially used stores",
+     "description": "used and len are divided as integers before multiplying by 100. Whenever fewer than all links have hits, the reported percentage is zero instead of the actual fraction.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 110,
+     "title": "Deleting a link never restores its owner's quota",
+     "description": "delete discards link.owner without decrementing the corresponding quota entry. Quota usage grows permanently despite the documented ability to reclaim slots by deletion.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 121,
+     "title": "Top links are sorted least-followed first",
+     "description": "The ascending hits sort followed by truncate returns the least-followed links, opposite to the leaderboard contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 130,
+     "title": "Owner filtering returns substring matches and empty-owner matches all",
+     "description": "by_owner uses contains rather than exact equality. Requests for one owner can include another owner's links, and an empty owner returns the entire store despite the exact-owner contract.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 139,
+     "title": "Extending a link revives expired links",
+     "description": "extend unconditionally replaces expires_at with now + ttl without checking the previous expiry. Already-expired links become live again, contrary to the method's explicit final-expiry contract.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 145,
+     "title": "Quota snapshots expose mutable internal state",
+     "description": "quotas returns a mutable reference to the actual quota map. Callers expecting a snapshot can mutate live accounting, contradicting the method contract.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 152,
+     "title": "Failed imports leave partial batches committed",
+     "description": "import validates and inserts each link in the same loop. If a later code is invalid, earlier links remain inserted even though the method returns Err and promises all-or-nothing behavior.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 165,
+     "title": "Prune returns remaining count instead of removed count",
+     "description": "The previous length is computed and discarded, and prune returns self.links.len(). Callers receive the number of surviving links rather than the documented number removed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 36,
+     "title": "Archive write failures are silently reported as success",
+     "description": "Each write! result is discarded. Disk-full, broken filesystem, and other write errors can produce truncated owner archives while archive_all still returns Ok.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 49,
+     "title": "Snapshot rename failures are silently ignored",
+     "description": "write_snapshot discards the rename result and returns Ok. A failed move leaves only the temporary file while callers believe snapshot.json was durably updated.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "Cache warming returns before its probes finish",
+     "description": "warm_cache stores the JoinHandles in a vector and drops them without joining. Dropping detaches the threads, so the function returns immediately despite promising that every probe has finished.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Unauthenticated connections can accumulate permanent handler threads",
+     "description": "Every accepted socket gets an unbounded detached thread, and read_to_end waits for EOF without any read timeout. A client can connect and keep sending slowly, or never close its write side, before authentication; enough such clients leave threads and sockets alive indefinitely and exhaust server resources.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 219,
+     "title": "Store mutex remains locked during blocking network writes",
+     "description": "Report retains the store guard through export and respond, and the other store-backed handlers similarly respond before their guards leave scope. A client can finish its request and then stop reading; once the socket buffer fills, the response write blocks while holding the store mutex, stalling every other store-backed request and the janitor.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 29,
+     "title": "Concurrent resolved-counter updates lose increments",
+     "description": "add_resolved implements read-modify-write as separate Relaxed load and store operations. Two concurrent /out requests can both load n and both store n+1, permanently losing one resolution in the reported metrics.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 117,
+     "title": "Cache get and flush acquire locks in opposite orders",
+     "description": "get holds entries.write while acquiring hits, whereas flush holds hits while acquiring entries.write. If a valid cache get runs concurrently with flush, each thread can hold its first lock while waiting for the other's, deadlocking both and blocking subsequent cache operations.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "warm_cache returns before its worker threads finish",
+     "description": "Dropping the handles vector detaches every spawned thread instead of waiting for it. A caller can return from warm_cache and immediately observe some or all requested codes absent from the cache, contrary to the function's completion guarantee.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 54,
+     "title": "Dropping JanitorStop leaves the janitor running forever",
+     "description": "When JanitorStop is dropped, its sender disconnects, but try_recv then returns Disconnected and is_ok remains false, so the worker continues its loop while retaining the store and cache Arc values. stop also only sends a message and never joins the thread, so it can continue sleeping or sweeping after stop returns.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "count_by_owner deadlocks by locking the same mutex twice",
+     "description": "The first guard is still alive when the same thread attempts store.lock again. std::sync::Mutex is not reentrant, so any call reaching this second acquisition cannot complete.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 105,
+     "title": "Sweep can delete a freshly replaced cache entry",
+     "description": "sweep collects expired keys under a read lock and releases it before deleting them individually. After the lock is released, another thread can set the same code to a fresh, unexpired target; sweep then deletes that new entry based on the stale expiration check, causing an unnecessary cache miss.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 47,
+     "title": "Concurrent snapshots share and overwrite one temporary file",
+     "description": "Every write_snapshot call truncates and writes /tmp/linkd-snapshot.json. Two concurrent callers can interleave truncation and writes to that inode, and one caller can rename the path before the other renames it; the latter rename error is discarded. This can publish the wrong or partial snapshot while both callers receive Ok.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 124,
+     "title": "A request panic poisons the store and cascades across all handlers",
+     "description": "Store operations execute while holding the mutex and every handler unwraps its lock result. A valid first create panics at Store::create's missing-quota unwrap, and report can panic in page's out-of-range slice; either panic poisons the mutex. Every later handler or janitor acquisition then panics on unwrap, turning one request failure into a persistent outage of all store-backed endpoints.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Unauthenticated clients can exhaust memory and threads",
+     "description": "Every accepted connection receives an unbounded thread, and read_to_end buffers until the peer closes the connection with no size limit or read timeout. A remote client can open many connections and trickle data to retain threads, or continuously send data to grow request buffers until the service is exhausted; this occurs before authentication.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 119,
+     "title": "Link ownership is supplied by the caller",
+     "description": "The authenticated session is discarded, and POST /links trusts the owner form field. An authenticated attacker can create records attributed to another user, corrupting ownership, quotas, audit data, and owner-specific exports.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 165,
+     "title": "Any authenticated user can delete any link",
+     "description": "DELETE /links checks only whether a code exists and never compares the link owner with the authenticated session. Any user who obtains or predicts another link's code can delete that victim's link.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 186,
+     "title": "Client-controlled header grants administrator access",
+     "description": "GET /admin/quotas treats X-Admin: true as proof of administrative privilege. Any authenticated non-administrator can add this header and access the administrator endpoint without a role check.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 216,
+     "title": "Report endpoint exports every user's private links",
+     "description": "GET /report retrieves an unrestricted store page and exports code, target, owner, and hits for every link. Any authenticated user can download other owners' link inventories and destinations.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 13,
+     "title": "Report names permit path traversal and file overwrite",
+     "description": "The user-controlled report name is joined directly to the export directory. A name such as ../../writable/location/audit causes GET /report to write attacker-influenced CSV content to audit.csv outside the configured directory, overwriting any service-writable file with that name.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 251,
+     "title": "Stored targets allow HTTP response splitting",
+     "description": "redirect_to inserts an unvalidated stored target directly into the Location header. The form parser preserves CR and LF, and store validation only checks the target prefix, so an attacker can store a target containing CRLF followed by injected headers such as Set-Cookie. Following that link then returns a forged response to the victim.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 35,
+     "title": "Session tokens are predictable from issuance time",
+     "description": "Token generation seeds a deterministic linear congruential generator with whole seconds since the epoch. An attacker who knows approximately when a victim's session was issued can reproduce candidate tokens and authenticate as that victim; tokens issued within the same second are identical.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 50,
+     "title": "Plaintext session tokens are written to logs",
+     "description": "Every issued bearer token is logged together with its owner. Anyone with access to application logs can replay an active token and impersonate that user.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 56,
+     "title": "Expired sessions remain valid indefinitely",
+     "description": "verify compares only token strings and never checks expires_at, despite issue assigning a 12-hour lifetime. A copied token therefore remains usable until explicitly revoked, even after its intended expiration.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 181,
+     "title": "Tracking endpoint is an open redirect",
+     "description": "GET /out accepts any nonempty next value and issues a permanent redirect to it. Attackers can place a trusted linkd URL in email or other content and send victims to a phishing or malware destination after the tracking request.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 17,
+     "title": "CSV export permits spreadsheet formula injection",
+     "description": "Attacker-controlled owner values and other link fields are written without CSV quoting or formula neutralization. An owner beginning with =, +, -, or @ becomes a spreadsheet formula when a report recipient opens the export, enabling deceptive links or formula-based data exfiltration in spreadsheet applications.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 25,
+     "title": "Confidential reports are not created with owner-only permissions",
+     "description": "fs::write creates reports using the process umask rather than explicitly enforcing owner-only access. With a common 022 umask, the resulting all-owner report is readable by other local users, contrary to the confidentiality requirement in the surrounding comment.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 57,
+     "title": "Expired links can still redirect callers",
+     "description": "The expiry comparison is reversed: unexpired links are removed, while links whose expiration has passed proceed to resolution. An expired link can therefore continue redirecting callers until the janitor removes it, allowing access beyond its intended lifetime.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 350633,
+      "output_tokens": 5172,
+      "cache_read_tokens": 331264
+     },
+     "duration_ms": 131540,
+     "failed": false,
+     "output_bytes": 13416
+    },
+    {
+     "usage": {
+      "input_tokens": 292603,
+      "output_tokens": 7003,
+      "cache_read_tokens": 274432
+     },
+     "duration_ms": 183747,
+     "failed": false,
+     "output_bytes": 6969
+    },
+    {
+     "usage": {
+      "input_tokens": 407554,
+      "output_tokens": 6563,
+      "cache_read_tokens": 387072
+     },
+     "duration_ms": 151993,
+     "failed": false,
+     "output_bytes": 8905
+    }
+   ],
+   "review_errors": []
+  }
+ ]
+}

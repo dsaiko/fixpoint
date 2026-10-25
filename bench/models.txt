@@ -1187,3 +1187,72 @@ ollama-codex@beam:cloud
 #
 # Neither route publishes a rate for beam, so the cost column is tokens per
 # point: 6.6k here against 4.3k on the claude route -- the extra spend above.
+
+# Kimi K3.1 Pro -- OpenRouter slug moonshotai/kimi-k3.1-pro, measured 2026-10-24 on
+# the Mac through the CODEX harness (codex@, effort high, same template as Argon).
+# Card: $2/M in, $10/M out, $0.20/M cached, 1M context; report.py's RATES carries it.
+# Probe clean (codex only warns it has no metadata for the id). No errors, no
+# contract failures, no 402 -- the account was topped up to $65 before the sweep, so
+# the max_tokens-ceiling preflight trap from the Argon note never fired.
+codex@moonshotai/kimi-k3.1-pro
+#
+# MEASURED 2026-10-24, full 8-target grid, 1 repeat, 0 errors, 0 contract failures:
+#
+#   codex@moonshotai/kimi-k3.1-pro  293/484  ~21st of 39  $3.76  $0.013/pt  88% cached  3486s
+#
+#   go 36/56  design 15/34  rust 37/64  java 42/69
+#   typescript 44/63  csharp 40/68  cpp 39/64  python 40/66
+#
+# Even across targets (58-70% everywhere, no collapse like terra's java/csharp) and
+# the cheapest candidate with a real score on a billed route: a quarter of Argon's
+# bill for 55 fewer seeds. 815k uncached-equivalent tokens in, 359k pts/Mtok.
+#
+# SEAT ARITHMETIC (panel today [claude-sonnet, gpt-6-sol, beam-ollama-codex]; the
+# parser reproduced the glm-era anchor 404 exactly before these were read; beam
+# repeat 1 / repeat 2 as in the beam note):
+#
+#   seated panel                              420 / 425
+#   kimi REPLACES beam (ollama seat)          403        (-17 / -22)
+#   kimi REPLACES claude-sonnet               400 / 406  (-20 / -19)
+#   kimi REPLACES gpt-6-sol (ChatGPT seat)    423 / 429  (+3 / +4)
+#   kimi as a 4th seat                        425 / 431  (+5 / +6)
+#   marginal over claude-sonnet+gpt-6-sol     +13
+#   head to head vs the seated panel (r1)     finds 5 seeds it misses, misses 132
+#
+# NOT A SEAT. The one swap that gains anything (+3/+4 over gpt-6-sol) is inside the
+# noise floor and would trade a quota-covered ChatGPT seat for a card-billed one --
+# the same objection as Argon's. As a 4th seat it adds +5/+6 for a recurring
+# per-token bill, and it duplicates 132 of what the panel already finds against 5 it
+# uniquely adds. Cheap enough to revisit if gpt-6-sol's quota ever becomes the
+# problem; kimi is then the one-word fallback.
+
+# Kimi K3.1 Pro at effort xhigh -- the same route as the row above, one variable moved.
+# `codex@<id>#<effort>` (bench/run.sh) pins the codex reasoning effort for a sweep; the
+# plain codex@ row is high. Measured 2026-10-24, 0 errors, 0 contract failures.
+# Asked because Kimi's hype did not show up at high: the claude harness cannot carry
+# effort over OpenRouter (docs/agents.md), so codex is the only route where it can be
+# pushed.
+codex@moonshotai/kimi-k3.1-pro#xhigh
+#
+#   high    293/484  403 findings  140k output tokens  $3.76  3486s
+#   xhigh   300/484  424 findings  156k output tokens  $3.56  3677s   (+7 seeds, +11% output)
+#
+#   go 37/56  design 15/34  rust 39/64  java 47/69
+#   typescript 34/63  csharp 41/68  cpp 44/64  python 43/66
+#
+# EFFORT IS NOT THE EXPLANATION. xhigh buys +7 seeds for +11% output tokens -- little
+# thinking was added, and the gain is inside what a repeat moves (beam's two grids
+# differ by 4). Per target it swings both ways: java +5, cpp +5, python +3, but
+# typescript -10, go +1. The two grids each find ~40 seeds the other misses (union
+# 337), i.e. most of the difference is sampling, not depth.
+#
+#   panel [claude-sonnet, gpt-6-sol, beam-ollama-codex]  420 / 425 (beam r1 / r2)
+#   xhigh REPLACES beam           400        REPLACES claude-sonnet  400 / 408
+#   xhigh REPLACES gpt-6-sol      418 / 425  AS A 4th SEAT           423 / 429
+#   marginal over claude-sonnet+gpt-6-sol  +10; finds 3 seeds the panel misses, misses 123
+#
+# Same verdict as at high: NOT A SEAT. Neither effort setting reproduces the launch
+# talk on this bench, which measures single-round recall of planted defects, not the
+# agentic coding Kimi is praised for. The untested remainder is the harness: codex
+# only (the claude route cannot carry effort), so a claude-harness row would differ in
+# harness and in an uncontrollable effort at once.
