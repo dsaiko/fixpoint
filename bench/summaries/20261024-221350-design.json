@@ -1,0 +1,252 @@
+{
+ "run": "20261024-221350",
+ "task": "design",
+ "target": "design",
+ "model": "codex@moonshotai/kimi-k3.1-pro",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 70,
+     "title": "Authentication failure destroys unsynchronized notes",
+     "description": "Any refresh 401, including the explicitly listed token corruption case, wipes the entire local database and outbox. Edits created offline that have never reached the server are then unrecoverable, directly violating the goal that an offline edit is never lost.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "A single account-wide cursor breaks multi-device synchronization",
+     "description": "One cursor per user cannot represent the independent progress of multiple devices. One device can advance the cursor past changes another device has not received, causing that device to skip notes and updates permanently; a new device also cannot reliably perform its initial full sync.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Timestamp-only cursors skip changes with equal timestamps",
+     "description": "The client requests changes strictly newer than the newest modified_at it has seen. Multiple writes can share that millisecond timestamp, especially when a batch is applied together, so advancing the cursor after a partial or bounded response can permanently omit the remaining rows at that timestamp.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 56,
+     "title": "Retries reapply batches without an idempotency mechanism",
+     "description": "A server can commit a batch and then lose the response or connection. The mandated retry sends the same edits again, but neither the client-generated note ID nor an operation ID is specified as unique or idempotent. Retried creates can therefore produce duplicate notes, while other repeated operations can corrupt synchronization state.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 78,
+     "title": "A validation error can permanently stall the outbox",
+     "description": "Rows before a failing row remain committed, but the protocol does not define per-edit acknowledgements or tell the client to remove those rows and skip or repair the bad edit. Retrying the same entire outbox reapplies earlier work and encounters the same failure indefinitely, blocking all later edits.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Client wall clocks can silently discard valid edits",
+     "description": "Last-writer-wins uses client-controlled wall-clock timestamps. Clock skew, clock correction, or a malicious client can give stale content a newer timestamp and permanently discard newer user work; NTP does not prevent offline edits from carrying old or incorrect timestamps.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Unbounded single-request batches cannot reliably recover from prolonged offline use",
+     "description": "The entire uncapped outbox, containing a full note body for every uncapped edit, is sent in one request with no server timeout or request-size bound. A long-offline device can exhaust client or server memory, hold workers indefinitely, or exceed infrastructure limits, leaving the outbox unable to drain precisely when recovery is needed.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 83,
+     "title": "Every sync performs an unbounded, unindexed changes query",
+     "description": "Filtering and sorting by user_id and modified_at without a supporting index requires increasingly expensive scans and sorts as the global notes table grows. Returning every matching tombstone and change without pagination also creates unbounded response work, so routine polling and post-outage retries can saturate Postgres rather than be fixed by adding stateless instances.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deployments are incompatible with the migration assumption",
+     "description": "Rolling deployment inherently leaves old and new application versions running together, contrary to the claim that they never share a schema. A destructive or changed migration run before rollout can make old instances fail or misinterpret newly written data, and rollback can restore code that cannot read the migrated schema.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Nightly backups cannot satisfy the acknowledged-edit durability guarantee",
+     "description": "After a database loss, restoring the latest nightly dump loses every acknowledged edit written since that dump, potentially a full day of data. Clients have already cleared those edits from their outboxes, and the server retains no older revisions, so there is no defined path to reconstruct them.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 56,
+     "title": "Synchronized retry and polling schedules amplify outage recovery load",
+     "description": "All clients use the same backoff schedule, and the design explicitly expects them to reconnect simultaneously after a regional outage. Without jitter, admission control, or per-user limits, retries repeatedly arrive in waves and can keep the shared database saturated; horizontal web scaling increases rather than relieves that pressure.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 117,
+     "title": "Liveness-only health checks keep broken instances in rotation",
+     "description": "An instance whose database pool is exhausted or whose requests are hung still returns 200 because the process is running. The load balancer therefore continues sending it sync traffic, increasing latency and failures without providing an automatic removal signal.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 123,
+     "title": "Silent client sync failures are invisible to operations",
+     "description": "A client that stops sending requests because it is offline, crashed, signed out, or permanently stuck produces no alert, yet support is explicitly expected to diagnose missing notes from dashboards alone. This leaves prolonged synchronization failures undetected until users report them.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "Authentication failure permanently wipes unsynchronized notes",
+     "description": "Signing out on any refresh 401 deletes notes.db, including outbox edits that have never reached the server. Password changes, revocation, or token corruption can therefore destroy offline work, directly violating the goal that an offline edit is never lost.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "Random 32-bit note identifiers can alias unrelated notes",
+     "description": "Independent devices can generate the same client id, while the server uses that value for lookup alongside a separate server-generated key. A collision can make an edit or deletion resolve to another note, and clients applying changes by that id can overwrite or merge unrelated records.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Wall-clock cursors permanently skip valid changes",
+     "description": "The cursor is a client-supplied modified_at value and synchronization requests only strictly newer rows. Once the cursor reaches T, a subsequently committed change timestamped T or earlier because of clock skew, equal-millisecond edits, or clock correction is never returned to that client.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 54,
+     "title": "Synchronization progress is scoped to an account instead of a device",
+     "description": "Each device has an independent replica, but only one cursor per user account is defined. When one device advances that shared cursor, another device can skip changes it has never applied, leaving its replica permanently stale.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 49,
+     "title": "Outbox acknowledgement can delete edits that were never sent",
+     "description": "The request contains the outbox contents at send time, but the response handler clears the outbox without identifying the acknowledged rows. An edit appended by the user, desktop client, or CLI while the request is in flight was not in that request and will nevertheless be deleted, so its current note state may never synchronize.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 56,
+     "title": "Retried sync requests have no idempotency mechanism",
+     "description": "A timeout can occur after the server commits but before the client receives the response. Retrying the same POST then presents the same edits as new work; creates can receive additional BIGSERIAL identities and prior operations can be applied again because there is no stable edit or batch identity with a stored outcome.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 79,
+     "title": "Partial batch commits cannot be reconciled by the client protocol",
+     "description": "A validation failure preserves earlier rows but leaves later rows unapplied, while the client has only whole-batch retry and whole-outbox clearing. Retrying repeats committed edits and cannot repair a deterministically invalid row; treating the response as an acknowledgment instead risks discarding failed or unprocessed edits.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Client clocks decide which user edit is destroyed",
+     "description": "A device with a fast clock can make an older edit defeat a newer one, while a device whose clock moves backward can lose its latest work. Equal timestamps have no deterministic winner, and the losing body is immediately discarded, making both incorrect conflict resolution and recovery impossible.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Unbounded single-message synchronization has no resumable path",
+     "description": "Note bodies and the outbox are unbounded, the entire outbox is sent in one POST, and all matching changes are returned without pagination. A long offline period or recovery can therefore exceed memory, proxy, or transport limits and cannot make partial progress, also undermining the 30-second synchronization goal.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "Latest-only storage cannot support the required diagnosis",
+     "description": "The server overwrites note versions, discards conflict losers, and records neither devices nor batches. Dashboards containing endpoint metrics cannot establish which edit, device, conflict, deletion, or sync response explains why a note is absent, so the stated support goal cannot be met from the retained data.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Backup and recovery cannot preserve acknowledged edits",
+     "description": "Nightly dumps permit loss of almost a day of acknowledged changes, while clients clear their outboxes after acknowledgment. After a restore, those clients also hold advanced cursors and have no server-generation or full-reconciliation signal, so surviving local copies are not automatically used to reconstruct the missing server state.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves owned note data without a deletion guarantee",
+     "description": "Deleting only the user row leaves all note rows and bodies in place, and cleanup is merely something that could happen later. Ordinary account deletion therefore retains personal data indefinitely with no defined owner, deadline, or mechanism for proving completion.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Schema migration assumptions conflict with rolling deployment",
+     "description": "Rolling deployment inherently runs old and new instances together, yet migration safety relies on them never sharing a schema. A destructive or semantic migration can consequently make old instances fail or write obsolete data while they continue receiving traffic.",
+     "lens": "design-data",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 65,
+     "title": "Field addition is not a substitute for protocol versioning",
+     "description": "The format has no version or capability negotiation, and clients are not even required to ignore unknown fields. Changes to cursor semantics, edit identity, deletion, or future attachment behavior cannot be distinguished from the original format, making mixed-version synchronization unsafe.",
+     "lens": "design-data",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 129302,
+      "output_tokens": 3706,
+      "cache_read_tokens": 122368
+     },
+     "duration_ms": 97133,
+     "failed": false,
+     "output_bytes": 9963
+    },
+    {
+     "usage": {
+      "input_tokens": 84487,
+      "output_tokens": 8533,
+      "cache_read_tokens": 79104
+     },
+     "duration_ms": 212863,
+     "failed": false,
+     "output_bytes": 10595
+    }
+   ],
+   "review_errors": []
+  }
+ ]
+}
