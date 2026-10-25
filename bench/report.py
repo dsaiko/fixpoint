@@ -158,6 +158,10 @@ RATES = {
     # codex@ (see the codex@ note in bench/models.txt): the claude harness 400s
     # on every call, including the preflight ping, with no session ever starting.
     "codex@google/gemini-4-argon": (2.00, 10.00, 0.10),
+    # Kimi K3.1 Pro, OpenRouter card read 2026-10-24: $2/$10 per MTok, cached
+    # input $0.20. Routed through codex@ like Argon (OpenRouter-billed, no
+    # subscription underneath).
+    "codex@moonshotai/kimi-k3.1-pro": (2.00, 10.00, 0.20),
     # DeepSeek V4.1 Flash 1017, the 2026-10-17 checkpoint of the model measured on
     # the ollama route as deepseek-v4.1-flash:cloud. OpenRouter-only (no ollama
     # tag), at the same card: 0.15 / 0.60 / 0.003 standard. Weekdays 01-04 and
@@ -665,13 +669,15 @@ def run_cost(model, harness, tok_in, tok_out, cache_read, asof=None, cache_write
     are billed at CACHE_WRITE_RATES, else at the input rate.
     """
     name, _ = agent_model(model, asof)
-    rates = RATES.get(name or model) or ollama_rate(model)
+    # `codex@<id>#<effort>` is the same model on the same card as `codex@<id>`.
+    priced = (name or model).split("#")[0]
+    rates = RATES.get(priced) or ollama_rate(model)
     if rates is None:
         return None
     rate_in, rate_out, rate_cache = rates
     return (tok_in * rate_in
             + cache_read * (rate_in if rate_cache is None else rate_cache)
-            + cache_write * CACHE_WRITE_RATES.get(name or model, rate_in)
+            + cache_write * CACHE_WRITE_RATES.get(priced, rate_in)
             + tok_out * rate_out) / 1e6
 
 
@@ -1691,6 +1697,14 @@ def selftest():
     check("ollama-codex@ is priced on the plain tag's card",
           ollama_rate(tc), ollama_rate("minimax-m3.1-flash:cloud"))
     check("and that card exists", ollama_rate(tc) is not None, True)
+
+    # An effort suffix (codex@<id>#xhigh) is priced on the unsuffixed id's card.
+    kc = "codex@moonshotai/kimi-k3.1-pro"
+    check("effort suffix is priced on the plain id's card",
+          run_cost(kc + "#xhigh", "openrouter/codex", 1000, 1000, 0),
+          run_cost(kc, "openrouter/codex", 1000, 1000, 0))
+    check("and that card exists", run_cost(kc, "openrouter/codex", 1, 1, 0) is not None, True)
+    check("suffixed id is still the openrouter/codex route", route(kc + "#xhigh"), "openrouter/codex")
 
     if fails:
         sys.exit("report.py --selftest FAILED:\n" + "\n".join(fails))

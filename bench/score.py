@@ -558,7 +558,7 @@ def main():
         for f in extras:
             lines.append(f"- ({f.get('severity', '?')}) {f.get('file', '?')}:{f.get('line', '?')} "
                          f"— {f.get('title', '')[:90]}")
-    report = outdir / f"{model.replace(':', '_').replace('/', '_')}-{target}-{run_id}.md"
+    report = outdir / f"{model.replace(':', '_').replace('/', '_').replace('#', '_')}-{target}-{run_id}.md"
     report.write_text("\n".join(lines) + "\n")
 
     print(f"bench: {model} {target}: recall {found}/{len(active)}, {len(extras)} unmatched, "
