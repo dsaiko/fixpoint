@@ -97,8 +97,8 @@ func TestShippedAgentsDoNotLoadTargetSettings(t *testing.T) {
 	// kimi, glm-5.2, glm-5.3-flash, gemma4, beam) and three OpenRouter-routed ones
 	// (kimi, glm, qwen). beam-ollama took the panel's ollama seat from
 	// glm-5.3-flash on 2026-10-19 (v0.16.0), which had taken it from minimax on
-	// 2026-09-14; the seat is now beam-ollama-codex, which runs the codex CLI and
-	// so is not counted here. glm-5.3-flash-ollama is a SEPARATE file from
+	// 2026-09-14; the seat went to beam-ollama-codex and then beam-ollama-direct,
+	// which both run the codex CLI and so are not counted here. glm-5.3-flash-ollama is a SEPARATE file from
 	// glm-ollama, which is glm-5.2 and stays off the panel -- two tiers of one
 	// family, not a rename. The
 	// same model appearing under two routes is deliberate -- the route changes
@@ -153,9 +153,12 @@ func TestShippedAgentsCarryAPromptBudget(t *testing.T) {
 		"glm-ollama":        remote,
 		"kimi-ollama":       remote,
 		"minimax-ollama":    remote,
-		// The panel's ollama seat since v0.17.0 (2026-10-19): beam through the
-		// codex harness. The budget is per ROUTE, so the ollama one.
+		// The panel's ollama seat 2026-10-19 .. 2026-10-28: beam through the codex
+		// harness. The budget is per ROUTE, so the ollama one.
 		"beam-ollama-codex": remote,
+		// The panel's ollama seat since 2026-10-28: the same model and harness
+		// straight to ollama.com, no local server. Same backend, same budget.
+		"beam-ollama-direct": remote,
 		// beam through the claude harness: the ollama seat in v0.16.0 only.
 		"beam-ollama": remote,
 		// The ollama seat 2026-09-14 .. 2026-10-19, kept ready one word away.
@@ -227,11 +230,16 @@ func TestShippedAgentsPinTheirEnvironment(t *testing.T) {
 		"glm-ollama":        {pass: ollama},
 		"kimi-ollama":       {pass: ollama},
 		"minimax-ollama":    {pass: ollama},
-		// The panel's ollama seat since v0.17.0. Sees OLLAMA_HOST and nothing
-		// else -- no OpenAI credential, although it runs the codex CLI: ollama
-		// configures the provider, and codex must not be able to fall back to a
-		// first-party endpoint billed to the ChatGPT seat's account.
+		// The panel's ollama seat 2026-10-19 .. 2026-10-28. Sees OLLAMA_HOST and
+		// nothing else -- no OpenAI credential, although it runs the codex CLI:
+		// ollama configures the provider, and codex must not be able to fall back
+		// to a first-party endpoint billed to the ChatGPT seat's account.
 		"beam-ollama-codex": {pass: ollama},
+		// The panel's ollama seat since 2026-10-28: the same codex harness pointed
+		// at ollama.com itself. No server address, since there is no local server;
+		// the key it needs instead is the one its provider block names, and no
+		// OpenAI credential for the same reason as above.
+		"beam-ollama-direct": {pass: []string{"OLLAMA_API_KEY"}},
 		// beam through the claude harness: the ollama seat in v0.16.0 only.
 		"beam-ollama": {pass: ollama},
 		// The ollama seat 2026-09-14 .. 2026-10-19.
@@ -366,5 +374,41 @@ func TestShippedCodexAgentsReportTheirErrorText(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no codex-harness agent found; the detection broke, or the bundle lost every codex route")
+	}
+}
+
+// A key handed to codex for its provider must not reach the model's shell.
+//
+// env.pass keeps every other secret out of the process, but the variable a
+// provider block names in env_key has to be IN it, and codex passes its
+// environment on to the commands the model runs: probed 2026-10-28, a reviewer
+// running `env` saw OLLAMA_API_KEY unless shell_environment_policy.exclude named
+// it. A prompt-injected reviewer could then quote the key into a finding.
+func TestShippedCodexProviderKeysStayOutOfTheShell(t *testing.T) {
+	checked := 0
+	for name, a := range shippedAgents(t) {
+		if !isCodexHarness(a) {
+			continue
+		}
+		argv := a.Argv()
+		var excluded string
+		for _, tok := range argv {
+			if v, ok := strings.CutPrefix(tok, "shell_environment_policy.exclude="); ok {
+				excluded = v
+			}
+		}
+		for _, tok := range argv {
+			_, key, ok := strings.Cut(tok, ".env_key=")
+			if !ok || !strings.HasPrefix(tok, "model_providers.") {
+				continue
+			}
+			checked++
+			if !strings.Contains(excluded, `"`+strings.Trim(key, `"`)+`"`) {
+				t.Errorf("agents/%s%s: codex provider reads %s, but shell_environment_policy.exclude does not name it; the model's shell would see the key", name, configExt, key)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no codex agent with a provider env_key found; this test would inspect nothing")
 	}
 }
