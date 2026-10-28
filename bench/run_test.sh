@@ -17,7 +17,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/tree/bench" "$tmp/tree/config/agents" "$tmp/bin"
 cp "$here/run.sh" "$here/agent-template-vllm.yaml" "$here/agent-template-ollama-codex.yaml" \
-    "$here/agent-template-ollama-direct.yaml" "$tmp/tree/bench/"
+    "$here/agent-template-ollama-direct.yaml" "$here/agent-template-openrouter-codex.yaml" "$tmp/tree/bench/"
 
 cat >"$tmp/bin/curl" <<'EOF'
 #!/bin/sh
@@ -119,6 +119,14 @@ if run 3 "direct with key" OLLAMA_API_KEY=k; then
     expect "direct candidate points at ollama.com" "$tmp/out/candidate.yaml" 'base_url=https://ollama\.com/v1$'
     expect "direct candidate model is the bare tag" "$tmp/out/candidate.yaml" '^model: glm-5\.3-flash:cloud$'
     expect "direct candidate effort is the suffix" "$tmp/out/candidate.yaml" '^effort: max '
+    expect "direct candidate keeps its key out of the model's shell" "$tmp/out/candidate.yaml" 'shell_environment_policy\.exclude=\["OLLAMA_API_KEY"\]'
+fi
+
+# (g2) The OpenRouter codex route reads a card-billed key through env_key; codex
+# would hand it to the model's shell unless the exclude names it.
+MODEL='codex@google/gemini-3.7-flash'
+if run 3 "openrouter codex" OPENROUTER_API_KEY=k; then
+    expect "openrouter candidate keeps its key out of the model's shell" "$tmp/out/candidate.yaml" 'shell_environment_policy\.exclude=\["OPENROUTER_API_KEY"\]'
 fi
 
 # (h) ollama-codex@ takes the same suffix, on its own template, and needs no key.
