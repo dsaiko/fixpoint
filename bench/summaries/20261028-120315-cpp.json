@@ -1,0 +1,238 @@
+{
+ "run": "20261028-120315",
+ "task": "code",
+ "target": "cpp",
+ "model": "ollama-codex@beam:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "worker.cpp",
+     "line": 18,
+     "title": "Janitor erases from the links map while iterating it, concurrently with other threads",
+     "description": "The janitor lambda walks store.all() (a std::map) and calls entries_.erase(it), which invalidates the iterator and yields undefined behavior. It also mutates the same Store and Cache concurrently with request handlers, warm_cache worker threads, and any other callers, with no synchronization at all. Interleaving: a handler inserts/resolves a link or a cache warm-up writes an entry while the janitor sweeps -> concurrent unsynchronized mutation of std::map -> data race (UB), map corruption or crash, and expired entries only sometimes removed.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 34,
+     "title": "warm_cache spawns threads and never joins them (terminates process) and captures loop variable by reference",
+     "description": "Workers are created in a vector but the function returns without joining any of them, so std::thread's destructor calls std::terminate as soon as warm_cache returns. Each lambda also captures `&link` (a reference into the loop variable of the range-for over `links`) and `&cache` with no synchronization, so threads can outlive the vector and race on the Cache. This makes parallel warm-up unusable and can abort the whole process.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.cpp",
+     "line": 28,
+     "title": "stop_janitor only flips a flag: the janitor thread is never joined or deleted",
+     "description": "stop_janitor sets `g_running=false` but never joins `*g_janitor` and never frees it. The thread may still be sleeping inside sleep_for(interval) or traversing Store/Cache, so it can keep running past shutdown and access freed store/cache objects (use-after-free) and leak the thread and its heap allocation.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 10,
+     "title": "Store has no synchronization while shared by janitor, handlers, and worker threads",
+     "description": "Link and quota maps are mutated and read by Store::create/resolve/rename/page/success_rate/remove/top/by_owner/extend/quotas/import_all/prune/total_hits and last_code without any mutex, even though they run concurrently (janitor sweep, HTTP handlers, warm_cache). Concurrent std::map access is a data race; create() returns a raw pointer into links_ and last_code() returns a string_view tied to map keys/temporaries, which become dangling once another thread erases or mutates the container.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.cpp",
+     "line": 54,
+     "title": "Cache is not thread-safe: concurrent get/set/erase/sweep/peek race on entries_ and hits_",
+     "description": "Cache::get, peek, set, erase, sweep and utilization access entries_ and hits_ with no synchronization while they are invoked concurrently by the janitor sweep, the resolver hot path and warm_cache threads. set() and erase()/sweep() also mutate the map during traversal. Interleaving two threads can corrupt entries_, lose entries, leak Entry* memory, and produce data races on long hits_.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 37,
+     "title": "Authenticator mutates sessions_ without synchronization; verify returns a pointer into a live map",
+     "description": "issue()/verify()/revoke() read and write sessions_ concurrently (request handlers plus any janitor/admin use) with no lock, while verify() returns &pair.second pointing into a std::map that another thread can reallocate/erase, yielding a dangling reference and a data race. Additional concurrency hazard: std::rand() is used without synchronization to mint tokens.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "linkd.h",
+     "line": 130,
+     "title": "Metrics counters are non-atomic shared across request threads; errors_ is uninitialized",
+     "description": "Metrics is a single global object whose add_resolved/add_created and resolved()/created()/errors() read/increment plain longs from multiple request threads, a data race. errors_ is never initialized (constructors set resolved_/created_ to 0 but not errors_), so errors() also reads an indeterminate value even on one thread. Concurrent increments can be lost and compiled-out, corrupting dashboard stats.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 15,
+     "title": "std::rand() used without synchronization in Store::create and Authenticator::issue",
+     "description": "Both Store::create (store.cpp:15) and Authenticator::issue (auth.cpp:22) call std::rand() to generate codes/tokens. std::rand maintains global mutable state and is not thread-safe in (at least) common implementations, so concurrent creation issues tokens/codes race on that state, producing nondeterministic or repeated values under load.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 73,
+     "title": "Stack buffer overflow in bearer_token",
+     "description": "bearer_token copies an attacker-controlled Authorization header into a fixed 64-byte stack buffer with std::strcpy and no length check, then dereferences space+1 without checking for a space. An overlong header overflows the stack and corrupts control data; a header without a space makes space nullptr and crashes or reads invalid memory.",
+     "lens": "review-security",
+     "severity": "critical"
+    },
+    {
+     "file": "main.cpp",
+     "line": 92,
+     "title": "Admin endpoint trusts client-controlled X-Admin header",
+     "description": "admin_quotas grants access solely when the request contains X-Admin: true, which any authenticated user can set. This bypasses the session/role check and exposes per-owner quota data.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.cpp",
+     "line": 14,
+     "title": "Path traversal via report name",
+     "description": "export_csv and read_report concatenate the user-supplied name into a filesystem path without sanitization or confinement. A name such as ../../etc/passwd lets an attacker write or read arbitrary files under the service account.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 70,
+     "title": "Delete endpoint has no ownership or auth check",
+     "description": "delete_link removes any link by code taken from the query without consulting the authenticated session. Any user with a valid token can delete another user's (or any) short link.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 37,
+     "title": "Expired sessions are not rejected",
+     "description": "verify returns a session even after expires_at has passed, so revoked-by-time tokens remain usable indefinitely and the 12-hour lifetime provides no protection.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 20,
+     "title": "Session tokens minted with predictable std::rand",
+     "description": "issue generates tokens from std::rand, which is not cryptographically secure and may be unseeded/default. An attacker who can infer or observe a few tokens can predict new ones and hijack sessions.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.cpp",
+     "line": 33,
+     "title": "Permissive CORS with credentials",
+     "description": "respond sets Access-Control-Allow-Origin: * together with Access-Control-Allow-Credentials: true. This combination is unsafe and signals that credentialed cross-origin requests (and any token leakage) are intended to be allowed.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.cpp",
+     "line": 38,
+     "title": "Expired links remain resolvable",
+     "description": "resolve deletes a link when Clock::now() < expires_at (i.e. while still valid) and keeps it when expired, the opposite of intended. Expired/dead links therefore remain reachable.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 80,
+     "title": "Open redirect via ?next=",
+     "description": "out sets Location to an unvalidated next parameter. An authenticated user (or attacker able to get a click) can steer victims to arbitrary URLs, including phishing destinations.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 39,
+     "title": "Owner taken from query instead of session",
+     "description": "create_link uses owner from req.query rather than the authenticated session owner. A user can attribute links to another owner and exhaust/abuse that owner's quota (IDOR).",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.cpp",
+     "line": 125,
+     "title": "Unknown token value leaked in 401 response",
+     "description": "The unauthorized response echoes the presented token back to the caller, disclosing a (possibly valid) secret to logs/browsers and aiding brute force.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.cpp",
+     "line": 120,
+     "title": "by_owner uses substring match and leaks nearby owners",
+     "description": "by_owner filters with owner.find(owner) != npos instead of equality, so querying 'a' returns every owner containing 'a', exposing other users' links.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 61,
+     "title": "Weak unsalted password hash",
+     "description": "hash_password is a non-cryptographic djb2-style hash with no salt, making stored passwords trivially recoverable by lookup or brute force.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.cpp",
+     "line": 11,
+     "title": "Hardcoded fallback secret when LINKD_SECRET unset",
+     "description": "If LINKD_SECRET is missing, the service uses the publicly known 'dev-secret-do-not-use', allowing anyone to forge/verify against the predictable secret in misconfigured deployments.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "export.cpp",
+     "line": 26,
+     "title": "Export files rely on umask for confidentiality",
+     "description": "The report purportedly service-user-only is written with default file permissions, so on a typical umask (022) other users on the box can read it.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "export.cpp",
+     "line": 48,
+     "title": "Predictable /tmp snapshot path TOCTOU",
+     "description": "write_snapshot writes to a fixed /tmp/linkd-snapshot.json then renames, allowing a local attacker to pre-create or swap that path (symlink attack) and to win a TOCTOU race.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 1375632,
+      "output_tokens": 17099,
+      "cache_read_tokens": 1299136
+     },
+     "duration_ms": 95241,
+     "failed": false,
+     "output_bytes": 2286
+    },
+    {
+     "usage": {
+      "input_tokens": 165163,
+      "output_tokens": 6536,
+      "cache_read_tokens": 145024
+     },
+     "duration_ms": 39999,
+     "failed": false,
+     "output_bytes": 6817
+    },
+    {
+     "usage": {
+      "input_tokens": 163572,
+      "output_tokens": 5376,
+      "cache_read_tokens": 145152
+     },
+     "duration_ms": 40489,
+     "failed": false,
+     "output_bytes": 8178
+    }
+   ],
+   "review_errors": []
+  }
+ ]
+}
