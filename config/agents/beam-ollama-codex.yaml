@@ -1,8 +1,10 @@
 
 # Beam via ollama, driven by the CODEX harness (`ollama launch codex`).
-# ON THE PANEL since 2026-10-19 (v0.17.0), in the ollama seat -- replacing
+# ON THE PANEL 2026-10-19 (v0.17.0) .. 2026-10-28, in the ollama seat -- replacing
 # beam-ollama.yaml, the same model through the claude harness, which held the
-# seat for one release (v0.16.0) and stays in the bundle one word away.
+# seat for one release (v0.16.0) and stays in the bundle one word away. Replaced
+# in turn by beam-ollama-direct.yaml: the same model and harness talking to
+# ollama.com itself, with no local server. Kept one word away.
 #
 # Same model and same payer as beam-ollama.yaml; see that file for what beam is,
 # why it took the seat from glm-5.3-flash, and its open cost question (no

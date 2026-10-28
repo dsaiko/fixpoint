@@ -8,7 +8,7 @@ pool:
     # defaults.yaml
     roles:
       review:
-        agents: [claude-sonnet, gpt-6-sol, beam-ollama-codex]
+        agents: [claude-sonnet, gpt-6-sol, beam-ollama-direct]
 
     # fix-code.yaml
     extends: defaults

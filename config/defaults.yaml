@@ -256,9 +256,19 @@ roles:
   # 420/414, and 0 contract failures in 16 runs against 1 in 17. Two variables
   # moved -- harness and thinking depth (xhigh here, max on the claude route) --
   # and the seat is bought with the measured whole; see beam-ollama-codex.yaml.
-  # `beam-ollama` is one word away on the line below.
+  #
+  # SAME MODEL AND HARNESS, NO LOCAL SERVER, 2026-10-28: beam-ollama-direct talks
+  # to ollama.com with OLLAMA_API_KEY instead of through `ollama launch codex` and
+  # the local server, which goes stale on every upgrade and is an install on every
+  # host. Only the transport moves, and the same-day pairs say it costs nothing:
+  # glm-5.3-flash through both routes, full grid, panel 408/484 direct against 406
+  # launched (solo 295 against 305); beam on three targets, 110 against 109. Beam itself was having a bad
+  # day on BOTH routes (dropped replies, a lens restated to empty findings), and it
+  # still covers more beside this panel than glm-5.3-flash direct: 298 against 288
+  # on the same six targets, at 2-3x the speed. See beam-ollama-direct.yaml.
+  # `beam-ollama-codex` is one word away on the line below.
   review:
-    agents: [claude-sonnet, gpt-6-sol, beam-ollama-codex]
+    agents: [claude-sonnet, gpt-6-sol, beam-ollama-direct]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds
