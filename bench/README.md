@@ -307,7 +307,14 @@ model through the CODEX harness (`ollama launch codex`): same model, same plan,
 different harness. Effort reaches the model on that route, unlike the claude
 one, so the template pins `xhigh`, the deepest level codex can express there;
 an ollama-codex@ row differs from the plain ollama row in harness and possibly
-thinking depth. Anything else runs the ollama template. Results append
+thinking depth. An `ollama-direct@` tag runs the same harness against ollama.com
+itself, with `OLLAMA_API_KEY` and no local ollama server: the transport is the
+variable. Both take a `#<effort>` suffix (`ollama-direct@glm-5.3-flash:cloud#max`;
+glm's catalog has no `xhigh`), and the pair is only comparable run the SAME DAY,
+interleaved -- on 2026-10-28 beam's launch route scored 109 on three targets that
+had given it 144 nine days before. That day's full glm-5.3-flash grid put the two
+routes level: panel 408 direct, 406 launched. Anything else runs the ollama
+template. Results append
 to `results.csv` (committed — measurements are project knowledge); per-run
 seed tables land in `results/`. Re-score an old run without re-paying for it:
 

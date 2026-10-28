@@ -1,7 +1,8 @@
 #!/bin/sh
 # Tests for bench/run.sh's vllm@ route: the guards that keep a credential on
-# our own server and refuse a sweep the server cannot serve. Run by
-# `make bench-check`.
+# our own server and refuse a sweep the server cannot serve. Also the
+# ollama-codex@ / ollama-direct@ routes' template choice and #<effort> suffix.
+# Run by `make bench-check`.
 #
 # run.sh runs in a scratch copy of the tree it needs, with `curl` and `make`
 # stubbed on PATH: curl answers /v1/models from STUB_MODELS (or fails), and
@@ -15,7 +16,8 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/tree/bench" "$tmp/tree/config/agents" "$tmp/bin"
-cp "$here/run.sh" "$here/agent-template-vllm.yaml" "$tmp/tree/bench/"
+cp "$here/run.sh" "$here/agent-template-vllm.yaml" "$here/agent-template-ollama-codex.yaml" \
+    "$here/agent-template-ollama-direct.yaml" "$tmp/tree/bench/"
 
 cat >"$tmp/bin/curl" <<'EOF'
 #!/bin/sh
@@ -105,8 +107,38 @@ if run 3 "exported credentials" VLLM_BASE_URL=http://vllm.test:8000 VLLM_API_KEY
     expect "ANTHROPIC_API_KEY unset" "$tmp/out/env" '^APIKEY=<unset>$'
 fi
 
+# (f) ollama-direct@ without a key: refused before anything is generated.
+MODEL=ollama-direct@glm-5.3-flash:cloud
+run 2 "direct without OLLAMA_API_KEY" || true
+[ -e "$tmp/out/env" ] && { echo "FAIL direct without key: make ran"; fails=$((fails + 1)); }
+
+# (g) ollama-direct@ with a key and an effort suffix: the direct template, the
+# bare tag as the model, the suffix as the effort.
+MODEL='ollama-direct@glm-5.3-flash:cloud#max'
+if run 3 "direct with key" OLLAMA_API_KEY=k; then
+    expect "direct candidate points at ollama.com" "$tmp/out/candidate.yaml" 'base_url=https://ollama\.com/v1$'
+    expect "direct candidate model is the bare tag" "$tmp/out/candidate.yaml" '^model: glm-5\.3-flash:cloud$'
+    expect "direct candidate effort is the suffix" "$tmp/out/candidate.yaml" '^effort: max '
+fi
+
+# (h) ollama-codex@ takes the same suffix, on its own template, and needs no key.
+MODEL='ollama-codex@glm-5.3-flash:cloud#max'
+if run 3 "launch with suffix"; then
+    expect "launch candidate runs ollama launch" "$tmp/out/candidate.yaml" '^  - launch$'
+    expect "launch candidate never names ollama.com" "$tmp/out/candidate.yaml" 'ollama\.com' !
+    expect "launch candidate effort is the suffix" "$tmp/out/candidate.yaml" '^effort: max '
+fi
+MODEL=ollama-codex@glm-5.3-flash:cloud
+if run 3 "launch without suffix"; then
+    expect "launch candidate keeps xhigh" "$tmp/out/candidate.yaml" '^effort: xhigh '
+fi
+
+# (i) An effort no route accepts is refused.
+MODEL='ollama-codex@glm-5.3-flash:cloud#ultra'
+run 2 "unknown effort" || true
+
 if [ "$fails" -ne 0 ]; then
     echo "bench/run_test.sh: $fails failure(s)" >&2
     exit 1
 fi
-echo "bench/run_test.sh: vllm@ route guards OK"
+echo "bench/run_test.sh: vllm@, ollama-codex@ and ollama-direct@ route guards OK"
