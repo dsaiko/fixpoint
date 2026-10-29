@@ -1,0 +1,196 @@
+{
+ "run": "20261029-094314",
+ "task": "design",
+ "target": "design",
+ "model": "gpt-6.1-terra",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "DESIGN.md",
+     "line": 72,
+     "title": "A refresh failure deletes unsynced offline edits",
+     "description": "A 401 caused by token corruption, a password change, or revocation wipes notes.db, including the outbox. Edits made offline since the last successful sync have no server copy and are permanently lost.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "The shared timestamp cursor can permanently skip changes",
+     "description": "A cursor shared by all devices can advance when one device syncs past changes another device has not received. Even with per-device cursors, changes with equal millisecond timestamps or timestamps behind the cursor are excluded by the strict greater-than query. The missing changes may never be delivered.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Last-writer-wins permanently discards offline work",
+     "description": "Concurrent offline edits cause the older timestamped body to be discarded, and the server retains no previous version. Clock skew can also make an edit appear older than an earlier edit. In either case, a user's offline writing can be permanently lost.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 49,
+     "title": "Acknowledging a batch can clear edits created during the request",
+     "description": "The protocol sends a snapshot of the outbox but then clears the outbox as a whole. If a user edits while the request is in flight, those new rows were not sent but can be deleted when the response arrives, losing unsynced work.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 79,
+     "title": "Partial batch failure has no safe retry contract",
+     "description": "The design says both that a request is a single transaction and that rows before a validation failure remain applied. The client protocol has no operation identifiers or specified handling for an acknowledged prefix, while connection failures cause the entire batch to be retried. A partial commit or lost response can therefore replay already applied work, and a permanently invalid row can prevent later edits from syncing.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Nightly backups cannot preserve acknowledged edits after database loss",
+     "description": "A database loss between dumps can erase up to a day's acknowledged changes. Clients have already cleared their outboxes, and the design specifies no point-in-time recovery or reconciliation after restoring an older dump, so those edits have no guaranteed recovery path.",
+     "lens": "design-failure",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 46,
+     "title": "Unbounded sync requests can exhaust client and server capacity",
+     "description": "Each request contains the entire unbounded outbox with full bodies, and each response returns every matching note without pagination. A long-offline device or large note can exceed memory, connection, or database capacity; retries resend the same oversized batch and cannot make progress. Repeated full-table scans without a user and cursor index amplify the load across users.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 143,
+     "title": "Outage recovery synchronizes retries against the same database",
+     "description": "Clients reconnect simultaneously and use the same deterministic backoff schedule. Adding HTTP instances does not remove the shared Postgres bottleneck, and unlimited request duration and absent rate limits allow the backlog to hold resources while synchronized retries add more work. A regional outage can consequently turn into a prolonged sync outage.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 128,
+     "title": "Rolling deployments do not protect old instances from new migrations",
+     "description": "Migrations run before new instances start while old instances can still be serving requests, and a rolling deployment also overlaps old and new binaries. A migration incompatible with the old version can break in-flight and subsequent syncs; rollback can likewise leave the old binary unable to read data written by the new one.",
+     "lens": "design-failure",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 123,
+     "title": "Operations cannot distinguish an idle device from a stuck sync",
+     "description": "Endpoint metrics and process health do not identify a device that stopped sending requests, a repeatedly rejected edit, or the last batch and cursor seen for a device. Support cannot determine why a device lacks a note from the dashboards, and these failures can persist until a user reports them.",
+     "lens": "design-failure",
+     "severity": "medium"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 61,
+     "title": "Conflict resolution permanently discards offline edits",
+     "description": "When two devices edit the same note offline, the older timestamped body is discarded, and the server retains no prior version. A user's offline writing is therefore permanently lost during an ordinary conflict, contrary to the stated goal that an offline edit is never lost.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 71,
+     "title": "A failed token refresh deletes unsynchronized edits",
+     "description": "A 401 caused by token corruption, password change, or revocation wipes notes.db, including the outbox. Any edits made offline that have not reached the server are irrecoverably lost, even if the user signs back in successfully.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 52,
+     "title": "Timestamp cursors can permanently skip changes",
+     "description": "The cursor uses client wall-clock timestamps and the query returns only strictly newer values. A later-arriving edit with a skewed or equal timestamp is invisible to a device that has already advanced past that value, so its copy may never receive the change.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 54,
+     "title": "A shared account cursor advances past changes other devices have not seen",
+     "description": "The design stores one cursor per account even though devices synchronize independently. If one device advances it after receiving changes, another device using that cursor can skip those changes and remain missing notes.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 24,
+     "title": "32-bit client note IDs collide and conflate distinct notes",
+     "description": "Devices generate note IDs from only 32 random bits, while the server uses that client ID for lookup. As an account accumulates notes, two distinct notes can receive the same ID; synchronization can then address the wrong note or overwrite its content.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 49,
+     "title": "Clearing the outbox can discard edits made during a sync",
+     "description": "The client sends a snapshot of the outbox, then clears the outbox after the response. Since the application and CLI can both edit the same database, an edit appended while the request is in flight can be cleared despite never being included in the acknowledged batch.",
+     "lens": "design-data",
+     "severity": "critical"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 79,
+     "title": "Partial batch application has no compatible retry or acknowledgment rule",
+     "description": "The server retains rows before a validation failure, while the client clears the outbox only after acknowledgment and retries failed requests as the same batch. The protocol specifies neither how the client removes the accepted prefix nor an idempotency identity for replay, so a bad row can indefinitely block later edits or replay already-applied work.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 133,
+     "title": "Nightly backups cannot preserve all acknowledged edits after database loss",
+     "description": "After the client receives a response it clears the outbox, but a restore from the nightly dump omits acknowledged edits made since that dump. If the database is lost, those edits have no guaranteed recoverable server copy, contradicting the no-acknowledged-edit-loss posture.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 159,
+     "title": "Missing per-device sync history prevents the stated support diagnosis",
+     "description": "The dashboards record endpoint aggregates, while the server keeps no device or batch history. Support cannot determine whether a particular device sent a batch, which cursor it used, or what changes it received, so the stated goal of answering why a device lacks a note from dashboards alone cannot be met.",
+     "lens": "design-data",
+     "severity": "high"
+    },
+    {
+     "file": "DESIGN.md",
+     "line": 156,
+     "title": "Account deletion leaves note contents orphaned indefinitely",
+     "description": "Deleting only the user row leaves its note bodies in the database, with cleanup merely a possible future job. The system has no defined way to complete deletion of the account's data, and the orphaned rows remain in subsequent backups.",
+     "lens": "design-data",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 36240,
+      "output_tokens": 1625,
+      "cache_read_tokens": 32000
+     },
+     "duration_ms": 29101,
+     "failed": false,
+     "output_bytes": 6966
+    },
+    {
+     "usage": {
+      "input_tokens": 36114,
+      "output_tokens": 1547,
+      "cache_read_tokens": 32000
+     },
+     "duration_ms": 27815,
+     "failed": false,
+     "output_bytes": 6522
+    }
+   ],
+   "review_errors": []
+  }
+ ]
+}
