@@ -63,6 +63,8 @@ effort: xhigh # the deepest level that reaches beam through codex; see beam-olla
 command:
   - codex
   - exec
+  - --ignore-user-config # no ~/.codex/config.toml: its MCP servers and plugins (Computer Use, browser) would reach a read-only reviewer
+  - -c features.apps=false # nor the ChatGPT login's apps (Sites deploy, Spaces sharing), which do not come from that file
   - -c model_provider=ollama-cloud
   - -c model_providers.ollama-cloud.name=ollama-cloud
   - -c model_providers.ollama-cloud.base_url=https://ollama.com/v1
