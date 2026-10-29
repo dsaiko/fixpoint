@@ -1,0 +1,51 @@
+# gpt-6.1-terra · design · run 20261029-094314 (repeat 1)
+
+recall **11/34** · 20 finding(s), 0 unmatched · 75526 tokens · 56s · 6 retired seed(s) not scored
+
+| seed | found | note | matched by |
+|---|---|---|---|
+| D01 | YES | retrying the same POST after a timeout re-applies edits the server alr | design-data: Partial batch application has no compatible retry or acknowl |
+| D02 | YES | §5 claims one transaction per request AND that rows 1..N-1 survive a f | design-failure: Partial batch failure has no safe retry contract |
+| D03 | YES | conflict resolution by client wall clock silently discards edits, cont | design-failure: Last-writer-wins permanently discards offline work; design-data: Conflict resolution permanently discards offline edits |
+| D05 | YES | no outbox cap plus whole-outbox-in-one-POST: a long-offline device pro | design-failure: Unbounded sync requests can exhaust client and server capaci |
+| D06 | — | desktop client and CLI open the same SQLite file with no locking story |  |
+| D07 | — | healthz checks process liveness only; an instance with a dead DB conne |  |
+| D08 | YES | rolling deploys guarantee old/new overlap; 'deploys are quick' is not  | design-failure: Rolling deployments do not protect old instances from new mi |
+| D09 | — | §5 removes the server-side request timeout, so a slow or hostile clien |  |
+| D10 | YES | every client shares one backoff schedule with no jitter; after an outa | design-failure: Outage recovery synchronizes retries against the same databa |
+| D11 | — | retries repeat until acknowledged with no attempt limit: a batch the s |  |
+| D12 | — | no per-user rate limit and no backpressure; one looping client can con |  |
+| D13 | YES | the cursor is a millisecond timestamp compared strictly-greater: chang | design-data: Timestamp cursors can permanently skip changes |
+| D14 | — | a client that can never sync simply goes quiet; the design names that  |  |
+| D15 | — | the changes query returns every matching row unpaginated; a first sync |  |
+| D16 | — | the changes query filters on (user_id, modified_at) with no index plan |  |
+| D18 | — | the wire format carries no version, so any change that is not purely a |  |
+| D19 | — | in-flight syncs are killed on every rolling deploy and the design lean |  |
+| D20 | YES | nightly pg_dump means up to 24h data loss, and the restore procedure h | design-failure: Nightly backups cannot preserve acknowledged edits after dat; design-data: Nightly backups cannot preserve all acknowledged edits after |
+| D21 | — | the 30-second sync goal is unreachable with a 15-minute foreground tim |  |
+| D22 | — | the reconnect spike after a regional outage is handled by 'adding inst |  |
+| D23 | YES | §1 promises support can answer 'why is my note missing' from dashboard | design-failure: Operations cannot distinguish an idle device from a stuck sy; design-data: Missing per-device sync history prevents the stated support  |
+| D24 | — | the conflict loser is discarded with no copy kept, so a wrong resoluti |  |
+| D26 | — | every note has two identities (client id, server BIGSERIAL) with no st |  |
+| D27 | — | the outbox stores a full copy of each body beside the note table, with |  |
+| D28 | — | nothing caps a note body, so one pasted file becomes a row and a reque |  |
+| D29 | — | the server keeps only the latest body, so nothing can reconstruct a no |  |
+| D30 | — | tombstones are kept forever in both databases with no GC horizon; the  |  |
+| D32 | YES | one cursor per account with several devices: whichever device syncs fi | design-failure: The shared timestamp cursor can permanently skip changes; design-data: A shared account cursor advances past changes other devices  |
+| D34 | — | notes.db is written in the clear with default permissions, while §4 tr |  |
+| D35 | — | a reserved shared_with column is not a sharing design; the migration i |  |
+| D36 | — | a delete on one device racing an edit on another is resolved by timest |  |
+| D37 | — | attachments are a URL in the note row with no lifecycle: nothing delet |  |
+| D38 | — | the server holds no per-device state at all, so it cannot tell two dev |  |
+| D40 | YES | step 4 clears the whole outbox, discarding edits the user made while t | design-failure: Acknowledging a batch can clear edits created during the req; design-data: Clearing the outbox can discard edits made during a sync |
+
+Retired seeds — still matched so their findings are not counted as noise, but out of the denominator:
+
+| seed | found | note |
+|---|---|---|
+| D04 | YES | a failed token refresh wipes notes.db including the unsynced outbox —  |
+| D17 | — | when Postgres is down every sync 500s with no degraded mode, and the r |
+| D25 | YES | note ids are random 32-bit integers minted per device: collisions are  |
+| D31 | YES | deleting an account leaves every note row in place, orphaned and undel |
+| D33 | — | nothing states who may write a given note: /sync applies whatever edit |
+| D39 | — | modified_at is client-supplied and stored as the truth; the server nev |

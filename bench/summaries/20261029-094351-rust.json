@@ -1,0 +1,238 @@
+{
+ "run": "20261029-094351",
+ "task": "code",
+ "target": "rust",
+ "model": "gpt-6.1-terra",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Wait for the HTTP request body without waiting for connection closure",
+     "description": "read_to_end waits for EOF, but ordinary HTTP clients keep the connection open while waiting for the response. Consequently, normal requests hang and no response is sent.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 93,
+     "title": "Provide a way to issue sessions before requiring one",
+     "description": "The authenticator starts with an empty session map, and no route or startup code calls issue. Every request with a syntactically valid authorization header therefore receives 401, so none of the service endpoints can be used.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/auth.rs",
+     "line": 96,
+     "title": "Handle missing and malformed authorization headers",
+     "description": "A request without an Authorization header, or with a value containing no space, indexes past the end of parts and panics instead of returning an unauthorized response.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 48,
+     "title": "Initialize the owner's quota entry when creating a link",
+     "description": "The quota map starts empty and nothing inserts entries into it. The first valid link creation inserts the link and then panics on unwrap, poisoning the store mutex and causing subsequent handlers that use the store to panic as well.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 57,
+     "title": "Correct the link expiry comparison",
+     "description": "The expiry condition is inverted: a link whose expiry is in the future is removed and returns None, while an expired link is allowed to resolve until the janitor removes it.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 90,
+     "title": "Clamp page endpoints to the collection length",
+     "description": "When the requested page extends past the end, end is set to all.len() + 1. The resulting slice panics. For example, listing or exporting a nonempty store with fewer than the requested number of links triggers this and poisons the store mutex.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 199,
+     "title": "Handle stats requests when the store is empty",
+     "description": "A stats request against an empty store divides by zero while holding the store mutex. The handler panics and poisons the mutex, causing later store operations to panic too.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 257,
+     "title": "Decode query and form parameter values",
+     "description": "parse_query leaves percent escapes and plus signs untouched. Standard form-encoded link targets such as https%3A%2F%2Fexample.com fail URL validation, and encoded query values are passed to handlers in their encoded form.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 52,
+     "title": "Interpret the cache TTL environment value as milliseconds",
+     "description": "LINKD_CACHE_TTL_MS is documented as milliseconds but is passed to Duration::from_secs. A configured TTL of 300000 milliseconds consequently lasts 300000 seconds instead of five minutes.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/config.rs",
+     "line": 113,
+     "title": "Return an error for invalid configuration",
+     "description": "validate collects and logs invalid settings but always returns Ok. For example, an invalid port is converted to zero and accepted, causing the server to bind an ephemeral port while reporting port zero.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 125,
+     "title": "Calculate cache utilization before integer truncation",
+     "description": "Dividing the entry count by the limit before multiplying by 100 reports zero for every partially full cache. A configured limit of zero also causes a division-by-zero panic.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 102,
+     "title": "Calculate success rate before integer truncation",
+     "description": "Integer division happens before multiplication, so the dashboard reports 0% whenever at least one link has no hits, even if most links have been followed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 218,
+     "title": "Read the default report under the same name used to write it",
+     "description": "When the name parameter is absent or empty, export_csv writes links.csv, but read_report is called with the original empty name and attempts to read .csv. The default report request therefore returns an error after writing the report.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 17,
+     "title": "Escape CSV fields in exported reports",
+     "description": "Code, target, and owner are written directly into comma-separated rows. A target or owner containing a comma, quote, or newline changes the column or row structure and produces an incorrect report.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/export.rs",
+     "line": 49,
+     "title": "Propagate snapshot rename failures",
+     "description": "write_snapshot ignores the result of rename and returns success even when the destination cannot be written or /tmp is on a different filesystem. In those cases the requested snapshot is not installed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/store.rs",
+     "line": 47,
+     "title": "Avoid overwriting an existing link on code collision",
+     "description": "new_code uses only the nanosecond component of the current time, which repeats every second, and insert replaces an existing entry with the same code. A collision silently destroys the existing link and changes where its code resolves.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Connections can hold handler threads indefinitely",
+     "description": "Each accepted connection starts a thread that calls read_to_end without a read timeout or request-size limit. A client can leave its connection open after sending a request, causing that thread to wait indefinitely; enough such connections exhaust server resources. Ordinary HTTP clients that wait for a response before closing their write side also leave the handler waiting.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 116,
+     "title": "Cache flush and get acquire locks in opposite orders",
+     "description": "get holds the entries write lock while acquiring hits, whereas flush holds hits while acquiring the entries write lock. If the calls overlap after each has acquired its first lock, both threads block permanently.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/cache.rs",
+     "line": 104,
+     "title": "Sweep can remove an entry refreshed after the expiry scan",
+     "description": "sweep collects expired keys under a read lock, releases that lock, and later deletes each key. If another thread replaces one of those keys with a fresh entry between the scan and deletion, sweep deletes the fresh entry.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 28,
+     "title": "Concurrent resolved increments can be lost",
+     "description": "add_resolved performs a separate atomic load and store. Two callers can read the same value and both store the same incremented value, so the dashboard undercounts concurrent resolutions.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 122,
+     "title": "Owner counting locks the same mutex twice",
+     "description": "count_by_owner retains its first store guard and then attempts to lock the same non-reentrant mutex again. Any call blocks permanently, holding the store lock and preventing other store operations.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 90,
+     "title": "Cache warming returns before its threads finish",
+     "description": "warm_cache drops its join handles without joining them. A caller can observe the function returning while entries are still absent, and the detached threads can subsequently change the cache after the caller assumes warming is complete.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/worker.rs",
+     "line": 54,
+     "title": "Dropping the janitor handle does not stop its thread",
+     "description": "Dropping JanitorStop disconnects the channel, but try_recv treats disconnection like an empty channel and continues the loop. The detached janitor therefore keeps running and retains the store and cache indefinitely; even an explicit stop cannot interrupt its sleep.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "src/main.rs",
+     "line": 66,
+     "title": "Unauthenticated clients can exhaust server resources",
+     "description": "Each accepted connection gets a new thread that reads until the peer closes its write side, with no read timeout or size limit. An attacker can hold many connections open to exhaust threads and sockets, or continuously send data to grow the request buffer until the process runs out of memory. This happens before authentication.",
+     "lens": "review-security",
+     "severity": "high"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 76165,
+      "output_tokens": 2221,
+      "cache_read_tokens": 61696
+     },
+     "duration_ms": 37410,
+     "failed": false,
+     "output_bytes": 8468
+    },
+    {
+     "usage": {
+      "input_tokens": 76537,
+      "output_tokens": 1238,
+      "cache_read_tokens": 59264
+     },
+     "duration_ms": 30155,
+     "failed": false,
+     "output_bytes": 4139
+    },
+    {
+     "usage": {
+      "input_tokens": 76765,
+      "output_tokens": 467,
+      "cache_read_tokens": 57600
+     },
+     "duration_ms": 21244,
+     "failed": false,
+     "output_bytes": 728
+    }
+   ],
+   "review_errors": []
+  }
+ ]
+}
