@@ -29,6 +29,12 @@ command:
   - --model {{model}}
   - --
   - exec
+  # NOT --ignore-user-config, unlike every codex-direct agent: `ollama launch`
+  # hands codex its provider as a profile layered on ~/.codex/config.toml, and
+  # that flag drops profile layers too (probed 2026-10-29 with a dead-port
+  # profile). So this route still inherits the user's MCP servers and plugins;
+  # only the account's apps can be switched off here.
+  - -c features.apps=false # the ChatGPT login's apps (Sites deploy, Spaces sharing)
   - --sandbox read-only # reviewer duty: enforced no-write sandbox
   - --skip-git-repo-check
   - --color never

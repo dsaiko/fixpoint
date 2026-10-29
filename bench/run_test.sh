@@ -120,6 +120,8 @@ if run 3 "direct with key" OLLAMA_API_KEY=k; then
     expect "direct candidate model is the bare tag" "$tmp/out/candidate.yaml" '^model: glm-5\.3-flash:cloud$'
     expect "direct candidate effort is the suffix" "$tmp/out/candidate.yaml" '^effort: max '
     expect "direct candidate keeps its key out of the model's shell" "$tmp/out/candidate.yaml" 'shell_environment_policy\.exclude=\["OLLAMA_API_KEY"\]'
+    expect "direct candidate ignores the user's codex config" "$tmp/out/candidate.yaml" '^  - --ignore-user-config '
+    expect "direct candidate switches the account's apps off" "$tmp/out/candidate.yaml" '^  - -c features\.apps=false '
 fi
 
 # (g2) The OpenRouter codex route reads a card-billed key through env_key; codex
@@ -127,6 +129,8 @@ fi
 MODEL='codex@google/gemini-3.7-flash'
 if run 3 "openrouter codex" OPENROUTER_API_KEY=k; then
     expect "openrouter candidate keeps its key out of the model's shell" "$tmp/out/candidate.yaml" 'shell_environment_policy\.exclude=\["OPENROUTER_API_KEY"\]'
+    expect "openrouter candidate ignores the user's codex config" "$tmp/out/candidate.yaml" '^  - --ignore-user-config '
+    expect "openrouter candidate switches the account's apps off" "$tmp/out/candidate.yaml" '^  - -c features\.apps=false '
 fi
 
 # (h) ollama-codex@ takes the same suffix, on its own template, and needs no key.
@@ -135,6 +139,9 @@ if run 3 "launch with suffix"; then
     expect "launch candidate runs ollama launch" "$tmp/out/candidate.yaml" '^  - launch$'
     expect "launch candidate never names ollama.com" "$tmp/out/candidate.yaml" 'ollama\.com' !
     expect "launch candidate effort is the suffix" "$tmp/out/candidate.yaml" '^effort: max '
+    # The flag would drop the profile `ollama launch` hands codex its provider in.
+    expect "launch candidate keeps the user's codex config" "$tmp/out/candidate.yaml" '^  - --ignore-user-config' !
+    expect "launch candidate switches the account's apps off" "$tmp/out/candidate.yaml" '^  - -c features\.apps=false '
 fi
 MODEL=ollama-codex@glm-5.3-flash:cloud
 if run 3 "launch without suffix"; then
