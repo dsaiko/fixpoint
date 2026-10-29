@@ -691,6 +691,17 @@ point, and in `pr` mode the only gate a fix round passes is
 author, not of that author's `.claude/settings.json` executing first. Agent
 commands you write yourself get no such treatment automatically.
 
+**Codex reviewers do not load your codex configuration either.** `--sandbox
+read-only` confines codex's shell, not the MCP tools a session is handed, and
+`~/.codex/config.toml` is shared with the Codex desktop app, which fills it with
+servers and plugins for Computer Use, a browser and connectors. Every shipped
+agent that runs `codex exec` directly passes `--ignore-user-config` (auth still
+comes from `CODEX_HOME`) and `-c features.apps=false`, which switches off the
+apps the ChatGPT login brings with it — creating and deploying Sites, sharing
+Spaces pages — independently of that file. The two agents that start codex
+through `ollama launch` take only the second: their provider arrives as a profile
+layered on that file, and `--ignore-user-config` drops profiles too.
+
 **The environment is the other read surface**, and it is filtered rather than
 inherited — see "The agent environment is filtered" below. What an agent can still
 quote into a finding is its own declared credentials (an agent given

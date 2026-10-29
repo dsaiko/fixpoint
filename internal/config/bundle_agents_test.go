@@ -414,3 +414,40 @@ func TestShippedCodexProviderKeysStayOutOfTheShell(t *testing.T) {
 		t.Fatal("no codex agent with a provider env_key found; this test would inspect nothing")
 	}
 }
+
+// A codex reviewer must not load the operator's ~/.codex/config.toml.
+//
+// That file is the Codex desktop app's as much as the CLI's: by 2026-10-28 it
+// carried MCP servers and plugins for Computer Use, a browser and Atlassian, and
+// `--sandbox read-only` confines the shell, not MCP tools. In bench run
+// 20261029-094128 two lenses whose shell had failed to start called the Computer
+// Use server and tried to open Terminal and VS Code; macOS refusing was all that
+// stopped them. --ignore-user-config drops the file (and with it any server added
+// later) while auth still reads CODEX_HOME. Agents launched through `ollama
+// launch` are not codex-harness by argv[0] and cannot take the flag: their
+// provider arrives as a profile layer, which it drops too.
+//
+// The file is not the whole surface. The ChatGPT login brings its own apps server
+// (codex_apps: Sites create and deploy, Spaces pages and sharing, plugin
+// management -- 88 tools in a 2026-10-29 probe with the flag set), so every agent
+// that drives codex, the `ollama launch` ones included, switches that feature off.
+func TestShippedCodexAgentsIgnoreUserConfig(t *testing.T) {
+	checked := 0
+	for name, a := range shippedAgents(t) {
+		argv := a.Argv()
+		launched := len(argv) > 2 && filepath.Base(argv[0]) == "ollama" && argv[1] == "launch" && argv[2] == "codex"
+		if !isCodexHarness(a) && !launched {
+			continue
+		}
+		checked++
+		if !launched && !slices.Contains(argv, "--ignore-user-config") {
+			t.Errorf("agents/%s%s: codex runs without --ignore-user-config, so the reviewer inherits every MCP server and plugin in ~/.codex/config.toml", name, configExt)
+		}
+		if !slices.Contains(argv, "features.apps=false") {
+			t.Errorf("agents/%s%s: codex runs without -c features.apps=false, so the reviewer can reach the ChatGPT account's apps (Sites deploy, Spaces sharing)", name, configExt)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no codex-harness agent found; the detection broke, or the bundle lost every codex route")
+	}
+}

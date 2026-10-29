@@ -22,6 +22,8 @@ effort: high # matched to the codex baseline, so effort is not the variable
 command:
   - codex
   - exec
+  - --ignore-user-config # no ~/.codex/config.toml: its MCP servers and plugins (Computer Use, browser) would reach a read-only reviewer
+  - -c features.apps=false # nor the ChatGPT login's apps (Sites deploy, Spaces sharing), which do not come from that file
   - --sandbox read-only # reviewer duty: enforced no-write sandbox
   - --skip-git-repo-check
   - --color never

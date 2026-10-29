@@ -26,6 +26,12 @@ Read this before pointing the tool at code you did not write.
   supplied it. The same flag keeps the target's MCP servers, skills and
   `CLAUDE.md` out of the session. Agent commands you write yourself get no such
   treatment automatically.
+- **No codex reviewer gets your codex MCP servers or ChatGPT apps.** Shipped
+  codex agents pass `--ignore-user-config` and `-c features.apps=false`: the
+  read-only sandbox confines the shell, not MCP tools, and the desktop app's
+  `~/.codex/config.toml` can hand a session Computer Use, while the login itself
+  brings apps that deploy Sites and share pages. The `ollama launch` agents can
+  take only the second flag.
 - **Trust is asserted on the command line only, never in a config file.**
   fixpoint refuses to load a config that sets `loop.trusted_target`,
   `loop.trusted_bundle` or `loop.allow_untrusted_fix`. Bundles are shadowable and `<project>/config` is
