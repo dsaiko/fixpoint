@@ -1256,3 +1256,68 @@ codex@moonshotai/kimi-k3.1-pro#xhigh
 # agentic coding Kimi is praised for. The untested remainder is the harness: codex
 # only (the claude route cannot carry effort), so a claude-harness row would differ in
 # harness and in an uncontrollable effort at once.
+
+# GPT-6.1 Terra -- added 2026-10-29, released 2026-10-26/27. The middle rung of the
+# gpt-6.1 family and the successor of gpt-5.6-terra (221/484, 23rd of 25 on
+# 2026-09-07). Agent file config/agents/gpt-6.1-terra.yaml is gpt-6.1-sol.yaml
+# with the model line changed (verified by diff). Its catalog DEFAULT effort is
+# `low`; the file pins `high` like every other ChatGPT-route row.
+#
+#   gpt-6.1-sol    $2.00 in  $10.00 out  $0.10 cached
+#   gpt-6.1-terra  $1.00 in   $5.00 out  $0.05 cached   (third-party rate cards,
+#                                                        2026-10-29; no openai.com page)
+#
+# Probe answered first try on ChatGPT-account auth with codex-cli 0.165.0.
+#
+# The bar, set before the run: one payer, one seat, so it can only REPLACE
+# gpt-6-sol. The seated panel [claude-sonnet, gpt-6-sol, beam] reads 420 / 425
+# (beam's two full grids through ollama-codex@, 2026-10-19; beam-ollama-direct
+# has no java or csharp row yet). Bar: panel >= 420 / 425 with this model in the
+# ChatGPT seat. Its predecessor was the lowest codex-route row measured, so solo
+# above 254 (gpt-6.1-sol) would already be news.
+gpt-6.1-terra
+#
+# MEASURED 2026-10-29 on the Mac, full 8-target grid, 1 repeat, 0 errors, 0 contract
+# failures:
+#
+#   gpt-6.1-terra  223/484  38th/45  ~$0.56  ~$0.003/pt  631 pts/Mtok   703s
+#   gpt-6-sol      221/484  40th     ~$2.39  ~$0.011/pt  400 pts/Mtok  2451s  (seated)
+#   gpt-6.1-sol    254/484  32nd     ~$2.17  ~$0.009/pt  441 pts/Mtok  5463s
+#   gpt-5.6-terra  221/484  39th     ~$3.04  ~$0.014/pt  361 pts/Mtok  2896s
+#
+#   go 23/56  design 11/34  rust 20/64  java 39/69
+#   typescript 34/63  csharp 21/68  cpp 40/64  python 35/66
+#
+# Lands on its predecessor's and gpt-6-sol's score (221) by a third route -- and on
+# a third of their output tokens (41k against 120-148k), ~60% of their input, and
+# 3.5x faster than gpt-6-sol. It reads the whole target in one or two shell
+# commands and stops. The cheapest and most token-efficient ChatGPT-route row
+# measured, and NOT a better reviewer: rust 20 and csharp 21 are the floor of the
+# codex route, and the go security lens read every file and returned nothing,
+# reasoning that no session token is ever issued so the guarded handlers are
+# "unreachable".
+#
+# SEAT ARITHMETIC (parser reproduced 398 / 404 / 420 / 425 before these were read;
+# beam = ollama-codex@beam:cloud's two 2026-10-19 grids):
+#
+#   seated panel [claude-sonnet, gpt-6-sol, beam]   420 / 425
+#   gpt-6.1-terra REPLACES gpt-6-sol                417 / 423   (-3 / -2: BAR NOT MET)
+#   gpt-6.1-sol in the same seat, for reference     423 / 427
+#   as a 4th seat (not available, same payer)       422 / 428
+#   marginal over claude-sonnet+gpt-6-sol +3; finds 2-3 seeds the panel misses
+#   head to head vs gpt-6-sol: +42 / -40; vs gpt-6.1-sol: +33 / -64
+#
+# NOT A SEAT. The loss is inside the noise floor, so the case for it would have to be
+# the clock and the quota -- the sweep moved the 5h window 0 -> 12% INCLUDING a void
+# go run -- and gpt-6-sol (2451s) does not pace a round today anyway.
+#
+# THE FIRST GO RUN (20261029-094128) WAS VOID AND IS NOT IN results.csv. codex-cli
+# 0.165.0 logged "code-mode host exited during handshake" / "timed out negotiating
+# with the code-mode host" as three lenses cold-started at once, so no lens had a
+# shell. Two fell back to a Computer Use MCP server (`cua_repl`, from the Codex
+# desktop app's ~/.codex/computer-use, installed 2026-10-28) and tried to open
+# Terminal and VS Code; macOS refused both. They returned `findings: []` with 1.8k
+# output tokens and a turn.completed, so it scored as a clean 0/56. Same rule as the
+# Argon 402: a harness refusal named in plain text is not a measurement. Re-run
+# 20261029-094937 had no host errors; the run dir of the void one stays in
+# .fixpoint/ as the record. Read a row's lens .raw before trusting a 0.

@@ -24,11 +24,11 @@
  "possible": 484,
  "measured": {
   "first": "2026-08-20",
-  "last": "2026-10-24"
+  "last": "2026-10-29"
  },
  "totals": {
-  "candidates": 40,
-  "sessions": 987,
+  "candidates": 45,
+  "sessions": 1087,
   "targets": 8,
   "contract_failures": 4,
   "timeouts": 3,
@@ -550,23 +550,23 @@
    "points": 348,
    "possible": 484,
    "incomplete": false,
-   "tokens": 2289141,
-   "points_per_mtok": 152.0,
+   "tokens": 2887603,
+   "points_per_mtok": 120.5,
    "cost_usd": null,
    "cost_per_point_usd": null,
    "notional": true,
    "caching_era": "cached",
-   "cached_input_share": 0.913,
+   "cached_input_share": 0.903,
    "cost_per_point_uncached_usd": null,
-   "seconds": 2258,
-   "sessions": 46,
+   "seconds": 2761,
+   "sessions": 55,
    "errors": 0,
    "contract_failures": 0,
    "timeouts": 0,
    "other_failures": 0,
    "measured": {
     "first": "2026-10-19",
-    "last": "2026-10-19"
+    "last": "2026-10-28"
    },
    "by_target": {
     "go": {
@@ -1333,6 +1333,78 @@
   },
   {
    "rank": 19,
+   "candidate": "ollama-codex@glm-5.3-flash:cloud#max",
+   "baseline": false,
+   "model": "ollama-codex@glm-5.3-flash:cloud#max",
+   "effort": null,
+   "route": "ollama/codex",
+   "pays": "sub (ollama)",
+   "points": 305,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1776336,
+   "points_per_mtok": 171.7,
+   "cost_usd": 0.65,
+   "cost_per_point_usd": 0.002,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.843,
+   "cost_per_point_uncached_usd": 0.005,
+   "seconds": 4619,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-28",
+    "last": "2026-10-28"
+   },
+   "by_target": {
+    "go": {
+     "found": 35,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 15,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 41,
+     "of": 64,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 38,
+     "of": 63,
+     "deflated": false
+    },
+    "python": {
+     "found": 39,
+     "of": 66,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 47,
+     "of": 64,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 41,
+     "of": 68,
+     "deflated": false
+    },
+    "java": {
+     "found": 49,
+     "of": 69,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 20,
    "candidate": "glm-5.3-flash:cloud",
    "baseline": false,
    "model": "glm-5.3-flash:cloud",
@@ -1404,7 +1476,7 @@
    }
   },
   {
-   "rank": 20,
+   "rank": 21,
    "candidate": "codex@moonshotai/kimi-k3.1-pro#xhigh",
    "baseline": false,
    "model": "codex@moonshotai/kimi-k3.1-pro#xhigh",
@@ -1476,7 +1548,7 @@
    }
   },
   {
-   "rank": 21,
+   "rank": 22,
    "candidate": "codex",
    "baseline": true,
    "model": "gpt-5.6-sol",
@@ -1548,7 +1620,79 @@
    }
   },
   {
-   "rank": 22,
+   "rank": 23,
+   "candidate": "ollama-direct@glm-5.3-flash:cloud#max",
+   "baseline": false,
+   "model": "ollama-direct@glm-5.3-flash:cloud#max",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 295,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 7343963,
+   "points_per_mtok": 40.2,
+   "cost_usd": null,
+   "cost_per_point_usd": null,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.444,
+   "cost_per_point_uncached_usd": null,
+   "seconds": 4502,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-28",
+    "last": "2026-10-28"
+   },
+   "by_target": {
+    "go": {
+     "found": 33,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 13,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 37,
+     "of": 64,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 40,
+     "of": 63,
+     "deflated": false
+    },
+    "python": {
+     "found": 47,
+     "of": 66,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 48,
+     "of": 68,
+     "deflated": false
+    },
+    "java": {
+     "found": 42,
+     "of": 69,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 24,
    "candidate": "codex@moonshotai/kimi-k3.1-pro",
    "baseline": false,
    "model": "codex@moonshotai/kimi-k3.1-pro",
@@ -1620,7 +1764,7 @@
    }
   },
   {
-   "rank": 23,
+   "rank": 25,
    "candidate": "glm-5.2:cloud",
    "baseline": false,
    "model": "glm-5.2:cloud",
@@ -1692,7 +1836,7 @@
    }
   },
   {
-   "rank": 24,
+   "rank": 26,
    "candidate": "claude-fable-5",
    "baseline": false,
    "model": "claude-fable-5",
@@ -1764,7 +1908,7 @@
    }
   },
   {
-   "rank": 25,
+   "rank": 27,
    "candidate": "x-ai/grok-4.6",
    "baseline": false,
    "model": "x-ai/grok-4.6",
@@ -1836,7 +1980,7 @@
    }
   },
   {
-   "rank": 26,
+   "rank": 28,
    "candidate": "deepseek-v4-pro:cloud",
    "baseline": false,
    "model": "deepseek-v4-pro:cloud",
@@ -1908,7 +2052,7 @@
    }
   },
   {
-   "rank": 27,
+   "rank": 29,
    "candidate": "gpt-6-astra-xhigh",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -1980,7 +2124,7 @@
    }
   },
   {
-   "rank": 28,
+   "rank": 30,
    "candidate": "claude-opus-4-8",
    "baseline": false,
    "model": "claude-opus-4-8",
@@ -2052,7 +2196,7 @@
    }
   },
   {
-   "rank": 29,
+   "rank": 31,
    "candidate": "gpt-6-astra",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2124,7 +2268,7 @@
    }
   },
   {
-   "rank": 30,
+   "rank": 32,
    "candidate": "gpt-6.1-sol",
    "baseline": false,
    "model": "gpt-6.1-sol",
@@ -2196,7 +2340,7 @@
    }
   },
   {
-   "rank": 31,
+   "rank": 33,
    "candidate": "minimax-m3:cloud",
    "baseline": false,
    "model": "minimax-m3:cloud",
@@ -2268,7 +2412,7 @@
    }
   },
   {
-   "rank": 32,
+   "rank": 34,
    "candidate": "deepseek-v4-flash:0731-cloud",
    "baseline": false,
    "model": "deepseek-v4-flash:0731-cloud",
@@ -2340,7 +2484,7 @@
    }
   },
   {
-   "rank": 33,
+   "rank": 35,
    "candidate": "claude-sonnet-5",
    "baseline": false,
    "model": "claude-sonnet-5",
@@ -2412,7 +2556,7 @@
    }
   },
   {
-   "rank": 34,
+   "rank": 36,
    "candidate": "kimi-k2.7-code:cloud",
    "baseline": false,
    "model": "kimi-k2.7-code:cloud",
@@ -2484,7 +2628,7 @@
    }
   },
   {
-   "rank": 35,
+   "rank": 37,
    "candidate": "gpt-oss:120b-cloud",
    "baseline": false,
    "model": "gpt-oss:120b-cloud",
@@ -2556,7 +2700,79 @@
    }
   },
   {
-   "rank": 36,
+   "rank": 38,
+   "candidate": "gpt-6.1-terra",
+   "baseline": false,
+   "model": "gpt-6.1-terra",
+   "effort": "high",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 223,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 353685,
+   "points_per_mtok": 630.5,
+   "cost_usd": 0.56,
+   "cost_per_point_usd": 0.003,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.752,
+   "cost_per_point_uncached_usd": 0.007,
+   "seconds": 703,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-29",
+    "last": "2026-10-29"
+   },
+   "by_target": {
+    "design": {
+     "found": 11,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 20,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 39,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 34,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 21,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 40,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 35,
+     "of": 66,
+     "deflated": false
+    },
+    "go": {
+     "found": 23,
+     "of": 56,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 39,
    "candidate": "gpt-5.6-terra",
    "baseline": false,
    "model": "gpt-5.6-terra",
@@ -2628,7 +2844,7 @@
    }
   },
   {
-   "rank": 37,
+   "rank": 40,
    "candidate": "gpt-6-sol",
    "baseline": false,
    "model": "gpt-6-sol",
@@ -2700,7 +2916,69 @@
    }
   },
   {
-   "rank": 38,
+   "rank": 41,
+   "candidate": "beam-ollama-direct",
+   "baseline": false,
+   "model": "beam:cloud",
+   "effort": "xhigh",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 215,
+   "possible": 347,
+   "incomplete": true,
+   "tokens": 913809,
+   "points_per_mtok": 235.3,
+   "cost_usd": null,
+   "cost_per_point_usd": null,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.839,
+   "cost_per_point_uncached_usd": null,
+   "seconds": 1235,
+   "sessions": 17,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-28",
+    "last": "2026-10-28"
+   },
+   "by_target": {
+    "go": {
+     "found": 38,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 17,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 38,
+     "of": 64,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 43,
+     "of": 63,
+     "deflated": false
+    },
+    "python": {
+     "found": 50,
+     "of": 66,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 29,
+     "of": 64,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 42,
    "candidate": "qwen3.5:397b-cloud",
    "baseline": false,
    "model": "qwen3.5:397b-cloud",
@@ -2772,7 +3050,7 @@
    }
   },
   {
-   "rank": 39,
+   "rank": 43,
    "candidate": "gemma4:31b-cloud",
    "baseline": false,
    "model": "gemma4:31b-cloud",
@@ -2844,7 +3122,7 @@
    }
   },
   {
-   "rank": 40,
+   "rank": 44,
    "candidate": "muse-spark-open:cloud",
    "baseline": false,
    "model": "muse-spark-open:cloud",
@@ -2911,6 +3189,48 @@
     "python": {
      "found": 14,
      "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 45,
+   "candidate": "beam-ollama-direct-fallback",
+   "baseline": false,
+   "model": "beam-ollama-direct-fallback",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 45,
+   "possible": 90,
+   "incomplete": true,
+   "tokens": 4030496,
+   "points_per_mtok": 11.2,
+   "cost_usd": null,
+   "cost_per_point_usd": null,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.473,
+   "cost_per_point_uncached_usd": null,
+   "seconds": 428,
+   "sessions": 5,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-28",
+    "last": "2026-10-28"
+   },
+   "by_target": {
+    "go": {
+     "found": 26,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 19,
+     "of": 34,
      "deflated": false
     }
    }
