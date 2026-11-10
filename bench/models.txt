@@ -43,6 +43,22 @@ claude-sonnet-5
 # trusting a row. On the verification call fable-5-1 showed 9460 cache-creation
 # tokens and $0.1049 while a haiku side-call took $0.0009.
 claude-fable-5-1
+# Fable 5.2, measured 2026-11-10 on the Mac: 403/484, FIRST in the grid by 27
+# (claude/opus-5 376, opus-5-5 372, sonnet-5-5 369, fable-5-1 365). 0 errors,
+# 0 contract failures, 23 sessions, 2959s. Best or level-best on 6 of 8 targets
+# (java 63/69, rust 56/64, typescript 57/63); design 19/34 is its one ordinary
+# column. ~$25.41 for the sweep on its own card ($8/$40, cached $0.20, 1h write
+# $16 -- 20% under Fable 5.1), and the CLI's summed cost_usd matches that to
+# the cent. Same traps as 5.1: dash-form id, and the CLI prints
+# [claude-code:unrecognized_model] and runs it anyway; all 260 assistant
+# messages in the session logs came back as claude-fable-5-2 (no fallback).
+# Panel (claude-sonnet, gpt-6-sol, beam; beam r1/r2 = 420/425):
+#   replaces claude-sonnet 437/439 (+17/+14, largest same-payer swap measured)
+#   replaces gpt-6-sol 440/442 | replaces beam 436 | 4th seat 446/447
+#   marginal over sonnet+gpt-6-sol +46; vs sonnet head to head +57/-23
+# The price of that seat is ~5x sonnet-5-5's $4.93 and the slowest seat's clock
+# (2959s vs gpt-6-sol 2451s). Not seated; operator's call.
+claude-fable-5-2
 mistral-large-3:675b-cloud
 deepseek-v4-flash:0731-cloud
 glm-5.2:cloud
