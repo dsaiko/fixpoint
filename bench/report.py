@@ -92,6 +92,14 @@ RATES = {
     # ($1.00 -> $0.25), announced 2026-09-01. On a bench sweep the claude
     # route caches ~98%, so that cut is most of what a run actually pays.
     "claude-fable-5-1": (10.00, 50.00, 0.25),
+    # Fable 5.2, added 2026-11-10 when it was benched: 20% under Fable 5.1 on
+    # every line -- $8/$40, cached input $0.20 (still 0.025x input), 1h write
+    # $16 -- from platform.claude.com/docs/en/about-claude/pricing that day.
+    # Flat across the 1M window. Checked against the CLI: the 8-target sweep's
+    # summed cost_usd is $25.41, which this card reproduces exactly. (The
+    # pre-sweep probe on Claude Code 2.1.319 said costBasis "unknown" and was
+    # billed at Opus 5.5's card -- so check, do not assume, on the next id.)
+    "claude-fable-5-2": (8.00, 40.00, 0.20),
     # Sonnet 5, added 2026-09-05 when it was benched. The cheapest Anthropic
     # entry here by a distance -- $2/$10 against Opus's $5/$25 -- which is the
     # whole reason to measure it: the claude route caches ~98% of a sweep, so
@@ -204,6 +212,7 @@ CACHE_WRITE_RATES = {
     "claude-opus-4-8": 10.00,
     "claude-fable-5": 20.00,
     "claude-fable-5-1": 20.00,
+    "claude-fable-5-2": 16.00,
     "claude-sonnet-5": 4.00,
     "claude-sonnet-5-5": 4.00,
     "claude-haiku-5-5": 0.20,
