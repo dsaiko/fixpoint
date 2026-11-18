@@ -153,6 +153,13 @@ RATES = {
     # $1/$5, cached $0.05, from third-party rate cards that agree with each
     # other (no openai.com page in the sources) -- half of gpt-6.1-sol.
     "gpt-6.1-terra": (1.00, 5.00, 0.05),
+    # GPT-6.2 Sol and Astra, added 2026-11-18 when they were benched (released
+    # 2026-11-17), from launch coverage that agrees across sources: Sol keeps
+    # gpt-6.1-sol's $2/$10/$0.10; Astra is $8/$40, cached $0.40 -- 20% under
+    # gpt-6-astra. Long-context (>272K input) rows are surcharged, which no
+    # bench session reaches.
+    "gpt-6.2-sol": (2.00, 10.00, 0.10),
+    "gpt-6.2-astra": (8.00, 40.00, 0.40),
     # GPT-6 Astra, from developers.openai.com on 2026-09-05, the day the model
     # became reachable on ChatGPT-account auth. Fable-5-class list price, and
     # 2x the input of the gpt-5.6-sol it is benched against. Requests over 272K
