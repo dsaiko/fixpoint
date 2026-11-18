@@ -267,8 +267,20 @@ roles:
   # still covers more beside this panel than glm-5.3-flash direct: 298 against 288
   # on the same six targets, at 2-3x the speed. See beam-ollama-direct.yaml.
   # `beam-ollama-codex` is one word away on the line below.
+  #
+  # THE CHATGPT SEAT MOVED FROM gpt-6-sol TO gpt-6.2-sol, 2026-11-18, the day
+  # after its release, on coverage. Same payer, same harness, same yaml with the
+  # model line changed. 315/484 solo against gpt-6-sol's 221 (go 20 -> 41, cpp
+  # 21 -> 48), and the panel reads 435 and 442/484 on beam's two grids against
+  # 420 and 425 -- +15/+17, the largest same-payer swap measured. gpt-6.2-astra
+  # ties it for the seat (437/440) at half the sweep clock but ~2.5x the Team 5h
+  # window per target; sol was chosen for the quota. The price is the clock:
+  # 5756s a sweep against 2451s, so this seat is now by far the panel's slowest
+  # reviewer and every round waits for it, and it drew ~13% of a Team 5h window
+  # per Mtok (one window, thin) against gpt-6-sol's ~5-9%. If rounds get too slow
+  # or the window binds, `gpt-6-sol` is one word away on the line below.
   review:
-    agents: [claude-sonnet, gpt-6-sol, beam-ollama-direct]
+    agents: [claude-sonnet, gpt-6.2-sol, beam-ollama-direct]
 
 loop:
   max_iterations: 5 # safety cap on review->fix rounds

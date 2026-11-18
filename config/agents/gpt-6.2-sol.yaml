@@ -1,8 +1,7 @@
-# GPT-6.2 Sol as a BENCH CANDIDATE, through the codex harness -- the same file
-# as config/agents/gpt-6.1-sol.yaml with only the model swapped, so the
-# comparison against its predecessor (and against the seated gpt-6-sol) has one
-# variable. Not a seat: nothing references this file except
-# `make bench MODEL=gpt-6.2-sol`.
+# GPT-6.2 Sol, THE CHATGPT REVIEW SEAT since 2026-11-18 (config/defaults.yaml
+# says why), through the codex harness -- the same file as
+# config/agents/gpt-6.1-sol.yaml with only the model swapped. Benched first as a
+# candidate: 315/484 solo, panel 435/442 against gpt-6-sol's 420/425.
 #
 # Released 2026-11-17 alongside gpt-6.2-astra. Rate card unchanged from
 # gpt-6.1-sol: $2/M in, $0.10/M cached, $10/M out (launch coverage 2026-11-18).
