@@ -27,8 +27,8 @@
   "last": "2026-11-18"
  },
  "totals": {
-  "candidates": 47,
-  "sessions": 1133,
+  "candidates": 48,
+  "sessions": 1156,
   "targets": 8,
   "contract_failures": 4,
   "timeouts": 3,
@@ -973,6 +973,78 @@
   },
   {
    "rank": 14,
+   "candidate": "gpt-6.2-astra",
+   "baseline": false,
+   "model": "gpt-6.2-astra",
+   "effort": "high",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 320,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 535610,
+   "points_per_mtok": 597.4,
+   "cost_usd": 7.54,
+   "cost_per_point_usd": 0.024,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.628,
+   "cost_per_point_uncached_usd": 0.041,
+   "seconds": 2728,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-11-18",
+    "last": "2026-11-18"
+   },
+   "by_target": {
+    "go": {
+     "found": 31,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 42,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 47,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 45,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 48,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 47,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 46,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 15,
    "candidate": "kimi-k3:cloud",
    "baseline": false,
    "model": "kimi-k3:cloud",
@@ -1044,7 +1116,7 @@
    }
   },
   {
-   "rank": 15,
+   "rank": 16,
    "candidate": "gpt-6.2-sol",
    "baseline": false,
    "model": "gpt-6.2-sol",
@@ -1116,7 +1188,7 @@
    }
   },
   {
-   "rank": 16,
+   "rank": 17,
    "candidate": "qwen/qwen3.8-27b",
    "baseline": false,
    "model": "qwen/qwen3.8-27b",
@@ -1188,7 +1260,7 @@
    }
   },
   {
-   "rank": 17,
+   "rank": 18,
    "candidate": "glm-5.3:cloud",
    "baseline": false,
    "model": "glm-5.3:cloud",
@@ -1260,7 +1332,7 @@
    }
   },
   {
-   "rank": 18,
+   "rank": 19,
    "candidate": "deepseek-v4.1-flash:cloud",
    "baseline": false,
    "model": "deepseek-v4.1-flash, Sep 2026 release",
@@ -1332,7 +1404,7 @@
    }
   },
   {
-   "rank": 19,
+   "rank": 20,
    "candidate": "nemotron-3-ultra:cloud",
    "baseline": false,
    "model": "nemotron-3-ultra:cloud",
@@ -1404,7 +1476,7 @@
    }
   },
   {
-   "rank": 20,
+   "rank": 21,
    "candidate": "vllm@bottlecapai/ThinkingCap-Qwen3.8-27B",
    "baseline": false,
    "model": "vllm@bottlecapai/ThinkingCap-Qwen3.8-27B",
@@ -1476,7 +1548,7 @@
    }
   },
   {
-   "rank": 21,
+   "rank": 22,
    "candidate": "ollama-codex@glm-5.3-flash:cloud#max",
    "baseline": false,
    "model": "ollama-codex@glm-5.3-flash:cloud#max",
@@ -1548,7 +1620,7 @@
    }
   },
   {
-   "rank": 22,
+   "rank": 23,
    "candidate": "glm-5.3-flash:cloud",
    "baseline": false,
    "model": "glm-5.3-flash:cloud",
@@ -1620,7 +1692,7 @@
    }
   },
   {
-   "rank": 23,
+   "rank": 24,
    "candidate": "codex@moonshotai/kimi-k3.1-pro#xhigh",
    "baseline": false,
    "model": "codex@moonshotai/kimi-k3.1-pro#xhigh",
@@ -1692,7 +1764,7 @@
    }
   },
   {
-   "rank": 24,
+   "rank": 25,
    "candidate": "codex",
    "baseline": true,
    "model": "gpt-5.6-sol",
@@ -1764,7 +1836,7 @@
    }
   },
   {
-   "rank": 25,
+   "rank": 26,
    "candidate": "ollama-direct@glm-5.3-flash:cloud#max",
    "baseline": false,
    "model": "ollama-direct@glm-5.3-flash:cloud#max",
@@ -1836,7 +1908,7 @@
    }
   },
   {
-   "rank": 26,
+   "rank": 27,
    "candidate": "codex@moonshotai/kimi-k3.1-pro",
    "baseline": false,
    "model": "codex@moonshotai/kimi-k3.1-pro",
@@ -1908,7 +1980,7 @@
    }
   },
   {
-   "rank": 27,
+   "rank": 28,
    "candidate": "glm-5.2:cloud",
    "baseline": false,
    "model": "glm-5.2:cloud",
@@ -1980,7 +2052,7 @@
    }
   },
   {
-   "rank": 28,
+   "rank": 29,
    "candidate": "claude-fable-5",
    "baseline": false,
    "model": "claude-fable-5",
@@ -2052,7 +2124,7 @@
    }
   },
   {
-   "rank": 29,
+   "rank": 30,
    "candidate": "x-ai/grok-4.6",
    "baseline": false,
    "model": "x-ai/grok-4.6",
@@ -2124,7 +2196,7 @@
    }
   },
   {
-   "rank": 30,
+   "rank": 31,
    "candidate": "deepseek-v4-pro:cloud",
    "baseline": false,
    "model": "deepseek-v4-pro:cloud",
@@ -2196,7 +2268,7 @@
    }
   },
   {
-   "rank": 31,
+   "rank": 32,
    "candidate": "gpt-6-astra-xhigh",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2268,7 +2340,7 @@
    }
   },
   {
-   "rank": 32,
+   "rank": 33,
    "candidate": "claude-opus-4-8",
    "baseline": false,
    "model": "claude-opus-4-8",
@@ -2340,7 +2412,7 @@
    }
   },
   {
-   "rank": 33,
+   "rank": 34,
    "candidate": "gpt-6-astra",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2412,7 +2484,7 @@
    }
   },
   {
-   "rank": 34,
+   "rank": 35,
    "candidate": "gpt-6.1-sol",
    "baseline": false,
    "model": "gpt-6.1-sol",
@@ -2484,7 +2556,7 @@
    }
   },
   {
-   "rank": 35,
+   "rank": 36,
    "candidate": "minimax-m3:cloud",
    "baseline": false,
    "model": "minimax-m3:cloud",
@@ -2556,7 +2628,7 @@
    }
   },
   {
-   "rank": 36,
+   "rank": 37,
    "candidate": "deepseek-v4-flash:0731-cloud",
    "baseline": false,
    "model": "deepseek-v4-flash:0731-cloud",
@@ -2628,7 +2700,7 @@
    }
   },
   {
-   "rank": 37,
+   "rank": 38,
    "candidate": "claude-sonnet-5",
    "baseline": false,
    "model": "claude-sonnet-5",
@@ -2700,7 +2772,7 @@
    }
   },
   {
-   "rank": 38,
+   "rank": 39,
    "candidate": "kimi-k2.7-code:cloud",
    "baseline": false,
    "model": "kimi-k2.7-code:cloud",
@@ -2772,7 +2844,7 @@
    }
   },
   {
-   "rank": 39,
+   "rank": 40,
    "candidate": "gpt-oss:120b-cloud",
    "baseline": false,
    "model": "gpt-oss:120b-cloud",
@@ -2844,7 +2916,7 @@
    }
   },
   {
-   "rank": 40,
+   "rank": 41,
    "candidate": "gpt-6.1-terra",
    "baseline": false,
    "model": "gpt-6.1-terra",
@@ -2916,7 +2988,7 @@
    }
   },
   {
-   "rank": 41,
+   "rank": 42,
    "candidate": "gpt-5.6-terra",
    "baseline": false,
    "model": "gpt-5.6-terra",
@@ -2988,7 +3060,7 @@
    }
   },
   {
-   "rank": 42,
+   "rank": 43,
    "candidate": "gpt-6-sol",
    "baseline": false,
    "model": "gpt-6-sol",
@@ -3060,7 +3132,7 @@
    }
   },
   {
-   "rank": 43,
+   "rank": 44,
    "candidate": "beam-ollama-direct",
    "baseline": false,
    "model": "beam:cloud",
@@ -3122,7 +3194,7 @@
    }
   },
   {
-   "rank": 44,
+   "rank": 45,
    "candidate": "qwen3.5:397b-cloud",
    "baseline": false,
    "model": "qwen3.5:397b-cloud",
@@ -3194,7 +3266,7 @@
    }
   },
   {
-   "rank": 45,
+   "rank": 46,
    "candidate": "gemma4:31b-cloud",
    "baseline": false,
    "model": "gemma4:31b-cloud",
@@ -3266,7 +3338,7 @@
    }
   },
   {
-   "rank": 46,
+   "rank": 47,
    "candidate": "muse-spark-open:cloud",
    "baseline": false,
    "model": "muse-spark-open:cloud",
@@ -3338,7 +3410,7 @@
    }
   },
   {
-   "rank": 47,
+   "rank": 48,
    "candidate": "beam-ollama-direct-fallback",
    "baseline": false,
    "model": "beam-ollama-direct-fallback",
