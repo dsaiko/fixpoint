@@ -1,0 +1,582 @@
+{
+ "run": "20261118-145143",
+ "task": "code",
+ "target": "go",
+ "model": "gpt-6.2-astra",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.go",
+     "line": 65,
+     "title": "Resolving a live link deletes it",
+     "description": "When the current time is before ExpiresAt, Resolve deletes the link and returns ErrNotFound. A lookup of a live code therefore destroys its record, while an expired code can still resolve until the janitor runs.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "main.go",
+     "line": 49,
+     "title": "The running server has no way to accept a valid session",
+     "description": "The authenticator starts with an empty session map, and no startup code or route calls Issue or loads existing sessions. Middleware wraps the entire mux, so even a correctly formed bearer header cannot reach any handler.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 78,
+     "title": "A missing Authorization header panics in middleware",
+     "description": "Splitting an empty header or a lone scheme produces one element. Accessing parts[1] panics, so the HTTP server aborts the request before middleware can return 401.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 54,
+     "title": "Creating the first link panics after inserting it",
+     "description": "NewStore initializes links but leaves quota nil. Create inserts the link, then panics on the quota increment. The caller receives no code even though the record remains in the store.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 78,
+     "title": "Redirect changes case-sensitive short codes before lookup",
+     "description": "newCode generates mixed-case Base64URL strings and the store indexes them verbatim. Lowercasing a returned code can make the redirect miss its record or select a different record with the lowercase spelling.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 106,
+     "title": "A partial final page panics instead of returning the remaining links",
+     "description": "When a page extends past the last link, end becomes len(all)+1. The slice was allocated with capacity len(s.links), so the subsequent slice exceeds capacity. This affects an ordinary listing with fewer than 20 links and the stats and report handlers with fewer than 1,000.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 174,
+     "title": "The stats handler divides by zero on an empty store",
+     "description": "Page returns no links on a fresh store or after the last deletion. Integer division by len(links) then panics and aborts the stats response.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 20,
+     "title": "Successful resolutions never increment the dashboard counter",
+     "description": "AddResolved has a value receiver. Every redirect increments a copy of resolved, so Snapshot continues to report the original value even after successful requests.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 123,
+     "title": "SuccessRate reports zero for every partially followed collection",
+     "description": "Integer division occurs before multiplication by 100. For example, one followed link out of two produces 0 percent instead of 50 percent.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 101,
+     "title": "Preview leaves the upstream HTTP response body open",
+     "description": "After a successful Get, neither the success path nor the read-error path closes resp.Body. For a page larger than 4,096 bytes, the handler stops reading before EOF and leaves the connection occupied after the preview finishes.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 191,
+     "title": "JSON responses commit their headers before setting them",
+     "description": "WriteHeader commits the response before Content-Type and the CORS headers are set. Clients can receive JSON labeled as plain text, and the intended CORS headers are absent.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.go",
+     "line": 54,
+     "title": "Configured cache TTLs are 1,000 times too long",
+     "description": "LINKD_CACHE_TTL_MS is documented in milliseconds, but LoadConfig multiplies the value by time.Second. A configured value of 500 produces 500 seconds instead of half a second.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 182,
+     "title": "CSV reports silently omit links beyond the first 1,000",
+     "description": "The report passes a single 1,000-entry page to ExportCSV. A larger store produces a successful download with missing rows, and map iteration determines which links are omitted.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.go",
+     "line": 21,
+     "title": "CSV fields containing commas, quotes, or newlines corrupt report rows",
+     "description": "ExportCSV interpolates raw fields into comma-delimited text. A valid target such as https://example.org/a,b produces an extra column. ArchiveAll uses the same formatting for its per-owner files.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "config.go",
+     "line": 48,
+     "title": "An invalid timeout silently disables the HTTP client deadline",
+     "description": "When LINKD_TIMEOUT_MS contains nonnumeric text, Atoi returns zero and an error. The code logs that it retained the default, then overwrites the timeout with zero. The preview client consequently has no overall deadline.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 116,
+     "title": "Invalid configuration never stops startup",
+     "description": "Validate returns nil even after collecting problems, and main never calls it. For example, LINKD_PORT=abc becomes zero because its conversion error is discarded, and the server can listen on an OS-assigned port instead of failing deployment.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 68,
+     "title": "A valid fetch-limit override is discarded",
+     "description": "A positive LINKD_FETCH_LIMIT is parsed and assigned to the blank identifier. LoadConfig always returns the default FetchLimit of 32.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 82,
+     "title": "Unreadable configuration files silently fall back to defaults",
+     "description": "LoadFile discards every ReadFile error. A permission failure on an existing file silently loses its overrides, although the documented fallback applies to a missing file.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 64,
+     "title": "Invalid TTL input creates a link with an unintended expiry",
+     "description": "A nonnumeric TTL becomes zero, negative hours are accepted, and large hour counts can overflow time.Duration. The handler passes the resulting expiry to Create without reporting a request error.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 39,
+     "title": "The URL check accepts targets without a host",
+     "description": "A string such as https:// passes the prefix check and can be stored, although it has no destination and cannot be fetched by the preview client.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 53,
+     "title": "A generated code collision overwrites an existing link",
+     "description": "Create inserts the random code without checking whether it is already present. On a collision, the previous target and its hit history are lost, and its published short URL points at the new target.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 78,
+     "title": "Rename validates the source twice and accepts invalid destinations",
+     "description": "The second validateCode call also receives from. A valid source can therefore be moved to an empty code or one containing a slash that the single-segment redirect route cannot address.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 98,
+     "title": "Offset pagination can repeat or skip links in an unchanged store",
+     "description": "Each Page call builds its slice from a fresh unordered map iteration. The second page can contain links already returned on the first page, leaving other links unseen even when the store has not changed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 134,
+     "title": "Removing or importing links leaves owner counts incorrect",
+     "description": "Delete removes the link but discards its owner without decrementing quota. Expiry removal in Resolve, Prune, and the janitor also bypasses quota updates, while Import inserts links without increasing the count. The dashboard can therefore disagree with the actual number of links per owner.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 146,
+     "title": "The leaderboard selects the least-followed links",
+     "description": "Top sorts hit counts in ascending order and returns the first n records. With links at one and ten hits, Top(1) returns the one-hit link.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 151,
+     "title": "A negative leaderboard size panics",
+     "description": "Top clamps n only when it exceeds the number of links. A negative value reaches all[:n] and causes a slice-bounds panic.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 159,
+     "title": "ByOwner matches partial owner names",
+     "description": "A lookup for ann includes records owned by joann, and an empty owner matches every record. Both results violate the method's exact-owner contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 160,
+     "title": "ByOwner exposes mutable store records",
+     "description": "The result slice is fresh, but its elements point to the store's Link objects. Changing a returned link's Target immediately changes subsequent resolution, despite the method's snapshot contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 173,
+     "title": "Extend can revive expired links or shorten live ones",
+     "description": "Extend assigns now plus ttl without checking the existing deadline. An expired record awaiting pruning becomes live again, and adding one hour to a link with a day remaining shortens its lifetime to one hour.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 180,
+     "title": "Quotas returns the store's mutable map",
+     "description": "A caller that changes or deletes a key in the documented snapshot changes the store's own owner counts.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 190,
+     "title": "A failed import leaves part of the batch in the store",
+     "description": "Import writes each link before validating the next. If a later code is invalid, earlier inserts and overwrites remain despite the returned error. A nil element also panics during validation.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 205,
+     "title": "Prune returns the number of survivors",
+     "description": "The function counts removals in removed but returns len(s.links). Pruning the only expired link therefore reports zero removals.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 84,
+     "title": "RequireAdmin rejects every role",
+     "description": "At least one inequality is true for any role string. An admin session therefore receives the same error as a disallowed session.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 52,
+     "title": "Expired sessions accumulate indefinitely",
+     "description": "Every Issue adds a map entry. Verify neither checks ExpiresAt nor removes expired entries, and Revoke requires an explicit call. An authenticator that issues sessions keeps both the records and their lookup cost indefinitely.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 165,
+     "title": "Dashboard averages exclude links beyond an arbitrary 1,000",
+     "description": "The hits_per_link calculation sums one page of links. In a larger store, the reported average uses a varying map-selected subset and can change between requests without any new hits.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 35,
+     "title": "The dashboard error counter can never increase",
+     "description": "Snapshot returns m.errors, but no code increments that field. A failed resolution or failed upstream preview leaves the reported error count at zero.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 151,
+     "title": "Permanent redirects allow repeat clicks to bypass counting",
+     "description": "The /out route promises to count every click, but a client can cache its 301 and send later visits directly to the destination. Those visits never reach AddResolved.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 63,
+     "title": "Set requests eviction even when no new capacity is needed",
+     "description": "At capacity, refreshing an existing key enters eviction even though replacing its value requires no extra slot. A zero-capacity cache also inserts its first entry because eviction on an empty map does nothing.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 83,
+     "title": "Eviction never selects the least recently used entry",
+     "description": "Both branches delete the first map key visited. The eviction logic never compares used timestamps, so its victim selection does not implement the stated LRU policy.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 71,
+     "title": "An old expiry timer can delete a refreshed cache entry",
+     "description": "Setting the same key again replaces the timer pointer without canceling the original callback. The first callback deletes by code, so it can remove the replacement before the replacement's TTL expires.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 94,
+     "title": "Timer records outlive the cache entries they track",
+     "description": "Delete removes only c.m[code]. Even after an entry expires, c.timers retains its key and timer, so processing distinct codes over time grows memory beyond the cache limit.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 36,
+     "title": "Distinct owners can overwrite each other's archive files",
+     "description": "ArchiveAll uses filepath.Base(owner) as the filename. Owners such as team/alex and alex both map to alex.csv, and the second os.Create truncates the first owner's report.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 40,
+     "title": "Archiving keeps one file descriptor open per owner",
+     "description": "The deferred closes run only when ArchiveAll returns. A batch with enough owners exhausts the process descriptor limit and fails partway through the archive.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 42,
+     "title": "ArchiveAll reports success after an archive write fails",
+     "description": "The row write result and the deferred Close error are discarded. If storage fills up after a file is created, ArchiveAll can return nil with an incomplete owner archive.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 60,
+     "title": "Snapshot installation can fail while returning success",
+     "description": "The temporary file is created under /tmp, so renaming it into dir can fail when the two directories are on different filesystems. Rename errors are discarded, leaving the previous snapshot in place and the temporary file behind. A write failure also returns without closing or removing the temporary file.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 59,
+     "title": "A successful snapshot return does not establish durability",
+     "description": "WriteSnapshot closes and renames the temporary file without syncing its contents or the destination directory. A system crash after a successful return can lose the latest snapshot despite the function's durability contract.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 112,
+     "title": "An invalid probe URL can panic the process",
+     "description": "mustHead logs a request-construction error and returns the nil request. CheckTargets passes it to client.Do inside a goroutine, where the resulting panic can terminate the process instead of being reported as a failed probe.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 53,
+     "title": "Store writes race with handlers and the janitor",
+     "description": "Create can insert a link while Page or the janitor at worker.go:51 iterates the same map. The janitor can also delete an entry while Resolve looks it up. Either overlap can terminate the process with a concurrent map access error.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 69,
+     "title": "Concurrent resolves and listings race on live Link records",
+     "description": "Two successful Resolve calls can read the same Hits value and both write back the same increment, losing a hit. Page also returns pointers to the stored records, so JSON or CSV encoding can read Hits while Resolve writes it, even after a lock around Page itself would have been released.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 20,
+     "title": "AddResolved copies the metrics mutex and discards every increment",
+     "description": "The value receiver increments a private copy, so Snapshot never sees a resolved request. If AddResolved copies Metrics while Snapshot or AddCreated holds the mutex, it can also block forever trying to acquire the copied locked mutex. The other goroutine unlocks only the original.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 49,
+     "title": "Incomplete HTTP headers can hold connection goroutines indefinitely",
+     "description": "ListenAndServe uses a server with no header-read deadline. A client that sends part of a header and keeps the connection open holds a socket and a server goroutine before authentication runs. Concurrent incomplete requests can exhaust those resources.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "export.go",
+     "line": 26,
+     "title": "Concurrent reports can overwrite a response while it is being served",
+     "description": "Two report requests with the same name, including the default name, write to the same path. After the first request finishes writing, the second can truncate that file before or during the first request's ServeFile call. The first client can receive an empty, partial, or different report.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 60,
+     "title": "Session verification races with issuance and revocation",
+     "description": "Verify iterates the sessions map. An overlapping Issue or Revoke on the same Authenticator can modify the map during iteration and terminate the process. Concurrent Issue calls can also write to the map simultaneously.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 79,
+     "title": "Eviction deadlocks on the cache's own write lock",
+     "description": "When Set finds a full, nonempty cache, it holds the write lock and calls evict. evict calls Get, which waits for a read lock on the same mutex. Set cannot reach its deferred unlock, so subsequent cache operations also block.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 92,
+     "title": "Deleting an absent cache entry permanently locks the cache",
+     "description": "Delete returns with the write lock held when the key is absent. This happens if Get removes an expired entry before its timer callback runs. The callback then takes the lock, returns, and leaves every subsequent locking operation blocked.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 44,
+     "title": "Get mutates the cache under a shared read lock",
+     "description": "Two Get calls can hold RLock simultaneously. If one deletes an expired key while the other looks up a key, the map access can terminate the process. Two hits on the same entry can also write its used timestamp concurrently.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 110,
+     "title": "The cache hit counter has unsynchronized readers and writers",
+     "description": "Concurrent Get calls can both increment hits from the same old value, even for different keys. Stats also reads hits without any lock and can race with an increment even if Get takes an exclusive lock.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 54,
+     "title": "Peek reads the cache map without synchronization",
+     "description": "Warm calls Peek while a Set or expiration callback can insert or delete a key. The unlocked lookup can overlap a map write and terminate the process.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 102,
+     "title": "Warm can overwrite an entry inserted after its presence check",
+     "description": "Warm can observe a missing key, then another goroutine can Set its current target before Warm calls Set with an older target. Synchronizing Peek and Set individually still allows Warm to replace the intervening value.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 71,
+     "title": "An old expiration timer can delete a replacement entry",
+     "description": "Setting the same code twice replaces its timer handle while the first callback remains scheduled. When the first timer fires, it deletes the second entry by code before that entry's TTL expires. Explicit deletion followed by reinsertion has the same race.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 68,
+     "title": "WarmCache can return before its probe goroutines start",
+     "description": "If the launching goroutine reaches Wait before any child runs Add, the counter is zero and Wait returns immediately. The caller can therefore observe completion while all HEAD requests are still pending.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 101,
+     "title": "CheckTargets leaks probe goroutines after the first error",
+     "description": "If one probe reports an error while another is still running, CheckTargets returns and leaves no receiver on the unbuffered results channel. The remaining probe continues its request and blocks forever when it tries to send its result.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 67,
+     "title": "Batch probes have no concurrency limit",
+     "description": "WarmCache and CheckTargets launch one goroutine per link before waiting for results. With a large batch of slow targets, the entire batch can have HTTP requests in flight at once, consuming sockets and goroutines despite the configured FetchLimit.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 96,
+     "title": "Preview fetches continue after the requesting client disconnects",
+     "description": "Client.Get creates an outbound request independent of r.Context(). If the caller disconnects while the target stalls, the handler and outbound request remain active until the target responds or the HTTP client times out.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 101,
+     "title": "Preview leaves HTTP transport work active after reading the prefix",
+     "description": "For a response larger than 4096 bytes, LimitReader finishes before the response body reaches EOF. The handler returns without closing the body, so the transport can retain the connection and its goroutines until the client timeout. Concurrent previews compound the resource use.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 49,
+     "title": "Connections can occupy server resources indefinitely before authentication",
+     "description": "http.ListenAndServe uses a server with no read-header deadline. A remote client can leave request headers incomplete and hold a socket and goroutine indefinitely. Enough open connections exhaust the process's file descriptors and prevent legitimate clients from connecting.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 78,
+     "title": "Missing Authorization headers trigger a logged panic on every request",
+     "description": "An absent Authorization header produces a one-element slice, so accessing parts[1] panics. Go's HTTP server recovers and logs a stack trace for each request. An unauthenticated caller can repeatedly trigger stack collection and disproportionately large log writes with small requests.",
+     "lens": "review-security",
+     "severity": "medium"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 38851,
+      "output_tokens": 6000,
+      "cache_read_tokens": 24192
+     },
+     "duration_ms": 155564,
+     "failed": false,
+     "output_bytes": 23744
+    },
+    {
+     "usage": {
+      "input_tokens": 40750,
+      "output_tokens": 2720,
+      "cache_read_tokens": 14208
+     },
+     "duration_ms": 74445,
+     "failed": false,
+     "output_bytes": 10971
+    },
+    {
+     "usage": {
+      "input_tokens": 64142,
+      "output_tokens": 1789,
+      "cache_read_tokens": 25088
+     },
+     "duration_ms": 71519,
+     "failed": false,
+     "output_bytes": 1639
+    }
+   ],
+   "review_errors": []
+  }
+ ]
+}
