@@ -1358,13 +1358,13 @@ gpt-6.2-sol
 # MEASURED 2026-11-18 on mediabox, full 8-target grid, 1 repeat, 0 errors, 0
 # contract failures, 24 sessions:
 #
-#   gpt-6.2-sol (high)  315/484  15th of 47  2.16M in / 0.16M out  5756s  ~$2.95  ~$0.009/pt
+#   gpt-6.2-sol (high)  315/484  16th of 47  2.16M in / 0.16M out  5756s  ~$2.95  ~$0.009/pt
 #   gpt-6.1-sol (high)  254/484              2.11M / 0.11M         5463s  ~$2.17
 #   gpt-6-sol   (high)  221/484  (seated)    2.06M / 0.12M         2451s  ~$2.39
 #
 #   go 41  design 16  rust 37  java 49  typescript 44  csharp 36  cpp 48  python 44
 #
-# The best ChatGPT-route row in the grid, +17 over gpt-5.6-sol (codex, 298) and +61
+# Second-best ChatGPT-route row (astra 320 below), +17 over gpt-5.6-sol (298), +61
 # over 6.1-sol at the same rate card, for +50% output tokens. java 49/69 is the
 # best ChatGPT-route java (codex 44; 6-sol and both terras 29-39); csharp 36/68 is
 # its weakest code column and BELOW codex's 44, so the route's C# weakness stays.
@@ -1378,17 +1378,37 @@ gpt-6.2-sol
 # though faster than gpt-5.6-sol's 6810s when it held this seat. A round waits for
 # its slowest reviewer, so this seat would lengthen every live round. Quota on Team:
 # the 5h window went 11% -> 31% over sol's first five targets (~4% per target).
-# Clears the bar; NOT seated pending the operator's call on the clock.
+# Clears the bar; NOT seated -- see gpt-6.2-astra below, which ties it for the seat
+# at half the clock and ~2.5x the quota.
 
-# gpt-6.2-astra -- PARTIAL, NOT IN results.csv. 6 of 8 targets ran clean (0 errors,
-# 0 contract failures) before the Team workspace's owner-set SPEND CAP refused
-# cpp and python at preflight ("You hit your spend cap set by the owner of your
-# workspace") -- an account limit, not a model fact, and run.sh wrote no row for
-# either. The six rows, results and summaries are parked on mediabox in
-# ~/.fixpoint/bench-gpt-6.2-astra-pending/ until cpp + python can run:
-#
-#   go 31  design 14  rust 42  java 47  typescript 45  csharp 48   (227/354)
-#
-# Shallower than sol (~half its output tokens per target, ~2x faster) yet ahead of
-# it on rust, typescript and csharp (+12); no headline until the grid is complete.
+# gpt-6.2-astra -- the same bar as sol above.
 gpt-6.2-astra
+#
+# MEASURED 2026-11-18 on mediabox, full 8-target grid, 1 repeat, 0 errors, 0
+# contract failures. Six targets ran 14:51-15:09; cpp and python were refused at
+# preflight with "You hit your spend cap set by the owner of your workspace" and
+# re-run 15:58-16:06. Despite the wording that refusal was the Team 5h window
+# (last good session read 94%, the refused ones carry
+# rate_limit_reached_type=workspace_member_usage_limit_reached), and it lifted at
+# the window's reset. run.sh wrote no row for either refusal.
+#
+#   gpt-6.2-astra (high)  320/484  14th of 47  0.54M tok  2728s  ~$7.54  ~$0.024/pt
+#   gpt-6.2-sol   (high)  315/484  16th        0.76M tok  5756s  ~$2.95  ~$0.009/pt
+#   gpt-6-astra   (high)  265/484              0.53M tok  3600s  ~$10.58
+#
+#   go 31  design 14  rust 42  java 47  typescript 45  csharp 48  cpp 47  python 46
+#
+# +55 over gpt-6-astra on the same token count and the best ChatGPT-route row. Level
+# with sol overall (+5 is noise) but shaped differently: sol leads go (+10) and
+# design, astra leads csharp (+12) and rust (+5) -- astra has no C# weakness. They
+# overlap less than the totals suggest: astra vs sol +34 / -29.
+#
+# PANEL, in gpt-6-sol's seat: 437 / 440 (sol 435 / 442) against 420 / 425 -- the
+# two are a tie for the seat. Head to head with gpt-6-sol +118 / -19.
+#
+# WHAT SEPARATES THEM IS CLOCK AGAINST QUOTA. Astra sweeps in 2728s, near the
+# incumbent's 2451s; sol needs 5756s. But on Team astra drew ~10% of the 5h window
+# per target (11% -> 94% across sol's 8 and astra's first 6), ~2.5x sol's ~4%, and
+# ~2.6x sol's $ per sweep. A live round is roughly one target's worth of lenses, so
+# an astra seat would empty a Team 5h window in about ten rounds. Clears the bar;
+# NOT seated, operator's call between the two costs.
