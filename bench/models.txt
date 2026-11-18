@@ -1337,3 +1337,58 @@ gpt-6.1-terra
 # Argon 402: a harness refusal named in plain text is not a measurement. Re-run
 # 20261029-094937 had no host errors; the run dir of the void one stays in
 # .fixpoint/ as the record. Read a row's lens .raw before trusting a 0.
+
+# GPT-6.2 Sol and GPT-6.2 Astra -- added 2026-11-18, both released 2026-11-17.
+# Agent files config/agents/gpt-6.2-{sol,astra}.yaml are gpt-6.1-terra.yaml with
+# the model line changed. Catalog DEFAULT effort is `medium` (sol) / `low`
+# (astra); both files pin `high` like every other ChatGPT-route row.
+#
+#   gpt-6.2-sol    $2.00 in  $10.00 out  $0.10 cached   (unchanged from 6.1-sol)
+#   gpt-6.2-astra  $8.00 in  $40.00 out  $0.40 cached   (20% under gpt-6-astra)
+#   (launch coverage 2026-11-18, several sources agreeing; no openai.com page read)
+#
+# Probed and run on MEDIABOX only (codex-cli 0.169.0, Team account): the Mac's
+# ~/.codex was missing that day and every Mac call 401'd before model lookup.
+#
+# Bar, as for terra: one payer, one seat, so either can only REPLACE gpt-6-sol.
+# Panel [claude-sonnet, gpt-6-sol, beam] = 420 / 425 (beam's two 2026-10-19
+# ollama-codex@ grids; the marginal parser reproduces terra's 417/423 exactly).
+gpt-6.2-sol
+#
+# MEASURED 2026-11-18 on mediabox, full 8-target grid, 1 repeat, 0 errors, 0
+# contract failures, 24 sessions:
+#
+#   gpt-6.2-sol (high)  315/484  15th of 47  2.16M in / 0.16M out  5756s  ~$2.95  ~$0.009/pt
+#   gpt-6.1-sol (high)  254/484              2.11M / 0.11M         5463s  ~$2.17
+#   gpt-6-sol   (high)  221/484  (seated)    2.06M / 0.12M         2451s  ~$2.39
+#
+#   go 41  design 16  rust 37  java 49  typescript 44  csharp 36  cpp 48  python 44
+#
+# The best ChatGPT-route row in the grid, +17 over gpt-5.6-sol (codex, 298) and +61
+# over 6.1-sol at the same rate card, for +50% output tokens. java 49/69 is the
+# best ChatGPT-route java (codex 44; 6-sol and both terras 29-39); csharp 36/68 is
+# its weakest code column and BELOW codex's 44, so the route's C# weakness stays.
+#
+# PANEL, in gpt-6-sol's seat: 435 / 442 against 420 / 425 (+15 / +17) -- level with
+# Fable 5.2's sonnet swap (+17 / +14), and on the SAME payer and harness as the
+# incumbent, so no new subscription. 4th seat 439 / 445. Head to head with gpt-6-sol
+# +116 / -22. Marginal over sonnet+beam r1: +24 (terra +6).
+#
+# THE COST IS THE CLOCK: 5756s summed wall clock against gpt-6-sol's 2451s, 2.3x,
+# though faster than gpt-5.6-sol's 6810s when it held this seat. A round waits for
+# its slowest reviewer, so this seat would lengthen every live round. Quota on Team:
+# the 5h window went 11% -> 31% over sol's first five targets (~4% per target).
+# Clears the bar; NOT seated pending the operator's call on the clock.
+
+# gpt-6.2-astra -- PARTIAL, NOT IN results.csv. 6 of 8 targets ran clean (0 errors,
+# 0 contract failures) before the Team workspace's owner-set SPEND CAP refused
+# cpp and python at preflight ("You hit your spend cap set by the owner of your
+# workspace") -- an account limit, not a model fact, and run.sh wrote no row for
+# either. The six rows, results and summaries are parked on mediabox in
+# ~/.fixpoint/bench-gpt-6.2-astra-pending/ until cpp + python can run:
+#
+#   go 31  design 14  rust 42  java 47  typescript 45  csharp 48   (227/354)
+#
+# Shallower than sol (~half its output tokens per target, ~2x faster) yet ahead of
+# it on rust, typescript and csharp (+12); no headline until the grid is complete.
+gpt-6.2-astra
