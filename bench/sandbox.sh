@@ -32,10 +32,9 @@
 #     on macOS, bubblewrap on Linux) cannot do it in here, so the bench
 #     candidate's own sandbox is switched off and THIS script is what enforces
 #     read-only; bench/run.sh does that in the generated candidate file only.
-#     fixpoint's agent validation currently refuses that file (can_edit: false
-#     with --sandbox danger-full-access), so a codex candidate stops at startup
-#     until the validation learns that sandbox.command backs the claim; see
-#     bench/README.md.
+#     fixpoint refuses that file's can_edit: false with --sandbox
+#     danger-full-access unless the invocation says -agents-sandboxed (a flag,
+#     never a config key; docs/security.md), which bench/run.sh passes.
 #
 # PLATFORMS
 #   macOS  sandbox-exec, an `allow default` profile with file-read* denied on

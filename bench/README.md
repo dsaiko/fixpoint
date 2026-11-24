@@ -85,18 +85,21 @@ inside the wrapper it cannot start: every command a lens ran failed with
 `sandbox_apply: Operation not permitted`. So `run.sh` rewrites it to `--sandbox
 danger-full-access` in the GENERATED candidate file only, and the wrapper is what
 enforces read-only. The shipped `config/agents/*.yaml` are untouched, and a
-claude-harness candidate has no such line. NOTE: fixpoint's agent validation
-refuses `can_edit: false` together with `--sandbox danger-full-access`
-(`internal/config/config.go`, the `permissionBypassFlag` check in `Validate`), and
-does not yet know that `sandbox.command` is what enforces read-only. Until it does,
-a codex-harness candidate stops at validation, before any session: it fails
-closed, it does not run unconfined. The claude-harness routes are not affected.
+claude-harness candidate has no such line. fixpoint's agent validation refuses
+`can_edit: false` together with `--sandbox danger-full-access` unless the
+invocation asserts `-agents-sandboxed`, a command-line flag that needs a
+`sandbox.command` and is refused in `pr` mode (`docs/security.md`); `run.sh`
+passes it. Run `./fixpoint bench-code` by hand without it and a codex candidate
+stops at validation, before any session.
 
 **What was verified.** On macOS: `bench/sandbox_test.sh` runs real
 `sandbox-exec` probes (a glob and `find` cannot reach the manifest; a `ro` target,
 `$HOME` and the checkout cannot be written; the target can be read), and a codex
 session through the wrapper read its target and was denied the checkout and
-`$HOME`. On Linux nothing beyond the assembly of `bwrap`'s arguments is tested.
+`$HOME`. A full run through it (`ollama-direct@glm-5.3-flash:cloud`, go,
+2026-11-24) scored 37/56 (its earlier go rows, unconfined, are 33 to 40): its three lenses
+ran 7 shell commands between them, all exit 0, none denied. On Linux nothing beyond
+the assembly of `bwrap`'s arguments is tested.
 **The `bwrap` branch has never been run.** It is a first draft written from
 bwrap's documentation and one measured fact (`--tmpfs <repo>` hides the checkout
 on the bench host); check a real run there before trusting a Linux row.
