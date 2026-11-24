@@ -91,7 +91,8 @@ state at all, and CLI state is **per invocation**:
   (`projects/`, `sessions/`, `file-history/`, `session-env/`, `shell-snapshots/`,
   `todos/`, `backups/`, `history.jsonl`) cannot be read, and everything that is
   executable configuration (`settings.json`, `CLAUDE.md`, `commands/`, `skills/`,
-  hooks) cannot be modified. On macOS the state directories are write-only; on
+  `plugins/`, hooks) cannot be modified. A claude lens runs without being able to
+  write `plugins/`, `ide/` or `statsig/` (checked with a real `claude -p` session). On macOS the state directories are write-only; on
   Linux they are empty tmpfs mounts. The live codex directory is unreadable.
 
 What a lens can still reach, stated plainly:

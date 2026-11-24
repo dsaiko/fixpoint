@@ -50,7 +50,8 @@
 #               fresh path is "Not logged in" (measured 2026-11-24). Copying the
 #               credential out would also risk a refresh-token rotation that logs
 #               the operator out. So: settings.json, CLAUDE.md, commands/,
-#               skills/, hooks cannot be modified; projects/, sessions/,
+#               skills/, plugins/ (plugin hooks, skills, commands and MCP servers) and hooks
+#               cannot be modified; projects/, sessions/,
 #               file-history/ and the other transcript stores cannot be read (on
 #               macOS they are write-only, on Linux an empty tmpfs). What stays
 #               WRITABLE is .claude.json, which is global state that includes
@@ -208,6 +209,11 @@ for hidden in "$repo" "$fpdir"; do
     "$hidden"/*) die "TMPDIR '$tb' is inside '$hidden', which this wrapper hides from the agent" ;;
     esac
 done
+# ... and a TMPDIR at or inside the TARGET (TMPDIR=. from the agent's directory is
+# the target) would put the always-writable scratch inside what must stay read-only.
+case "$tb/" in
+"$target"/*) die "TMPDIR '$tb' is the target or inside it '$target'; the scratch directory must not be part of what is reviewed" ;;
+esac
 S=$(mktemp -d "$tb/bench-sandbox.XXXXXX") || die "cannot create a scratch directory in '$tb'"
 S=$(phys "$S")
 [ -n "$S" ] || die "cannot resolve the scratch directory"
@@ -313,7 +319,7 @@ Darwin)
         # above). .claude.json and its temp and lock siblings: the CLI rewrites it.
         prof="$prof
 (allow file-write* (subpath \"$ctmp/$cslug\") (regex #\"^/private/tmp/claude-[0-9a-f]+-cwd$\") (prefix \"$claudejson\")"
-        for d in projects sessions session-env shell-snapshots todos file-history backups telemetry cache plugins ide statsig; do
+        for d in projects sessions session-env shell-snapshots todos file-history backups telemetry cache; do
             prof="$prof (subpath \"$claudedir/$d\")"
         done
         prof="$prof)"
