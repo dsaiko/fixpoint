@@ -1507,3 +1507,21 @@ ollama-direct@hy4:cloud
 # DECIDED 2026-11-24, operator: NOT seated, beam keeps the ollama seat. +9 / +4
 # seeds from one repeat does not pay for 3.1x the round time, that quota and a
 # sandbox. The row stays in the grid.
+
+# THE GRID WAS RE-SCORED ON 2026-11-24, from bench/summaries/, no model re-run.
+# score.py put `\b` in front of every keyword, and `\b` before `<=`, `==`, `&&`,
+# `/tmp` or `-1` only matches where a word character precedes it: "i<=n" hit,
+# "i <= n" did not. 55 keywords were dead whenever a reviewer quoted the line the
+# way a formatter writes it (found by the panel's review, run 20261124-104533:
+# hy4's cpp finding on the exact `i <= links.size()` loop was scored as noise).
+# Such a keyword is now matched as a literal. Two keywords the literal rule made
+# too loose were tightened on evidence: `..` -> `../` in five path-traversal
+# seeds (it matched the ellipsis in "=HYPERLINK(...)"; csharp keeps `..` for
+# `..\`), and `.csv` left rust RM13 (it took path-traversal findings quoting
+# `format!("{}.csv", name)`). 51 of 418 rows moved, +46 matched seeds net, nobody
+# by more than 4, and the order at the top is unchanged:
+#   claude-fable-5-2 403 -> 404   hy4 388 -> 389   claude 376 -> 377
+#   claude-opus-5-5 372 -> 371    claude-sonnet-5-5 369 -> 371
+#   inkling-2-small 364 -> 363    ollama-codex@beam 348 -> 351 (median of grids)
+# The panel bar reads 420 / 425 as before. EVERY SCORE QUOTED ABOVE THIS NOTE IS
+# ON THE OLD MATCHER and may differ from the table by a few seeds.

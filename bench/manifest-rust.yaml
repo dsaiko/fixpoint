@@ -291,7 +291,7 @@ seeds:
     anchor: 'let name = if name.is_empty() { "links" } else { name };'
     span: 8
     need: 1
-    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", join, arbitrary]
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "../", join, arbitrary]
     note: "parallel: EX01 the report name comes from the query string and goes into Path::join unchecked"
   - id: RE02
     file: src/export.rs
@@ -455,7 +455,7 @@ seeds:
     anchor: "export::read_report(&self.cfg.export_dir, &name)"
     span: 6
     need: 1
-    keywords: ["links.csv", empty, default, mismatch, "no name", ".csv", "always fails", inconsistent]
+    keywords: ["links.csv", empty, default, mismatch, "no name", "always fails", inconsistent]
     note: "export_csv defaults an empty name to links.csv but read_report is handed the original empty name, so /report with no name always fails"
   - id: RM14
     file: src/main.rs

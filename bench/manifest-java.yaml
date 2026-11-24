@@ -328,7 +328,7 @@ seeds:
     anchor: 'name = "links";'
     span: 8
     need: 1
-    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", arbitrary]
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "../", arbitrary]
     note: "parallel: EX01 the report name comes from the query string and is joined onto dir unchecked"
   - id: J44
     file: src/linkd/Export.java
