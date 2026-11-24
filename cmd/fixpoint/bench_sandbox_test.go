@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -31,7 +32,10 @@ func TestShippedBenchConfigsReachTheWrapperWithTheStagedTargetReadOnly(t *testin
 				t.Fatal(err)
 			}
 			f := newFixture(t)
-			for n := 1; n <= tc.lenses; n++ {
+			// The mock agent answers its n-th invocation with the n-th response: fixpoint's
+			// own agent ping comes first and takes one, then one per lens. A lens that ran
+			// out of responses would fail its round and make the run below vacuous.
+			for n := 1; n <= tc.lenses+1; n++ {
 				f.respond(n, reviewResponse(t))
 			}
 			// The shipped bundle, as ~/.fixpoint: the config, its base and every
@@ -75,8 +79,26 @@ func TestShippedBenchConfigsReachTheWrapperWithTheStagedTargetReadOnly(t *testin
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 			var buf bytes.Buffer
-			// The exit code is review-only's own business; what matters is below.
-			run([]string{tc.name, "-target", f.repo, "-trusted-bundle", "-trusted-target", "-agents-sandboxed"}, &buf, &buf)
+			got := run([]string{tc.name, "-target", f.repo, "-trusted-bundle", "-trusted-target", "-agents-sandboxed"}, &buf, &buf)
+			// The run itself must complete, with a valid response from every lens: a
+			// review-only run that ended cleanly exits 0 (nothing to fix) or 4, and any
+			// reviewer or lens error would show in the output.
+			if got != 0 && got != 4 {
+				t.Fatalf("run exited %d, want 0 or 4 (review-only completed):\n%s", got, buf.String())
+			}
+			if !strings.Contains(buf.String(), "0 reviewer error(s)") {
+				t.Errorf("the run reports reviewer errors:\n%s", buf.String())
+			}
+			if !strings.Contains(buf.String(), "1 of 1 reviewer(s) completed every lens") {
+				t.Errorf("the reviewer did not complete every lens:\n%s", buf.String())
+			}
+			// Every lens line of the summary shows zero errors.
+			lensErrors := regexp.MustCompile(`(?m)^\s+(review-\S+|design-\S+|\S+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s`)
+			for _, m := range lensErrors.FindAllStringSubmatch(buf.String(), -1) {
+				if m[2] != "0" {
+					t.Errorf("lens %s reports %s error(s):\n%s", m[1], m[2], buf.String())
+				}
+			}
 
 			data, err := os.ReadFile(rec)
 			if err != nil {

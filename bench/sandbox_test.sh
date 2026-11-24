@@ -39,6 +39,22 @@ fail() {
     fails=$((fails + 1))
 }
 
+# reap <pid> <seconds>: wait for a background job, but never longer than the deadline
+# (a wrapper that ignores its signal must fail the test, not hang it). Sets reap_rc, and
+# reap_late=1 when the deadline had to kill the job.
+reap() {
+    rm -f "$base/dog-fired"
+    ( sleep "$2"; if kill -0 "$1" 2>/dev/null; then : >"$base/dog-fired"; kill -KILL "$1" 2>/dev/null; fi ) >/dev/null 2>&1 &
+    dog=$!
+    set +e
+    wait "$1" 2>/dev/null
+    reap_rc=$?
+    set -e
+    { kill "$dog"; wait "$dog"; } 2>/dev/null || true
+    reap_late=0
+    [ ! -e "$base/dog-fired" ] || reap_late=1
+}
+
 # expect <label> <file> <grep -E pattern> [!]: the file must (or, with !, must
 # not) match.
 expect() {
@@ -70,6 +86,9 @@ echo 'model = "x"' >"$home/.codex/config.toml"
 echo 'CLAUDE-TRANSCRIPT' >"$home/.claude/projects/p/t.jsonl"
 echo 'CLAUDE-SESSION' >"$home/.claude/sessions/s.json"
 echo 'CLAUDE-HISTORY' >"$home/.claude/history.jsonl"
+mkdir -p "$home/.claude/debug" "$home/.claude/plans"
+echo 'CLAUDE-DEBUG' >"$home/.claude/debug/d.txt"
+echo 'CLAUDE-PLAN' >"$home/.claude/plans/p.md"
 echo '{"hooks":{}}' >"$home/.claude/settings.json"
 echo 'CLAUDE-MD' >"$home/.claude/CLAUDE.md"
 echo '{"mcpServers":{}}' >"$home/.claude.json"
@@ -100,11 +119,21 @@ cat >"$home/.local/bin/probe.sh" <<'EOF'
 who=$1
 # td is a destructive attempt: the unconfined control run must not perform it.
 td() { [ -z "${CONTROL:-}" ] || return 0; t "$@"; }
-t() { name=$1; shift; if "$@" >"$TMPDIR/o.$name" 2>&1; then echo "$name=ok"; else echo "$name=denied"; fi; }
+t() {
+    name=$1
+    shift
+    if "$@" >"$TMPDIR/o.$name" 2>&1; then echo "$name=ok"; else echo "$name=denied"; fi
+    # What came back, whatever the exit status said: a sentinel in the output is a leak.
+    if grep -q 'KEY-IN' "$TMPDIR/o.$name" 2>/dev/null; then echo "leak=$name"; fi
+}
 echo "who=$who"
 t cat_key cat "$REPO/bench/manifest-go.yaml"
 t cat_glob sh -c 'cat "$REPO"/bench/manifest-*.yaml'
-t cat_deep_glob sh -c 'cat "$REPO"/*/manifest-*.yaml "$REPO"/.fixpoint/*/*.json'
+t cat_deep_glob sh -c 'cat "$REPO"/*/manifest-*.yaml'
+# The earlier runs' findings, apart from the manifest: one cat of both would hide a
+# successful read of either behind the other's failure.
+t cat_findings cat "$REPO/.fixpoint/run/findings.json"
+t cat_findings_glob sh -c 'cat "$REPO"/.fixpoint/*/*.json'
 t find_key sh -c 'find "$REPO" -name "manifest-*" | grep .'
 # A listing, not just ls: macOS refuses it, but a tmpfs mask on Linux is listable and
 # EMPTY, so what must hold on both is that no entry of the real directory shows.
@@ -143,6 +172,8 @@ t read_claude_settings cat "$CLAUDE_CONFIG_DIR/settings.json"
 # What a claude lens would leave for the operator's NEXT session: a planted memory
 # file under projects/, a shell snapshot; and what it must not read: the history.
 # (cat | grep ., not cat: on Linux the history is bound over by an EMPTY file.)
+t cat_claude_debug cat "$CLAUDE_CONFIG_DIR/debug/d.txt"
+t cat_claude_plans cat "$CLAUDE_CONFIG_DIR/plans/p.md"
 t cat_claude_history sh -c 'cat "$CLAUDE_CONFIG_DIR/history.jsonl" 2>/dev/null | grep .'
 td write_claude_projects sh -c 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/-x/memory" && echo planted >"$CLAUDE_CONFIG_DIR/projects/-x/memory/MEMORY.md"'
 td write_claude_snapshots sh -c 'echo planted >"$CLAUDE_CONFIG_DIR/shell-snapshots/snapshot-x.sh"'
@@ -156,6 +187,8 @@ t read_other_scratch sh -c '[ -n "$SECRETPATH" ] && cat "$SECRETPATH"'
 t codex_home_is_fresh sh -c '[ -n "$CODEX_HOME" ] && [ "$CODEX_HOME" != "$HOME/.codex" ]'
 t codex_home_auth cat "$CODEX_HOME/auth.json"
 t cat_codex_auth cat "$HOME/.codex/auth.json"
+t codex_home_auth_is_symlink sh -c '[ -L "$CODEX_HOME/auth.json" ]'
+td write_codex_auth sh -c 'echo REFRESHED >>"$CODEX_HOME/auth.json"'
 t codex_home_no_sessions sh -c '[ -z "$(ls "$CODEX_HOME/sessions" 2>/dev/null)" ]'
 t codex_home_writable sh -c 'echo x >"$CODEX_HOME/new"'
 # Sockets that start processes as the operator, outside any sandbox.
@@ -180,7 +213,25 @@ echo SECRET >"$TMPDIR/secret"
 echo ready
 while :; do sleep 1; done
 EOF
-chmod +x "$home/.local/bin/ttyprobe" "$home/.local/bin/hold"
+# TIOCSTI: typing into the operator's terminal from a lens, through /dev/tty AND through
+# the tty it inherited as stdin/stderr. Run under a pty by the test.
+cat >"$home/.local/bin/stiprobe" <<'EOF'
+#!/usr/bin/env python3
+import fcntl, os, termios
+def attempt(name, fd):
+    try:
+        fcntl.ioctl(fd, termios.TIOCSTI, b"x")
+        print(name + "=injected")
+    except OSError as e:
+        print(name + "=failed")
+try:
+    attempt("devtty", os.open("/dev/tty", os.O_RDWR))
+except OSError:
+    print("devtty=failed")
+attempt("stderr", 2)
+attempt("stdin", 0)
+EOF
+chmod +x "$home/.local/bin/ttyprobe" "$home/.local/bin/hold" "$home/.local/bin/stiprobe"
 for who in codex claude other; do
     cat >"$home/.local/bin/$who" <<EOF
 #!/bin/sh
@@ -369,6 +420,7 @@ case $1 in
 status) exit 7 ;;
 stdin) cat >"$TMPDIR/stdin.out" && cat "$TMPDIR/stdin.out" ;;
 term) trap 'echo got-term; exit 143' TERM; echo started; while :; do sleep 1; done ;;
+term0) trap 'echo got-term; exit 0' TERM; echo started; while :; do sleep 1; done ;;
 esac
 EOF
         chmod +x "$home/.local/bin/plumb"
@@ -385,39 +437,42 @@ EOF
         # forwards it; on Linux bwrap does not forward signals and, with --die-with-parent
         # in a new pid namespace, kills the agent outright when it goes. fixpoint itself
         # only ever stops an agent with SIGKILL to the process group (internal/agent
-        # KillProcessGroup), which no handler sees on either platform.
+        # KillProcessGroup), which no handler sees on either platform (not covered here).
         # The agent carries a token no other run on the host can have, and the run has a
-        # TMPDIR of its own, so neither count can be skewed by a concurrent sandbox.
+        # TMPDIR of its own, so neither count can be skewed by a concurrent sandbox. The
+        # second case is an agent that handles the TERM and exits 0: the wrapper must still
+        # not report success for an interrupted run.
         token=term-$$-$(date +%s)
         mkdir -p "$base/term-tmp"
-        agent_running() { ps -eo args | grep -c "[p]lumb term $token" || true; }
-        (cd "$target" && exec env HOME="$home" TMPDIR="$base/term-tmp" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- plumb term "$token") >"$base/term.out" 2>&1 &
-        wpid=$!
-        n=0
-        while ! grep -q started "$base/term.out" 2>/dev/null && [ "$n" -lt 100 ]; do
-            sleep 0.1
-            n=$((n + 1))
+        for mode in term term0; do
+            agent_running() { ps -eo args | grep -c "[p]lumb $mode $token" || true; }
+            rm -f "$base/term.out"
+            (cd "$target" && exec env HOME="$home" TMPDIR="$base/term-tmp" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- plumb "$mode" "$token") >"$base/term.out" 2>&1 &
+            wpid=$!
+            n=0
+            while ! grep -q started "$base/term.out" 2>/dev/null && [ "$n" -lt 100 ]; do
+                sleep 0.1
+                n=$((n + 1))
+            done
+            # Without this the rest could pass because the agent never ran at all.
+            grep -q started "$base/term.out" || fail "$mode: the agent never started, so the TERM checks below mean nothing: $(cat "$base/term.out")"
+            [ "$(agent_running)" -ge 1 ] || fail "$mode: the agent is not running before the TERM"
+            [ "$(scratch_count "$base/term-tmp")" = 1 ] || fail "$mode: the wrapper has no scratch directory while the agent runs"
+            kill -TERM "$wpid" 2>/dev/null || true
+            reap "$wpid" 20
+            [ "$reap_late" = 0 ] || fail "$mode: the wrapper did not exit within 20s of a TERM"
+            [ "$reap_rc" != 0 ] || fail "$mode: a wrapper terminated by TERM exited 0"
+            n=0
+            while [ "$n" -lt 50 ] && { [ "$(agent_running)" -gt 0 ] || [ "$(scratch_count "$base/term-tmp")" -gt 0 ]; }; do
+                sleep 0.1
+                n=$((n + 1))
+            done
+            [ "$(agent_running)" = 0 ] || fail "$mode: the agent was still running 5s after its wrapper was terminated"
+            [ "$(scratch_count "$base/term-tmp")" = 0 ] || fail "$mode: a terminated wrapper left its scratch directory behind"
+            if [ "$os" = Darwin ]; then
+                grep -q got-term "$base/term.out" || fail "$mode: TERM did not reach the agent"
+            fi
         done
-        # Without this the rest could pass because the agent never ran at all.
-        grep -q started "$base/term.out" || fail "the agent never started, so the TERM checks below mean nothing: $(cat "$base/term.out")"
-        [ "$(agent_running)" -ge 1 ] || fail "the agent is not running before the TERM"
-        [ "$(scratch_count "$base/term-tmp")" = 1 ] || fail "the wrapper has no scratch directory while the agent runs"
-        kill -TERM "$wpid" 2>/dev/null || true
-        set +e
-        wait "$wpid" 2>/dev/null
-        got=$?
-        set -e
-        [ "$got" != 0 ] || fail "a wrapper terminated by TERM exited 0"
-        n=0
-        while [ "$n" -lt 50 ] && { [ "$(agent_running)" -gt 0 ] || [ "$(scratch_count "$base/term-tmp")" -gt 0 ]; }; do
-            sleep 0.1
-            n=$((n + 1))
-        done
-        [ "$(agent_running)" = 0 ] || fail "the agent was still running 5s after its wrapper was terminated"
-        [ "$(scratch_count "$base/term-tmp")" = 0 ] || fail "a terminated wrapper left its scratch directory behind"
-        if [ "$os" = Darwin ]; then
-            grep -q got-term "$base/term.out" || fail "TERM did not reach the agent"
-        fi
     else
         echo "bench/sandbox_test.sh: no working sandbox here; the status, stdin and signal checks were skipped." >&2
     fi
@@ -444,7 +499,11 @@ for who in codex claude other; do
         expect "linux $who $mode: new pid namespace" "$out" '^--unshare-pid$'
         expect "linux $who $mode: its own session, off the operator's terminal" "$out" '^--new-session$'
         expect "linux $who $mode: new ipc namespace" "$out" '^--unshare-ipc$'
-        expect "linux $who $mode: /run is masked" "$out" '^/run$'
+        [ "$(grep -c -x /run "$out")" = 1 ] && [ "$(grep -x -B1 /run "$out" | head -1)" = --tmpfs ] ||
+            fail "linux $who $mode: /run is not exactly one --tmpfs (the host's /run bound anywhere would show here twice)"
+        if grep '^/run/' "$out" | grep -v -x '/run/systemd/resolve' | grep -q .; then
+            fail "linux $who $mode: something under /run is bound beside the DNS directory"
+        fi
         expect "linux $who $mode: no network namespace unshare (the CLI needs the API)" "$out" '^--unshare-(net|all)$' !
         expect "linux $who $mode: the home directory is replaced" "$out" "^$home\$"
         expect "linux $who $mode: ~/.fixpoint is masked" "$out" "^$base/realfp\$"
@@ -513,9 +572,14 @@ if [ "$can_confine" = 1 ]; then
     if [ "$os" = Linux ]; then
         expect "control: a decoy's /proc/<pid>/cwd reaches the checkout unconfined" "$base/control.out" '^proc_any_cwd=ok$'
     fi
-    for k in cat_codex_auth cat_claude_history cat_key cat_glob find_key ls_repo ls_fixpoint_home cat_fixpoint_home cat_real_fixpoint read_target cat_codex_sessions cat_codex_config cat_claude_transcript cat_claude_session read_claude_settings; do
+    for k in cat_findings cat_findings_glob cat_deep_glob cat_claude_debug cat_claude_plans cat_codex_auth cat_claude_history cat_key cat_glob find_key ls_repo ls_fixpoint_home cat_fixpoint_home cat_real_fixpoint read_target cat_codex_sessions cat_codex_config cat_claude_transcript cat_claude_session read_claude_settings; do
         expect "control: $k works unconfined, so its denial below means something" "$base/control.out" "^$k=ok\$"
     done
+    # the key sentinels really do come back unconfined: a missing "leak=" below means something
+    expect "control: the manifest's sentinel does come back unconfined" "$base/control.out" '^leak=cat_key$'
+    expect "control: the findings' sentinel does come back unconfined" "$base/control.out" '^leak=cat_findings$'
+    grep -q '^user_bus=ok$' "$base/control.out" || echo "bench/sandbox_test.sh: no user bus socket on this host, so 'the user bus is not exposed' was not checked." >&2
+    grep -q '^system_bus=ok$' "$base/control.out" || echo "bench/sandbox_test.sh: no system bus or docker socket on this host, so 'the system sockets are not exposed' was not checked." >&2
     snap >"$base/before.snap"
 
     # run_probe <who> <mode> <outfile>
@@ -530,7 +594,10 @@ if [ "$can_confine" = 1 ]; then
         o=$base/$who.out
         expect "$who: the checkout's manifest is unreadable" "$o" '^cat_key=denied$'
         expect "$who: a glob cannot reach the manifest" "$o" '^cat_glob=denied$'
-        expect "$who: a deeper glob cannot reach the manifest or the findings" "$o" '^cat_deep_glob=denied$'
+        expect "$who: a deeper glob cannot reach the manifest" "$o" '^cat_deep_glob=denied$'
+        expect "$who: the earlier findings are unreadable" "$o" '^cat_findings=denied$'
+        expect "$who: a glob cannot reach the earlier findings" "$o" '^cat_findings_glob=denied$'
+        expect "$who: no sentinel of the key or the findings came back in any output" "$o" '^leak=' !
         expect "$who: find does not see the manifest" "$o" '^find_key=denied$'
         expect "$who: the checkout lists no entries" "$o" '^ls_repo=denied$'
         expect "$who: no /proc/<pid>/cwd leads to the checkout" "$o" '^proc_any_cwd=denied$'
@@ -543,8 +610,14 @@ if [ "$can_confine" = 1 ]; then
         expect "$who: /dev/null can be written" "$o" '^write_dev_null=ok$'
         expect "$who: the codex sessions are unreadable" "$o" '^cat_codex_sessions=denied$'
         expect "$who: codex's config.toml is unreadable" "$o" '^cat_codex_config=denied$'
-        expect "$who: the user bus is not exposed" "$o" '^user_bus=denied$'
-        expect "$who: the system sockets are not exposed" "$o" '^system_bus=denied$'
+        # Only meaningful when the same socket is there to see unconfined; a host with no
+        # user bus or system socket proves nothing, and says so once below.
+        if grep -q '^user_bus=ok$' "$base/control.out"; then
+            expect "$who: the user bus is not exposed" "$o" '^user_bus=denied$'
+        fi
+        if grep -q '^system_bus=ok$' "$base/control.out"; then
+            expect "$who: the system sockets are not exposed" "$o" '^system_bus=denied$'
+        fi
         if [ "$os" = Darwin ]; then
             # macOS denies the write; Linux gives a tmpfs that vanishes, which the
             # host-side comparison below covers for both.
@@ -579,6 +652,8 @@ if [ "$can_confine" = 1 ]; then
     for who in codex claude other; do
         expect "$who: the live codex login is unreadable without the chatgpt route" "$base/$who.out" '^cat_codex_auth=denied$'
         expect "$who: claude's prompt history is unreadable" "$base/$who.out" '^cat_claude_history=denied$'
+        expect "$who: claude's debug logs are unreadable" "$base/$who.out" '^cat_claude_debug=denied$'
+        expect "$who: claude's plans are unreadable" "$base/$who.out" '^cat_claude_plans=denied$'
     done
     expect "claude: its shell-tool directory is its own scratch" "$base/claude.out" '^claude_tmpdir_is_scratch=ok$'
     expect "codex: it starts with no sessions" "$base/codex.out" '^codex_home_no_sessions=ok$'
@@ -608,14 +683,27 @@ if [ "$can_confine" = 1 ]; then
     # any other binary), through a symlink in the fresh CODEX_HOME to the one file.
     echo chatgpt >"$tree/bench/.sandbox-codex-auth"
     run_probe codex ro "$base/codex-chatgpt.out"
+    # The entry in the fresh home is a symlink to the live file, and a write through it
+    # lands on the host's login (an in-place update; a rename is the known limitation).
+    expect "codex: the fresh home's login is a symlink" "$base/codex-chatgpt.out" '^codex_home_auth_is_symlink=ok$'
+    expect "codex: a write through the symlink is allowed" "$base/codex-chatgpt.out" '^write_codex_auth=ok$'
+    grep -q REFRESHED "$home/.codex/auth.json" || fail "codex: a write through the symlink did not update the host's login"
+    echo 'CODEX-AUTH' >"$home/.codex/auth.json"
     run_probe other ro "$base/other-chatgpt.out"
     rm -f "$tree/bench/.sandbox-codex-auth"
-    # A route file that says anything but chatgpt hands nothing over either.
-    echo none >"$tree/bench/.sandbox-codex-auth"
-    run_probe codex ro "$base/codex-none.out"
+    # A route file that is not EXACTLY "chatgpt" and one newline hands nothing over: a
+    # word that is not chatgpt, a second line, a blank line, trailing junk, no newline,
+    # a carriage return.
+    n=0
+    for content in 'none\n' 'chatgpt\nsomething\n' 'chatgpt\n\n' 'chatgpt junk\n' 'chatgpt' 'chatgpt\r\n'; do
+        n=$((n + 1))
+        printf "$content" >"$tree/bench/.sandbox-codex-auth"
+        run_probe codex ro "$base/codex-marker$n.out"
+        expect "codex: a route file holding '$content' hands over no login" "$base/codex-marker$n.out" '^codex_home_auth=denied$'
+        expect "codex: ... and the live login stays unreadable ('$content')" "$base/codex-marker$n.out" '^cat_codex_auth=denied$'
+    done
     rm -f "$tree/bench/.sandbox-codex-auth"
-    expect "codex: a route file saying none hands over no login" "$base/codex-none.out" '^codex_home_auth=denied$'
-    expect "codex: ... and the live login stays unreadable" "$base/codex-none.out" '^cat_codex_auth=denied$'
+    grep -q '^codex_home_auth_is_symlink=ok$' "$base/codex-marker2.out" && fail "codex: a malformed route file left a login symlink in the fresh home"
     expect "codex: the chatgpt route gets the login through its fresh home" "$base/codex-chatgpt.out" '^codex_home_auth=ok$'
     expect "codex: ... and nothing else of the live ~/.codex" "$base/codex-chatgpt.out" '^cat_codex_config=denied$'
     expect "codex: ... whose sessions stay unreadable" "$base/codex-chatgpt.out" '^cat_codex_sessions=denied$'
@@ -638,18 +726,34 @@ if [ "$can_confine" = 1 ]; then
     (cd "$target" && penv TMPDIR="$base/ptmp" SECRETPATH="$holdscratch/secret" "$tree/bench/sandbox.sh" "$target" ro -- "$home/.local/bin/other") >"$base/second.out" 2>"$base/second.err" || fail "the second lens could not run: $(cat "$base/second.err")"
     expect "a second lens cannot read the first one's scratch directory" "$base/second.out" '^read_other_scratch=denied$'
     kill -TERM "$holdpid" 2>/dev/null || true
-    wait "$holdpid" 2>/dev/null || true
+    reap "$holdpid" 20
 
-    # Linux: a new session, so no controlling terminal to inject keystrokes into
-    # (TIOCSTI). Needs a pty to mean anything; python3 makes one.
-    if [ "$os" = Linux ] && command -v python3 >/dev/null 2>&1; then
+    # TIOCSTI: typing into the operator's terminal. A lens inherits it unless it has a
+    # session of its own. Linux gets one (bwrap --new-session); macOS does not (setsid
+    # would leak agents past fixpoint's group kill, and macOS has no die-with-parent), so
+    # the profile denies the ioctl on the terminal devices instead. Either way, under a pty
+    # the confined probe must FAIL on /dev/tty and on its inherited tty fds, while the
+    # unconfined control SUCCEEDS (else the probe proves nothing). python3 makes the pty.
+    if command -v python3 >/dev/null 2>&1; then
         ptyrun() { python3 -c 'import pty,sys; sys.exit(pty.spawn(sys.argv[1:]) >> 8)' "$@" 2>&1 | tr -d '\r'; }
-        ptyrun "$home/.local/bin/ttyprobe" >"$base/tty-control.out" || true
-        if grep -q '^tty_nr=[1-9]' "$base/tty-control.out"; then
-            (cd "$target" && ptyrun env HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- ttyprobe) >"$base/tty.out" || true
-            expect "linux: the lens has no controlling terminal" "$base/tty.out" '^tty_nr=0$'
+        ptyrun "$home/.local/bin/stiprobe" >"$base/sti-control.out" || true
+        if grep -q 'devtty=injected$' "$base/sti-control.out" && grep -q 'stderr=injected$' "$base/sti-control.out"; then
+            (cd "$target" && ptyrun env HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- stiprobe) >"$base/sti.out" || true
+            expect "the lens cannot type into /dev/tty (TIOCSTI)" "$base/sti.out" 'devtty=failed$'
+            expect "the lens cannot type into its inherited stderr tty (TIOCSTI)" "$base/sti.out" 'stderr=failed$'
+            expect "the lens cannot type into its inherited stdin tty (TIOCSTI)" "$base/sti.out" 'stdin=failed$'
+            expect "nothing was injected at all" "$base/sti.out" 'injected' !
         else
-            echo "bench/sandbox_test.sh: could not give a probe a controlling terminal here; the new-session check was skipped." >&2
+            echo "bench/sandbox_test.sh: could not make TIOCSTI work unconfined under a pty here; the TIOCSTI check was skipped." >&2
+        fi
+        if [ "$os" = Linux ]; then
+            ptyrun "$home/.local/bin/ttyprobe" >"$base/tty-control.out" || true
+            if grep -q '^tty_nr=[1-9]' "$base/tty-control.out"; then
+                (cd "$target" && ptyrun env HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- ttyprobe) >"$base/tty.out" || true
+                expect "linux: the lens has no controlling terminal" "$base/tty.out" '^tty_nr=0$'
+            else
+                echo "bench/sandbox_test.sh: could not give a probe a controlling terminal here; the new-session check was skipped." >&2
+            fi
         fi
     fi
 
