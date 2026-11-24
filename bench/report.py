@@ -1734,6 +1734,10 @@ def selftest():
     check("ollama-direct@ reports cached inside input", cached_is_subset(td), True)
     check("ollama-direct@ is priced on the plain tag's card",
           ollama_rate(td), ollama_rate("minimax-m3.1-flash:cloud"))
+    # A SIZE-priced tag: the stem alone has no card, so this fails unless both
+    # the route prefix and the #<effort> suffix are stripped and the size kept.
+    check("a size-priced tag keeps its size under a prefix and a suffix",
+          ollama_rate("ollama-direct@gpt-oss:120b-cloud#max"), OLLAMA_RATES["gpt-oss:120b"])
 
     # An effort suffix (codex@<id>#xhigh) is priced on the unsuffixed id's card.
     kc = "codex@moonshotai/kimi-k3.1-pro"

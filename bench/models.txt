@@ -1429,13 +1429,26 @@ gpt-6.2-astra
 # 20261019-210306 (beam r1) opened an older TYPESCRIPT run's findings and never a
 # python one. Since then bench/run.sh reviews a fresh copy outside the repository
 # and score.py refuses a row whose lens reached the key (key_reads()).
+#
+# The panel's review of that fix (run 20261124-104533, 16 findings) changed it
+# the same day: the copy is staged from git's file list, not `cp -R` (which
+# carried ignored build output: target-go/linkd, target-csharp/obj); the patterns
+# catch globs and any path into the checkout; a failed mktemp can no longer aim
+# the cleanup at the checkout. STILL OPEN, and stated in score.py: the check
+# cannot see a path the shell expands, and it cannot see the claude-harness
+# routes at all (`--output-format json` records no tool calls), so every
+# claude-*, OpenRouter-claude and plain :cloud row is unaudited. A real boundary
+# is sandbox.command around the lens.
 
 # inkling-2-small (Thinking Machines), through the codex harness straight to
 # ollama.com, effort xhigh -- the seated beam's route.
 ollama-direct@inkling-2-small:cloud
 #
 # MEASURED 2026-11-23 on mediabox, full 8-target grid, 1 repeat, 0 errors, 0
-# contract failures, 0 answer-key reads (checked per run with key_reads()). 594B
+# contract failures. BEFORE the isolation fix: its lenses stood in
+# bench/testdata like every earlier row. Its sessions were audited afterwards
+# with key_reads(): 0 answer-key reads, and mediabox's targets held no ignored
+# build output apart from target-go/linkd, which fixpoint's collector skipped. 594B
 # NVFP4, 1M context; ollama card $0.30 / $1.00 / $0.03 cached.
 #
 #   inkling-2-small  364/484  8th of 50 (7th until hy4 below)  1.57M tok  3596s  ~$0.76
@@ -1457,38 +1470,40 @@ ollama-direct@inkling-2-small:cloud
 ollama-direct@hy4:cloud
 #
 # MEASURED 2026-11-24 on the Mac, full 8-target grid, 1 repeat, 0 errors, 0
-# contract failures, 0 answer-key reads. This is the SECOND sweep: the first
-# (2026-11-23) is the one that read manifest-go.yaml and scored go 53/56 -- see
-# the note above; it was stopped after go and nothing of it is in results.csv.
+# contract failures, 0 answer-key reads, every row under isolation. Third time
+# lucky: the first sweep (2026-11-23) read manifest-go.yaml and scored go 53/56
+# -- see the note above; the second was clean of key reads, but its go and csharp
+# copies carried ignored build output (hy4 took `linkd` apart with strings/nm),
+# so those two were measured again from git's file list: go 42 -> 46, csharp
+# 51 -> 48. Nothing of the voided runs is in results.csv.
 # 774B BF16, 1M context; ollama card $0.834 / $2.501 / $0.042 cached.
 #
-#   hy4  387/484  2nd of 50 (Fable 5.2 403, claude 376)  1.74M tok  9129s  ~$3.14
-#   go 42  design 20  rust 57  java 56  typescript 52  csharp 51  cpp 54  python 55
+#   hy4  388/484  2nd of 50 (Fable 5.2 403, claude 376)  1.62M tok  8631s  ~$2.97
+#   go 46  design 20  rust 57  java 56  typescript 52  csharp 48  cpp 54  python 55
 #
-# Best non-Anthropic row by 23 (inkling-2-small 364) and the first one above
-# Opus. rust 57/64 is the grid record (Fable 5.2 56), cpp 54 ties it. Honest go
-# is 42, so the key was worth 11 seeds on that target.
+# Best non-Anthropic row by 24 (inkling-2-small 364) and the first one above
+# Opus. go 46/56 and rust 57/64 are grid records (Fable 5.2 44 and 56), cpp 54
+# ties it. The key had been worth 7 seeds on go.
 #
-# PANEL, in beam's (ollama) seat: 430 against 420 / 425 (+10 / +5). vs beam
-# r1 +68 / -34, r2 +74 / -36; marginal over sonnet+gpt-6-sol +40. Replacing
-# gpt-6-sol 437 / 442, 4th seat 442 / 446 (both a second ollama payer).
+# PANEL, in beam's (ollama) seat: 429 against 420 / 425 (+9 / +4). vs beam
+# r1 +66 / -31, r2 +74 / -35; marginal over sonnet+gpt-6-sol +39. Replacing
+# gpt-6-sol 434 / 441, 4th seat 440 / 446 (both a second ollama payer).
 #
-# TWO COSTS. (1) The clock: 9129s for the sweep, 3.3x beam's 2761s and the
-# slowest seat a round would wait for (go alone 1548s). (2) Its conduct: it reads
+# THREE COSTS. (1) The clock: 8631s for the sweep, 3.1x beam's 2761s and the
+# slowest seat a round would wait for (go alone 1087s). (2) Its conduct: it reads
 # whatever it can reach. Across 123 shell commands it touched no secret, no
 # network and wrote nothing, but in the unisolated run it read the manifest, the
 # scorer, fixpoint's prompts and other models' findings; isolated, it tries
-# `git log`, reads stdlib/JDK sources and takes the compiled `linkd` apart with
-# strings/nm. In a live round its lens stands in the real repository, .fixpoint/
+# `git log` and reads stdlib/JDK sources. In a live round its lens stands in the real repository, .fixpoint/
 # with the other reviewers' findings included, so a seat would want
 # sandbox.command.
 #
 # (3) The quota, read off the account's usage page on 2026-11-24 after the
-# sweep: session 44.9% used and weekly 10.7%, almost all of both hy4's (213
-# requests: this sweep plus the aborted first one). Roughly 5% of a session
+# second sweep: session 44.9% used and weekly 10.7%, almost all of both hy4's (213
+# requests: that sweep plus the aborted first one). Roughly 5% of a session
 # window and 1% of the week per target, so about twenty live rounds to a window.
 # inkling-2-small's 130 requests were a sliver of the same bars.
 #
-# DECIDED 2026-11-24, operator: NOT seated, beam keeps the ollama seat. +10 / +5
-# seeds from one repeat does not pay for 3.3x the round time, that quota and a
+# DECIDED 2026-11-24, operator: NOT seated, beam keeps the ollama seat. +9 / +4
+# seeds from one repeat does not pay for 3.1x the round time, that quota and a
 # sandbox. The row stays in the grid.
