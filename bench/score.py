@@ -4,6 +4,7 @@
 Usage: bench/score.py <manifest.yaml> <summary-*.json> <model> [repeat]
        bench/score.py --check <manifest.yaml>
        bench/score.py --selftest <manifest.yaml>
+       bench/score.py --leak-selftest
 
 Reads the run summary fixpoint already writes, matches every finding against
 the manifest's seeded defects, and appends one row to bench/results.csv plus a
@@ -391,11 +392,115 @@ def selftest(manifest_path):
     return 1 if stolen else 0
 
 
+# THE ANSWER KEY IS READABLE FROM A LENS (found 2026-11-23). The read-only
+# sandbox confines writes, not reads, so a lens can open the manifest, this
+# scorer, the per-run tables, or an earlier model's findings under .fixpoint/.
+# ollama-direct@hy4:cloud did all four and read go 53/56; two glm-5.3-flash rows
+# of 2026-10-28 had read their manifests. bench/run.sh now reviews a copy
+# outside the repository, and this is the second wall: a row whose lens
+# REACHED for the key is not a measurement, whatever it then found.
+#
+# Only tool-call INPUTS are read -- a codex shell command, a claude tool_use --
+# never tool output, so a path that merely appears in a directory listing is
+# not an offence. The patterns are paths no target contains (checked: none of
+# bench/testdata matches), so a hit is the model looking past its target.
+KEY_PATHS = re.compile(
+    r"manifest-[a-z]+\.yaml"
+    r"|score\.py"
+    r"|bench/(?:results|summaries|README|report)"
+    r"|results[\w.-]*\.(?:csv|json)"
+    r"|\.fixpoint/\d{8}-\d{6}"
+)
+
+
+def tool_inputs(raw_path):
+    """Every tool call's input in one session's raw stream, codex or claude."""
+    for line in pathlib.Path(raw_path).read_text(errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        item = event.get("item") or {}
+        if isinstance(item, dict) and item.get("type") == "command_execution" \
+                and event.get("type") == "item.started":
+            yield item.get("command") or ""
+        msg = event.get("message")
+        if isinstance(msg, dict):
+            for part in msg.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "tool_use":
+                    yield json.dumps(part.get("input"))
+
+
+def key_reads(run_dir):
+    """[(session file, tool input)] for every call that reached the answer key.
+
+    Empty for a directory with no round-*/ raws -- an extract under
+    bench/summaries/ being re-scored has no sessions to inspect, and its row was
+    judged when it was first written.
+    """
+    hits = []
+    for raw in sorted(pathlib.Path(run_dir).glob("round-*/*.raw")):
+        for call in tool_inputs(raw):
+            if KEY_PATHS.search(call):
+                hits.append((raw.name, call))
+    return hits
+
+
+def leak_selftest():
+    """key_reads() against the calls that leaked, and the ones that must not trip it."""
+    import tempfile
+    leaked = [
+        "/bin/zsh -lc \"nl -ba ../../manifest-go.yaml | sed -n '200,480p'\"",
+        "/bin/zsh -lc \"sed -n '1,140p' /Users/x/fixpoint/bench/score.py\"",
+        "/bin/zsh -lc 'cat .fixpoint/20260913-222951/round-1/review-x.json'",
+        "/bin/zsh -lc 'ls bench/results | head'",
+        "/bin/zsh -lc 'grep -n kimi results.csv'",
+    ]
+    clean = [
+        "/bin/zsh -lc 'nl -ba main.go store.go'",
+        "/bin/zsh -lc 'for p in /AGENTS.md /Users/AGENTS.md; do cat $p; done'",
+        "/bin/zsh -lc 'ls -la ..'",
+        "/bin/zsh -lc 'grep -rn Results src/'",
+    ]
+    fails = []
+    with tempfile.TemporaryDirectory() as d:
+        rnd = pathlib.Path(d, "round-1")
+        rnd.mkdir()
+        for i, cmd in enumerate(leaked + clean):
+            ev = {"type": "item.started", "item": {"type": "command_execution", "command": cmd}}
+            # A completed event repeating the command, and its OUTPUT naming a
+            # key path: neither may be counted -- only the started call's input.
+            done = {"type": "item.completed", "item": {"type": "command_execution", "command": cmd,
+                    "aggregated_output": "manifest-go.yaml score.py results.csv"}}
+            rnd.joinpath(f"s{i}.raw").write_text(json.dumps(ev) + "\n" + json.dumps(done) + "\n")
+        # The claude harness's shape: a tool_use inside an assistant message.
+        tu = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/r/bench/manifest-rust.yaml"}}]}}
+        rnd.joinpath("claude.raw").write_text(json.dumps(tu) + "\n")
+        got = {name for name, _ in key_reads(d)}
+        want = {f"s{i}.raw" for i in range(len(leaked))} | {"claude.raw"}
+        for name in sorted(want - got):
+            fails.append(f"missed a key read in {name}")
+        for name in sorted(got - want):
+            fails.append(f"flagged a clean call in {name}")
+        if len(key_reads(d)) != len(want):
+            fails.append(f"counted {len(key_reads(d))} calls, want {len(want)} (output or repeats counted)")
+    if fails:
+        print("score.py --leak-selftest FAILED:\n  " + "\n  ".join(fails))
+        return 1
+    print("score.py: answer-key read detection OK")
+    return 0
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--check":
         sys.exit(check(sys.argv[2]))
     if len(sys.argv) == 3 and sys.argv[1] == "--selftest":
         sys.exit(selftest(sys.argv[2]))
+    if len(sys.argv) == 2 and sys.argv[1] == "--leak-selftest":
+        sys.exit(leak_selftest())
     if len(sys.argv) < 4:
         sys.exit(__doc__)
     manifest_path, summary_path, model = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -469,6 +574,12 @@ def main():
         sys.exit(f"bench: {model} {target}: the panel never ran "
                  f"({summary.get('error') or 'no sessions'}), so this is not a "
                  f"measurement and no row was written. Re-run it.")
+    leaks = key_reads(pathlib.Path(summary_path).parent)
+    if leaks:
+        shown = "\n  ".join(f"{name}: {call[:200]}" for name, call in leaks[:8])
+        sys.exit(f"bench: {model} {target}: a lens read the answer key or earlier "
+                 f"results ({len(leaks)} call(s)), so this is not a measurement and "
+                 f"no row was written:\n  {shown}")
     mtok = (tok_in + tok_out) / 1e6
     eff = round(found / mtok, 2) if mtok else 0.0
 

@@ -1,0 +1,694 @@
+{
+ "run": "20261123-200657",
+ "task": "code",
+ "target": "go",
+ "model": "ollama-direct@inkling-2-small:cloud",
+ "repeat": "1",
+ "rounds": [
+  {
+   "findings": [
+    {
+     "file": "store.go",
+     "line": 65,
+     "title": "Resolve treats live links as expired and deletes them",
+     "description": "The expiry condition is inverted: `if time.Now().Before(l.ExpiresAt)` is true for every non-expired link, so a live link is deleted from the store and Resolve returns ErrNotFound. Expired links (now after ExpiresAt) fall through and resolve normally. The core redirect path is broken and every successful lookup permanently destroys a valid link (data loss in normal use). Should be `if !time.Now().Before(l.ExpiresAt)` (or time.Now().After(...)).",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.go",
+     "line": 79,
+     "title": "Cache eviction deadlocks the entire cache",
+     "description": "evict() is called with c.mu held in write mode (Set takes c.mu.Lock()). evict then calls c.Get(code), which takes c.mu.RLock(); RLock blocks while a writer holds the lock, so the goroutine deadlocks against itself. Once the cache reaches its limit (default 1024 entries), every Set wedges forever, and the held write lock also blocks all Get/Set/Delete/Warm callers \u2014 the resolver cache stops serving entirely.",
+     "lens": "review-bugs",
+     "severity": "critical"
+    },
+    {
+     "file": "store.go",
+     "line": 54,
+     "title": "Store.quota is never initialized; Create panics",
+     "description": "NewStore only initializes the links map. Create does `s.quota[owner]++` on the nil quota map, which panics with 'assignment to entry in nil map' on the very first link created. Every POST /links fails (recovered by net/http as a connection error), so link creation is entirely broken.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 106,
+     "title": "Page() slice-out-of-range panic on partial last page",
+     "description": "When end > len(all), end is set to len(all)+1 instead of len(all). `return all[offset:end]` then panics with slice bounds out of range whenever the requested page extends past the end of the slice \u2014 e.g. store has 5 links, Page(0, 20) yields all[0:6] on a 5-element slice. listLinks uses default size=20, so any store with fewer than 20 links (or a short final page) panics on GET /links.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 78,
+     "title": "redirect lowercases the code, so mixed-case codes never resolve",
+     "description": "newCode generates codes with base64.RawURLEncoding, whose alphabet is A-Za-z0-9-_. redirect() resolves strings.ToLower(code), so any code containing an uppercase letter (the overwhelming majority) is looked up under a key that was never stored, and the link 404s. The preview handler does not lowercase, so the two paths disagree as well.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 92,
+     "title": "Cache.Delete returns without unlocking when the key is missing",
+     "description": "If the code is not present, Delete returns while still holding c.mu (the early `return` skips the Unlock on line 95). The cache mutex is never released again, so every subsequent Get/Set/Delete/Warm blocks forever \u2014 a single timer-fired Delete of an already-evicted/expired key permanently wedges the cache.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 59,
+     "title": "Verify never checks ExpiresAt, so tokens never expire",
+     "description": "Verify looks up the token and returns the session without comparing s.ExpiresAt to time.Now(), despite its contract ('unknown or its lifetime has run out') and the 12h lifetime set in Issue. Expired sessions keep full access indefinitely; there is no other place that prunes or checks expiry.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 78,
+     "title": "BearerToken panics on any request without a well-formed header",
+     "description": "`parts := strings.Split(h, \" \"); return parts[1]` indexes element 1 unconditionally. If the Authorization header is absent (\"\") or is just \"Bearer\" with no space, Split yields a 1-element slice and the index panics. Every unauthenticated/malformed request to any protected endpoint triggers a panic (recovered by net/http per connection, so the request dies without a response).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "export.go",
+     "line": 60,
+     "title": "WriteSnapshot ignores the rename error and cross-device temp dir",
+     "description": "The result of os.Rename is discarded, so if the rename fails (e.g. the temp file is in /tmp on a different filesystem than dir, yielding EXDEV, or dir is read-only) WriteSnapshot returns nil and callers believe a durable snapshot exists when nothing was written. Additionally, on Write error the temp file is never closed/removed, leaking it. Durability claim in the doc comment is not met (no sync either).",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 90,
+     "title": "mustHead can pass a nil *http.Request to client.Do, panicking",
+     "description": "mustHead logs a NewRequest error but still returns the nil req. CheckTargets passes it straight to client.Do, which dereferences the nil request and panics; an unrecovered panic in a goroutine crashes the whole process. A stored target such as 'http://%zz' (passes the http:// prefix check in Create) triggers this as soon as CheckTargets runs.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 101,
+     "title": "preview never closes resp.Body",
+     "description": "The response body from s.client.Get(target) is read via LimitReader but resp.Body.Close() is never called on success or on the ReadAll error path. Each preview leaks a connection/file descriptor, eventually exhausting the transport's connections and starving the shared http.Client.",
+     "lens": "review-bugs",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 174,
+     "title": "stats divides by len(links), panicking on an empty store",
+     "description": "hits / int64(len(links)) is an integer division by zero when the store has no links (fresh deploy). The panic is recovered by net/http but the /stats endpoint fails the connection instead of returning a valid response.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 191,
+     "title": "writeJSON sends headers after WriteHeader",
+     "description": "w.WriteHeader(status) is called before the Content-Type, charset, and CORS headers are set, so those headers never reach the client \u2014 responses are served with the default Content-Type and no CORS headers, breaking JSON clients and browsers.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 64,
+     "title": "createLink ignores TTL parse errors",
+     "description": "hours, _ := strconv.Atoi(req.TTL): a non-numeric TTL becomes 0, producing ttl=0, i.e. a link that is already expired the moment it is created. Negative values likewise produce dead links with no error reported to the caller.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 48,
+     "title": "Invalid LINKD_TIMEOUT_MS zeroes the timeout instead of keeping the default",
+     "description": "When strconv.Atoi fails, the code logs and then unconditionally executes cfg.Timeout = time.Duration(ms) * time.Millisecond with ms == 0, so a bad env value silently yields a zero (infinite) HTTP client timeout despite the log message claiming the default is kept.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 54,
+     "title": "LINKD_CACHE_TTL_MS is interpreted as seconds, not milliseconds",
+     "description": "The documented unit is milliseconds, but the code multiplies by time.Second: a configured value of 5000 yields a 5000-second (83-minute) TTL instead of 5 seconds. Every TTL set via this env var is off by a factor of 1000.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 39,
+     "title": "Invalid LINKD_PORT is silently accepted as port 0",
+     "description": "The Atoi error is discarded; a malformed LINKD_PORT (e.g. 'http') sets cfg.Port = 0. Combined with Validate never returning an error, the server starts on a random ephemeral port (or fails opaquely) with no configuration error reported.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 68,
+     "title": "LINKD_FETCH_LIMIT is parsed but never applied",
+     "description": "The parsed limit is checked for > 0 and then discarded (`_ = limit`), so cfg.FetchLimit always remains the default 32 regardless of the environment. The documented configuration knob does nothing.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 116,
+     "title": "Validate never returns an error",
+     "description": "Validate detects problems, logs them, and then falls through to `return nil` unconditionally. The entire startup-validation safety net is a no-op: an invalid port, negative cache size, or zero timeout starts the service anyway, contrary to the documented behavior and the caller's expectation of a fail-fast error.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 84,
+     "title": "RequireAdmin rejects every role, including admin",
+     "description": "`if s.Role != \"admin\" || s.Role != \"owner\"` is a tautology \u2014 a role cannot equal both strings, so the condition is always true and RequireAdmin always returns 'admin role required'. No session can ever pass the admin check. The operator should be &&.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 20,
+     "title": "AddResolved has a value receiver; the counter never changes",
+     "description": "func (m Metrics) AddResolved() copies the Metrics struct (including the mutex) and increments the copy's resolved field, which is discarded on return. The resolved counter reported by Snapshot is permanently 0 and the real mutex is bypassed.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 68,
+     "title": "WarmCache calls wg.Add inside the goroutine",
+     "description": "wg.Add(1) is executed inside the spawned goroutine, so wg.Wait() can run before any Add happens and return immediately \u2014 the function does not wait for the HEAD probes despite documenting 'It returns after every probe finished'. Probes may outlive the caller and are never accounted for.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 100,
+     "title": "CheckTargets leaks goroutines forever after the first failure",
+     "description": "results is an unbuffered channel and the function returns as soon as one error is received. Every other in-flight probe then blocks forever on `results <- ...`, leaking one goroutine per remaining target per failing call \u2014 an unbounded goroutine accumulation under repeated use.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 146,
+     "title": "Top returns the least-followed links first",
+     "description": "The sort comparator `all[i].Hits < all[j].Hits` sorts ascending by hits, so Top(n) returns the n least-followed links \u2014 the exact opposite of the documented 'most hits first' leaderboard.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 159,
+     "title": "ByOwner matches substrings instead of the exact owner",
+     "description": "ByOwner uses strings.Contains(l.Owner, owner), so asking for owner \"ann\" also returns links owned by \"annabelle\" or \"griann\", and an empty owner string matches every link. The doc promises 'links belonging to exactly this owner'.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 173,
+     "title": "Extend resurrects expired links, violating the finality of expiry",
+     "description": "Extend unconditionally sets ExpiresAt = now + ttl. The documented contract is 'An already-expired link stays expired: expiry is final'. As written, a dead code can be brought back by extending it, contradicting the design and re-enabling expired links that were already deleted from/served as dead elsewhere.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 134,
+     "title": "Delete never releases the owner's quota slot",
+     "description": "The comment promises the owner gets their quota slot back, but the owner is read into `l` and then discarded (`_ = l.Owner`); s.quota is never decremented. Quota counts therefore grow forever and users permanently lose slots for links they deleted.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 185,
+     "title": "Import is not atomic despite its contract",
+     "description": "Import validates and inserts one link at a time, mutating s.links as it goes; on the first invalid code it returns an error leaving the earlier links already inserted. The doc promises 'either every link in the batch is stored, or none of them is'. A failed import half-commits.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 78,
+     "title": "Rename validates `from` twice and never validates `to`",
+     "description": "The second validateCode call repeats validateCode(from) \u2014 copy-paste slip \u2014 so the destination code `to` is unchecked. A caller can rename a link to a code containing arbitrary characters or one longer than 32 chars (Rename is exposed for internal callers and other constraints elsewhere assume validated codes), corrupting the store's code invariants.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 71,
+     "title": "Stale timers are never stopped and outlive replaced entries",
+     "description": "Set overwrites c.timers[code] without stopping the previous timer, and Delete never stops the timer nor removes its map entry. An old timer fires Delete(code) after the entry was re-created, deleting the fresh entry before its TTL elapses; the timers map also grows unboundedly (one leaked timer per Set of an existing key).",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 123,
+     "title": "SuccessRate integer division always yields 0 or 100",
+     "description": "`used / len(s.links) * 100` performs integer division first, so any fraction below 100% truncates to 0. Only a store where every link was clicked reports 100; e.g. 1 of 2 links clicked reports 0% instead of 50%.",
+     "lens": "review-bugs",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 205,
+     "title": "Prune returns the surviving count, not the number removed",
+     "description": "Prune computes `removed` correctly but returns `len(s.links)` (the number of remaining links). Callers asking 'how many were pruned' get a meaningless, unrelated number.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 180,
+     "title": "Quotas returns the store's internal map, not a snapshot",
+     "description": "The doc promises 'a snapshot: mutating it must not affect the store', but the function returns s.quota itself. Any caller (e.g. the admin dashboard handler) that writes to the returned map corrupts per-owner quota accounting.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "cache.go",
+     "line": 83,
+     "title": "evict does not evict the least recently used entry",
+     "description": "Despite its doc and the Get doc tying eviction to LRU order, evict picks the first entry yielded by map iteration (effectively random) and discards a live entry regardless of recency; the both-branches-delete structure makes the !alive check pointless.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "export.go",
+     "line": 21,
+     "title": "CSV output is never escaped, so fields containing , or newline corrupt the report",
+     "description": "Fields are interpolated with fmt.Sprintf without quoting. A link target or owner containing a comma, quote, or newline smears into adjacent columns or injects extra rows, producing a malformed CSV that downstream tooling mis-parses.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "export.go",
+     "line": 40,
+     "title": "ArchiveAll defers Close inside the loop and ignores write errors",
+     "description": "f.Close() is deferred, so all per-owner files stay open until the function returns (FD pressure for many owners) and close errors are silently dropped; WriteString errors are also ignored, so a filled disk yields 'successful' (possibly empty/partial) archives.",
+     "lens": "review-bugs",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 26,
+     "title": "Store has no synchronization; every access to the links map races",
+     "description": "Store.links (and Store.quota) are plain maps with no mutex, yet they are touched concurrently by every HTTP handler (Create, Resolve, Page, Delete, Import, Prune, Quotas) and by the janitor goroutine (worker.go StartJanitor iterates and deletes from the same map). Two concurrent requests resolving/creating links, or a handler running while the janitor sweeps, is a concurrent map read/write, which the Go runtime escalates to a fatal, unrecoverable 'concurrent map read and map write' crash. Additionally, Link pointers handed out by Page/ByOwner/Top are mutated in place (l.Hits++ in Resolve) while other goroutines read them, so even map-safe access would still race on the Link structs.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "worker.go",
+     "line": 51,
+     "title": "Janitor iterates and deletes from the store map with no lock held",
+     "description": "StartJanitor's goroutine ranges over s.links and calls delete on entries while HTTP handlers concurrently Create/Resolve/Page through Store methods. This is a direct map read/write race outside any mutex (none exists today, and even one added only to Store's methods would not protect this direct field access). A sweep racing a redirect or create can crash the process or corrupt iteration.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 92,
+     "title": "Cache.Delete returns without unlocking when the key is absent",
+     "description": "Delete takes c.mu.Lock() and, if the code is not present, does 'return' without calling c.mu.Unlock(). The mutex stays locked forever, so every subsequent Cache call (Get via handlers, Set, evict, the AfterFunc expiry callbacks) blocks permanently and the resolver wedges; the runtime cannot detect this. Missing-key Delete is routine: an AfterFunc timer fires after the entry was already expired-out by Get or dropped by evict, or Delete is called for a code that was never cached.",
+     "lens": "review-concurrency",
+     "severity": "critical"
+    },
+    {
+     "file": "cache.go",
+     "line": 79,
+     "title": "evict self-deadlocks by calling Get (RLock) while holding the write Lock",
+     "description": "evict is documented 'the caller holds the lock' and is called from Set while c.mu.Lock() is held. It then calls c.Get(code), which does c.mu.RLock(). A goroutine already holding the write lock can never acquire a read lock (readers block until the writer releases), so Set deadlocks once the cache is full (len(c.m) >= limit). Every request that populates a full cache hangs a handler goroutine forever, and the accumulated blocked handlers eventually stall the server.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "cache.go",
+     "line": 44,
+     "title": "Get mutates shared state under a read lock",
+     "description": "Get runs under c.mu.RLock(), which allows many concurrent readers, but it deletes expired entries from c.m (line 44), writes e.used (line 47), and increments c.hits (line 48). Concurrent readers therefore write the map and the shared entry concurrently with each other and with writers blocked behind no lock, producing a data race and potentially a fatal concurrent map write; e.used updates for the same entry also race, corrupting the LRU ordering eviction relies on.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 52,
+     "title": "Authenticator.sessions map is accessed without any synchronization",
+     "description": "Issue (line 52), Verify (the loop at line 60, executed on every authenticated request via Middleware), and Revoke (delete) all read/write a.sessions with no mutex. Concurrent requests issuing/verifying/revoking tokens race on the map; Go escalates concurrent map read/write to a fatal error, and even without the runtime check the session set can be observed mid-update. Authenticator is shared process-wide in main (NewAuthenticator().Middleware(mux)).",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 68,
+     "title": "WarmCache calls wg.Add(1) inside the spawned goroutine",
+     "description": "wg.Add(1) executes after the goroutine is scheduled, while the main goroutine proceeds to wg.Wait(). If Wait runs before any Add executes it returns immediately, so WarmCache returns before the probes finish (defeating its documented 'returns after every probe finished' contract); if Add lands while Wait is in progress the runtime can also panic with 'sync: WaitGroup misuse: Add called concurrently with Wait'.",
+     "lens": "review-concurrency",
+     "severity": "high"
+    },
+    {
+     "file": "worker.go",
+     "line": 101,
+     "title": "CheckTargets leaks the remaining probe goroutines on first failure",
+     "description": "results is an unbuffered channel and every probe goroutine sends exactly one result. When the loop sees a non-nil error it returns immediately without draining results, so all probes that have not yet sent (or send afterwards) block forever on 'results <- ...'. Those goroutines, and their in-flight HTTP work, are never awaited or cancelled and accumulate on every failed Target check; there is also no context/timeout path to cancel them.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 54,
+     "title": "Peek reads the cache map with no lock at all",
+     "description": "Peek is documented for concurrent use ('called from the janitor goroutine while handlers are serving' for Warm, which relies on Peek) and is called with no synchronization. It races with Set, Delete, the AfterFunc expiry callback, and the map writes inside Get, so a warm pass can observe a half-updated map or crash the process.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 71,
+     "title": "Expiry timer is never stopped; a stale timer can delete a freshly set entry",
+     "description": "Set stores time.AfterFunc(ttl) in c.timers[code] without stopping the previous timer for the same code, and Delete (despite its comment 'stops the work that was scheduled for it') never stops or removes the timer. After a re-Set/refresh, the old timer still fires Delete(code) at the old deadline, deleting the new entry well before its TTL (and, combined with the missing-unlock bug above, wedging the cache). timers entries are also never deleted, so the map grows unboundedly.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 20,
+     "title": "Metrics.AddResolved uses a value receiver, copying the sync.Mutex",
+     "description": "func (m Metrics) AddResolved() copies the Metrics struct, including mu. The method locks and increments the copy, which is discarded on return, so the shared resolved counter is never incremented and the mutex is copied (go vet 'copies lock value'). Each caller locks a private mutex, so concurrent AddResolved calls are entirely unsynchronized with the real state Snapshot reads.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 180,
+     "title": "Quotas returns the live internal quota map, not a snapshot",
+     "description": "Quotas returns s.quota itself although its contract says callers get a snapshot that they may mutate freely. The admin handler (main.go adminQuotas) serializes this map to JSON while other goroutines create links (s.quota[owner]++) and delete them, racing the JSON encoder's iteration over the same map \u2014 a fatal concurrent map read/write \u2014 and letting the caller corrupt store state.",
+     "lens": "review-concurrency",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 110,
+     "title": "Cache.hits is incremented under RLock and read with no lock",
+     "description": "hits is bumped concurrently by Get (under only a read lock) and read by Stats with no synchronization at all, so the dashboard counter races and can lose updates or read torn values. It cannot be made correct by readers-writer locking alone while Get writes under RLock.",
+     "lens": "review-concurrency",
+     "severity": "low"
+    },
+    {
+     "file": "main.go",
+     "line": 96,
+     "title": "SSRF via /preview: server fetches arbitrary stored URLs and returns the response body",
+     "description": "Any authenticated user can create a link whose target is http://169.254.169.254/latest/meta-data/iam/security-credentials/ or any internal address (only the http:// or https:// prefix is checked in Store.Create), then GET /preview/{code}. The handler performs a server-side GET and returns the first 4 KB of the response body to the caller, leaking cloud metadata credentials and internal service data. The response body is also never closed, compounding connection/FD exhaustion.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "export.go",
+     "line": 16,
+     "title": "Path traversal in ExportCSV writes outside the export dir; report endpoint serves it back",
+     "description": "The `name` query parameter flows from GET /report (main.go:180) straight into filepath.Join(dir, name+\".csv\"). A value like ../../etc/some/controlled-name overwrites files anywhere the service user can write, with attacker-influenced content (all owners' link data, with newlines and CSV metacharacters injected via targets/owners). GET /report?name=../../any/path then calls http.ServeFile on the resulting path, reading it back to the attacker. The 'confined to dir' comment is simply false.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 133,
+     "title": "deleteLink performs no ownership check; any authenticated user can delete anyone's link",
+     "description": "The comment states the owner is taken from the authenticated session, but the handler never reads the X-Owner header the middleware sets and never compares it to the link's owner. DELETE /links/{code} deletes the link outright, so any valid token holder can delete every other user's links (availability/integrity loss, sabotage).",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 156,
+     "title": "Admin authorization decided by client-controlled X-Admin header",
+     "description": "/admin/quotas only checks r.Header.Get(\"X-Admin\") == \"true\". Any authenticated user can set that header and read every owner's link counts. The middleware has already authenticated the caller and populated the session role, but the admin gate ignores it entirely, so the role system is bypassed for this endpoint.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "main.go",
+     "line": 67,
+     "title": "Link owner is taken from the request body, not the session",
+     "description": "createLink decodes `owner` from the client JSON and passes it verbatim to Store.Create. Any authenticated user can create links attributed to another owner (impersonation), inflate another owner's quota counters, and poison ownership-based access control and per-owner reporting (ArchiveAll, Quotas).",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 44,
+     "title": "Session tokens generated with math/rand, not crypto/rand",
+     "description": "Issue() fills the 16-byte token with math/rand, which is not a CSPRNG. An attacker who can observe or influence the PRNG state (or who brute-forces the limited seed space) can predict issued session tokens and hijack accounts. Token issuance is the control gating every endpoint.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 59,
+     "title": "Verify never checks ExpiresAt; expired tokens remain valid forever",
+     "description": "Sessions are issued with a 12-hour ExpiresAt, but Verify only iterates the sessions map and returns the session on token match; the expiry timestamp is never consulted. A leaked or stolen token therefore works indefinitely. The function's own doc comment promises expiry enforcement that does not exist.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 53,
+     "title": "Full session token written to the log on every issue",
+     "description": "Issue logs 'auth: issued token %s for %s'. Anyone with read access to the logs (log aggregation, backups, shared host) obtains live bearer tokens for arbitrary users and can replay them to take over accounts; the tokens additionally never expire (see Verify finding).",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 69,
+     "title": "Passwords hashed with unsalted SHA-256",
+     "description": "HashPassword does a single unsalted sha256 of the password. Unsalted fast hashes are vulnerable to rainbow tables and mass cracking of the user table; a single SHA-256 round provides no work factor against GPUs. (Best practice would be bcrypt/argon2/scrypt with per-user salt.)",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 65,
+     "title": "Expiry check inverted: live links are deleted on resolve, expired links are served",
+     "description": "Resolve does `if time.Now().Before(l.ExpiresAt) { delete(s.links, code); return ErrNotFound }` \u2014 the condition is backwards. Live links are deleted and return 404 on first access, while genuinely expired links skip the branch and are returned to callers with a hit incremented. Expired short links (the exact thing expiry exists to kill) remain usable indefinitely, and the code-deletion side effect corrupts/DoSes the store.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 27,
+     "title": "Store has no synchronization; concurrent map access causes fatal process crash",
+     "description": "Store.links is read/written from HTTP handlers, the janitor goroutine (worker.go StartJanitor iterates and deletes from s.links), and resolvers with no mutex anywhere. Go maps are not safe for concurrent use: a concurrent read/write triggers a runtime fatal error that net/http cannot recover, killing the whole process. Normal concurrent traffic plus the 1-minute janitor sweep makes this reachable in ordinary use.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "store.go",
+     "line": 106,
+     "title": "Page() slices with end = len+1; any page past the end panics",
+     "description": "When offset+size exceeds the store size, the code sets end = len(all)+1 and returns all[offset:end], which is out of range and panics. With the default size=20 this triggers for any store with fewer than 20 links hitting GET /links (and via /stats and /report, which call Page(0, 1000)) \u2014 an authenticated remote user gets a handler panic on every call. net/http recovers the handler, but the endpoint is dead and the pattern is fragile.",
+     "lens": "review-security",
+     "severity": "high"
+    },
+    {
+     "file": "auth.go",
+     "line": 78,
+     "title": "BearerToken panics on missing or malformed Authorization header",
+     "description": "strings.Split(h, \" \") with no second element makes parts[1] an index-out-of-range panic. Every route is behind Middleware, so any unauthenticated client sending no header, 'Bearer', or a single-token scheme panics the handler goroutine; net/http recovers the connection but the request dies as a dropped connection instead of a clean 401, and the same panic occurs for any non-'x y' header shape. The scheme is also never validated.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "auth.go",
+     "line": 32,
+     "title": "Hardcoded fallback secret 'dev-secret-do-not-use' when LINKD_SECRET is unset",
+     "description": "NewAuthenticator silently falls back to a publicly known hardcoded secret when LINKD_SECRET is missing. Anyone who knows this source (or finds it in a leaked binary/repo) can forge whatever the secret protects and, worse, the fallback hides misconfiguration instead of failing closed. (The secret is currently unused for signing, but shipping a known-default credential is a standing failure mode.)",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 21,
+     "title": "CSV injection and no field escaping in exports",
+     "description": "Link fields (target is URL-validated but may contain CR/LF and commas; owner is fully attacker-controlled; code is constrained but hits fields are numeric) are interpolated into CSV without quoting or formula-escaping. A target like 'https://x/\\n=1+cmd|'\" or an owner starting with '=', '+', '-', '@' produces a CSV that executes formulas when opened in Excel/LibreOffice (DDE/command execution) and corrupts row structure otherwise. Attackers who share/open the export are the victims.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 26,
+     "title": "Report file created world-readable/writable (0666) despite containing all owners' data",
+     "description": "ExportCSV writes the per-target report (every owner's code/target/hits) with mode 0666, directly contradicting the comment that it must be service-user only. On a multi-user box any local user can read every owner's link metadata, or tamper with the file before it is served via /report.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "export.go",
+     "line": 60,
+     "title": "WriteSnapshot ignores os.Rename failure (and uses /tmp + rename across filesystems)",
+     "description": "The rename from the /tmp temp file to dir/snapshot.json is unchecked; on EXDEV (temp on /tmp, dir elsewhere) or any other rename failure, the function returns nil and the snapshot silently never lands in place \u2014 the process believes it persisted state it did not. The durability the function promises is illusory, and the temp file leaks. Additionally the fixed /tmp prefix is predictable (though CreateTemp randomizes the suffix).",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "config.go",
+     "line": 116,
+     "title": "Validate() always returns nil; bad config never fails startup",
+     "description": "Validate builds a problems list, logs it, and then returns nil unconditionally, so invalid config (bad port, negative cache size, non-positive timeout) is accepted 'because the log line was emitted'. Compounding it, LINKD_TIMEOUT_MS parse failure logs 'keeping default' but then still assigns time.Duration(0) (ms == 0 on error), and LINKD_CACHE_TTL_MS is interpreted as seconds despite the documented MILLISECONDS unit \u2014 so a typo yields a zero-timeout HTTP client (no timeout: SSRF/preview hangs forever, slow-loris amplification) and a 1000x wrong cache TTL, silently.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 174,
+     "title": "Integer division by zero panics in /stats when no links exist",
+     "description": "hits / int64(len(links)) divides by zero when the store is empty (fresh deploy or after all links are pruned). GET /stats by any authenticated user then panics the handler; net/http recovers the connection, but the endpoint is broken and the same pattern recurs anywhere len(links)==0.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 144,
+     "title": "Open redirect: /out redirects to arbitrary ?next= target",
+     "description": "/out?next=https://evil.example 302s the caller to any attacker-chosen URL. Because the parameter is unconstrained and sits on the service's domain, it is a textbook phishing oracle ('linkd.example/out?next=evil.com'), and it bypasses any link validation the rest of the service enforces (no http(s) check at all, unlike Store.Create).",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 110,
+     "title": "GET /links returns every owner's links to any authenticated user",
+     "description": "listLinks paginates the entire store with no owner scoping, exposing all users' codes, targets, and hit counts to any valid token holder. The store even has ByOwner for exactly this but it is not used, so per-user data partitioning is absent where the product plainly intends it (see ArchiveAll/delete ownership semantics).",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "cache.go",
+     "line": 91,
+     "title": "Cache mutex misuse: Delete returns without Unlock, evict runs under write lock, Get mutates under read lock",
+     "description": "Delete() returns early when the key is absent without c.mu.Unlock(), permanently wedging every subsequent Cache operation on that mutex. Get() deletes from c.m and writes used/hits while holding only RLock (concurrent map delete is fatal at runtime), and evict() (called with the write lock held) calls Get(), which RLocks \u2014 a guaranteed deadlock once the cache is full. Warm() then blocks forever, and since the cache is created on the serve path, a full/updated cache can wedge the resolver. Not currently wired into handlers, which is why this is medium.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "store.go",
+     "line": 159,
+     "title": "ByOwner uses substring match, leaking other owners' links",
+     "description": "strings.Contains(l.Owner, owner) returns every link whose owner contains the query as a substring (owner 'ann' matches 'anna', 'bannana', 'ann@x'). Any caller using ByOwner to show a user their own links (the documented purpose) discloses other users' links. Should be exact equality.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "worker.go",
+     "line": 112,
+     "title": "mustHead returns nil request on parse failure; CheckTargets then panics in a goroutine",
+     "description": "If NewRequest fails, mustHead logs and returns nil; the goroutine then calls client.Do(nil), which panics. A panic inside a bare goroutine is not recovered by net/http or by any handler \u2014 the whole process dies. Attacker-controlled link targets that defeat URL parsing therefore crash the service the moment any batch-check is run. CheckTargets also abandons remaining probes on first error while the unbuffered channel blocks later goroutines forever (goroutine leak). Not currently routed, hence medium.",
+     "lens": "review-security",
+     "severity": "medium"
+    },
+    {
+     "file": "main.go",
+     "line": 190,
+     "title": "writeJSON sets headers after WriteHeader; CORS allows any origin with credentials",
+     "description": "w.WriteHeader(status) is called before Content-Type and CORS headers are set, so those headers are silently dropped (responses are untyped, and the intended CORS posture never applies). Additionally, 'Access-Control-Allow-Origin: *' combined with 'Access-Control-Allow-Credentials: true' is an invalid/overbroad pairing \u2014 browsers reject it, but if the JSON endpoint is ever fronted by a CORS-reflecting proxy it signals an intent to allow cross-origin credentialed reads of authenticated responses.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "main.go",
+     "line": 96,
+     "title": "401 response reflects the submitted bearer token back to the caller",
+     "description": "Middleware writes the raw token into the error body (\"... (token \" + token + \")\") on every failed authentication. Beyond echoing credentials into access logs and browser histories, this trains clients to treat tokens as non-sensitive; if the body is logged anywhere it captures live credentials of mis-sent tokens.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "main.go",
+     "line": 97,
+     "title": "preview never closes resp.Body",
+     "description": "resp.Body is read with LimitReader(4096) but never Closed, leaking the underlying TCP connection on every preview call; repeated previews exhaust the client's/server's connection pool and file descriptors, degrading or hanging outbound fetch capacity (availability).",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "main.go",
+     "line": 184,
+     "title": "Error response leaks internal export directory and filesystem error",
+     "description": "The 500 body includes s.cfg.ExportDir and the raw os error (e.g. open /var/lib/linkd/exports/x.csv: permission denied), disclosing deployment layout (paths, mount layout, usernames in some errors) to any authenticated caller.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 74,
+     "title": "Rename validates 'from' twice and never validates 'to'",
+     "description": "validateCode is applied to `from` on both checks and never to `to`, so a caller can rename a link to an arbitrary string (invalid characters, control chars, path separators). That wrong code is then stored and reflected in exports/redirects and cannot be addressed by the mux's {code} pattern, permanently orphaning the link and enabling stored-content weirdness. Rename is not currently routed over HTTP.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 171,
+     "title": "Extend revives expired links, contradicting the 'expiry is final' invariant",
+     "description": "The doc comment says an already-expired link stays expired, but the implementation unconditionally sets ExpiresAt = now+ttl on any link found in the map. In combination with the inverted expiry check in Resolve, expired codes can be brought back to life indefinitely \u2014 a dead link can be resurrected by anyone able to call Extend (e.g. future admin tooling wired to this method).",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 180,
+     "title": "Quotas returns the live internal map, not a copy",
+     "description": "Quotas() hands out the store's own s.quota map; the adminQuotas handler then serializes it while other goroutines write to it (store is otherwise unsynchronized), risking fatal concurrent map read, and any caller can mutate quota state, defeating per-owner limits.",
+     "lens": "review-security",
+     "severity": "low"
+    },
+    {
+     "file": "store.go",
+     "line": 185,
+     "title": "Import claims atomicity and validates codes but not targets, and is not atomic",
+     "description": "Import inserts into s.links one by one and returns on the first invalid code, leaving earlier inserts in place \u2014 the opposite of the documented all-or-nothing semantics \u2014 and it never validates Target (unlike Create, it allows javascript:/file:/control-character URLs to be stored for later redirect/preview). It also bypasses quota accounting. Import is not currently exposed via HTTP.",
+     "lens": "review-security",
+     "severity": "low"
+    }
+   ],
+   "steps": [
+    {
+     "usage": {
+      "input_tokens": 103948,
+      "output_tokens": 16979,
+      "cache_read_tokens": 47872
+     },
+     "duration_ms": 480283,
+     "failed": false,
+     "output_bytes": 22167
+    },
+    {
+     "usage": {
+      "input_tokens": 140967,
+      "output_tokens": 10134,
+      "cache_read_tokens": 68864
+     },
+     "duration_ms": 240261,
+     "failed": false,
+     "output_bytes": 10734
+    },
+    {
+     "usage": {
+      "input_tokens": 168697,
+      "output_tokens": 21277,
+      "cache_read_tokens": 73216
+     },
+     "duration_ms": 350289,
+     "failed": false,
+     "output_bytes": 24266
+    }
+   ],
+   "review_errors": []
+  }
+ ]
+}

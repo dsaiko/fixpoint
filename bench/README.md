@@ -46,6 +46,18 @@ verdict to INCONCLUSIVE. Any contract failure or timeout across the sweep is
 recorded in `results.csv` (`errors`); more than one across three repeats
 disqualifies regardless of recall.
 
+### Isolation: the reviewer must not see the answer key
+
+A lens can read anything its user can; the read-only sandbox confines writes.
+Until 2026-11-23 a lens reviewed `bench/testdata/target-<x>` in place, two
+directories below its own `manifest-<x>.yaml`, and three rows were measured
+by models that read it (hy4 scored go 53/56 that way). So `run.sh` now hands
+every run a fresh copy of the target outside the repository, and `score.py`
+writes no row when any lens's tool call names a manifest, the scorer, the
+per-run tables or an earlier run's findings (`key_reads()`, tested by
+`--leak-selftest`). A record-breaking cell is suspect until its sessions have
+been read.
+
 ### The calibration, measured 2026-08-20
 
 | baseline | go | design | **score** | tokens | wall |

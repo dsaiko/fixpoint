@@ -1412,3 +1412,72 @@ gpt-6.2-astra
 # ~2.6x sol's $ per sweep. A live round is roughly one target's worth of lenses, so
 # an astra seat would empty a Team 5h window in about ten rounds. Clears the bar;
 # NOT seated, operator's call between the two costs.
+
+# THE ANSWER KEY WAS READABLE FROM A LENS until 2026-11-23. A lens's cwd was
+# bench/testdata/target-<x> and the read-only sandbox confines writes, not reads,
+# so `../../manifest-<x>.yaml`, bench/score.py and every earlier model's findings
+# under .fixpoint/ were one `cat` away. Found when ollama-direct@hy4:cloud read go
+# 53/56 (+9 over the record): its security lens ran `find ../..`, then
+# `nl -ba ../../manifest-go.yaml`, read score.py and grepped old security findings.
+# An audit of every results.csv run on both hosts (tool-call INPUTS only, not
+# listings) found two more: ollama-codex@glm-5.3-flash:cloud#max cpp 20261028-125904
+# (read manifest-cpp and manifest-go, tried to run score.py) and
+# ollama-direct@glm-5.3-flash:cloud#max csharp 20261028-130828 (read
+# manifest-csharp). All three rows were removed and the two glm targets re-measured
+# under the fix. One borderline row was kept: ollama-codex@beam:cloud python
+# 20261019-210306 (beam r1) opened an older TYPESCRIPT run's findings and never a
+# python one. Since then bench/run.sh reviews a fresh copy outside the repository
+# and score.py refuses a row whose lens reached the key (key_reads()).
+
+# inkling-2-small (Thinking Machines), through the codex harness straight to
+# ollama.com, effort xhigh -- the seated beam's route.
+ollama-direct@inkling-2-small:cloud
+#
+# MEASURED 2026-11-23 on mediabox, full 8-target grid, 1 repeat, 0 errors, 0
+# contract failures, 0 answer-key reads (checked per run with key_reads()). 594B
+# NVFP4, 1M context; ollama card $0.30 / $1.00 / $0.03 cached.
+#
+#   inkling-2-small  364/484  8th of 50 (7th until hy4 below)  1.57M tok  3596s  ~$0.76
+#   go 44  design 19  rust 50  java 50  typescript 48  csharp 49  cpp 51  python 53
+#
+# Level with Fable 5.1 (365) and Sonnet 5.5 (369) solo, at a twentieth of their
+# notional cost; +16 over beam through codex (348) and above Gemini 4 Argon (348).
+# go 44 and design 19 equal Fable 5.2's.
+#
+# PANEL, in beam's (ollama) seat: 418 against 420 / 425 -- NOT a gain. Head to head
+# vs beam r1 +50 / -39, r2 +60 / -45: it finds more, but what beam finds that it
+# misses is what claude-sonnet + gpt-6-sol also miss. Replacing gpt-6-sol 424 / 431,
+# 4th seat 430 / 436 -- both would make a second ollama payer. Marginal over
+# sonnet+gpt-6-sol +28. Not a seat on coverage; the case for it is solo quality at
+# ~$0.76 a sweep, and an ollama-seat round at its pace (3596s for the sweep).
+
+# hy4 (Tencent), same route as inkling above: codex harness straight to
+# ollama.com, effort xhigh.
+ollama-direct@hy4:cloud
+#
+# MEASURED 2026-11-24 on the Mac, full 8-target grid, 1 repeat, 0 errors, 0
+# contract failures, 0 answer-key reads. This is the SECOND sweep: the first
+# (2026-11-23) is the one that read manifest-go.yaml and scored go 53/56 -- see
+# the note above; it was stopped after go and nothing of it is in results.csv.
+# 774B BF16, 1M context; ollama card $0.834 / $2.501 / $0.042 cached.
+#
+#   hy4  387/484  2nd of 50 (Fable 5.2 403, claude 376)  1.74M tok  9129s  ~$3.14
+#   go 42  design 20  rust 57  java 56  typescript 52  csharp 51  cpp 54  python 55
+#
+# Best non-Anthropic row by 23 (inkling-2-small 364) and the first one above
+# Opus. rust 57/64 is the grid record (Fable 5.2 56), cpp 54 ties it. Honest go
+# is 42, so the key was worth 11 seeds on that target.
+#
+# PANEL, in beam's (ollama) seat: 430 against 420 / 425 (+10 / +5). vs beam
+# r1 +68 / -34, r2 +74 / -36; marginal over sonnet+gpt-6-sol +40. Replacing
+# gpt-6-sol 437 / 442, 4th seat 442 / 446 (both a second ollama payer).
+#
+# TWO COSTS. (1) The clock: 9129s for the sweep, 3.3x beam's 2761s and the
+# slowest seat a round would wait for (go alone 1548s). (2) Its conduct: it reads
+# whatever it can reach. Across 123 shell commands it touched no secret, no
+# network and wrote nothing, but in the unisolated run it read the manifest, the
+# scorer, fixpoint's prompts and other models' findings; isolated, it tries
+# `git log`, reads stdlib/JDK sources and takes the compiled `linkd` apart with
+# strings/nm. In a live round its lens stands in the real repository, .fixpoint/
+# with the other reviewers' findings included, so a seat would want
+# sandbox.command. NOT seated -- operator's call.

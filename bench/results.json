@@ -24,11 +24,11 @@
  "possible": 484,
  "measured": {
   "first": "2026-08-20",
-  "last": "2026-11-18"
+  "last": "2026-11-24"
  },
  "totals": {
-  "candidates": 48,
-  "sessions": 1156,
+  "candidates": 50,
+  "sessions": 1199,
   "targets": 8,
   "contract_failures": 4,
   "timeouts": 3,
@@ -109,6 +109,78 @@
   },
   {
    "rank": 2,
+   "candidate": "ollama-direct@hy4:cloud",
+   "baseline": false,
+   "model": "ollama-direct@hy4:cloud",
+   "effort": null,
+   "route": "ollama/codex",
+   "pays": "sub (ollama)",
+   "points": 387,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1739837,
+   "points_per_mtok": 222.4,
+   "cost_usd": 3.14,
+   "cost_per_point_usd": 0.008,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.788,
+   "cost_per_point_uncached_usd": 0.014,
+   "seconds": 9129,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-11-24",
+    "last": "2026-11-24"
+   },
+   "by_target": {
+    "go": {
+     "found": 42,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 20,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 57,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 56,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 52,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 51,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 54,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 55,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 3,
    "candidate": "claude",
    "baseline": true,
    "model": "claude-opus-5",
@@ -180,7 +252,7 @@
    }
   },
   {
-   "rank": 3,
+   "rank": 4,
    "candidate": "claude-opus-5",
    "baseline": false,
    "model": "claude-opus-5",
@@ -252,7 +324,7 @@
    }
   },
   {
-   "rank": 4,
+   "rank": 5,
    "candidate": "claude-opus-5-5",
    "baseline": false,
    "model": "claude-opus-5-5",
@@ -324,7 +396,7 @@
    }
   },
   {
-   "rank": 5,
+   "rank": 6,
    "candidate": "claude-sonnet-5-5",
    "baseline": false,
    "model": "claude-sonnet-5-5",
@@ -396,7 +468,7 @@
    }
   },
   {
-   "rank": 6,
+   "rank": 7,
    "candidate": "claude-fable-5-1",
    "baseline": false,
    "model": "claude-fable-5-1",
@@ -468,7 +540,79 @@
    }
   },
   {
-   "rank": 7,
+   "rank": 8,
+   "candidate": "ollama-direct@inkling-2-small:cloud",
+   "baseline": false,
+   "model": "ollama-direct@inkling-2-small:cloud",
+   "effort": null,
+   "route": "ollama/codex",
+   "pays": "sub (ollama)",
+   "points": 364,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1567565,
+   "points_per_mtok": 232.2,
+   "cost_usd": 0.76,
+   "cost_per_point_usd": 0.002,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.5,
+   "cost_per_point_uncached_usd": 0.003,
+   "seconds": 3596,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-11-23",
+    "last": "2026-11-23"
+   },
+   "by_target": {
+    "go": {
+     "found": 44,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 19,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 50,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 50,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 48,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 49,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 51,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 53,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 9,
    "candidate": "claude-haiku-5-5",
    "baseline": false,
    "model": "claude-haiku-5-5",
@@ -540,7 +684,7 @@
    }
   },
   {
-   "rank": 8,
+   "rank": 10,
    "candidate": "codex@google/gemini-4-argon",
    "baseline": false,
    "model": "codex@google/gemini-4-argon",
@@ -612,7 +756,7 @@
    }
   },
   {
-   "rank": 9,
+   "rank": 11,
    "candidate": "ollama-codex@beam:cloud",
    "baseline": false,
    "model": "ollama-codex@beam:cloud",
@@ -684,7 +828,7 @@
    }
   },
   {
-   "rank": 10,
+   "rank": 12,
    "candidate": "deepseek/deepseek-v4.1-flash-1017",
    "baseline": false,
    "model": "deepseek-v4.1-flash 1017, Oct 2026 release",
@@ -756,7 +900,7 @@
    }
   },
   {
-   "rank": 11,
+   "rank": 13,
    "candidate": "qwen/qwen3.8-max",
    "baseline": false,
    "model": "qwen/qwen3.8-max",
@@ -828,7 +972,7 @@
    }
   },
   {
-   "rank": 12,
+   "rank": 14,
    "candidate": "minimax-m3.1-flash:cloud",
    "baseline": false,
    "model": "minimax-m3.1-flash:cloud",
@@ -900,7 +1044,7 @@
    }
   },
   {
-   "rank": 13,
+   "rank": 15,
    "candidate": "beam:cloud",
    "baseline": false,
    "model": "beam:cloud",
@@ -972,7 +1116,7 @@
    }
   },
   {
-   "rank": 14,
+   "rank": 16,
    "candidate": "gpt-6.2-astra",
    "baseline": false,
    "model": "gpt-6.2-astra",
@@ -1044,7 +1188,7 @@
    }
   },
   {
-   "rank": 15,
+   "rank": 17,
    "candidate": "kimi-k3:cloud",
    "baseline": false,
    "model": "kimi-k3:cloud",
@@ -1116,7 +1260,7 @@
    }
   },
   {
-   "rank": 16,
+   "rank": 18,
    "candidate": "gpt-6.2-sol",
    "baseline": false,
    "model": "gpt-6.2-sol",
@@ -1188,7 +1332,7 @@
    }
   },
   {
-   "rank": 17,
+   "rank": 19,
    "candidate": "qwen/qwen3.8-27b",
    "baseline": false,
    "model": "qwen/qwen3.8-27b",
@@ -1260,7 +1404,7 @@
    }
   },
   {
-   "rank": 18,
+   "rank": 20,
    "candidate": "glm-5.3:cloud",
    "baseline": false,
    "model": "glm-5.3:cloud",
@@ -1332,7 +1476,7 @@
    }
   },
   {
-   "rank": 19,
+   "rank": 21,
    "candidate": "deepseek-v4.1-flash:cloud",
    "baseline": false,
    "model": "deepseek-v4.1-flash, Sep 2026 release",
@@ -1404,7 +1548,7 @@
    }
   },
   {
-   "rank": 20,
+   "rank": 22,
    "candidate": "nemotron-3-ultra:cloud",
    "baseline": false,
    "model": "nemotron-3-ultra:cloud",
@@ -1476,7 +1620,7 @@
    }
   },
   {
-   "rank": 21,
+   "rank": 23,
    "candidate": "vllm@bottlecapai/ThinkingCap-Qwen3.8-27B",
    "baseline": false,
    "model": "vllm@bottlecapai/ThinkingCap-Qwen3.8-27B",
@@ -1548,79 +1692,7 @@
    }
   },
   {
-   "rank": 22,
-   "candidate": "ollama-codex@glm-5.3-flash:cloud#max",
-   "baseline": false,
-   "model": "ollama-codex@glm-5.3-flash:cloud#max",
-   "effort": null,
-   "route": "ollama/codex",
-   "pays": "sub (ollama)",
-   "points": 305,
-   "possible": 484,
-   "incomplete": false,
-   "tokens": 1776336,
-   "points_per_mtok": 171.7,
-   "cost_usd": 0.65,
-   "cost_per_point_usd": 0.002,
-   "notional": true,
-   "caching_era": "cached",
-   "cached_input_share": 0.843,
-   "cost_per_point_uncached_usd": 0.005,
-   "seconds": 4619,
-   "sessions": 23,
-   "errors": 0,
-   "contract_failures": 0,
-   "timeouts": 0,
-   "other_failures": 0,
-   "measured": {
-    "first": "2026-10-28",
-    "last": "2026-10-28"
-   },
-   "by_target": {
-    "go": {
-     "found": 35,
-     "of": 56,
-     "deflated": false
-    },
-    "design": {
-     "found": 15,
-     "of": 34,
-     "deflated": false
-    },
-    "rust": {
-     "found": 41,
-     "of": 64,
-     "deflated": false
-    },
-    "typescript": {
-     "found": 38,
-     "of": 63,
-     "deflated": false
-    },
-    "python": {
-     "found": 39,
-     "of": 66,
-     "deflated": false
-    },
-    "cpp": {
-     "found": 47,
-     "of": 64,
-     "deflated": false
-    },
-    "csharp": {
-     "found": 41,
-     "of": 68,
-     "deflated": false
-    },
-    "java": {
-     "found": 49,
-     "of": 69,
-     "deflated": false
-    }
-   }
-  },
-  {
-   "rank": 23,
+   "rank": 24,
    "candidate": "glm-5.3-flash:cloud",
    "baseline": false,
    "model": "glm-5.3-flash:cloud",
@@ -1692,7 +1764,7 @@
    }
   },
   {
-   "rank": 24,
+   "rank": 25,
    "candidate": "codex@moonshotai/kimi-k3.1-pro#xhigh",
    "baseline": false,
    "model": "codex@moonshotai/kimi-k3.1-pro#xhigh",
@@ -1764,7 +1836,7 @@
    }
   },
   {
-   "rank": 25,
+   "rank": 26,
    "candidate": "codex",
    "baseline": true,
    "model": "gpt-5.6-sol",
@@ -1831,78 +1903,6 @@
     "python": {
      "found": 39,
      "of": 66,
-     "deflated": false
-    }
-   }
-  },
-  {
-   "rank": 26,
-   "candidate": "ollama-direct@glm-5.3-flash:cloud#max",
-   "baseline": false,
-   "model": "ollama-direct@glm-5.3-flash:cloud#max",
-   "effort": null,
-   "route": "ollama",
-   "pays": "sub (ollama)",
-   "points": 295,
-   "possible": 484,
-   "incomplete": false,
-   "tokens": 7343963,
-   "points_per_mtok": 40.2,
-   "cost_usd": null,
-   "cost_per_point_usd": null,
-   "notional": true,
-   "caching_era": "cached",
-   "cached_input_share": 0.444,
-   "cost_per_point_uncached_usd": null,
-   "seconds": 4502,
-   "sessions": 23,
-   "errors": 0,
-   "contract_failures": 0,
-   "timeouts": 0,
-   "other_failures": 0,
-   "measured": {
-    "first": "2026-10-28",
-    "last": "2026-10-28"
-   },
-   "by_target": {
-    "go": {
-     "found": 33,
-     "of": 56,
-     "deflated": false
-    },
-    "design": {
-     "found": 13,
-     "of": 34,
-     "deflated": false
-    },
-    "rust": {
-     "found": 37,
-     "of": 64,
-     "deflated": false
-    },
-    "typescript": {
-     "found": 40,
-     "of": 63,
-     "deflated": false
-    },
-    "python": {
-     "found": 47,
-     "of": 66,
-     "deflated": false
-    },
-    "cpp": {
-     "found": 35,
-     "of": 64,
-     "deflated": false
-    },
-    "csharp": {
-     "found": 48,
-     "of": 68,
-     "deflated": false
-    },
-    "java": {
-     "found": 42,
-     "of": 69,
      "deflated": false
     }
    }
@@ -1981,6 +1981,78 @@
   },
   {
    "rank": 28,
+   "candidate": "ollama-direct@glm-5.3-flash:cloud#max",
+   "baseline": false,
+   "model": "ollama-direct@glm-5.3-flash:cloud#max",
+   "effort": null,
+   "route": "ollama/codex",
+   "pays": "sub (ollama)",
+   "points": 289,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1511258,
+   "points_per_mtok": 191.2,
+   "cost_usd": 0.49,
+   "cost_per_point_usd": 0.002,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.785,
+   "cost_per_point_uncached_usd": 0.003,
+   "seconds": 4405,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-28",
+    "last": "2026-11-24"
+   },
+   "by_target": {
+    "go": {
+     "found": 33,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 13,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 37,
+     "of": 64,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 40,
+     "of": 63,
+     "deflated": false
+    },
+    "python": {
+     "found": 47,
+     "of": 66,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 42,
+     "of": 69,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 42,
+     "of": 68,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 29,
    "candidate": "glm-5.2:cloud",
    "baseline": false,
    "model": "glm-5.2:cloud",
@@ -2052,7 +2124,7 @@
    }
   },
   {
-   "rank": 29,
+   "rank": 30,
    "candidate": "claude-fable-5",
    "baseline": false,
    "model": "claude-fable-5",
@@ -2124,7 +2196,7 @@
    }
   },
   {
-   "rank": 30,
+   "rank": 31,
    "candidate": "x-ai/grok-4.6",
    "baseline": false,
    "model": "x-ai/grok-4.6",
@@ -2196,7 +2268,7 @@
    }
   },
   {
-   "rank": 31,
+   "rank": 32,
    "candidate": "deepseek-v4-pro:cloud",
    "baseline": false,
    "model": "deepseek-v4-pro:cloud",
@@ -2268,7 +2340,7 @@
    }
   },
   {
-   "rank": 32,
+   "rank": 33,
    "candidate": "gpt-6-astra-xhigh",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2340,7 +2412,7 @@
    }
   },
   {
-   "rank": 33,
+   "rank": 34,
    "candidate": "claude-opus-4-8",
    "baseline": false,
    "model": "claude-opus-4-8",
@@ -2412,7 +2484,7 @@
    }
   },
   {
-   "rank": 34,
+   "rank": 35,
    "candidate": "gpt-6-astra",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2484,7 +2556,74 @@
    }
   },
   {
-   "rank": 35,
+   "rank": 36,
+   "candidate": "ollama-codex@glm-5.3-flash:cloud#max",
+   "baseline": false,
+   "model": "ollama-codex@glm-5.3-flash:cloud#max",
+   "effort": null,
+   "route": "ollama/codex",
+   "pays": "sub (ollama)",
+   "points": 258,
+   "possible": 420,
+   "incomplete": true,
+   "tokens": 1306887,
+   "points_per_mtok": 197.4,
+   "cost_usd": 0.44,
+   "cost_per_point_usd": 0.002,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.793,
+   "cost_per_point_uncached_usd": 0.003,
+   "seconds": 3729,
+   "sessions": 20,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-28",
+    "last": "2026-10-28"
+   },
+   "by_target": {
+    "go": {
+     "found": 35,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 15,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 41,
+     "of": 64,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 38,
+     "of": 63,
+     "deflated": false
+    },
+    "python": {
+     "found": 39,
+     "of": 66,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 41,
+     "of": 68,
+     "deflated": false
+    },
+    "java": {
+     "found": 49,
+     "of": 69,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 37,
    "candidate": "gpt-6.1-sol",
    "baseline": false,
    "model": "gpt-6.1-sol",
@@ -2556,7 +2695,7 @@
    }
   },
   {
-   "rank": 36,
+   "rank": 38,
    "candidate": "minimax-m3:cloud",
    "baseline": false,
    "model": "minimax-m3:cloud",
@@ -2628,7 +2767,7 @@
    }
   },
   {
-   "rank": 37,
+   "rank": 39,
    "candidate": "deepseek-v4-flash:0731-cloud",
    "baseline": false,
    "model": "deepseek-v4-flash:0731-cloud",
@@ -2700,7 +2839,7 @@
    }
   },
   {
-   "rank": 38,
+   "rank": 40,
    "candidate": "claude-sonnet-5",
    "baseline": false,
    "model": "claude-sonnet-5",
@@ -2772,7 +2911,7 @@
    }
   },
   {
-   "rank": 39,
+   "rank": 41,
    "candidate": "kimi-k2.7-code:cloud",
    "baseline": false,
    "model": "kimi-k2.7-code:cloud",
@@ -2844,7 +2983,7 @@
    }
   },
   {
-   "rank": 40,
+   "rank": 42,
    "candidate": "gpt-oss:120b-cloud",
    "baseline": false,
    "model": "gpt-oss:120b-cloud",
@@ -2916,7 +3055,7 @@
    }
   },
   {
-   "rank": 41,
+   "rank": 43,
    "candidate": "gpt-6.1-terra",
    "baseline": false,
    "model": "gpt-6.1-terra",
@@ -2988,7 +3127,7 @@
    }
   },
   {
-   "rank": 42,
+   "rank": 44,
    "candidate": "gpt-5.6-terra",
    "baseline": false,
    "model": "gpt-5.6-terra",
@@ -3060,7 +3199,7 @@
    }
   },
   {
-   "rank": 43,
+   "rank": 45,
    "candidate": "gpt-6-sol",
    "baseline": false,
    "model": "gpt-6-sol",
@@ -3132,7 +3271,7 @@
    }
   },
   {
-   "rank": 44,
+   "rank": 46,
    "candidate": "beam-ollama-direct",
    "baseline": false,
    "model": "beam:cloud",
@@ -3194,7 +3333,7 @@
    }
   },
   {
-   "rank": 45,
+   "rank": 47,
    "candidate": "qwen3.5:397b-cloud",
    "baseline": false,
    "model": "qwen3.5:397b-cloud",
@@ -3266,7 +3405,7 @@
    }
   },
   {
-   "rank": 46,
+   "rank": 48,
    "candidate": "gemma4:31b-cloud",
    "baseline": false,
    "model": "gemma4:31b-cloud",
@@ -3338,7 +3477,7 @@
    }
   },
   {
-   "rank": 47,
+   "rank": 49,
    "candidate": "muse-spark-open:cloud",
    "baseline": false,
    "model": "muse-spark-open:cloud",
@@ -3410,7 +3549,7 @@
    }
   },
   {
-   "rank": 48,
+   "rank": 50,
    "candidate": "beam-ollama-direct-fallback",
    "baseline": false,
    "model": "beam-ollama-direct-fallback",

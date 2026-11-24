@@ -256,7 +256,26 @@ run_task() {
     # written -- fabricated numbers, in the file that decides panel seats
     # (review run 20260813-124710).
     marker=$(mktemp)
-    ./fixpoint "$cfg" -target "$target" --trusted-target --trusted-bundle || {
+    # THE LENS REVIEWS A COPY OUTSIDE THE REPOSITORY, never bench/testdata itself.
+    # A lens's cwd is its target, and the read-only sandbox confines writes, not
+    # reads: from bench/testdata/target-<x>, `../../manifest-<x>.yaml` is the
+    # answer key, and `.fixpoint/` holds every earlier model's findings. hy4 read
+    # both and scored go 53/56 (2026-11-23); two glm-5.3-flash rows of 2026-10-28
+    # had read their manifests too. A fresh directory per run has nothing above
+    # the target and does not name the repository in its path; score.py's
+    # key_reads() refuses a row whose lens reached the key anyway.
+    # `pwd -P`: macOS mktemp answers under /var, a symlink to /private/var, and
+    # fixpoint refuses a -target with a symlink in any component.
+    work=$(mktemp -d)
+    work=$(cd "$work" && pwd -P)
+    # Checked by hand: run_task is called under `||`, where `set -e` is off, and
+    # a failed copy would otherwise send the panel to review an empty directory.
+    if ! cp -R "$target" "$work/repo"; then
+        echo "bench: could not copy $target to $work/repo; nothing to score" >&2
+        rm -rf "$work" "$marker"
+        return 1
+    fi
+    ./fixpoint "$cfg" -target "$work/repo" --trusted-target --trusted-bundle || {
         # exit 4 is review-only's normal termination; anything else is the
         # candidate failing, which the bench records rather than hides.
         code=$?
@@ -264,6 +283,7 @@ run_task() {
             echo "bench: run exited $code (recorded; a model that cannot finish a run cannot hold a seat)" >&2
         fi
     }
+    rm -rf "$work"
     # With concurrency refused above, a run directory newer than the marker can
     # only be this invocation's.
     rundir=$(ls -dt .fixpoint/*/ 2>/dev/null | while read -r d; do
