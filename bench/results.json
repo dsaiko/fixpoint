@@ -28,7 +28,7 @@
  },
  "totals": {
   "candidates": 50,
-  "sessions": 1199,
+  "sessions": 1202,
   "targets": 8,
   "contract_failures": 4,
   "timeouts": 3,
@@ -1765,6 +1765,78 @@
   },
   {
    "rank": 25,
+   "candidate": "ollama-codex@glm-5.3-flash:cloud#max",
+   "baseline": false,
+   "model": "ollama-codex@glm-5.3-flash:cloud#max",
+   "effort": null,
+   "route": "ollama/codex",
+   "pays": "sub (ollama)",
+   "points": 301,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 1402843,
+   "points_per_mtok": 214.6,
+   "cost_usd": 0.48,
+   "cost_per_point_usd": 0.002,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.791,
+   "cost_per_point_uncached_usd": 0.003,
+   "seconds": 4066,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-28",
+    "last": "2026-11-24"
+   },
+   "by_target": {
+    "go": {
+     "found": 35,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 15,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 41,
+     "of": 64,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 38,
+     "of": 63,
+     "deflated": false
+    },
+    "python": {
+     "found": 39,
+     "of": 66,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 41,
+     "of": 68,
+     "deflated": false
+    },
+    "java": {
+     "found": 49,
+     "of": 69,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 43,
+     "of": 64,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 26,
    "candidate": "codex@moonshotai/kimi-k3.1-pro#xhigh",
    "baseline": false,
    "model": "codex@moonshotai/kimi-k3.1-pro#xhigh",
@@ -1836,7 +1908,7 @@
    }
   },
   {
-   "rank": 26,
+   "rank": 27,
    "candidate": "codex",
    "baseline": true,
    "model": "gpt-5.6-sol",
@@ -1908,7 +1980,7 @@
    }
   },
   {
-   "rank": 27,
+   "rank": 28,
    "candidate": "codex@moonshotai/kimi-k3.1-pro",
    "baseline": false,
    "model": "codex@moonshotai/kimi-k3.1-pro",
@@ -1980,7 +2052,7 @@
    }
   },
   {
-   "rank": 28,
+   "rank": 29,
    "candidate": "ollama-direct@glm-5.3-flash:cloud#max",
    "baseline": false,
    "model": "ollama-direct@glm-5.3-flash:cloud#max",
@@ -2052,7 +2124,7 @@
    }
   },
   {
-   "rank": 29,
+   "rank": 30,
    "candidate": "glm-5.2:cloud",
    "baseline": false,
    "model": "glm-5.2:cloud",
@@ -2124,7 +2196,7 @@
    }
   },
   {
-   "rank": 30,
+   "rank": 31,
    "candidate": "claude-fable-5",
    "baseline": false,
    "model": "claude-fable-5",
@@ -2196,7 +2268,7 @@
    }
   },
   {
-   "rank": 31,
+   "rank": 32,
    "candidate": "x-ai/grok-4.6",
    "baseline": false,
    "model": "x-ai/grok-4.6",
@@ -2268,7 +2340,7 @@
    }
   },
   {
-   "rank": 32,
+   "rank": 33,
    "candidate": "deepseek-v4-pro:cloud",
    "baseline": false,
    "model": "deepseek-v4-pro:cloud",
@@ -2340,7 +2412,7 @@
    }
   },
   {
-   "rank": 33,
+   "rank": 34,
    "candidate": "gpt-6-astra-xhigh",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2412,7 +2484,7 @@
    }
   },
   {
-   "rank": 34,
+   "rank": 35,
    "candidate": "claude-opus-4-8",
    "baseline": false,
    "model": "claude-opus-4-8",
@@ -2484,7 +2556,7 @@
    }
   },
   {
-   "rank": 35,
+   "rank": 36,
    "candidate": "gpt-6-astra",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2551,73 +2623,6 @@
     "python": {
      "found": 40,
      "of": 66,
-     "deflated": false
-    }
-   }
-  },
-  {
-   "rank": 36,
-   "candidate": "ollama-codex@glm-5.3-flash:cloud#max",
-   "baseline": false,
-   "model": "ollama-codex@glm-5.3-flash:cloud#max",
-   "effort": null,
-   "route": "ollama/codex",
-   "pays": "sub (ollama)",
-   "points": 258,
-   "possible": 420,
-   "incomplete": true,
-   "tokens": 1306887,
-   "points_per_mtok": 197.4,
-   "cost_usd": 0.44,
-   "cost_per_point_usd": 0.002,
-   "notional": true,
-   "caching_era": "cached",
-   "cached_input_share": 0.793,
-   "cost_per_point_uncached_usd": 0.003,
-   "seconds": 3729,
-   "sessions": 20,
-   "errors": 0,
-   "contract_failures": 0,
-   "timeouts": 0,
-   "other_failures": 0,
-   "measured": {
-    "first": "2026-10-28",
-    "last": "2026-10-28"
-   },
-   "by_target": {
-    "go": {
-     "found": 35,
-     "of": 56,
-     "deflated": false
-    },
-    "design": {
-     "found": 15,
-     "of": 34,
-     "deflated": false
-    },
-    "rust": {
-     "found": 41,
-     "of": 64,
-     "deflated": false
-    },
-    "typescript": {
-     "found": 38,
-     "of": 63,
-     "deflated": false
-    },
-    "python": {
-     "found": 39,
-     "of": 66,
-     "deflated": false
-    },
-    "csharp": {
-     "found": 41,
-     "of": 68,
-     "deflated": false
-    },
-    "java": {
-     "found": 49,
-     "of": 69,
      "deflated": false
     }
    }
