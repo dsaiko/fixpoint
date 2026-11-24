@@ -1,6 +1,6 @@
 # nemotron-3-ultra:cloud · rust · run 20260902-085838 (repeat 1)
 
-recall **40/64** · 55 finding(s), 4 unmatched · 665510 tokens · 3159s
+recall **39/64** · 55 finding(s), 5 unmatched · 665510 tokens · 3159s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -62,7 +62,7 @@ recall **40/64** · 55 finding(s), 4 unmatched · 665510 tokens · 3159s
 | RM09 | — | RUST-ONLY the auth path calls bearer_token on an absent Authorization  |  |
 | RM10 | YES | parallel: C26 janitor.stop() sits after an infinite accept loop, so it | review-concurrency: Janitor stop() unreachable after infinite loop |
 | RM11 | — | parallel: C25 no read or write timeout is ever set on an accepted stre |  |
-| RM13 | YES | export_csv defaults an empty name to links.csv but read_report is hand | review-bugs: report() path traversal via user-controlled name |
+| RM13 | — | export_csv defaults an empty name to links.csv but read_report is hand |  |
 | RM14 | YES | a bad ttl parses to 0 and mints an already-expired link, and a large v | review-bugs: TTL parsing: invalid input becomes 0 (immediate expiry) |
 | RM15 | — | every handler writes its HTTP response while still holding the global  |  |
 | RM16 | — | the link owner is taken from the request body instead of the authentic |  |
@@ -72,5 +72,6 @@ recall **40/64** · 55 finding(s), 4 unmatched · 665510 tokens · 3159s
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/store.rs:83 — page() off-by-one causes panic on last page
 - (medium) src/cache.rs:50 — peek() returns true for expired entries
+- (medium) src/main.rs:212 — report() path traversal via user-controlled name
 - (high) src/main.rs:49 — Unbounded thread spawning per connection
 - (medium) src/config.rs:71 — LINKD_EXPORT_DIR used without path validation

@@ -1,6 +1,6 @@
 # kimi-k2.7-code:cloud · rust · run 20260901-215232 (repeat 1)
 
-recall **33/64** · 45 finding(s), 3 unmatched · 238081 tokens · 249s
+recall **32/64** · 45 finding(s), 4 unmatched · 238081 tokens · 249s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -62,7 +62,7 @@ recall **33/64** · 45 finding(s), 3 unmatched · 238081 tokens · 249s
 | RM09 | — | RUST-ONLY the auth path calls bearer_token on an absent Authorization  |  |
 | RM10 | — | parallel: C26 janitor.stop() sits after an infinite accept loop, so it |  |
 | RM11 | — | parallel: C25 no read or write timeout is ever set on an accepted stre |  |
-| RM13 | YES | export_csv defaults an empty name to links.csv but read_report is hand | review-security: Path traversal in /report via the name parameter |
+| RM13 | — | export_csv defaults an empty name to links.csv but read_report is hand |  |
 | RM14 | — | a bad ttl parses to 0 and mints an already-expired link, and a large v |  |
 | RM15 | YES | every handler writes its HTTP response while still holding the global  | review-concurrency: Store lock held during report export I/O |
 | RM16 | YES | the link owner is taken from the request body instead of the authentic | review-security: Create link endpoint lets caller forge the owner |
@@ -73,3 +73,4 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/config.rs:113 — Config::validate() always succeeds even when it finds problems
 - (medium) src/cache.rs:125 — Cache::utilization() integer-division loses all precision
 - (medium) src/cache.rs:32 — Lock-ordering inversion between cache entries and hit counter
+- (critical) src/main.rs:213 — Path traversal in /report via the name parameter

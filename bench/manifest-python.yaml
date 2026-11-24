@@ -307,7 +307,7 @@ seeds:
     anchor: 'path = os.path.join(directory, name + ".csv")'
     span: 6
     need: 1
-    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", "os.path.join", absolute]
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "../", "os.path.join", absolute]
     note: "parallel: EX01 the report name comes from the query string; os.path.join also DISCARDS directory entirely if the name is absolute"
   - id: Y41
     file: export.py
