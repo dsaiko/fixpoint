@@ -51,12 +51,19 @@ disqualifies regardless of recall.
 A lens can read anything its user can; the read-only sandbox confines writes.
 Until 2026-11-23 a lens reviewed `bench/testdata/target-<x>` in place, two
 directories below its own `manifest-<x>.yaml`, and three rows were measured
-by models that read it (hy4 scored go 53/56 that way). So `run.sh` now hands
-every run a fresh copy of the target outside the repository, and `score.py`
-writes no row when any lens's tool call names a manifest, the scorer, the
-per-run tables or an earlier run's findings (`key_reads()`, tested by
-`--leak-selftest`). A record-breaking cell is suspect until its sessions have
-been read.
+by models that read it (hy4 scored go 53/56 that way). So `run.sh` now stages
+every run's target in a fresh directory outside the repository, from git's own
+file list (ignored build output stays behind), and `score.py` writes no row
+when any lens's tool call mentions the checkout, `bench/`, `.fixpoint`, a
+manifest or the scorer (`key_reads()`, tested by `--leak-selftest` and
+end to end in `run_test.sh`).
+
+That check is evidence, not a boundary. It cannot see a path the shell only
+forms by expansion, and it cannot see the claude-harness routes at all: their
+raw stream holds one result envelope and no tool calls, so `score.py` prints a
+warning and scores those sessions on trust. Confining the lens with
+`sandbox.command` is the fix that would hold. A record-breaking cell is
+suspect until its sessions have been read.
 
 ### The calibration, measured 2026-08-20
 

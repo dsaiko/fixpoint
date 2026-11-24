@@ -378,7 +378,7 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 | # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | contract | timeouts |
 |--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|
 | 1 | `claude-fable-5-2` | anthropic | 403/484 | 83% | ~$25.41 | ~$0.063 | 74% | ~$0.093 | 2959 | 0 | 0 |
-| 2 | `ollama-direct@hy4:cloud` | ollama/codex | 387/484 | 80% | ~$3.14 | ~$0.008 | 79% | ~$0.014 | 9129 | 0 | 0 |
+| 2 | `ollama-direct@hy4:cloud` | ollama/codex | 388/484 | 80% | ~$2.97 | ~$0.008 | 77% | ~$0.012 | 8631 | 0 | 0 |
 | 3 | `claude` | cli | 376/484 | 78% | ~$14.12 | ~$0.038 | 74% | ~$0.050 | 3958 | 0 | 0 |
 | 4 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$14.36 | ~$0.038 | 74% | ~$0.052 | 4152 | 0 | 0 |
 | 5 | `claude-opus-5-5` | anthropic | 372/484 | 77% | ~$10.02 | ~$0.027 | 72% | ~$0.038 | 2016 | 0 | 0 |
@@ -433,7 +433,7 @@ Recall per target, which is where a model that is strong in one language and wea
 | candidate | go | design | cpp | csharp | java | python | rust | typescript |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
 | `claude-fable-5-2` | 44/56 | 19/34 | 54/64 | 54/68 | 63/69 | 56/66 | 56/64 | 57/63 |
-| `ollama-direct@hy4:cloud` | 42/56 | 20/34 | 54/64 | 51/68 | 56/69 | 55/66 | 57/64 | 52/63 |
+| `ollama-direct@hy4:cloud` | 46/56 | 20/34 | 54/64 | 48/68 | 56/69 | 55/66 | 57/64 | 52/63 |
 | `claude` | 43/56 | 20/34 | 51/64 | 51/68 | 52/69 | 51/66 | 53/64 | 55/63 |
 | `claude-opus-5` | 42/56 | 16/34 | 51/64 | 52/68 | 55/69 | 49/66 | 53/64 | 55/63 |
 | `claude-opus-5-5` | 42/56 | 17/34 | 51/64 | 53/68 | 56/69 | 48/66 | 52/64 | 53/63 |

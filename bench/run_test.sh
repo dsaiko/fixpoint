@@ -159,6 +159,13 @@ run 2 "unknown effort" || true
 mkdir -p "$tmp/tree/bench/testdata/target-go"
 echo 'package main // seeded' >"$tmp/tree/bench/testdata/target-go/main.go"
 echo 'seeds: the answer key' >"$tmp/tree/bench/manifest-go.yaml"
+# The target is staged from git's view of it, so the scratch tree is a repo: one
+# tracked file, one untracked, and one IGNORED build artifact that must not travel.
+echo 'package main // untracked' >"$tmp/tree/bench/testdata/target-go/extra.go"
+echo 'binary' >"$tmp/tree/bench/testdata/target-go/linkd"
+echo 'bench/testdata/target-*/linkd' >"$tmp/tree/.gitignore"
+git -C "$tmp/tree" init -q
+git -C "$tmp/tree" add bench/testdata/target-go/main.go .gitignore
 cat >"$tmp/tree/fixpoint" <<'EOF'
 #!/bin/sh
 while [ $# -gt 0 ]; do [ "$1" = -target ] && t=$2; shift; done
@@ -167,6 +174,8 @@ while [ $# -gt 0 ]; do [ "$1" = -target ] && t=$2; shift; done
     cd "$t" && echo "PHYS=$(pwd -P)"
     ls ../.. ../../.. 2>/dev/null | grep -q '^manifest-' && echo "KEY=reachable"
     cmp -s main.go "$STUB_TREE/bench/testdata/target-go/main.go" && echo "COPY=identical"
+    [ -f extra.go ] && echo "UNTRACKED=copied"
+    [ -e linkd ] && echo "IGNORED=copied"
 } >"$STUB_OUT/fixpoint"
 exit 4
 EOF
@@ -194,6 +203,64 @@ if run 0 "isolated target" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree"
     fi
     expect "no manifest above the copy" "$tmp/out/fixpoint" '^KEY=' !
     expect "the copy is the target" "$tmp/out/fixpoint" '^COPY=identical$'
+    expect "untracked source travels" "$tmp/out/fixpoint" '^UNTRACKED=copied$'
+    expect "ignored build output does not" "$tmp/out/fixpoint" '^IGNORED=' !
+    case "$(sed -n 's/^PHYS=//p' "$tmp/out/fixpoint")/" in
+    "$(cd "$tmp/tree" && pwd -P)"/*) echo "FAIL the copy is inside the checkout"; fails=$((fails + 1)) ;;
+    esac
+fi
+
+# (k) A scratch directory INSIDE the checkout (a TMPDIR set there; macOS mktemp
+# ignores TMPDIR, so the stub stands in for it) would stage the copy back under
+# the key: refused before fixpoint runs, and nothing of the checkout is removed.
+mkdir -p "$tmp/tree/scratch"
+cat >"$tmp/bin/mktemp" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = -d ] && { mkdir "$STUB_TREE/scratch/w" && echo "$STUB_TREE/scratch/w"; exit; }
+exec /usr/bin/mktemp "$@"
+EOF
+chmod +x "$tmp/bin/mktemp"
+run 0 "scratch inside the checkout" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree" || true
+rm -f "$tmp/bin/mktemp"
+[ -e "$tmp/out/fixpoint" ] && { echo "FAIL scratch inside the checkout: fixpoint ran"; fails=$((fails + 1)); }
+expect "the refusal names the checkout" "$tmp/out/log" 'inside the checkout'
+[ -f "$tmp/tree/bench/manifest-go.yaml" ] || { echo "FAIL the checkout was damaged"; fails=$((fails + 1)); }
+
+# (l) mktemp failing must not turn the cleanup on the checkout (run_task runs
+# with `set -e` off; an empty $work once meant `rm -rf` of the repository).
+cat >"$tmp/bin/mktemp" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = -d ] && exit 1
+exec /usr/bin/mktemp "$@"
+EOF
+chmod +x "$tmp/bin/mktemp"
+run 0 "mktemp -d fails" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree" || true
+rm -f "$tmp/bin/mktemp"
+[ -e "$tmp/out/fixpoint" ] && { echo "FAIL mktemp fails: fixpoint ran"; fails=$((fails + 1)); }
+[ -f "$tmp/tree/bench/testdata/target-go/main.go" ] && [ -f "$tmp/tree/bench/run.sh" ] ||
+    { echo "FAIL mktemp fails: the checkout was removed"; fails=$((fails + 1)); }
+
+# (m) THE SCORER REFUSES A RUN WHOSE LENS READ THE KEY, end to end: the real
+# score.py and go manifest in a scratch bench/, a summary with one session, and
+# a raw log beside it. A key read writes nothing; the same run without it scores.
+sc="$tmp/sc"
+mkdir -p "$sc/bench/testdata" "$sc/run/round-1"
+cp "$here/score.py" "$here/manifest-go.yaml" "$sc/bench/"
+(cd "$here/testdata/target-go" && git ls-files -z . | tar -cf - --null -T -) | (mkdir "$sc/bench/testdata/target-go" && tar -xf - -C "$sc/bench/testdata/target-go")
+echo '{"rounds":[{"findings":[],"steps":[{"usage":{"input_tokens":5,"output_tokens":5},"duration_ms":1000,"output_bytes":9}]}]}' >"$sc/run/summary-1.json"
+echo '{"type":"item.started","item":{"type":"command_execution","command":"cat ../../manifest-go.yaml"}}' >"$sc/run/round-1/lens.raw"
+if python3 "$sc/bench/score.py" "$sc/bench/manifest-go.yaml" "$sc/run/summary-1.json" probe 1 >"$sc/log" 2>&1; then
+    echo "FAIL a run that read the key was scored"; fails=$((fails + 1))
+fi
+expect "the refusal says why" "$sc/log" 'read the answer key'
+for left in results.csv results summaries; do
+    [ -e "$sc/bench/$left" ] && { echo "FAIL a refused run still wrote bench/$left"; fails=$((fails + 1)); }
+done
+echo '{"type":"item.started","item":{"type":"command_execution","command":"nl -ba main.go"}}' >"$sc/run/round-1/lens.raw"
+if python3 "$sc/bench/score.py" "$sc/bench/manifest-go.yaml" "$sc/run/summary-1.json" probe 1 >"$sc/log" 2>&1; then
+    [ "$(wc -l <"$sc/bench/results.csv" | tr -d ' ')" = 2 ] || { echo "FAIL a clean run did not write one row"; fails=$((fails + 1)); }
+else
+    echo "FAIL a clean run was refused"; sed 's/^/    /' "$sc/log"; fails=$((fails + 1))
 fi
 
 if [ "$fails" -ne 0 ]; then
