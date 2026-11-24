@@ -386,7 +386,7 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 | 7 | `claude-fable-5-1` | anthropic | 367/484 | 76% | ~$24.62 | ~$0.067 | 64% | ~$0.081 | 3504 | 0 | 0 |
 | 8 | `ollama-direct@inkling-2-small:cloud` | ollama/codex | 363/484 | 75% | ~$0.76 | ~$0.002 | 50% | ~$0.003 | 3596 | 0 | 0 |
 | 9 | `claude-haiku-5-5` | anthropic | 358/484 | 74% | ~$0.57 | ~$0.002 | 71% | ~$0.002 | 3255 | 0 | 0 |
-| 10 | `ollama-codex@beam:cloud` | ollama/codex | 351/484 | 73% | - | 8.2k | 90% | - | 2761 | 0 | 0 |
+| 10 | `ollama-codex@beam:cloud` | ollama/codex | 352/484 | 73% | - | 7.9k | 90% | - | 2634 | 0 | 0 |
 | 11 | `codex@google/gemini-4-argon` | openrouter/codex | 350/484 | 72% | $13.62 | $0.039 | 45% | $0.059 | 3701 | 0 | 0 |
 | 12 | `deepseek/deepseek-v4.1-flash-1017` *(deepseek-v4.1-flash 1017, Oct 2026 release)* | openrouter | 346/484 | 71% | $0.54 | $0.002 | 64% | $0.003 | 9048 | 0 | 0 |
 | 13 | `qwen/qwen3.8-max` | openrouter | 331/484 | 68% | $8.26 | $0.025 | 65% | $0.025 | 11266 | 0 | 0 |
@@ -422,7 +422,7 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 | 43 | `gpt-6.1-terra` | cli | 224/484 | 46% | ~$0.56 | ~$0.003 | 75% | ~$0.007 | 703 | 0 | 0 |
 | 44 | `gpt-5.6-terra` | cli | 221/484 | 46% | ~$3.04 | ~$0.014 | 78% | ~$0.028 | 2896 | 0 | 0 |
 | 45 | `gpt-6-sol` | cli | 221/484 | 46% | ~$2.39 | ~$0.011 | 79% | ~$0.024 | 2451 | 0 | 0 |
-| 46 | `beam-ollama-direct` *(incomplete)* | cli | 218/347 | 63% | - | 4.2k | 84% | - | 1235 | 0 | 0 |
+| 46 | `beam-ollama-direct` *(incomplete)* | cli | 218/347 | 63% | - | 4.5k | 83% | - | 1443 | 0 | 0 |
 | 47 | `qwen3.5:397b-cloud` | ollama | 186/484 | 38% | ~$1.66 | ~$0.009 | - | ~$0.009 | 1187 | 0 | 0 |
 | 48 | `gemma4:31b-cloud` | ollama | 156/484 | 32% | ~$0.66 | ~$0.004 | - | ~$0.004 | 1598 | 0 | 0 |
 | 49 | `muse-spark-open:cloud` | ollama | 143/484 | 30% | ~$2.54 | ~$0.018 | 72% | ~$0.044 | 941 | 0 | 0 |
@@ -441,7 +441,7 @@ Recall per target, which is where a model that is strong in one language and wea
 | `claude-fable-5-1` | 40/56 | 15/34 | 49/64 | 51/68 | 55/69 | 52/66 | 52/64 | 53/63 |
 | `ollama-direct@inkling-2-small:cloud` | 44/56 | 19/34 | 50/64 | 49/68 | 50/69 | 53/66 | 50/64 | 48/63 |
 | `claude-haiku-5-5` | 41/56 | 21/34 | 48/64 | 47/68 | 52/69 | 51/66 | 47/64 | 51/63 |
-| `ollama-codex@beam:cloud` | 39/56 | 16/34 | 48/64 | 49/68 | 52/69 | 50/66 | 46/64 | 51/63 |
+| `ollama-codex@beam:cloud` | 39/56 | 16/34 | 48/64 | 49/68 | 52/69 | 51/66 | 46/64 | 51/63 |
 | `codex@google/gemini-4-argon` | 42/56 | 14/34 | 49/64 | 44/68 | 54/69 | 48/66 | 50/64 | 49/63 |
 | `deepseek/deepseek-v4.1-flash-1017` *(deepseek-v4.1-flash 1017, Oct 2026 release)* | 37/56 | 20/34 | 54/64 | 41/68 | 52/69 | 48/66 | 45/64 | 49/63 |
 | `qwen/qwen3.8-max` | 37/56 | 19/34 | 49/64 | 43/68 | 44/69 | 48/66 | 44/64 | 47/63 |
