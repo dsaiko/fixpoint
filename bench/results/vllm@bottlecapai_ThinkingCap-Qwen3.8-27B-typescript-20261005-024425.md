@@ -1,6 +1,6 @@
 # vllm@bottlecapai/ThinkingCap-Qwen3.8-27B · typescript · run 20261005-024425 (repeat 1)
 
-recall **40/63** · 51 finding(s), 3 unmatched · 51491 tokens · 843s
+recall **41/63** · 51 finding(s), 2 unmatched · 51491 tokens · 843s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **40/63** · 51 finding(s), 3 unmatched · 51491 tokens · 843s
 | T40 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | T41 | — | parallel: EX03 CSV rows are built by template interpolation, so a comm |  |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | — | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  |  |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: writeSnapshot's rename fails across filesystems (EXDEV) |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: parseReport emits a spurious empty row for the trailing newl |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-bugs: warmCache does not await its probes, so it resolves immediat; review-concurrency: warmCache fires async probes but doesn't await them, so it r |
@@ -69,6 +69,5 @@ recall **40/63** · 51 finding(s), 3 unmatched · 51491 tokens · 843s
 | T63 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) src/export.ts:47 — writeSnapshot's rename fails across filesystems (EXDEV)
 - (medium) src/main.ts:32 — Janitor stopper discarded — the sweeper interval can never be cleared
 - (critical) src/main.ts:159 — Path traversal in /report allows arbitrary file read/write

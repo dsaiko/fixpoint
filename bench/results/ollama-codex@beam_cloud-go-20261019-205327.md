@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · go · run 20261019-205327 (repeat 1)
 
-recall **40/56** · 62 finding(s), 3 unmatched · 953181 tokens · 114s · 11 retired seed(s) not scored
+recall **41/56** · 62 finding(s), 2 unmatched · 953181 tokens · 114s · 11 retired seed(s) not scored
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -30,7 +30,7 @@ recall **40/56** · 62 finding(s), 3 unmatched · 953181 tokens · 114s · 11 re
 | S03 | YES | every issued session token is written to the log in cleartext | review-security: Issued session token written to logs |
 | S04 | YES | Verify never looks at ExpiresAt, so a token works forever despite the  | review-bugs: Verify never enforces session expiry; review-security: Session expiry is never enforced |
 | S05 | YES | passwords are stored as a single unsalted SHA-256, crackable offline a | review-security: Unsalted SHA-256 password hashing |
-| S07 | — | the admin check is always true, so RequireAdmin rejects every session  |  |
+| S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin rejects everyone |
 | S08 | YES | the 401 response echoes the rejected token back to the caller | review-security: Token echoed back in 401 response |
 | S09 | YES | the sessions map is read and written from every request goroutine with | review-concurrency: Authenticator.sessions map is shared across goroutines witho |
 | CF01 | YES | a malformed LINKD_PORT silently becomes port 0 | review-bugs: LINKD_PORT parse failure overwrites the default with zero |
@@ -78,6 +78,5 @@ Retired seeds — still matched so their findings are not counted as noise, but 
 | X04 | YES | CheckTargets returns on first error; remaining sends to the unbuffered |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) auth.go:84 — RequireAdmin rejects everyone
 - (high) auth.go:99 — Middleware never exposes admin status to handlers
 - (medium) main.go:91 — preview does not normalize code case

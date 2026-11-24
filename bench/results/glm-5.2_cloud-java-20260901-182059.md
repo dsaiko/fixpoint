@@ -1,6 +1,6 @@
 # glm-5.2:cloud · java · run 20260901-182059 (repeat 1)
 
-recall **42/69** · 50 finding(s), 2 unmatched · 488850 tokens · 615s
+recall **41/69** · 50 finding(s), 2 unmatched · 488850 tokens · 615s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -50,8 +50,8 @@ recall **42/69** · 50 finding(s), 2 unmatched · 488850 tokens · 615s
 | J44 | — | JAVA-ONLY the FileWriter is closed only on the success path; any excep |  |
 | J45 | — | parallel: EX03 CSV rows are built by concatenation, so a comma or quot |  |
 | J46 | YES | archiveAll builds a filename straight from the owner string, so an own | review-security: archiveAll writes files named by owner with no path sanitiza |
-| J47 | YES | parallel: EX06 renameTo's boolean result is discarded and it fails sil | review-bugs: writeSnapshot() ignores renameTo() failure and uses a fixed  |
-| J48 | YES | parallel: EX07 the snapshot temp file has one fixed name in /tmp: a sy | review-security: Snapshot written to a fixed, predictable temp path (symlink  |
+| J47 | — | parallel: EX06 renameTo's boolean result is discarded and it fails sil |  |
+| J48 | YES | parallel: EX07 the snapshot temp file has one fixed name in /tmp: a sy | review-bugs: writeSnapshot() ignores renameTo() failure and uses a fixed ; review-security: Snapshot written to a fixed, predictable temp path (symlink  |
 | J49 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | J50 | YES | parallel: X01 addCreated is unsynchronized while addResolved is, so co | review-concurrency: Metrics.addCreated is unsynchronized while sibling counters  |
 | J51 | — | the errors counter is exposed on /stats and never incremented anywhere |  |

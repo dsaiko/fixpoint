@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · rust · run 20261019-205729 (repeat 2)
 
-recall **46/64** · 67 finding(s), 8 unmatched · 2014981 tokens · 162s
+recall **46/64** · 67 finding(s), 7 unmatched · 2014981 tokens · 162s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -44,7 +44,7 @@ recall **46/64** · 67 finding(s), 8 unmatched · 2014981 tokens · 162s
 | RE02 | YES | parallel: EX02 the export holding every owner's links is written with  | review-security: Sensitive export written with default permissions |
 | RE03 | — | parallel: EX03 CSV rows are built with format!, so a comma or quote in |  |
 | RE04 | YES | archive_all builds a filename straight from the owner string, so an ow | review-security: Path traversal via owner filename |
-| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-concurrency: write_snapshot collides on a fixed shared temp path; review-security: Predictable temp file in /tmp |
+| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: write_snapshot swallows rename failure; review-concurrency: write_snapshot collides on a fixed shared temp path |
 | RE06 | YES | parallel: C21 the read error carries the server's filesystem path back | review-security: read_report inherits path traversal |
 | RW01 | YES | RUST-ONLY (parallel: X01) add_resolved does load-then-store instead of | review-concurrency: Metrics::add_resolved uses non-atomic load-then-store RMW, l |
 | RW02 | — | the janitor checks for stop only before a 60s sleep, so shutdown waits |  |
@@ -70,7 +70,6 @@ recall **46/64** · 67 finding(s), 8 unmatched · 2014981 tokens · 162s
 | RM12 | — | parse_query never percent-decodes, and the POST body is parsed as a qu |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) src/export.rs:49 — write_snapshot swallows rename failure
 - (medium) src/export.rs:31 — archive_all ignores write errors and may not flush
 - (low) src/store.rs:138 — resolve() lowercasing mismatch with redirect()
 - (medium) src/export.rs:12 — export_csv uses non-atomic fs::write, racing on concurrent same-named reports

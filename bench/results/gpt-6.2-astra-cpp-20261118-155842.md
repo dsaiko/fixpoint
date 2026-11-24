@@ -1,6 +1,6 @@
 # gpt-6.2-astra · cpp · run 20261118-155842 (repeat 1)
 
-recall **47/64** · 95 finding(s), 28 unmatched · 157623 tokens · 403s
+recall **47/64** · 95 finding(s), 27 unmatched · 157623 tokens · 403s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **47/64** · 95 finding(s), 28 unmatched · 157623 tokens · 403s
 | P40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Exported owner data can be readable by other local accounts |
 | P41 | YES | parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in | review-bugs: CSV exports do not preserve fields containing commas, quotes; review-security: User-controlled link fields can inject spreadsheet formulas  |
 | P42 | YES | archive_all builds a filename straight from the owner string, so an ow | review-bugs: Owner archival silently succeeds with missing or partial fil; review-security: Per-owner archive names can escape the archive directory |
-| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: A snapshot replaces the previous copy before its contents ar; review-bugs: Failed audit appends silently lose records |
+| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: A snapshot replaces the previous copy before its contents ar; review-bugs: Snapshot replacement silently fails across filesystems |
 | P44 | YES | CPP-ONLY format_row returns a pointer to a function-local char array,  | review-bugs: The row formatter returns a pointer to a destroyed stack arr |
 | P45 | YES | CPP-ONLY the errors_ counter has no initializer while its siblings do, | review-bugs: The error metric has no initialization for default construct |
 | P46 | YES | parallel: X01 the counters are plain longs incremented from the janito | review-concurrency: Concurrent requests race on the dashboard counters |
@@ -85,7 +85,6 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) main.cpp:32 — CSV and plain-text responses are advertised as JSON
 - (medium) cache.cpp:31 — Peek reports expired entries as cache hits
 - (medium) cache.cpp:37 — Updating an existing key in a full cache can evict an unrelated key
-- (medium) export.cpp:48 — Snapshot replacement silently fails across filesystems
 - (medium) worker.cpp:43 — Target checking reads one element past the vector
 - (medium) worker.cpp:44 — Target probes classify links by scheme without checking the destination
 - (high) cache.cpp:37 — Parallel cache writers can select and erase the same eviction victim

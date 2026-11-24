@@ -1,6 +1,6 @@
 # minimax-m3:cloud · typescript · run 20260901-102418 (repeat 1)
 
-recall **31/63** · 39 finding(s), 2 unmatched · 452700 tokens · 585s
+recall **31/63** · 39 finding(s), 1 unmatched · 452700 tokens · 585s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **31/63** · 39 finding(s), 2 unmatched · 452700 tokens · 585s
 | T40 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | T41 | — | parallel: EX03 CSV rows are built by template interpolation, so a comm |  |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-security: writeSnapshot opens /tmp/linkd-snapshot.json for write witho |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: writeSnapshot writes the temp file to /tmp, not the snapshot; review-security: writeSnapshot opens /tmp/linkd-snapshot.json for write witho |
 | T44 | — | TS-ONLY parseReport asserts a header row exists and casts every cell w |  |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-bugs: warmCache doesn't await probes and has the wrong return type; review-concurrency: warmCache resolves before probes complete |
@@ -70,4 +70,3 @@ recall **31/63** · 39 finding(s), 2 unmatched · 452700 tokens · 585s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/main.ts:159 — report() leaks every owner's links to the caller
-- (low) src/export.ts:44 — writeSnapshot writes the temp file to /tmp, not the snapshot dir

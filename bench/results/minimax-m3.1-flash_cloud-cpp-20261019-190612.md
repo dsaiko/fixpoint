@@ -42,9 +42,9 @@ recall **51/64** · 76 finding(s), 3 unmatched · 543675 tokens · 4846s
 | P36 | YES | parallel: CF04 LINKD_FETCH_LIMIT is parsed, validated and discarded; t | review-bugs: LINKD_FETCH_LIMIT is parsed and then discarded |
 | P37 | — | parallel: CF05 load_file never checks whether the stream opened, so an |  |
 | P38 | YES | parallel: CF06 validate logs the problems it finds and returns true, s | review-bugs: validate() always returns true, so an invalid configuration ; review-security: validate() reports configuration problems but always returns |
-| P39 | YES | parallel: EX01 the report name comes from the query string and is conc | review-security: The report filename is built from a user-supplied name with  |
+| P39 | YES | parallel: EX01 the report name comes from the query string and is conc | review-bugs: export_csv does not confine the report name to the export di; review-security: The report filename is built from a user-supplied name with  |
 | P40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-bugs: The export file is created with default permissions instead ; review-security: Export files containing every owner's links are created worl |
-| P41 | YES | parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in | review-bugs: export_csv does not confine the report name to the export di; review-bugs: export_csv writes link fields into CSV without escaping comm |
+| P41 | YES | parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in | review-bugs: export_csv writes link fields into CSV without escaping comm |
 | P42 | YES | archive_all builds a filename straight from the owner string, so an ow | review-security: archive_all builds per-owner filenames from the owner string |
 | P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: write_snapshot renames a fixed /tmp path into the target dir; review-security: write_snapshot uses a fixed path in /tmp, which is a symlink |
 | P44 | YES | CPP-ONLY format_row returns a pointer to a function-local char array,  | review-bugs: format_row returns a pointer to a local buffer that is destr; review-security: format_row returns a pointer to a stack buffer that is out o |

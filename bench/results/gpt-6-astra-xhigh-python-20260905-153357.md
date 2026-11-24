@@ -1,6 +1,6 @@
 # gpt-6-astra-xhigh · python · run 20260905-153357 (repeat 1)
 
-recall **42/66** · 56 finding(s), 10 unmatched · 298609 tokens · 823s
+recall **42/66** · 56 finding(s), 8 unmatched · 298609 tokens · 823s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -47,7 +47,7 @@ recall **42/66** · 56 finding(s), 10 unmatched · 298609 tokens · 823s
 | Y41 | YES | parallel: EX02 the report is written with default permissions and with | review-security: Sensitive reports are created without private file permissio |
 | Y42 | YES | parallel: EX03 CSV rows are built by string formatting, so a comma or  | review-bugs: CSV fields are written without escaping; review-security: Exported user input can execute spreadsheet formulas |
 | Y43 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: Snapshots are published before buffered data is made durable |
+| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: Snapshots are published before buffered data is made durable; review-bugs: Snapshot replacement fails across filesystems |
 | Y45 | YES | PY-ONLY the default `rows=[]` is shared across calls, so every parse a | review-bugs: Report parsing retains rows from previous calls |
 | Y46 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | Y47 | YES | PY-ONLY the janitor deletes from store.links while consuming the gener | review-bugs: The first expired link terminates the janitor; review-concurrency: Concurrent store changes can permanently terminate the janit |
@@ -76,9 +76,7 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) main.py:29 — Responses declare JSON while returning unencoded text or CSV
 - (medium) main.py:89 — Invalid pagination values raise uncaught exceptions
 - (medium) cache.py:40 — Updating a full cache unnecessarily evicts another entry
-- (medium) export.py:43 — Snapshot replacement fails across filesystems
 - (medium) export.py:66 — Every generated report produces a spurious parsed row
 - (medium) store.py:32 — Links created without tags share the same mutable list
 - (high) export.py:21 — Concurrent reports overwrite files before responses read them
 - (medium) auth.py:43 — Session mutation can interrupt token verification
-- (medium) export.py:43 — Concurrent snapshots share one temporary file

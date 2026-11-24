@@ -1,6 +1,6 @@
 # x-ai/grok-4.6 · typescript · run 20260901-124451 (repeat 1)
 
-recall **41/63** · 49 finding(s), 2 unmatched · 159298 tokens · 951s
+recall **42/63** · 49 finding(s), 1 unmatched · 159298 tokens · 951s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **41/63** · 49 finding(s), 2 unmatched · 159298 tokens · 951s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Export files are written with default umask permissions |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV rows are not escaped, so targets with commas break the r; review-security: CSV rows concatenate unsanitized link fields |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | — | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  |  |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: writeSnapshot() renames from /tmp onto a possibly different  |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: parseReport() turns the trailing newline into an extra empty |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-bugs: warmCache() returns before any probe or cache.set finishes; review-concurrency: warmCache returns before any probe or cache.set finishes |
@@ -70,4 +70,3 @@ recall **41/63** · 49 finding(s), 2 unmatched · 159298 tokens · 951s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/cache.ts:38 — peek() treats expired entries as still cached
-- (medium) src/export.ts:45 — writeSnapshot() renames from /tmp onto a possibly different filesystem

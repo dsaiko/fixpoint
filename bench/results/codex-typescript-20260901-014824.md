@@ -1,6 +1,6 @@
 # codex · typescript · run 20260901-014824 (repeat 1)
 
-recall **41/63** · 50 finding(s), 5 unmatched · 195225 tokens · 882s
+recall **42/63** · 50 finding(s), 4 unmatched · 195225 tokens · 882s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **41/63** · 50 finding(s), 5 unmatched · 195225 tokens · 882s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Sensitive reports are created with potentially world-readabl |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV fields are emitted without escaping; review-security: Unescaped CSV fields enable spreadsheet formula injection |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | — | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  |  |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot rename can fail across filesystems |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: Parsing a generated report adds a spurious blank row |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-concurrency: warmCache detaches all probe tasks |
@@ -72,5 +72,4 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/main.ts:25 — Startup ignores the validation result
 - (medium) src/config.ts:100 — NaN numeric settings bypass validation
 - (medium) src/cache.ts:46 — Refreshing an existing entry can evict an unrelated entry
-- (medium) src/export.ts:47 — Snapshot rename can fail across filesystems
 - (medium) src/main.ts:32 — The janitor interval is started without any shutdown path

@@ -1,6 +1,6 @@
 # glm-5.3:cloud · rust · run 20260901-122250 (repeat 1)
 
-recall **39/64** · 50 finding(s), 1 unmatched · 664447 tokens · 351s
+recall **39/64** · 50 finding(s), 0 unmatched · 664447 tokens · 351s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -44,7 +44,7 @@ recall **39/64** · 50 finding(s), 1 unmatched · 664447 tokens · 351s
 | RE02 | YES | parallel: EX02 the export holding every owner's links is written with  | review-security: Export report is written with default permissions despite th |
 | RE03 | — | parallel: EX03 CSV rows are built with format!, so a comma or quote in |  |
 | RE04 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-security: Snapshot uses a fixed predictable /tmp path, enabling a syml |
+| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: write_snapshot() ignores the rename result and reports succe; review-security: Snapshot uses a fixed predictable /tmp path, enabling a syml |
 | RE06 | — | parallel: C21 the read error carries the server's filesystem path back |  |
 | RW01 | YES | RUST-ONLY (parallel: X01) add_resolved does load-then-store instead of | review-concurrency: Metrics::add_resolved uses load+store instead of fetch_add,  |
 | RW02 | — | the janitor checks for stop only before a 60s sleep, so shutdown waits |  |
@@ -68,6 +68,3 @@ recall **39/64** · 50 finding(s), 1 unmatched · 664447 tokens · 351s
 | RM16 | — | the link owner is taken from the request body instead of the authentic |  |
 | RM17 | — | JSON responses are built by string interpolation with no escaping, so  |  |
 | RM12 | — | parse_query never percent-decodes, and the POST body is parsed as a qu |  |
-
-Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) src/export.rs:49 — write_snapshot() ignores the rename result and reports success without a snapshot

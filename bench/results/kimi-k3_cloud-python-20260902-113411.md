@@ -1,6 +1,6 @@
 # kimi-k3:cloud · python · run 20260902-113411 (repeat 1)
 
-recall **39/66** · 50 finding(s), 3 unmatched · 170878 tokens · 267s
+recall **39/66** · 50 finding(s), 2 unmatched · 170878 tokens · 267s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -47,7 +47,7 @@ recall **39/66** · 50 finding(s), 3 unmatched · 170878 tokens · 267s
 | Y41 | — | parallel: EX02 the report is written with default permissions and with |  |
 | Y42 | — | parallel: EX03 CSV rows are built by string formatting, so a comma or  |  |
 | Y43 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-security: Snapshot written via fixed predictable /tmp path (symlink/TO |
+| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: write_snapshot renames the temp file before closing it; review-security: Snapshot written via fixed predictable /tmp path (symlink/TO |
 | Y45 | YES | PY-ONLY the default `rows=[]` is shared across calls, so every parse a | review-bugs: parse_report() accumulates rows across calls via a mutable d |
 | Y46 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | Y47 | YES | PY-ONLY the janitor deletes from store.links while consuming the gener | review-bugs: Janitor loop mutates the links dict while consuming the find; review-concurrency: Janitor thread mutates store.links unsynchronized and dies s |
@@ -72,6 +72,5 @@ recall **39/66** · 50 finding(s), 3 unmatched · 170878 tokens · 267s
 | Y66 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) export.py:46 — write_snapshot renames the temp file before closing it
 - (high) auth.py:43 — verify() iterates sessions dict while issue()/revoke() mutate it from other threads
 - (low) store.py:46 — Quota counter read-modify-write races across concurrent create() calls

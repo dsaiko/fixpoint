@@ -1,6 +1,6 @@
 # gpt-6.2-astra · python · run 20261118-160246 (repeat 1)
 
-recall **46/66** · 89 finding(s), 25 unmatched · 125030 tokens · 318s
+recall **46/66** · 89 finding(s), 24 unmatched · 125030 tokens · 318s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -47,7 +47,7 @@ recall **46/66** · 89 finding(s), 25 unmatched · 125030 tokens · 318s
 | Y41 | YES | parallel: EX02 the report is written with default permissions and with | review-security: Aggregate reports can be readable by other local users |
 | Y42 | YES | parallel: EX03 CSV rows are built by string formatting, so a comma or  | review-bugs: CSV reports do not round-trip fields containing delimiters; review-security: User-controlled CSV fields can inject spreadsheet formulas |
 | Y43 | YES | archive_all builds a filename straight from the owner string, so an ow | review-security: Archive filenames allow owner identifiers to escape the arch |
-| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: The snapshot is published before its contents are durable; review-concurrency: Concurrent snapshot writers share a temporary file and publi |
+| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: The snapshot is published before its contents are durable; review-bugs: Snapshots cannot be installed across filesystem boundaries |
 | Y45 | YES | PY-ONLY the default `rows=[]` is shared across calls, so every parse a | review-security: Report parsing retains previous callers' rows |
 | Y46 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | Y47 | YES | PY-ONLY the janitor deletes from store.links while consuming the gener | review-bugs: The first expired link terminates the janitor; review-concurrency: Deleting the first expired link terminates the janitor |
@@ -78,7 +78,6 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) store.py:34 — URL validation accepts targets with no host
 - (medium) cache.py:35 — An expired entry prevents cache warming
 - (medium) auth.py:50 — The admin-role check rejects administrators
-- (medium) export.py:43 — Snapshots cannot be installed across filesystem boundaries
 - (medium) export.py:61 — Parsing a report returns rows from previous calls
 - (medium) export.py:65 — Every generated report parses with a phantom final row
 - (medium) main.py:68 — A numeric zero TTL silently becomes thirty days

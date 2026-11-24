@@ -1,6 +1,6 @@
 # gpt-6-astra-xhigh · cpp · run 20260905-152509 (repeat 1)
 
-recall **45/64** · 66 finding(s), 11 unmatched · 356401 tokens · 869s
+recall **45/64** · 66 finding(s), 10 unmatched · 356401 tokens · 869s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **45/64** · 66 finding(s), 11 unmatched · 356401 tokens · 869s
 | P40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Sensitive reports inherit potentially public filesystem perm |
 | P41 | YES | parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in | review-bugs: CSV fields are written without escaping; review-security: Attacker-controlled CSV cells can execute spreadsheet formul |
 | P42 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: The snapshot is published before its contents are durable |
+| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: The snapshot is published before its contents are durable; review-bugs: Snapshot replacement fails across filesystems |
 | P44 | YES | CPP-ONLY format_row returns a pointer to a function-local char array,  | review-bugs: format_row returns a pointer to a local array |
 | P45 | — | CPP-ONLY the errors_ counter has no initializer while its siblings do, |  |
 | P46 | — | parallel: X01 the counters are plain longs incremented from the janito |  |
@@ -80,4 +80,3 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) main.cpp:32 — Plain-text and CSV bodies are labeled as JSON
 - (medium) main.cpp:96 — The quota endpoint omits all per-owner counts
 - (medium) export.cpp:26 — Report I/O failures are reported as successful downloads
-- (medium) export.cpp:48 — Snapshot replacement fails across filesystems

@@ -1,6 +1,6 @@
 # gpt-6.1-sol · cpp · run 20260930-102609 (repeat 1)
 
-recall **42/64** · 65 finding(s), 12 unmatched · 263484 tokens · 744s
+recall **42/64** · 65 finding(s), 11 unmatched · 263484 tokens · 744s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **42/64** · 65 finding(s), 12 unmatched · 263484 tokens · 744s
 | P40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-bugs: Report export reports success after file I/O failures; review-security: Sensitive reports are created with ambient file permissions |
 | P41 | YES | parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in | review-bugs: CSV fields are written without quoting or escaping; review-security: CSV exports allow attacker-controlled spreadsheet formulas |
 | P42 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: Snapshot replacement occurs before the data is durable |
+| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: Snapshot replacement occurs before the data is durable; review-bugs: Snapshot rename failures are silently ignored |
 | P44 | YES | CPP-ONLY format_row returns a pointer to a function-local char array,  | review-bugs: format_row returns a pointer to a destroyed stack array |
 | P45 | — | CPP-ONLY the errors_ counter has no initializer while its siblings do, |  |
 | P46 | — | parallel: X01 the counters are plain longs incremented from the janito |  |
@@ -77,7 +77,6 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) store.cpp:176 — last_code selects the largest code instead of the newest link
 - (medium) cache.cpp:37 — Updating an existing cache key unnecessarily evicts another entry
 - (medium) cache.cpp:31 — peek reports expired entries as cached
-- (medium) export.cpp:51 — Snapshot rename failures are silently ignored
 - (medium) store.cpp:26 — Generated code collisions overwrite existing links
 - (medium) main.cpp:44 — TTL conversion overflows before constructing the duration
 - (medium) cache.cpp:45 — Parallel cache warming races on the entries map

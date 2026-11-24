@@ -1,6 +1,6 @@
 # glm-5.3:cloud · java · run 20260901-122508 (repeat 1)
 
-recall **49/69** · 59 finding(s), 2 unmatched · 840865 tokens · 376s
+recall **48/69** · 59 finding(s), 2 unmatched · 840865 tokens · 376s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -50,8 +50,8 @@ recall **49/69** · 59 finding(s), 2 unmatched · 840865 tokens · 376s
 | J44 | YES | JAVA-ONLY the FileWriter is closed only on the success path; any excep | review-bugs: FileWriter handles leak when a write fails |
 | J45 | YES | parallel: EX03 CSV rows are built by concatenation, so a comma or quot | review-bugs: exportCsv() does not escape CSV fields; review-security: CSV injection: owner field is written into reports unescaped |
 | J46 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| J47 | YES | parallel: EX06 renameTo's boolean result is discarded and it fails sil | review-bugs: writeSnapshot() ignores renameTo failure and uses a fixed te |
-| J48 | YES | parallel: EX07 the snapshot temp file has one fixed name in /tmp: a sy | review-security: Snapshot written through a fixed, world-visible /tmp path (s |
+| J47 | — | parallel: EX06 renameTo's boolean result is discarded and it fails sil |  |
+| J48 | YES | parallel: EX07 the snapshot temp file has one fixed name in /tmp: a sy | review-bugs: writeSnapshot() ignores renameTo failure and uses a fixed te; review-security: Snapshot written through a fixed, world-visible /tmp path (s |
 | J49 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | J50 | YES | parallel: X01 addCreated is unsynchronized while addResolved is, so co | review-concurrency: Metrics.addCreated() is unsynchronized while the class claim |
 | J51 | — | the errors counter is exposed on /stats and never incremented anywhere |  |

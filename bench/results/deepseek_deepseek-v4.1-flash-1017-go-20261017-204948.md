@@ -1,6 +1,6 @@
 # deepseek/deepseek-v4.1-flash-1017 · go · run 20261017-204948 (repeat 1)
 
-recall **37/56** · 60 finding(s), 1 unmatched · 441622 tokens · 1776s · 11 retired seed(s) not scored
+recall **37/56** · 60 finding(s), 0 unmatched · 441622 tokens · 1776s · 11 retired seed(s) not scored
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -30,7 +30,7 @@ recall **37/56** · 60 finding(s), 1 unmatched · 441622 tokens · 1776s · 11 r
 | S03 | YES | every issued session token is written to the log in cleartext | review-security: Raw session tokens are written to the log |
 | S04 | YES | Verify never looks at ExpiresAt, so a token works forever despite the  | review-bugs: Verify ignores Session.ExpiresAt, so tokens never expire; review-security: Verify never checks ExpiresAt, so session tokens never expir |
 | S05 | — | passwords are stored as a single unsalted SHA-256, crackable offline a |  |
-| S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin's condition is always true and rejects every ro |
+| S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin's condition is always true and rejects every ro; review-security: RequireAdmin's condition is unsatisfiable, so the role check |
 | S08 | — | the 401 response echoes the rejected token back to the caller |  |
 | S09 | YES | the sessions map is read and written from every request goroutine with | review-concurrency: Authenticator.sessions map is mutated and read with no synch |
 | CF01 | — | a malformed LINKD_PORT silently becomes port 0 |  |
@@ -76,6 +76,3 @@ Retired seeds — still matched so their findings are not counted as noise, but 
 | X02 | YES | janitor iterates and deletes s.links concurrently with HTTP handlers;  |
 | X03 | YES | wg.Add inside the goroutine races wg.Wait; WarmCache can return before |
 | X04 | YES | CheckTargets returns on first error; remaining sends to the unbuffered |
-
-Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) auth.go:84 — RequireAdmin's condition is unsatisfiable, so the role check always denies

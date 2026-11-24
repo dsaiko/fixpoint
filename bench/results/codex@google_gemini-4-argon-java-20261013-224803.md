@@ -1,6 +1,6 @@
 # codex@google/gemini-4-argon · java · run 20261013-224803 (repeat 1)
 
-recall **53/69** · 64 finding(s), 5 unmatched · 1179247 tokens · 500s
+recall **54/69** · 64 finding(s), 3 unmatched · 1179247 tokens · 500s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -28,7 +28,7 @@ recall **53/69** · 64 finding(s), 5 unmatched · 1179247 tokens · 500s
 | J22 | YES | JAVA-ONLY verify compares the token with == rather than equals, so aut | review-bugs: Token verification compares Strings with == instead of equal |
 | J23 | YES | parallel: S05 passwords are stored as a single unsalted SHA-256, crack | review-security: Unsalted single-pass SHA-256 used for password hashing |
 | J24 | YES | parallel: S06 bearerToken indexes parts[1] without checking, so a malf | review-bugs: Uncaught NullPointerException and ArrayIndexOutOfBoundsExcep |
-| J25 | — | parallel: S07 the admin check is always true, so requireAdmin rejects  |  |
+| J25 | YES | parallel: S07 the admin check is always true, so requireAdmin rejects  | review-bugs: Always-true condition in requireAdmin rejects all sessions; review-security: Broken admin authorization condition in requireAdmin |
 | J26 | YES | secretEquals is documented as not leaking how much matched and uses St | review-security: Non-constant-time secret comparison in secretEquals |
 | J27 | YES | the sessions map is read and written from every request thread with no | review-concurrency: Unsynchronized HashMap and Random in Authenticator |
 | J28 | — | JAVA-ONLY hashPassword returns the empty string when the digest is una |  |
@@ -75,8 +75,6 @@ recall **53/69** · 64 finding(s), 5 unmatched · 1179247 tokens · 500s
 | J69 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) src/linkd/Authenticator.java:62 — Always-true condition in requireAdmin rejects all sessions
 - (high) src/linkd/Export.java:84 — Export.readReport does not default null or empty report name to "links"
 - (high) src/linkd/Main.java:57 — Query parameter parser does not URL-decode keys or values
-- (high) src/linkd/Authenticator.java:62 — Broken admin authorization condition in requireAdmin
 - (medium) src/linkd/Main.java:91 — Unescaped target URL concatenated directly into JSON response

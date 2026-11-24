@@ -1,6 +1,6 @@
 # minimax-m3.1-flash:cloud · rust · run 20261019-173829 (repeat 1)
 
-recall **38/64** · 55 finding(s), 6 unmatched · 470227 tokens · 3242s
+recall **38/64** · 55 finding(s), 5 unmatched · 470227 tokens · 3242s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -44,7 +44,7 @@ recall **38/64** · 55 finding(s), 6 unmatched · 470227 tokens · 3242s
 | RE02 | — | parallel: EX02 the export holding every owner's links is written with  |  |
 | RE03 | — | parallel: EX03 CSV rows are built with format!, so a comma or quote in |  |
 | RE04 | YES | archive_all builds a filename straight from the owner string, so an ow | review-bugs: archive_all() swallows write errors and omits the CSV header |
-| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: write_snapshot() uses a fixed temp path, so concurrent write |
+| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: write_snapshot() discards the rename error and reports succe; review-bugs: write_snapshot() uses a fixed temp path, so concurrent write |
 | RE06 | — | parallel: C21 the read error carries the server's filesystem path back |  |
 | RW01 | YES | RUST-ONLY (parallel: X01) add_resolved does load-then-store instead of | review-bugs: add_resolved() uses load-then-store instead of fetch_add and; review-concurrency: add_resolved does a non-atomic load-then-store, losing incre |
 | RW02 | YES | the janitor checks for stop only before a 60s sleep, so shutdown waits | review-bugs: The janitor checks its stop signal only before sleeping, so  |
@@ -71,7 +71,6 @@ recall **38/64** · 55 finding(s), 6 unmatched · 470227 tokens · 3242s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/worker.rs:61 — The janitor deletes links that have not expired
-- (medium) src/export.rs:49 — write_snapshot() discards the rename error and reports success when the snapshot was lost
 - (low) src/main.rs:84 — The request body is rejoined with CRLF, so a bare-LF body is mis-parsed
 - (high) src/cache.rs:45 — Lock-order inversion between Cache::get and Cache::flush can deadlock the cache
 - (medium) src/worker.rs:59 — The janitor holds the store mutex for its whole O(n) sweep and again across cache.sweep()

@@ -1,6 +1,6 @@
 # codex@google/gemini-4-argon · cpp · run 20261013-225820 (repeat 1)
 
-recall **48/64** · 60 finding(s), 3 unmatched · 1419262 tokens · 531s
+recall **49/64** · 60 finding(s), 3 unmatched · 1419262 tokens · 531s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -51,8 +51,8 @@ recall **48/64** · 60 finding(s), 3 unmatched · 1419262 tokens · 531s
 | P45 | YES | CPP-ONLY the errors_ counter has no initializer while its siblings do, | review-bugs: Metrics::errors_ is uninitialized |
 | P46 | YES | parallel: X01 the counters are plain longs incremented from the janito | review-concurrency: Metrics counters are updated and read without synchronizatio |
 | P47 | YES | CPP-ONLY (parallel: X02) the janitor erases through the iterator it th | review-bugs: Iterator invalidation in start_janitor link sweep loop; review-concurrency: Unsynchronized concurrent access to Store between janitor th |
-| P48 | YES | CPP-ONLY warm_cache never joins its threads, so the vector's destructo | review-bugs: warm_cache destroys joinable std::thread objects without joi; review-concurrency: warm_cache destroys joinable std::thread objects without joi |
-| P49 | — | CPP-ONLY the thread lambda captures the loop variable by reference, so |  |
+| P48 | YES | CPP-ONLY warm_cache never joins its threads, so the vector's destructo | review-bugs: warm_cache destroys joinable std::thread objects without joi; review-concurrency: stop_janitor does not join the janitor thread and allows pos |
+| P49 | YES | CPP-ONLY the thread lambda captures the loop variable by reference, so | review-concurrency: warm_cache destroys joinable std::thread objects without joi |
 | P50 | YES | CPP-ONLY check_targets loops with <= and reads one element past the en | review-bugs: Off-by-one loop bound `i <= links.size()` in check_targets r |
 | P51 | YES | CPP-ONLY count_for_owner uses map::operator[], which INSERTS a zero en | review-bugs: count_for_owner inserts unknown owners into the quota map vi |
 | P52 | — | CPP-ONLY the janitor thread is heap-allocated, never joined and never  |  |

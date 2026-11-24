@@ -1,10 +1,10 @@
 # qwen3.5:397b-cloud · typescript · run 20260902-110955 (repeat 1)
 
-recall **21/63** · 30 finding(s), 4 unmatched · 327402 tokens · 141s
+recall **21/63** · 30 finding(s), 3 unmatched · 327402 tokens · 141s
 
 | seed | found | note | matched by |
 |---|---|---|---|
-| T01 | YES | TS-ONLY (parallel: C01) a new owner has no quota entry, and the non-nu | review-bugs: Quota becomes NaN for new owners |
+| T01 | YES | TS-ONLY (parallel: C01) a new owner has no quota entry, and the non-nu | review-bugs: Quota becomes NaN for new owners; review-concurrency: Quota increment is a data race |
 | T02 | YES | parallel: C02 expiry comparison inverted: live links are deleted, expi | review-bugs: resolve() deletes valid links instead of expired ones; review-security: Inverted expiry logic deletes valid links |
 | T03 | YES | parallel: C03 rename validates `from` twice; `to` is never validated | review-bugs: rename() validates 'from' twice, never validates 'to' |
 | T04 | YES | parallel: C04 page clamps end past the array length; slice silently re | review-bugs: page() sets end index out of bounds |
@@ -69,7 +69,6 @@ recall **21/63** · 30 finding(s), 4 unmatched · 327402 tokens · 141s
 | T63 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) src/store.ts:34 — Quota increment is a data race
 - (medium) src/cache.ts:12 — Cache class has data races on shared state
 - (medium) src/main.ts:27 — Shared global state accessed by concurrent request handlers
 - (medium) src/auth.ts:13 — Authenticator sessions map has data races

@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · typescript · run 20261019-205838 (repeat 1)
 
-recall **50/63** · 72 finding(s), 11 unmatched · 1190609 tokens · 173s
+recall **51/63** · 72 finding(s), 10 unmatched · 1190609 tokens · 173s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -56,7 +56,7 @@ recall **50/63** · 72 finding(s), 11 unmatched · 1190609 tokens · 173s
 | T50 | — | the janitor takes the cache and never sweeps it, so expired cache entr |  |
 | T51 | YES | TS-ONLY the request body is cast to `any`, so target and owner reach t | review-bugs: JSON.parse is outside the try block |
 | T52 | YES | a bad ttl parses to NaN and produces a link whose expiry is NaN, which | review-bugs: Non-numeric payload.ttl produces NaN link expiry |
-| T53 | — | parallel: C16 redirect lowercases the code before lookup although code |  |
+| T53 | YES | parallel: C16 redirect lowercases the code before lookup although code | review-bugs: redirect() assumes query.code is present |
 | T54 | YES | parallel: C17 deleteLink never checks the owner its doc promises to ch | review-bugs: deleteLink() does not enforce ownership; review-security: Any authenticated user can delete any link |
 | T55 | YES | parallel: C18 /out redirects to any address in ?next= -- an open redir | review-security: Open redirect in /out endpoint |
 | T56 | YES | parallel: C19 the admin endpoint is gated on a request header the call | review-security: Admin quotas endpoint authorized by spoofable header |
@@ -72,7 +72,6 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (low) src/cache.ts:37 — peek() reports expired entries as cached
 - (medium) src/main.ts:25 — validate() result is ignored at startup
 - (high) src/main.ts:51 — Missing/invalid auth header crashes request handling
-- (medium) src/main.ts:96 — redirect() assumes query.code is present
 - (medium) src/worker.ts:70 — flushAudit() does not retry and ignores errors
 - (medium) src/worker.ts:28 — startJanitor() misses links expiring exactly at now
 - (high) src/cache.ts:45 — Cache timers are never cleared, so stale timeouts delete newer entries

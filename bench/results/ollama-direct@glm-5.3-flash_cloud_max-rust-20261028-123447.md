@@ -1,6 +1,6 @@
 # ollama-direct@glm-5.3-flash:cloud#max · rust · run 20261028-123447 (repeat 1)
 
-recall **37/64** · 47 finding(s), 4 unmatched · 962188 tokens · 479s
+recall **38/64** · 47 finding(s), 3 unmatched · 962188 tokens · 479s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **37/64** · 47 finding(s), 4 unmatched · 962188 tokens · 479s
 | RA04 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: Expired sessions are accepted; review-security: Expired sessions are still accepted |
 | RA05 | — | RUST-ONLY (parallel: S05) passwords are hashed with a djb2-style 64-bi |  |
 | RA06 | YES | RUST-ONLY (parallel: S06) bearer_token indexes parts[1] without checki | review-bugs: Malformed Authorization header causes an indexing panic; review-security: Missing Authorization header causes request-handler panic |
-| RA07 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| RA07 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: Admin authorization condition rejects every role |
 | RA08 | — | RUST-ONLY secret_eq is documented as constant-time and is not: it retu |  |
 | RA09 | — | verify scans every session linearly although the map is already keyed  |  |
 | RC01 | — | RUST-ONLY get takes the WRITE lock on the read path, so every cache re |  |
@@ -71,6 +71,5 @@ recall **37/64** · 47 finding(s), 4 unmatched · 962188 tokens · 479s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/store.rs:83 — Paging panics for ordinary list requests
-- (medium) src/auth.rs:68 — Admin authorization condition rejects every role
 - (medium) src/cache.rs:53 — Cache warming skips expired entries and leaves stale data
 - (high) src/main.rs:216 — Report endpoint exposes all users' links without authorization

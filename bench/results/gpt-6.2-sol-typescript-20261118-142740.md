@@ -1,6 +1,6 @@
 # gpt-6.2-sol · typescript · run 20261118-142740 (repeat 1)
 
-recall **44/63** · 74 finding(s), 16 unmatched · 245300 tokens · 839s
+recall **44/63** · 74 finding(s), 15 unmatched · 245300 tokens · 839s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **44/63** · 74 finding(s), 16 unmatched · 245300 tokens · 839s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Generated reports can be readable by other local users |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV exports corrupt fields containing commas or line breaks; review-security: User-supplied CSV cells can execute spreadsheet formulas |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot writes return before the replacement is durable; review-concurrency: Concurrent snapshots use the same staging file |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot writes fail across filesystem boundaries; review-bugs: Snapshot writes return before the replacement is durable |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: Parsing a generated CSV produces an extra empty row |
 | T45 | YES | the errors counter is reported by snapshot and never incremented anywh | review-bugs: The dashboard error count never increases |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-bugs: Cache warmup loses probe failures; review-concurrency: Cache warming detaches probe failures from its returned prom |
@@ -73,7 +73,6 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/store.ts:152 — A rejected import leaves earlier changes in the store
 - (medium) src/cache.ts:48 — Zero capacity and an empty-string victim break the cache bound
 - (medium) src/cache.ts:38 — Cache warming skips entries that have already expired
-- (medium) src/export.ts:47 — Snapshot writes fail across filesystem boundaries
 - (medium) src/main.ts:85 — Malformed JSON and null bodies escape link creation error handling
 - (medium) src/main.ts:107 — Negative page sizes can return nearly the entire store
 - (medium) src/main.ts:159 — Reports silently omit links after the first 1,000

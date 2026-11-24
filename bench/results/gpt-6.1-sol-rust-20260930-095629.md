@@ -1,6 +1,6 @@
 # gpt-6.1-sol · rust · run 20260930-095629 (repeat 1)
 
-recall **29/64** · 37 finding(s), 5 unmatched · 345079 tokens · 561s
+recall **29/64** · 37 finding(s), 4 unmatched · 345079 tokens · 561s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -44,7 +44,7 @@ recall **29/64** · 37 finding(s), 5 unmatched · 345079 tokens · 561s
 | RE02 | — | parallel: EX02 the export holding every owner's links is written with  |  |
 | RE03 | YES | parallel: EX03 CSV rows are built with format!, so a comma or quote in | review-bugs: CSV fields are written without escaping |
 | RE04 | YES | archive_all builds a filename straight from the owner string, so an ow | review-bugs: Archive write failures are reported as success |
-| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot writes do not provide the promised durability; review-concurrency: Concurrent snapshots share and truncate one temporary file |
+| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot replacement failures are silently ignored; review-bugs: Snapshot writes do not provide the promised durability |
 | RE06 | — | parallel: C21 the read error carries the server's filesystem path back |  |
 | RW01 | YES | RUST-ONLY (parallel: X01) add_resolved does load-then-store instead of | review-concurrency: Concurrent resolved increments overwrite each other |
 | RW02 | YES | the janitor checks for stop only before a 60s sleep, so shutdown waits | review-concurrency: Dropping the janitor handle leaves its thread running |
@@ -74,4 +74,3 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/store.rs:47 — Short-code collisions silently overwrite existing links
 - (medium) src/main.rs:243 — Text and CSV responses are advertised as JSON
 - (medium) src/export.rs:67 — Downloading an unnamed report reads the wrong filename
-- (medium) src/export.rs:49 — Snapshot replacement failures are silently ignored

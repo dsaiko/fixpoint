@@ -1,6 +1,6 @@
 # deepseek-v4-pro:cloud · java · run 20260901-112937 (repeat 1)
 
-recall **42/69** · 53 finding(s), 3 unmatched · 452836 tokens · 307s
+recall **43/69** · 53 finding(s), 2 unmatched · 452836 tokens · 307s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -28,7 +28,7 @@ recall **42/69** · 53 finding(s), 3 unmatched · 452836 tokens · 307s
 | J22 | YES | JAVA-ONLY verify compares the token with == rather than equals, so aut | review-bugs: verify() compares tokens with == so auth always fails; review-security: Token verification compares strings with == |
 | J23 | — | parallel: S05 passwords are stored as a single unsalted SHA-256, crack |  |
 | J24 | YES | parallel: S06 bearerToken indexes parts[1] without checking, so a malf | review-bugs: bearerToken() NPEs on a missing header and AIOOBEs on a malf; review-security: bearerToken throws on missing/malformed Authorization header |
-| J25 | — | parallel: S07 the admin check is always true, so requireAdmin rejects  |  |
+| J25 | YES | parallel: S07 the admin check is always true, so requireAdmin rejects  | review-bugs: requireAdmin() is always false due to || instead of && |
 | J26 | — | secretEquals is documented as not leaking how much matched and uses St |  |
 | J27 | YES | the sessions map is read and written from every request thread with no | review-concurrency: Authenticator's sessions HashMap is read and mutated concurr |
 | J28 | — | JAVA-ONLY hashPassword returns the empty string when the digest is una |  |
@@ -76,5 +76,4 @@ recall **42/69** · 53 finding(s), 3 unmatched · 452836 tokens · 307s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/linkd/Main.java:86 — links() parses ttl outside the try, so a bad ttl is an unhandled 500
-- (medium) src/linkd/Authenticator.java:62 — requireAdmin() is always false due to || instead of &&
 - (high) src/linkd/Store.java:45 — link.hits++ is a non-atomic read-modify-write on a shared field

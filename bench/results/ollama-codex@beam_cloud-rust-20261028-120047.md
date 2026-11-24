@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · rust · run 20261028-120047 (repeat 1)
 
-recall **39/64** · 49 finding(s), 3 unmatched · 959129 tokens · 165s
+recall **40/64** · 49 finding(s), 2 unmatched · 959129 tokens · 165s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **39/64** · 49 finding(s), 3 unmatched · 959129 tokens · 165s
 | RA04 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify ignores session expiry; review-security: Session expiry is never enforced |
 | RA05 | — | RUST-ONLY (parallel: S05) passwords are hashed with a djb2-style 64-bi |  |
 | RA06 | YES | RUST-ONLY (parallel: S06) bearer_token indexes parts[1] without checki | review-bugs: bearer_token panics on malformed Authorization header; review-security: bearer_token panics on malformed Authorization header |
-| RA07 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| RA07 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin rejects every role |
 | RA08 | — | RUST-ONLY secret_eq is documented as constant-time and is not: it retu |  |
 | RA09 | — | verify scans every session linearly although the map is already keyed  |  |
 | RC01 | — | RUST-ONLY get takes the WRITE lock on the read path, so every cache re |  |
@@ -70,6 +70,5 @@ recall **39/64** · 49 finding(s), 3 unmatched · 959129 tokens · 165s
 | RM12 | — | parse_query never percent-decodes, and the POST body is parsed as a qu |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) src/auth.rs:68 — require_admin rejects every role
 - (medium) src/worker.rs:70 — JanitorStop does not stop the janitor when dropped
 - (high) src/main.rs:248 — Unsanitized redirect Location enables response splitting and open redirect

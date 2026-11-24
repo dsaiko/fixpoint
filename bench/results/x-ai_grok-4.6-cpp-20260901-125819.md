@@ -1,6 +1,6 @@
 # x-ai/grok-4.6 · cpp · run 20260901-125819 (repeat 1)
 
-recall **39/64** · 46 finding(s), 2 unmatched · 164624 tokens · 1051s
+recall **40/64** · 46 finding(s), 1 unmatched · 164624 tokens · 1051s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **39/64** · 46 finding(s), 2 unmatched · 164624 tokens · 1051s
 | P18 | YES | parallel: S02 session tokens come from std::rand, never seeded, writte | review-security: Session tokens are predictable std::rand() hex |
 | P19 | YES | parallel: S03 every issued session token is printed in cleartext | review-security: Session tokens are written to stdout |
 | P20 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify() never checks session expiry; review-security: verify() never enforces session expiry |
-| P21 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin always returns false |
 | P22 | — | parallel: S05 passwords are hashed with a djb2 accumulator: unsalted,  |  |
 | P23 | YES | CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64 | review-security: Unauthenticated stack overflow in bearer_token |
 | P24 | YES | CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no | review-bugs: bearer_token overflows a 64-byte buffer and dereferences a n |
@@ -71,4 +71,3 @@ recall **39/64** · 46 finding(s), 2 unmatched · 164624 tokens · 1051s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) store.cpp:58 — rename() uses a Link reference after the map node is erased
-- (high) auth.cpp:49 — require_admin always returns false

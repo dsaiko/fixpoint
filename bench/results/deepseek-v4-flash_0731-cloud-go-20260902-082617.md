@@ -1,6 +1,6 @@
 # deepseek-v4-flash:0731-cloud · go · run 20260902-082617 (repeat 1)
 
-recall **28/56** · 45 finding(s), 1 unmatched · 651372 tokens · 735s · 11 retired seed(s) not scored
+recall **29/56** · 45 finding(s), 0 unmatched · 651372 tokens · 735s · 11 retired seed(s) not scored
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -30,7 +30,7 @@ recall **28/56** · 45 finding(s), 1 unmatched · 651372 tokens · 735s · 11 re
 | S03 | YES | every issued session token is written to the log in cleartext | review-security: Session tokens written to the log in plaintext |
 | S04 | YES | Verify never looks at ExpiresAt, so a token works forever despite the  | review-bugs: Verify never checks session expiry; review-security: Session expiry is never enforced |
 | S05 | — | passwords are stored as a single unsalted SHA-256, crackable offline a |  |
-| S07 | — | the admin check is always true, so RequireAdmin rejects every session  |  |
+| S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin always rejects: || instead of && |
 | S08 | — | the 401 response echoes the rejected token back to the caller |  |
 | S09 | YES | the sessions map is read and written from every request goroutine with | review-concurrency: Authenticator.sessions is a plain map mutated by Issue/Revok |
 | CF01 | — | a malformed LINKD_PORT silently becomes port 0 |  |
@@ -76,6 +76,3 @@ Retired seeds — still matched so their findings are not counted as noise, but 
 | X02 | YES | janitor iterates and deletes s.links concurrently with HTTP handlers;  |
 | X03 | YES | wg.Add inside the goroutine races wg.Wait; WarmCache can return before |
 | X04 | YES | CheckTargets returns on first error; remaining sends to the unbuffered |
-
-Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) auth.go:84 — RequireAdmin always rejects: || instead of &&
