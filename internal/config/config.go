@@ -1533,6 +1533,29 @@ type Loop struct {
 	// directory, so a YAML-readable form would let a bundle authorize its own
 	// execution.
 	TrustedBundle bool `yaml:"-"`
+
+	// AgentsSandboxed asserts that sandbox.command, not the agent CLI's own flags,
+	// is what keeps a can_edit: false agent from writing. It lifts exactly one
+	// refusal -- the one that reads a non-editing agent's argv for a switch that
+	// turns the CLI's own sandbox off (--sandbox danger-full-access,
+	// --dangerously-bypass-approvals-and-sandbox, ...) -- and only when
+	// sandbox.command is set, because without a wrapper the claim has nothing
+	// behind it. Every other check on the composed argv still runs.
+	//
+	// It exists because sandboxes do not nest: an agent CLI that sandboxes its own
+	// shell commands (codex does, with seatbelt or bubblewrap) cannot start that
+	// sandbox inside a wrapper, so the only way to run it confined is to switch its
+	// own off and let the wrapper enforce read-only. The wrapper receives
+	// {{target_mode}} = ro for exactly these agents, but fixpoint cannot verify
+	// that it honors it -- which is why the operator asserts it, per invocation.
+	//
+	// Set ONLY by the -agents-sandboxed flag, `yaml:"-"` for the reason given on
+	// TrustedTarget: the file that would grant it can come from the repository under
+	// review, and a repository that could declare its own agents sandboxed could
+	// write a config whose "read-only" reviewer has no write barrier at all. Refused
+	// in pr mode, where the target is untrusted content and an unverified wrapper is
+	// the only thing left between it and the write tools.
+	AgentsSandboxed bool `yaml:"-"`
 }
 
 // Logs configures where run artifacts are written and in which renderings.
@@ -2092,7 +2115,12 @@ func (c *Config) Validate() error {
 		// on faith when the command hands the write tools to the model: whatever
 		// remains (a --plan style flag) is the CLI's business to enforce, not
 		// something fixpoint can check or has verified.
-		if !a.CanEdit {
+		//
+		// -agents-sandboxed lifts this one refusal, and only this one: validateSandbox
+		// has already required a wrapper (and refused pr mode) for that flag, so the
+		// claim is backed by something, and every other check on the composed argv
+		// still runs.
+		if !a.CanEdit && !c.Loop.AgentsSandboxed {
 			if flag := permissionBypassFlag(a.Argv()); flag != "" {
 				return fmt.Errorf("agents.%s: can_edit: false, but the command passes %s, which lets the agent write files without being asked; a read-only claim must be backed by the command itself (drop the flag, or use the CLI's enforced read-only sandbox such as codex --sandbox read-only), otherwise declare can_edit: true so the agent is kept out of roles.review", name, flag)
 			}

@@ -126,6 +126,10 @@ type Overrides struct {
 	// TrustedBundle asserts trust in the bundle alone, not in the target's content;
 	// see Loop.TrustedBundle for why the two are separate assertions.
 	TrustedBundle bool
+	// AgentsSandboxed asserts that sandbox.command is what keeps a read-only agent
+	// from writing, which lets such an agent's argv switch its own CLI's sandbox off;
+	// see Loop.AgentsSandboxed.
+	AgentsSandboxed bool
 	// NoCoverageCheck waives §4.2 rule 6 for this invocation (§7.4).
 	NoCoverageCheck bool
 	// PlanOnly stops an implement run after the plan is validated (§7.4).
@@ -164,6 +168,9 @@ func (o Overrides) apply(c *Config) {
 	}
 	if o.TrustedBundle {
 		c.Loop.TrustedBundle = true
+	}
+	if o.AgentsSandboxed {
+		c.Loop.AgentsSandboxed = true
 	}
 	if o.NoCoverageCheck {
 		c.Implement.NoCoverageCheck = true
@@ -304,6 +311,9 @@ func (o Overrides) Applied() []string {
 	}
 	if o.TrustedBundle {
 		out = append(out, "trusted_bundle=true")
+	}
+	if o.AgentsSandboxed {
+		out = append(out, "agents_sandboxed=true")
 	}
 	if o.Gate != "" {
 		out = append(out, "gate="+o.Gate)
@@ -477,8 +487,9 @@ func loadWithExtends(r *Resolver, path string) (*Config, string, map[string]bool
 // the target's own -- and differ in what the key would buy the repository that
 // shipped it.
 const (
-	whyNotTrust = "Configs are searched in the target's own directory first, so a config that could grant trust would let reviewed code authorize fixpoint to execute its agent definitions and run the coder against it -- the very thing that assertion is meant to gate"
-	whyNotPost  = "Configs are searched in the target's own directory first, so a config that could turn publishing on would let reviewed code arrange for a review -- or, with post_verdict, an approval -- to be published on its own pull request under the operator's identity"
+	whyNotTrust     = "Configs are searched in the target's own directory first, so a config that could grant trust would let reviewed code authorize fixpoint to execute its agent definitions and run the coder against it -- the very thing that assertion is meant to gate"
+	whyNotSandboxed = "Configs are searched in the target's own directory first, so a config that could declare its agents sandboxed would let reviewed code switch off the CLI's own read-only sandbox for the reviewers that read it, on the strength of a wrapper it also chose"
+	whyNotPost      = "Configs are searched in the target's own directory first, so a config that could turn publishing on would let reviewed code arrange for a review -- or, with post_verdict, an approval -- to be published on its own pull request under the operator's identity"
 )
 
 // trustKeys are the authorization keys a task config may not set: the trust
@@ -494,6 +505,7 @@ var trustKeys = []struct {
 	{"loop", "trusted_target", "-trusted-target", whyNotTrust},
 	{"loop", "trusted_bundle", "-trusted-bundle", whyNotTrust},
 	{"loop", "allow_untrusted_fix", "-allow-untrusted-fix", whyNotTrust},
+	{"loop", "agents_sandboxed", "-agents-sandboxed", whyNotSandboxed},
 	{"review", "post", "-post", whyNotPost},
 	{"review", "post_verdict", "-post-verdict", whyNotPost},
 	{"review", "post_if_approved", "-post-if-approved", whyNotPost},

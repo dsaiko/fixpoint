@@ -43,6 +43,15 @@ alone (`--permission-mode acceptEdits`, `--sandbox workspace-write`,
 `--approval-mode auto_edit`) — because a reviewer's read-only claim is the only
 barrier left when the code under review turns out to be prompt-injected.
 
+One invocation-only exception exists. Run with `-agents-sandboxed` and a
+non-empty [`sandbox.command`](security.md#confining-agents-with-sandboxcommand),
+and this one refusal is lifted: you are asserting that the wrapper, not the
+agent's own flags, keeps the reviewer read-only, which is what a CLI that cannot
+nest its own sandbox inside a wrapper needs (codex with `--sandbox
+danger-full-access`). Without a wrapper the flag is an error, in `pr` mode it is
+refused, and it is never a config key — see
+[security](security.md#agents-that-switch-their-own-sandbox-off--agents-sandboxed).
+
 ### Borrowing an agentic harness for a model that has no CLI
 
 A reviewer has to *explore* the repository, not just answer from a prompt, so a

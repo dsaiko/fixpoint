@@ -95,6 +95,7 @@ Flags:
 	allowUntrustedFix := fs.Bool("allow-untrusted-fix", false, "permit fix rounds in pr mode; PR content is untrusted and can steer the coder via prompt injection")
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
 	trustedBundle := fs.Bool("trusted-bundle", false, "assert only that the bundle files resolved from inside the target may be run; trusts no other target content and permits no fix round")
+	agentsSandboxed := fs.Bool("agents-sandboxed", false, "assert that sandbox.command confines the agents, so a read-only agent may switch its own CLI's sandbox off (codex --sandbox danger-full-access); needs sandbox.command, refused in pr mode")
 	post := fs.Bool("post", false, "publish the review on the pull request as a COMMENT: findings become visible, no verdict is acted on")
 	postRunDir := fs.String("post-run", "", "publish the review a FINISHED run already produced, from its .fixpoint/<run> directory; invokes no agent")
 	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
@@ -206,6 +207,7 @@ Flags:
 		AllowUntrustedFix: *allowUntrustedFix,
 		TrustedTarget:     *trustedTarget,
 		TrustedBundle:     *trustedBundle,
+		AgentsSandboxed:   *agentsSandboxed,
 		NoCoverageCheck:   *noCoverageCheck,
 		PlanOnly:          *planOnly,
 		Plan:              paths["plan"],

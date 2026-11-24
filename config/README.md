@@ -824,8 +824,8 @@ author's, use the narrow flag: the wider one turns the checkout guards into
 warnings.
 
 **A config cannot grant trust.** Setting `loop.trusted_target`,
-`loop.trusted_bundle` or
-`loop.allow_untrusted_fix` in any config file is a hard load error, in the task
+`loop.trusted_bundle`,
+`loop.allow_untrusted_fix` or `loop.agents_sandboxed` in any config file is a hard load error, in the task
 config and in a base it `extends`. This directory is searched *before* the
 operator's own bundles, so it may be shipped by the repository under review: a
 trust key here would let reviewed code authorize fixpoint to execute the agent

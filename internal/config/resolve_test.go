@@ -661,7 +661,7 @@ func TestLoadBundleExtends(t *testing.T) {
 // Every field is checked in both positions (the task config and the base it
 // extends), because inheritance would otherwise be the way around the rule.
 func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
-	for _, key := range []string{"trusted_target", "trusted_bundle", "allow_untrusted_fix"} {
+	for _, key := range []string{"trusted_target", "trusted_bundle", "allow_untrusted_fix", "agents_sandboxed"} {
 		t.Run(key+"/direct", func(t *testing.T) {
 			root := t.TempDir()
 			dir := bundle(t, filepath.Join(root, projectBundleDir), map[string]string{
@@ -706,10 +706,10 @@ func TestLoadBundleRejectsSelfGrantedTrust(t *testing.T) {
 // ever bypassed or removed.
 func TestTrustFieldsAreNotYAMLDecodable(t *testing.T) {
 	var cfg Config
-	if err := yaml.Unmarshal([]byte("loop:\n  trusted_target: true\n  trusted_bundle: true\n  allow_untrusted_fix: true\n"), &cfg); err != nil {
+	if err := yaml.Unmarshal([]byte("loop:\n  trusted_target: true\n  trusted_bundle: true\n  allow_untrusted_fix: true\n  agents_sandboxed: true\n"), &cfg); err != nil {
 		t.Fatalf("permissive decode should not error here: %v", err)
 	}
-	if cfg.Loop.TrustedTarget || cfg.Loop.TrustedBundle || cfg.Loop.AllowUntrustedFix {
+	if cfg.Loop.TrustedTarget || cfg.Loop.TrustedBundle || cfg.Loop.AllowUntrustedFix || cfg.Loop.AgentsSandboxed {
 		t.Error("YAML set a trust field; these must be settable only by the CLI flags")
 	}
 }
@@ -1008,12 +1008,13 @@ func TestOverridesApplied(t *testing.T) {
 		PostVerdict:       true,
 		PostIfApproved:    true,
 		TrustedTarget:     true,
+		AgentsSandboxed:   true,
 		NoCoverageCheck:   true,
 		PlanOnly:          true,
 		Plan:              "/p.json",
 		Continue:          "/proj",
 	}.Applied(), ", ")
-	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "post=true", "post_verdict=true", "post_if_approved=true", "trusted_target=true", "max_iterations=-1", "pr=1234", "no_coverage_check=true", "plan_only=true", "plan=/p.json", "continue=/proj"} {
+	for _, want := range []string{"review_only=true", "allow_untrusted_fix=true", "post=true", "post_verdict=true", "post_if_approved=true", "trusted_target=true", "agents_sandboxed=true", "max_iterations=-1", "pr=1234", "no_coverage_check=true", "plan_only=true", "plan=/p.json", "continue=/proj"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Applied() = %q, missing %q", got, want)
 		}
