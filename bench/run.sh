@@ -289,6 +289,23 @@ if grep -q '^  - --sandbox read-only' "$CANDIDATE"; then
     }
 fi
 
+# The sandbox, checked ONCE before the sweep. A host with no bwrap or sandbox-exec, or
+# whose bwrap cannot create a namespace, would otherwise fail every preflight ping, write
+# no row, and leave `make bench` looking as if it had run.
+ROOT=$(pwd -P)
+probe=${TMPDIR:-/tmp}/bench-probe.$$
+if ! mkdir "$probe" 2>/dev/null; then
+    echo "bench: cannot create $probe to check the sandbox" >&2
+    exit 2
+fi
+if ! out=$(cd "$probe" && "$ROOT/bench/sandbox.sh" "$probe" ro -- /bin/echo bench-sandbox-ok 2>&1) ||
+    [ "$out" != bench-sandbox-ok ]; then
+    rm -rf "$probe"
+    echo "bench: the lens sandbox does not work on this host (bench/sandbox.sh needs bwrap on Linux, sandbox-exec on macOS, and a namespace bwrap can create); every lens runs inside it, so nothing would be measured: $out" >&2
+    exit 2
+fi
+rm -rf "$probe"
+
 make build >/dev/null
 
 run_task() {
@@ -406,6 +423,7 @@ run_task() {
 # is the benchmark's disqualifier and the most important thing it measured.
 rep=${REPEAT_START:-1}
 last=$((rep + REPEATS - 1))
+scored=0
 while [ "$rep" -le "$last" ]; do
     case $TASKS in
     all)
@@ -415,8 +433,8 @@ while [ "$rep" -le "$last" ]; do
         # run costs and what its total is. Name a language to measure it.
         # Guarded like the list below, and for its reason: go failing to score
         # must not leave design unmeasured.
-        run_task go "$rep" || echo "bench: go did not score; continuing" >&2
-        run_task design "$rep" || echo "bench: design did not score; continuing" >&2
+        if run_task go "$rep"; then scored=$((scored + 1)); else echo "bench: go did not score; continuing" >&2; fi
+        if run_task design "$rep"; then scored=$((scored + 1)); else echo "bench: design did not score; continuing" >&2; fi
         ;;
     *)
         # Comma- or space-separated list, so one invocation can sweep several
@@ -426,11 +444,16 @@ while [ "$rep" -le "$last" ]; do
         # hours; losing the remaining ten to one bad summary is not a tradeoff
         # worth making, and the failure is recorded either way.
         for one in $(echo "$TASKS" | tr ',' ' '); do
-            run_task "$one" "$rep" || echo "bench: $one did not score; continuing" >&2
+            if run_task "$one" "$rep"; then scored=$((scored + 1)); else echo "bench: $one did not score; continuing" >&2; fi
         done
         ;;
     esac
     rep=$((rep + 1))
 done
 
+# A sweep in which nothing scored measured nothing: that is a failure, not a pass.
+if [ "$scored" -eq 0 ]; then
+    echo "bench: no requested target produced a score; nothing was written to bench/results.csv" >&2
+    exit 1
+fi
 echo "bench: done -> bench/results.csv"

@@ -21,6 +21,23 @@ cp "$here/../config/agents/gpt-6.2-sol.yaml" "$here/../config/agents/claude-opus
 cp "$here/run.sh" "$here/agent-template.yaml" "$here/agent-template-vllm.yaml" "$here/agent-template-ollama-codex.yaml" \
     "$here/agent-template-ollama-direct.yaml" "$here/agent-template-openrouter-codex.yaml" "$tmp/tree/bench/"
 
+# The wrapper run.sh checks once before it sweeps. A stub: the real one needs a working
+# sandbox on the host, which is what bench/sandbox_test.sh is for.
+cat >"$tmp/tree/bench/sandbox.sh" <<'EOF'
+#!/bin/sh
+if [ -n "${STUB_SANDBOX_FAIL:-}" ]; then
+    echo "bench/sandbox.sh: bwrap not found; refusing to run the agent unconfined" >&2
+    exit 2
+fi
+if [ -n "${STUB_SANDBOX_JUNK:-}" ]; then
+    echo "something else entirely"
+    exit 0
+fi
+shift 3
+exec "$@"
+EOF
+chmod +x "$tmp/tree/bench/sandbox.sh"
+
 cat >"$tmp/bin/curl" <<'EOF'
 #!/bin/sh
 [ "${STUB_CURL_FAIL:-0}" = 1 ] && exit 7
@@ -229,7 +246,8 @@ cp bench/.sandbox-codex-auth "$STUB_OUT/route" 2>/dev/null || echo absent >"$STU
 exit 3
 EOF
 MODEL='ollama-direct@glm-5.3-flash:cloud'
-if run 0 "isolated target" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree"; then
+# A sweep in which nothing scored exits non-zero (here fixpoint writes no run directory).
+if run 1 "isolated target" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree"; then
     expect "fixpoint was run" "$tmp/out/fixpoint" '^TARGET=/'
     # The assertion that lets a codex candidate with its own sandbox off past
     # fixpoint's validation, because bench/sandbox.sh is what confines the lens.
@@ -252,6 +270,19 @@ if run 0 "isolated target" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree"
     esac
 fi
 
+# (j2) THE SANDBOX IS CHECKED ONCE, BEFORE THE SWEEP. A host without a working sandbox
+# would fail every preflight ping, write no row, and look as if it had run: it exits
+# non-zero, with the wrapper's own words, before make or fixpoint start.
+rm -f "$tmp/out/fixpoint" "$tmp/out/env"
+run 2 "no working sandbox" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree" STUB_SANDBOX_FAIL=1 || true
+expect "the refusal says the sandbox does not work" "$tmp/out/log" 'lens sandbox does not work'
+expect "the refusal carries the wrapper's own message" "$tmp/out/log" 'bwrap not found'
+[ -e "$tmp/out/fixpoint" ] && { echo "FAIL no working sandbox: fixpoint ran"; fails=$((fails + 1)); }
+[ -e "$tmp/out/env" ] && { echo "FAIL no working sandbox: make ran"; fails=$((fails + 1)); }
+# ... and a wrapper that exits 0 without running the probe command is not a working sandbox.
+run 2 "sandbox that ran nothing" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree" STUB_SANDBOX_JUNK=1 || true
+expect "a wrapper that printed something else is refused" "$tmp/out/log" 'lens sandbox does not work'
+
 # (k) A scratch directory INSIDE the checkout (a TMPDIR set there; macOS mktemp
 # ignores TMPDIR, so the stub stands in for it) would stage the copy back under
 # the key: refused before fixpoint runs, and nothing of the checkout is removed.
@@ -262,7 +293,7 @@ cat >"$tmp/bin/mktemp" <<'EOF'
 exec /usr/bin/mktemp "$@"
 EOF
 chmod +x "$tmp/bin/mktemp"
-run 0 "scratch inside the checkout" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree" || true
+run 1 "scratch inside the checkout" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree" || true
 rm -f "$tmp/bin/mktemp"
 [ -e "$tmp/out/fixpoint" ] && { echo "FAIL scratch inside the checkout: fixpoint ran"; fails=$((fails + 1)); }
 expect "the refusal names the checkout" "$tmp/out/log" 'inside the checkout'
@@ -276,7 +307,7 @@ cat >"$tmp/bin/mktemp" <<'EOF'
 exec /usr/bin/mktemp "$@"
 EOF
 chmod +x "$tmp/bin/mktemp"
-run 0 "mktemp -d fails" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree" || true
+run 1 "mktemp -d fails" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree" || true
 rm -f "$tmp/bin/mktemp"
 [ -e "$tmp/out/fixpoint" ] && { echo "FAIL mktemp fails: fixpoint ran"; fails=$((fails + 1)); }
 [ -f "$tmp/tree/bench/testdata/target-go/main.go" ] && [ -f "$tmp/tree/bench/run.sh" ] ||
