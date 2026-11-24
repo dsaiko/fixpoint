@@ -281,6 +281,10 @@ OLLAMA_RATES = {
     "glm-5.3-flash":     (0.15, 0.50, 0.03),
     "gpt-oss:20b":       (0.07, 0.30, 0.035),
     "gpt-oss:120b":      (0.15, 0.60, 0.014),
+    # hy4 (Tencent) and inkling-2-small (Thinking Machines), added 2026-11-23
+    # the day they were benched (ollama.com/pricing; no off-peak row for either).
+    "hy4":               (0.834, 2.501, 0.042),
+    "inkling-2-small":   (0.30, 1.00, 0.03),
     "kimi-k2.6":         (0.95, 4.00, 0.16),
     "kimi-k2.7-code":    (0.95, 4.00, 0.19),
     "kimi-k3":           (3.00, 15.00, 0.30),
@@ -445,9 +449,10 @@ def ollama_rate(model):
     `deepseek-v4-flash`, and `gemma4:31b-cloud` as `gemma4` -- but `gpt-oss:120b`
     and `qwen3.5:397b` ARE priced per size, so the size tag cannot simply be
     stripped. Try the full name, then the name with `-cloud` removed, then the
-    stem. An ollama-codex@ row is the same model on the same card.
+    stem. An ollama-codex@ or ollama-direct@ row is the same model on the same
+    card, and so is one with a #<effort> suffix.
     """
-    model = model.removeprefix("ollama-codex@")
+    model = model.removeprefix("ollama-codex@").removeprefix("ollama-direct@").split("#")[0]
     cands = [model]
     if ":" in model:
         stem, tag = model.split(":", 1)
@@ -606,9 +611,11 @@ def route(model):
     """
     if agent_file(model).exists():
         return "cli"
-    if model.startswith("ollama-codex@"):
-        # An ollama model through the codex harness (bench/run.sh). Checked
-        # before every other rule so the tag is never read as a plain ollama row.
+    if model.startswith(("ollama-codex@", "ollama-direct@")):
+        # An ollama model through the codex harness (bench/run.sh): through the
+        # local server (ollama-codex@) or straight to ollama.com (ollama-direct@).
+        # Same harness, same payer, same usage shape. Checked before every other
+        # rule so the tag is never read as a plain ollama row.
         return "ollama/codex"
     if model.startswith("codex@"):
         return "openrouter/codex"
@@ -641,9 +648,9 @@ def cached_is_subset(model):
 
     The codex CLI does (OpenAI usage shape), on every route it drives: the
     bundled codex-harness agents, the codex@ OpenRouter template and the
-    ollama-codex@ template alike.
+    ollama-codex@ and ollama-direct@ templates alike.
     """
-    return runs_codex(model) or model.startswith(("codex@", "ollama-codex@"))
+    return runs_codex(model) or model.startswith(("codex@", "ollama-codex@", "ollama-direct@"))
 
 
 def billing(model, harness):
@@ -1717,6 +1724,16 @@ def selftest():
     check("ollama-codex@ is priced on the plain tag's card",
           ollama_rate(tc), ollama_rate("minimax-m3.1-flash:cloud"))
     check("and that card exists", ollama_rate(tc) is not None, True)
+    # ollama-direct@ is the same harness straight to ollama.com: same route,
+    # same payer, same usage shape, same card -- an #<effort> suffix included.
+    # Until 2026-11-23 it fell through to "ollama" (the claude harness), so its
+    # rows were unpriced and their token column counted cached input twice.
+    td = "ollama-direct@minimax-m3.1-flash:cloud#max"
+    check("ollama-direct@ is the ollama/codex route", route(td), "ollama/codex")
+    check("ollama-direct@ bills the ollama plan", billing(td, route(td)), "sub (ollama)")
+    check("ollama-direct@ reports cached inside input", cached_is_subset(td), True)
+    check("ollama-direct@ is priced on the plain tag's card",
+          ollama_rate(td), ollama_rate("minimax-m3.1-flash:cloud"))
 
     # An effort suffix (codex@<id>#xhigh) is priced on the unsuffixed id's card.
     kc = "codex@moonshotai/kimi-k3.1-pro"

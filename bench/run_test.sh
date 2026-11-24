@@ -152,8 +152,52 @@ fi
 MODEL='ollama-codex@glm-5.3-flash:cloud#ultra'
 run 2 "unknown effort" || true
 
+# (j) THE LENS NEVER REVIEWS bench/testdata ITSELF: from there `../../` is the
+# answer key (hy4, 2026-11-23). make is let through and ./fixpoint stubbed: it
+# records the -target it was given and what a lens standing there can reach,
+# then exits 4 without a run directory, so run_task stops before scoring.
+mkdir -p "$tmp/tree/bench/testdata/target-go"
+echo 'package main // seeded' >"$tmp/tree/bench/testdata/target-go/main.go"
+echo 'seeds: the answer key' >"$tmp/tree/bench/manifest-go.yaml"
+cat >"$tmp/tree/fixpoint" <<'EOF'
+#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = -target ] && t=$2; shift; done
+{
+    echo "TARGET=$t"
+    cd "$t" && echo "PHYS=$(pwd -P)"
+    ls ../.. ../../.. 2>/dev/null | grep -q '^manifest-' && echo "KEY=reachable"
+    cmp -s main.go "$STUB_TREE/bench/testdata/target-go/main.go" && echo "COPY=identical"
+} >"$STUB_OUT/fixpoint"
+exit 4
+EOF
+chmod +x "$tmp/tree/fixpoint"
+cat >"$tmp/bin/make" <<'EOF'
+#!/bin/sh
+[ "${STUB_MAKE_OK:-0}" = 1 ] && exit 0
+{
+    echo "AUTH=${ANTHROPIC_AUTH_TOKEN-<unset>}"
+    echo "APIKEY=${ANTHROPIC_API_KEY-<unset>}"
+} >"$STUB_OUT/env"
+cp config/agents/bench-candidate.yaml "$STUB_OUT/candidate.yaml"
+exit 3
+EOF
+MODEL='ollama-direct@glm-5.3-flash:cloud'
+if run 0 "isolated target" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree"; then
+    expect "fixpoint was run" "$tmp/out/fixpoint" '^TARGET=/'
+    expect "the target is a copy, not bench/testdata" "$tmp/out/fixpoint" 'bench/testdata' !
+    expect "the copy's path names no symlink" "$tmp/out/fixpoint" '^PHYS='
+    if [ -f "$tmp/out/fixpoint" ]; then
+        t=$(sed -n 's/^TARGET=//p' "$tmp/out/fixpoint")
+        p=$(sed -n 's/^PHYS=//p' "$tmp/out/fixpoint")
+        [ "$t" = "$p" ] || { echo "FAIL -target $t is not its physical path $p"; fails=$((fails + 1)); }
+        [ -e "$t" ] && { echo "FAIL the copy $t was left behind"; fails=$((fails + 1)); }
+    fi
+    expect "no manifest above the copy" "$tmp/out/fixpoint" '^KEY=' !
+    expect "the copy is the target" "$tmp/out/fixpoint" '^COPY=identical$'
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "bench/run_test.sh: $fails failure(s)" >&2
     exit 1
 fi
-echo "bench/run_test.sh: vllm@, ollama-codex@ and ollama-direct@ route guards OK"
+echo "bench/run_test.sh: vllm@, ollama-codex@ and ollama-direct@ route guards and target isolation OK"
