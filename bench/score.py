@@ -5,6 +5,7 @@ Usage: bench/score.py <manifest.yaml> <summary-*.json> <model> [repeat]
        bench/score.py --check <manifest.yaml>
        bench/score.py --selftest <manifest.yaml>
        bench/score.py --leak-selftest
+       bench/score.py --matcher-selftest
 
 Reads the run summary fixpoint already writes, matches every finding against
 the manifest's seeded defects, and appends one row to bench/results.csv plus a
@@ -299,6 +300,27 @@ def assign(seeds, findings):
     return hit, extras
 
 
+def keyword_present(keyword, text):
+    """Whether one manifest keyword occurs in `text` (already lower-cased).
+
+    A keyword that starts with a word character is a word-boundary PREFIX
+    match: "race" hits "races" and "racing" but "lock" does not hit "block" --
+    substring matching produced both failure modes in calibration.
+
+    A keyword that starts with anything else (`<=`, `&&`, `/tmp`, `-1`, `!`) is
+    matched as a literal. `\\b` sits between a word character and a non-word
+    one, so a `\\b` in front of `<=` only matches where a word character
+    precedes it: "i<=n" hit and "i <= n" -- the way every formatter writes it,
+    and the way a reviewer quotes it -- did not. Such a keyword was dead
+    whenever a space or punctuation mark stood in front of it, so a seed whose
+    evidence is an operator went unfound however exactly the finding quoted
+    the line.
+    """
+    k = keyword.lower()
+    prefix = r"\b" if re.match(r"\w", k) else ""
+    return re.search(prefix + re.escape(k), text) is not None
+
+
 def match_score(seed, finding):
     """Return the ranking key if the finding matches this seed, else None.
 
@@ -315,12 +337,12 @@ def match_score(seed, finding):
         distance = abs(int(finding.get("line") or 0) - seed["line"])
         if distance > seed["span"]:
             return None
-    text = (finding.get("title", "") + " " + finding.get("description", "")).lower()
-    # Word-boundary prefix match: "race" hits "races" and "racing" but "lock"
-    # does not hit "block" -- substring matching produced both failure modes
-    # in calibration.
-    hits = sum(1 for k in seed["keywords"]
-               if re.search(r"\b" + re.escape(k.lower()), text))
+    # An extract stores a field the run never set as null, not as absent, so
+    # `.get(k, "")` hands back None and the concatenation raises: 8 findings in
+    # the kept summaries have no description, and re-scoring any of them
+    # crashed before it reached a keyword.
+    text = ((finding.get("title") or "") + " " + (finding.get("description") or "")).lower()
+    hits = sum(1 for k in seed["keywords"] if keyword_present(k, text))
     if hits < seed["need"]:
         return None
     return (hits, 1 if seed["line"] > 0 else 0, -distance)
@@ -390,6 +412,49 @@ def selftest(manifest_path):
         print(f"  CLASSIFY classify_errors gave {kinds}, want (3, 1)")
         return 1
     return 1 if stolen else 0
+
+
+def matcher_selftest():
+    """Pin how a keyword is matched, on the cases that have each been wrong.
+
+    `--selftest` cannot see this: it builds every seed's finding from the
+    seed's own keywords, so it passes whatever the matcher does with a keyword
+    in running prose. The `\\b` that was prefixed to every keyword made `<=`
+    match "i<=n" and miss "i <= n" -- and `--selftest` had passed all along.
+    """
+    cases = [
+        # (keyword, text, expected)
+        ("<=", "the loop `for (i = 0; i <= links.size(); i++)` reads one past", True),
+        ("<=", "for (int i=0;i<=n;i++)", True),
+        ("&&", "the guard `a != nil && a == nil` is never true", True),
+        ("/tmp", "writes to /tmp/links.tmp with a fixed name", True),
+        ("-1", "indexof returns -1 and the check tests truthiness", True),
+        ("!", "the non-null assertion `x!` hides undefined", True),
+        ("..", "a path containing ../ escapes the root", True),
+        ("<=", "the loop is off by one", False),
+        # Word-character keywords keep the word-boundary prefix.
+        ("lock", "a lock is held across the call", True),
+        ("lock", "this will block the caller", False),
+        ("race", "two races on the counter", True),
+        ("race", "a trace of the request", False),
+    ]
+    failed = 0
+    for keyword, text, want in cases:
+        got = keyword_present(keyword, text.lower())
+        if got != want:
+            failed += 1
+            print(f"  MATCHER {keyword!r} in {text!r}: got {got}, want {want}")
+    # And through the whole path, on the seed this was found with: the finding
+    # quotes the loop exactly and says nothing else the seed has a keyword for.
+    seed = {"id": "P50", "file": "worker.cpp", "line": 43, "span": 3, "need": 1,
+            "keywords": ["off-by-one", "<=", "out of bounds"]}
+    quoted = {"file": "src/worker.cpp", "line": 43, "title": "loop runs once too often",
+              "description": "`for (size_t i = 0; i <= links.size(); ++i)` indexes links[i]"}
+    if match_score(seed, quoted) is None:
+        failed += 1
+        print("  MATCHER a finding quoting `i <= links.size()` did not match its seed")
+    print(f"matcher selftest: {len(cases) + 1 - failed}/{len(cases) + 1} cases")
+    return 1 if failed else 0
 
 
 # THE ANSWER KEY IS READABLE FROM A LENS (found 2026-11-23). The read-only
@@ -550,6 +615,8 @@ def main():
         sys.exit(selftest(sys.argv[2]))
     if len(sys.argv) == 2 and sys.argv[1] == "--leak-selftest":
         sys.exit(leak_selftest())
+    if len(sys.argv) == 2 and sys.argv[1] == "--matcher-selftest":
+        sys.exit(matcher_selftest())
     if len(sys.argv) < 4:
         sys.exit(__doc__)
     manifest_path, summary_path, model = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -705,7 +772,7 @@ def main():
     lines.append("|---|---|---|---|")
     for s in active:
         got = hit[s["id"]]
-        by = "; ".join(f"{g.get('lens', '?')}: {g.get('title', '')[:60]}" for g in got[:2])
+        by = "; ".join(f"{g.get('lens', '?')}: {(g.get('title') or '')[:60]}" for g in got[:2])
         lines.append(f"| {s['id']} | {'YES' if got else '—'} | {s.get('note', '')[:70]} | {by} |")
     if retired:
         lines.append("")
@@ -721,8 +788,11 @@ def main():
         lines.append("")
         lines.append("Unmatched findings (noise, or genuinely new — skim before dismissing):")
         for f in extras:
-            lines.append(f"- ({f.get('severity', '?')}) {f.get('file', '?')}:{f.get('line', '?')} "
-                         f"— {f.get('title', '')[:90]}")
+            # A line an extract stored as null reads "?" like one the summary
+            # never had, not "None".
+            line = "?" if f.get("line") is None else f.get("line")
+            lines.append(f"- ({f.get('severity', '?')}) {f.get('file', '?')}:{line} "
+                         f"— {(f.get('title') or '')[:90]}")
     report = outdir / f"{model.replace(':', '_').replace('/', '_').replace('#', '_')}-{target}-{run_id}.md"
     report.write_text("\n".join(lines) + "\n")
 

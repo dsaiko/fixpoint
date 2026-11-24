@@ -1,6 +1,6 @@
 # gpt-6.1-sol · java · run 20260930-100214 (repeat 1)
 
-recall **37/69** · 51 finding(s), 9 unmatched · 394265 tokens · 1095s
+recall **39/69** · 51 finding(s), 8 unmatched · 394265 tokens · 1095s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -25,7 +25,7 @@ recall **37/69** · 51 finding(s), 9 unmatched · 394265 tokens · 1095s
 | J19 | — | parallel: S02 session tokens come from java.util.Random, so they are p |  |
 | J20 | — | parallel: S03 every issued session token is printed in cleartext |  |
 | J21 | — | parallel: S04 verify never looks at expiresAt, so a token works foreve |  |
-| J22 | — | JAVA-ONLY verify compares the token with == rather than equals, so aut |  |
+| J22 | YES | JAVA-ONLY verify compares the token with == rather than equals, so aut | review-bugs: Token verification compares String identities |
 | J23 | — | parallel: S05 passwords are stored as a single unsalted SHA-256, crack |  |
 | J24 | YES | parallel: S06 bearerToken indexes parts[1] without checking, so a malf | review-bugs: Missing or malformed Authorization headers crash handlers |
 | J25 | YES | parallel: S07 the admin check is always true, so requireAdmin rejects  | review-bugs: The admin-role condition rejects every role |
@@ -50,8 +50,8 @@ recall **37/69** · 51 finding(s), 9 unmatched · 394265 tokens · 1095s
 | J44 | YES | JAVA-ONLY the FileWriter is closed only on the success path; any excep | review-bugs: Write failures leak report and audit file handles |
 | J45 | YES | parallel: EX03 CSV rows are built by concatenation, so a comma or quot | review-bugs: CSV fields are written without escaping |
 | J46 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| J47 | YES | parallel: EX06 renameTo's boolean result is discarded and it fails sil | review-bugs: Snapshot publication failures are silently ignored; review-concurrency: Give each snapshot write its own temporary file |
-| J48 | — | parallel: EX07 the snapshot temp file has one fixed name in /tmp: a sy |  |
+| J47 | YES | parallel: EX06 renameTo's boolean result is discarded and it fails sil | review-bugs: Snapshot publication failures are silently ignored |
+| J48 | YES | parallel: EX07 the snapshot temp file has one fixed name in /tmp: a sy | review-concurrency: Give each snapshot write its own temporary file |
 | J49 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | J50 | YES | parallel: X01 addCreated is unsynchronized while addResolved is, so co | review-concurrency: Synchronize updates to the created counter |
 | J51 | — | the errors counter is exposed on /stats and never incremented anywhere |  |
@@ -76,7 +76,6 @@ recall **37/69** · 51 finding(s), 9 unmatched · 394265 tokens · 1095s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/linkd/Main.java:32 — The server never creates an authenticatable session
-- (high) src/linkd/Authenticator.java:50 — Token verification compares String identities
 - (high) src/linkd/Main.java:57 — Query parameters are never URL-decoded
 - (medium) src/linkd/Cache.java:66 — Zero-capacity caches still store entries and crash statistics
 - (medium) src/linkd/Main.java:86 — Malformed numeric parameters escape request error handling

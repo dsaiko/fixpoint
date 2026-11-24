@@ -1,6 +1,6 @@
 # codex@moonshotai/kimi-k3.1-pro#xhigh · python · run 20261024-231303 (repeat 1)
 
-recall **43/66** · 60 finding(s), 9 unmatched · 663813 tokens · 541s
+recall **43/66** · 60 finding(s), 8 unmatched · 663813 tokens · 541s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -47,7 +47,7 @@ recall **43/66** · 60 finding(s), 9 unmatched · 663813 tokens · 541s
 | Y41 | YES | parallel: EX02 the report is written with default permissions and with | review-security: Cross-owner reports may be created world-readable |
 | Y42 | YES | parallel: EX03 CSV rows are built by string formatting, so a comma or  | review-concurrency: Concurrent reports overwrite and expose each other's output; review-security: Owner-controlled CSV cells permit spreadsheet formula inject |
 | Y43 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: Snapshot is renamed before its data is flushed or closed; review-security: Predictable shared temporary file enables symlink overwrite  |
+| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: Snapshot is renamed before its data is flushed or closed; review-concurrency: Concurrent snapshots share a temporary pathname |
 | Y45 | YES | PY-ONLY the default `rows=[]` is shared across calls, so every parse a | review-bugs: Parsed rows leak between calls |
 | Y46 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | Y47 | YES | PY-ONLY the janitor deletes from store.links while consuming the gener | review-bugs: Janitor crashes while deleting expired links |
@@ -80,4 +80,3 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) store.py:46 — Store counters lose concurrent increments
 - (medium) store.py:67 — Concurrent renames can overwrite and lose a link
 - (medium) store.py:101 — Concurrent deletion raises an uncaught KeyError
-- (medium) export.py:43 — Concurrent snapshots share a temporary pathname

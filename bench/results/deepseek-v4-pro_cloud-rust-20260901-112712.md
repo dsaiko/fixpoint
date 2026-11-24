@@ -1,6 +1,6 @@
 # deepseek-v4-pro:cloud · rust · run 20260901-112712 (repeat 1)
 
-recall **33/64** · 42 finding(s), 2 unmatched · 504471 tokens · 353s
+recall **34/64** · 42 finding(s), 1 unmatched · 504471 tokens · 353s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **33/64** · 42 finding(s), 2 unmatched · 504471 tokens · 353s
 | RA04 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify() never checks session expiry |
 | RA05 | — | RUST-ONLY (parallel: S05) passwords are hashed with a djb2-style 64-bi |  |
 | RA06 | YES | RUST-ONLY (parallel: S06) bearer_token indexes parts[1] without checki | review-bugs: bearer_token() panics on a missing or malformed Authorizatio; review-security: bearer_token panics on missing/malformed Authorization heade |
-| RA07 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| RA07 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin() rejects every role |
 | RA08 | — | RUST-ONLY secret_eq is documented as constant-time and is not: it retu |  |
 | RA09 | — | verify scans every session linearly although the map is already keyed  |  |
 | RC01 | — | RUST-ONLY get takes the WRITE lock on the read path, so every cache re |  |
@@ -70,5 +70,4 @@ recall **33/64** · 42 finding(s), 2 unmatched · 504471 tokens · 353s
 | RM12 | YES | parse_query never percent-decodes, and the POST body is parsed as a qu | review-security: Stored CRLF injection in redirect Location header |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (low) src/auth.rs:68 — require_admin() rejects every role
 - (high) src/main.rs:216 — Report endpoint exports every owner's links

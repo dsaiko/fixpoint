@@ -1,6 +1,6 @@
 # codex@google/gemini-4-argon · typescript · run 20261013-225208 (repeat 1)
 
-recall **49/63** · 62 finding(s), 1 unmatched · 1136472 tokens · 529s
+recall **49/63** · 62 finding(s), 0 unmatched · 1136472 tokens · 529s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **49/63** · 62 finding(s), 1 unmatched · 1136472 tokens · 529s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Exported CSV report written without restrictive file permiss |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-security: Unescaped fields in exportCsv and archiveAll allow CSV and f |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-concurrency: writeSnapshot uses a fixed shared /tmp/linkd-snapshot.json p; review-security: Predictable /tmp/linkd-snapshot.json path enables symlink an |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: writeSnapshot writes its temporary file to /tmp, causing ren; review-concurrency: writeSnapshot uses a fixed shared /tmp/linkd-snapshot.json p |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: parseReport does not skip the trailing empty line, adding a  |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-bugs: warmCache uses Array.prototype.forEach with an async callbac; review-concurrency: warmCache does not await async callbacks passed to forEach |
@@ -67,6 +67,3 @@ recall **49/63** · 62 finding(s), 1 unmatched · 1136472 tokens · 529s
 | T61 | YES | parallel: C29 /report exports every owner's links to any authenticated | review-security: /report exports all users' links to any authenticated caller |
 | T62 | — | the created link is serialized wholesale, returning the owner field an |  |
 | T63 | YES | HARVESTED from calibration (2026-09-01, reported by both baselines). e | review-bugs: report fails with ENOENT when the `name` query parameter is  |
-
-Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) src/export.ts:45 — writeSnapshot writes its temporary file to /tmp, causing renameSync to fail across filesys

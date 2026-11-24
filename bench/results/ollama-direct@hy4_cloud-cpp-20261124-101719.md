@@ -1,6 +1,6 @@
 # ollama-direct@hy4:cloud · cpp · run 20261124-101719 (repeat 1)
 
-recall **54/64** · 81 finding(s), 7 unmatched · 353394 tokens · 1049s
+recall **55/64** · 81 finding(s), 5 unmatched · 353394 tokens · 1049s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **54/64** · 81 finding(s), 7 unmatched · 353394 tokens · 1049s
 | P18 | YES | parallel: S02 session tokens come from std::rand, never seeded, writte | review-security: Session tokens come from an unseeded, noncryptographic PRNG |
 | P19 | YES | parallel: S03 every issued session token is printed in cleartext | review-security: Live session tokens are written to stdout |
 | P20 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: Session expiry is never checked; review-security: Session verification ignores expiration |
-| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-security: Admin role check can never succeed |
+| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin rejects every role; review-security: Admin role check can never succeed |
 | P22 | YES | parallel: S05 passwords are hashed with a djb2 accumulator: unsalted,  | review-security: Password storage uses an unsalted 64-bit DJB2 digest |
 | P23 | YES | CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64 | review-bugs: Authorization header is copied into a fixed 64-byte buffer; review-security: Attacker-controlled Authorization header overflows a stack b |
 | P24 | YES | CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no | review-bugs: Malformed or missing Authorization header dereferences null |
@@ -53,7 +53,7 @@ recall **54/64** · 81 finding(s), 7 unmatched · 353394 tokens · 1049s
 | P47 | YES | CPP-ONLY (parallel: X02) the janitor erases through the iterator it th | review-bugs: Janitor increments an erased map iterator; review-concurrency: Janitor thread structurally mutates Store/Cache concurrently |
 | P48 | YES | CPP-ONLY warm_cache never joins its threads, so the vector's destructo | review-bugs: warm_cache destroys joinable threads; review-concurrency: stop_janitor signals the flag but never joins/awaits the jan |
 | P49 | YES | CPP-ONLY the thread lambda captures the loop variable by reference, so | review-concurrency: warm_cache never joins its worker threads, so destroying joi |
-| P50 | — | CPP-ONLY check_targets loops with <= and reads one element past the en |  |
+| P50 | YES | CPP-ONLY check_targets loops with <= and reads one element past the en | review-bugs: check_targets reads one element past the vector |
 | P51 | YES | CPP-ONLY count_for_owner uses map::operator[], which INSERTS a zero en | review-bugs: count_for_owner inserts missing owners into quotas |
 | P52 | — | CPP-ONLY the janitor thread is heap-allocated, never joined and never  |  |
 | P53 | YES | CPP-ONLY the handler reads query parameters with .at(), which throws s | review-bugs: Missing query parameters and invalid targets throw uncaught  |
@@ -72,8 +72,6 @@ recall **54/64** · 81 finding(s), 7 unmatched · 353394 tokens · 1049s
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) cache.cpp:39 — A zero-entry cache erases the end iterator
 - (high) store.cpp:59 — rename uses a reference after erasing the map node
-- (high) worker.cpp:43 — check_targets reads one element past the vector
-- (medium) auth.cpp:49 — require_admin rejects every role
 - (medium) store.cpp:26 — create overwrites existing links on code collision
 - (high) worker.cpp:37 — warm_cache runs Cache::set concurrently from many threads on one unsynchronized Cache
 - (medium) export.cpp:56 — Raw audit lines allow forged log entries

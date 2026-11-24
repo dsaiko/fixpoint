@@ -1,6 +1,6 @@
 # x-ai/grok-4.6 · java · run 20260901-123553 (repeat 1)
 
-recall **38/69** · 44 finding(s), 1 unmatched · 165296 tokens · 1054s
+recall **39/69** · 44 finding(s), 0 unmatched · 165296 tokens · 1054s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -13,7 +13,7 @@ recall **38/69** · 44 finding(s), 1 unmatched · 165296 tokens · 1054s
 | J07 | YES | parallel: C09 delete drops the link but never returns the owner's quot | review-bugs: delete() does not return the owner's quota slot |
 | J08 | YES | parallel: C10 top sorts by hits ascending, so the leaderboard shows th | review-bugs: top() returns the least-hit links, not the most-hit |
 | J09 | YES | parallel: C11 byOwner matches owners by substring, so one owner sees a | review-bugs: byOwner() matches substrings, not the owner |
-| J10 | — | JAVA-ONLY findByCode compares strings with == instead of equals, so it |  |
+| J10 | YES | JAVA-ONLY findByCode compares strings with == instead of equals, so it | review-bugs: findByCode() compares codes with == |
 | J11 | YES | parallel: C12 extend re-dates an already-expired link, resurrecting a  | review-bugs: extend() revives already-expired links |
 | J12 | — | parallel: C14 quotas hands out the store's own map while the doc calls |  |
 | J13 | YES | parallel: C13 importAll stores as it validates, so a bad code leaves t | review-bugs: importAll() is not atomic |
@@ -73,6 +73,3 @@ recall **38/69** · 44 finding(s), 1 unmatched · 165296 tokens · 1054s
 | J67 | — | offset and size are parsed with unguarded parseInt, so any non-numeric |  |
 | J68 | YES | parallel: C29 /report exports every owner's links to any authenticated | review-security: Report endpoint dumps every owner's links |
 | J69 | YES | HARVESTED from calibration (2026-09-01, reported by both baselines). e | review-bugs: report writes links.csv but reads name.csv when name is omit |
-
-Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) src/linkd/Store.java:129 — findByCode() compares codes with ==

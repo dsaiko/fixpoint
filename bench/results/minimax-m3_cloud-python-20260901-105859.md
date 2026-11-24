@@ -1,6 +1,6 @@
 # minimax-m3:cloud · python · run 20260901-105859 (repeat 2)
 
-recall **36/66** · 52 finding(s), 6 unmatched · 1039070 tokens · 704s
+recall **37/66** · 52 finding(s), 5 unmatched · 1039070 tokens · 704s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -34,7 +34,7 @@ recall **36/66** · 52 finding(s), 6 unmatched · 1039070 tokens · 704s
 | Y28 | — | parallel: CA08 eviction drops the first key in insertion order, not th |  |
 | Y29 | — | parallel: CA06 warm's peek and set take the lock separately, so the ja |  |
 | Y30 | YES | PY-ONLY sweep deletes from the dict while iterating it, raising Runtim | review-bugs: sweep() mutates self.entries while iterating it; review-concurrency: Cache.sweep mutates self.entries during iteration, raising R |
-| Y31 | — | PY-ONLY utilization floor-divides before scaling so it always reports  |  |
+| Y31 | YES | PY-ONLY utilization floor-divides before scaling so it always reports  | review-bugs: utilization() returns 0 for any cache below `limit` entries  |
 | Y32 | YES | PY-ONLY flush holds the non-reentrant Lock and calls delete, which tak | review-concurrency: Cache.flush deadlocks by re-entering its own non-reentrant L |
 | Y33 | — | parallel: CA07 stats reads the hit counter outside the lock while get  |  |
 | Y34 | — | parallel: CF01 a malformed LINKD_PORT is swallowed silently with no lo |  |
@@ -72,7 +72,6 @@ recall **36/66** · 52 finding(s), 6 unmatched · 1039070 tokens · 704s
 | Y66 | YES | HARVESTED from calibration (2026-09-01, reported by both baselines). e | review-bugs: export report path is built from the query string without sa |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (low) cache.py:73 — utilization() returns 0 for any cache below `limit` entries because of floor-divide-then-m
 - (low) cache.py:80 — flush() calls delete on a sentinel key that is never inserted
 - (critical) auth.py:23 — Authenticator.sessions has no lock; every authenticated request races on the dict
 - (high) store.py:60 — Store.resolve races on link.hits via non-atomic read-modify-write

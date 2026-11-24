@@ -1,6 +1,6 @@
 # glm-5.3-flash:cloud · rust · run 20260901-135000 (repeat 1)
 
-recall **35/64** · 45 finding(s), 1 unmatched · 604511 tokens · 293s
+recall **35/64** · 45 finding(s), 0 unmatched · 604511 tokens · 293s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **35/64** · 45 finding(s), 1 unmatched · 604511 tokens · 293s
 | RA04 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify never checks expires_at, so expired sessions keep wor; review-security: verify() never checks expires_at, so sessions never expire |
 | RA05 | — | RUST-ONLY (parallel: S05) passwords are hashed with a djb2-style 64-bi |  |
 | RA06 | YES | RUST-ONLY (parallel: S06) bearer_token indexes parts[1] without checki | review-bugs: bearer_token panics on any request without an Authorization ; review-security: bearer_token panics on missing or malformed Authorization he |
-| RA07 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-security: require_admin condition is a tautology and rejects every rol |
+| RA07 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin condition is wrong operator and always rejects; review-security: require_admin condition is a tautology and rejects every rol |
 | RA08 | YES | RUST-ONLY secret_eq is documented as constant-time and is not: it retu | review-security: secret_eq is not constant-time despite its documented guaran |
 | RA09 | — | verify scans every session linearly although the map is already keyed  |  |
 | RC01 | — | RUST-ONLY get takes the WRITE lock on the read path, so every cache re |  |
@@ -68,6 +68,3 @@ recall **35/64** · 45 finding(s), 1 unmatched · 604511 tokens · 293s
 | RM16 | — | the link owner is taken from the request body instead of the authentic |  |
 | RM17 | YES | JSON responses are built by string interpolation with no escaping, so  | review-security: Hand-built JSON embeds unescaped user input |
 | RM12 | — | parse_query never percent-decodes, and the POST body is parsed as a qu |  |
-
-Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) src/auth.rs:68 — require_admin condition is wrong operator and always rejects

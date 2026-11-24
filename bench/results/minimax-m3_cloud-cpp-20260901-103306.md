@@ -1,6 +1,6 @@
 # minimax-m3:cloud · cpp · run 20260901-103306 (repeat 1)
 
-recall **38/64** · 53 finding(s), 5 unmatched · 653249 tokens · 447s
+recall **38/64** · 53 finding(s), 4 unmatched · 653249 tokens · 447s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **38/64** · 53 finding(s), 5 unmatched · 653249 tokens · 447s
 | P40 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | P41 | — | parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in |  |
 | P42 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-security: TOCTOU / symlink attack in write_snapshot via /tmp |
+| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: write_snapshot ignores its dir parameter; review-security: TOCTOU / symlink attack in write_snapshot via /tmp |
 | P44 | YES | CPP-ONLY format_row returns a pointer to a function-local char array,  | review-bugs: format_row returns pointer to stack buffer |
 | P45 | — | CPP-ONLY the errors_ counter has no initializer while its siblings do, |  |
 | P46 | — | parallel: X01 the counters are plain longs incremented from the janito |  |
@@ -70,7 +70,6 @@ recall **38/64** · 53 finding(s), 5 unmatched · 653249 tokens · 447s
 | P64 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) export.cpp:47 — write_snapshot ignores its dir parameter
 - (low) export.cpp:62 — read_report returns empty string when file missing
 - (high) auth.cpp:20 — Authenticator.sessions_ is unsynchronized; issue/verify/revoke race
 - (medium) config.cpp:43 — LINKD_EXPORT_DIR taken from env without validation

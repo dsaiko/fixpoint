@@ -1,6 +1,6 @@
 # nemotron-3-ultra:cloud · go · run 20260902-082630 (repeat 1)
 
-recall **32/56** · 80 finding(s), 10 unmatched · 555381 tokens · 3041s · 11 retired seed(s) not scored
+recall **32/56** · 80 finding(s), 8 unmatched · 555381 tokens · 3041s · 11 retired seed(s) not scored
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -30,7 +30,7 @@ recall **32/56** · 80 finding(s), 10 unmatched · 555381 tokens · 3041s · 11 
 | S03 | YES | every issued session token is written to the log in cleartext | review-bugs: Verify does O(n) linear search instead of O(1) map lookup; review-security: Session tokens logged in plaintext |
 | S04 | — | Verify never looks at ExpiresAt, so a token works forever despite the  |  |
 | S05 | YES | passwords are stored as a single unsalted SHA-256, crackable offline a | review-security: Password hashing uses unsalted SHA-256 - vulnerable to rainb |
-| S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin logic always rejects - condition is always true; review-security: RequireAdmin logic bug - always denies access even for admin |
+| S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin logic always rejects - condition is always true; review-concurrency: RequireAdmin logic always rejects |
 | S08 | YES | the 401 response echoes the rejected token back to the caller | review-bugs: Token leaked in error response; review-security: Token leaked in error response |
 | S09 | YES | the sessions map is read and written from every request goroutine with | review-concurrency: Authenticator.sessions map has no synchronization |
 | CF01 | — | a malformed LINKD_PORT silently becomes port 0 |  |
@@ -42,7 +42,7 @@ recall **32/56** · 80 finding(s), 10 unmatched · 555381 tokens · 3041s · 11 
 | EX02 | YES | the export holding every owner's links is written world-readable | review-bugs: ExportCSV uses world-readable 0666 permissions despite comme; review-security: Exported CSV files created with world-readable permissions ( |
 | EX03 | — | CSV rows are built with Sprintf, so a comma or quote in a target break |  |
 | EX04 | — | defer inside the loop holds every file open until ArchiveAll returns |  |
-| EX06 | YES | the rename's error is discarded and /tmp is usually another filesystem | review-bugs: WriteSnapshot doesn't check os.Rename error; cross-device re |
+| EX06 | YES | the rename's error is discarded and /tmp is usually another filesystem | review-bugs: WriteSnapshot doesn't check os.Rename error; cross-device re; review-security: Snapshot temp file created in world-writable /tmp - symlink  |
 | EX07 | — | nothing fsyncs before the rename the comment calls durable, and the te |  |
 | CA01 | YES | Get deletes from the map and increments hits while holding only a read | review-bugs: Get modifies map and counters under read lock (data races); review-concurrency: Cache.Get mutates map and counters under RLock |
 | CA02 | YES | Peek reads the map with no lock at all while other goroutines are writ | review-bugs: Peek has no locking (concurrent map access race); review-concurrency: Cache.Peek accesses map without lock |
@@ -85,6 +85,4 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) cache.go:89 — Cache.Delete doesn't clean up timer, double-delete risk
 - (high) store.go:97 — Store returns internal Link pointers to callers
 - (medium) store.go:185 — Store.Import doesn't update quota, no conflict check
-- (critical) auth.go:84 — RequireAdmin logic always rejects
 - (critical) worker.go:64 — SSRF in WarmCache and CheckTargets - fetches arbitrary user-controlled URLs
-- (medium) export.go:52 — Snapshot temp file created in world-writable /tmp - symlink attack risk

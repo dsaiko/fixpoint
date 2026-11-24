@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · java · run 20261019-205833 (repeat 2)
 
-recall **51/69** · 71 finding(s), 10 unmatched · 1046454 tokens · 131s
+recall **52/69** · 71 finding(s), 9 unmatched · 1046454 tokens · 131s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -28,7 +28,7 @@ recall **51/69** · 71 finding(s), 10 unmatched · 1046454 tokens · 131s
 | J22 | YES | JAVA-ONLY verify compares the token with == rather than equals, so aut | review-bugs: verify uses reference equality instead of value equality; review-security: Token verification uses reference equality |
 | J23 | YES | parallel: S05 passwords are stored as a single unsalted SHA-256, crack | review-security: Passwords hashed with unsalted single-pass SHA-256 |
 | J24 | YES | parallel: S06 bearerToken indexes parts[1] without checking, so a malf | review-bugs: bearerToken crashes on null or malformed header |
-| J25 | — | parallel: S07 the admin check is always true, so requireAdmin rejects  |  |
+| J25 | YES | parallel: S07 the admin check is always true, so requireAdmin rejects  | review-bugs: requireAdmin condition is always false |
 | J26 | YES | secretEquals is documented as not leaking how much matched and uses St | review-security: secretEquals claims constant-time but uses String.equals |
 | J27 | YES | the sessions map is read and written from every request thread with no | review-concurrency: sessions map is an unsynchronized HashMap accessed concurren |
 | J28 | — | JAVA-ONLY hashPassword returns the empty string when the digest is una |  |
@@ -75,7 +75,6 @@ recall **51/69** · 71 finding(s), 10 unmatched · 1046454 tokens · 131s
 | J69 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) src/linkd/Authenticator.java:62 — requireAdmin condition is always false
 - (medium) src/linkd/Cache.java:57 — peek does not account for expiry
 - (medium) src/linkd/Config.java:43 — bad LINKD_TIMEOUT_MS sets timeout to 0 instead of default
 - (medium) src/linkd/Config.java:93 — loadFile unguarded parseInt crashes on bad file values

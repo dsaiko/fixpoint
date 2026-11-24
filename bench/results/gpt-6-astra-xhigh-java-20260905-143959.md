@@ -1,6 +1,6 @@
 # gpt-6-astra-xhigh · java · run 20260905-143959 (repeat 1)
 
-recall **34/69** · 49 finding(s), 11 unmatched · 450808 tokens · 740s
+recall **36/69** · 49 finding(s), 9 unmatched · 450808 tokens · 740s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -13,7 +13,7 @@ recall **34/69** · 49 finding(s), 11 unmatched · 450808 tokens · 740s
 | J07 | YES | parallel: C09 delete drops the link but never returns the owner's quot | review-bugs: Link mutations leave owner counts inconsistent |
 | J08 | YES | parallel: C10 top sorts by hits ascending, so the leaderboard shows th | review-bugs: The leaderboard selects the least-followed links |
 | J09 | — | parallel: C11 byOwner matches owners by substring, so one owner sees a |  |
-| J10 | — | JAVA-ONLY findByCode compares strings with == instead of equals, so it |  |
+| J10 | YES | JAVA-ONLY findByCode compares strings with == instead of equals, so it | review-bugs: Code lookup compares String identities |
 | J11 | YES | parallel: C12 extend re-dates an already-expired link, resurrecting a  | review-bugs: Extension can shorten live links and revive expired links |
 | J12 | YES | parallel: C14 quotas hands out the store's own map while the doc calls | review-bugs: The quota snapshot exposes mutable store state |
 | J13 | YES | parallel: C13 importAll stores as it validates, so a bad code leaves t | review-bugs: Failed batch imports retain earlier mutations |
@@ -25,7 +25,7 @@ recall **34/69** · 49 finding(s), 11 unmatched · 450808 tokens · 740s
 | J19 | — | parallel: S02 session tokens come from java.util.Random, so they are p |  |
 | J20 | — | parallel: S03 every issued session token is printed in cleartext |  |
 | J21 | — | parallel: S04 verify never looks at expiresAt, so a token works foreve |  |
-| J22 | — | JAVA-ONLY verify compares the token with == rather than equals, so aut |  |
+| J22 | YES | JAVA-ONLY verify compares the token with == rather than equals, so aut | review-bugs: Token verification compares String identities |
 | J23 | — | parallel: S05 passwords are stored as a single unsalted SHA-256, crack |  |
 | J24 | YES | parallel: S06 bearerToken indexes parts[1] without checking, so a malf | review-bugs: Missing or incomplete Authorization headers abort requests |
 | J25 | YES | parallel: S07 the admin check is always true, so requireAdmin rejects  | review-bugs: The administrator role check rejects every role |
@@ -76,12 +76,10 @@ recall **34/69** · 49 finding(s), 11 unmatched · 450808 tokens · 740s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/linkd/Main.java:32 — The HTTP server never provisions a usable session
-- (high) src/linkd/Authenticator.java:50 — Token verification compares String identities
 - (high) src/linkd/Main.java:57 — Query parameters are never URL-decoded
 - (medium) src/linkd/Main.java:35 — Failed HTTP startup leaves the janitor running
 - (medium) src/linkd/Cache.java:66 — A zero cache limit is accepted but cannot function
 - (medium) src/linkd/Cache.java:66 — Updating a full cache can evict an unrelated entry
-- (medium) src/linkd/Store.java:129 — Code lookup compares String identities
 - (medium) src/linkd/Store.java:27 — Generated-code collisions overwrite existing links
 - (medium) src/linkd/Main.java:86 — Malformed numeric parameters escape request error handling
 - (medium) src/linkd/Main.java:188 — Non-JSON responses are advertised as JSON

@@ -1,6 +1,6 @@
 # gpt-6.2-astra · rust · run 20261118-145634 (repeat 1)
 
-recall **42/64** · 62 finding(s), 13 unmatched · 277011 tokens · 284s
+recall **42/64** · 62 finding(s), 12 unmatched · 277011 tokens · 284s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -44,7 +44,7 @@ recall **42/64** · 62 finding(s), 13 unmatched · 277011 tokens · 284s
 | RE02 | — | parallel: EX02 the export holding every owner's links is written with  |  |
 | RE03 | YES | parallel: EX03 CSV rows are built with format!, so a comma or quote in | review-bugs: CSV exports lose column boundaries for ordinary field values |
 | RE04 | YES | archive_all builds a filename straight from the owner string, so an ow | review-bugs: Owner archives can report success after a write failure |
-| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot success does not guarantee crash durability; review-concurrency: Concurrent snapshots share one temporary file across destina |
+| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot publication reports success even when rename fails; review-bugs: Snapshot success does not guarantee crash durability |
 | RE06 | — | parallel: C21 the read error carries the server's filesystem path back |  |
 | RW01 | YES | RUST-ONLY (parallel: X01) add_resolved does load-then-store instead of | review-concurrency: Concurrent redirects lose resolved-counter increments |
 | RW02 | YES | the janitor checks for stop only before a 60s sleep, so shutdown waits | review-bugs: Dropping the janitor handle leaves the worker running indefi; review-concurrency: Dropping the janitor handle leaves the worker running |
@@ -79,7 +79,6 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/main.rs:216 — A successful report silently omits links beyond the first 1,000
 - (medium) src/cache.rs:60 — Updating a cached key can evict an unrelated entry
 - (medium) src/cache.rs:53 — Expired cache entries prevent warming their replacements
-- (medium) src/export.rs:49 — Snapshot publication reports success even when rename fails
 - (medium) src/main.rs:52 — Persistent accept errors make the listener spin
 - (medium) src/cache.rs:105 — A sweep can delete an entry that another thread just refreshed
 - (critical) src/main.rs:55 — Idle connections can exhaust threads and terminate the listener

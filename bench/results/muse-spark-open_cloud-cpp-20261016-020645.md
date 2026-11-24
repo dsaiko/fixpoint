@@ -16,8 +16,8 @@ recall **17/64** · 18 finding(s), 0 unmatched · 183059 tokens · 89s
 | P10 | — | parallel: C12 extend re-dates an already-expired link, resurrecting a  |  |
 | P11 | — | parallel: C14 quotas hands out a non-const reference to the store's ow |  |
 | P12 | — | parallel: C13 import_all stores as it validates, so a bad code leaves  |  |
-| P13 | — | CPP-ONLY prune erases through the iterator and then increments it: the |  |
-| P14 | YES | parallel: C15 prune counts removals into `removed` and then returns th | review-bugs: prune() iterator invalidation and returns wrong value |
+| P13 | YES | CPP-ONLY prune erases through the iterator and then increments it: the | review-bugs: prune() iterator invalidation and returns wrong value |
+| P14 | — | parallel: C15 prune counts removals into `removed` and then returns th |  |
 | P15 | YES | CPP-ONLY last_code returns a string_view onto a function-local std::st | review-bugs: last_code() returns dangling string_view to local |
 | P16 | — | CPP-ONLY create returns a raw pointer into the map; any later erase or |  |
 | P17 | — | parallel: S01 the signing secret falls back to a hardcoded development |  |

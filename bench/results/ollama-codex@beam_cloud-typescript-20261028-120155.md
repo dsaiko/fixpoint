@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · typescript · run 20261028-120155 (repeat 1)
 
-recall **48/63** · 64 finding(s), 4 unmatched · 647651 tokens · 163s
+recall **49/63** · 64 finding(s), 3 unmatched · 647651 tokens · 163s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -56,7 +56,7 @@ recall **48/63** · 64 finding(s), 4 unmatched · 647651 tokens · 163s
 | T50 | — | the janitor takes the cache and never sweeps it, so expired cache entr |  |
 | T51 | YES | TS-ONLY the request body is cast to `any`, so target and owner reach t | review-bugs: JSON.parse is outside the try block in createLink |
 | T52 | — | a bad ttl parses to NaN and produces a link whose expiry is NaN, which |  |
-| T53 | — | parallel: C16 redirect lowercases the code before lookup although code |  |
+| T53 | YES | parallel: C16 redirect lowercases the code before lookup although code | review-bugs: redirect dereferences missing query code |
 | T54 | YES | parallel: C17 deleteLink never checks the owner its doc promises to ch | review-bugs: deleteLink does not enforce ownership; review-security: Missing ownership check on link deletion |
 | T55 | YES | parallel: C18 /out redirects to any address in ?next= -- an open redir | review-security: Open redirect via /out endpoint |
 | T56 | YES | parallel: C19 the admin endpoint is gated on a request header the call | review-bugs: adminQuotas trusts the x-admin header instead of the session; review-security: Admin endpoint trusts a client-supplied header |
@@ -70,6 +70,5 @@ recall **48/63** · 64 finding(s), 4 unmatched · 647651 tokens · 163s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/main.ts:51 — handle crashes when Authorization header is missing
-- (high) src/main.ts:97 — redirect dereferences missing query code
 - (medium) src/store.ts:88 — successRate floors before converting to a percentage
 - (medium) src/cache.ts:45 — Cache TTL timers are never cleared, so stale timers can delete live entries

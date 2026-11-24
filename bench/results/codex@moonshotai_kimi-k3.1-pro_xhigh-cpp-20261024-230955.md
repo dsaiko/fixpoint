@@ -1,6 +1,6 @@
 # codex@moonshotai/kimi-k3.1-pro#xhigh · cpp · run 20261024-230955 (repeat 1)
 
-recall **44/64** · 63 finding(s), 13 unmatched · 860461 tokens · 458s
+recall **46/64** · 63 finding(s), 11 unmatched · 860461 tokens · 458s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **44/64** · 63 finding(s), 13 unmatched · 860461 tokens · 458s
 | P18 | YES | parallel: S02 session tokens come from std::rand, never seeded, writte | review-security: Session tokens are generated with predictable randomness |
 | P19 | YES | parallel: S03 every issued session token is printed in cleartext | review-security: Bearer tokens are written to logs |
 | P20 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: Expired sessions remain valid; review-security: Expired session tokens remain valid indefinitely |
-| P21 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: Admin authorization rejects every role |
 | P22 | YES | parallel: S05 passwords are hashed with a djb2 accumulator: unsalted,  | review-security: Password hashing is unsalted and extremely fast |
 | P23 | YES | CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64 | review-bugs: Bearer token parsing overflows its stack buffer; review-security: Malformed Authorization headers crash the process |
 | P24 | YES | CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no | review-bugs: Malformed Authorization headers cause undefined behavior |
@@ -46,7 +46,7 @@ recall **44/64** · 63 finding(s), 13 unmatched · 860461 tokens · 458s
 | P40 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | P41 | — | parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in |  |
 | P42 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| P43 | — | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul |  |
+| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-concurrency: Concurrent snapshots share one temporary pathname |
 | P44 | YES | CPP-ONLY format_row returns a pointer to a function-local char array,  | review-bugs: format_row returns a pointer to dead stack storage |
 | P45 | YES | CPP-ONLY the errors_ counter has no initializer while its siblings do, | review-bugs: Error metric reads an uninitialized value |
 | P46 | YES | parallel: X01 the counters are plain longs incremented from the janito | review-concurrency: Metrics increments and reads are unsynchronized |
@@ -70,7 +70,6 @@ recall **44/64** · 63 finding(s), 13 unmatched · 860461 tokens · 458s
 | P64 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) auth.cpp:49 — Admin authorization rejects every role
 - (medium) cache.cpp:31 — peek reports expired entries as cached
 - (high) cache.cpp:38 — A zero-sized cache erases from an empty map
 - (high) cache.cpp:64 — Zero cache capacity divides by zero
@@ -81,5 +80,4 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) auth.cpp:30 — Session map races with verification and revocation
 - (high) worker.cpp:29 — stop_janitor neither waits for nor releases the worker
 - (high) main.cpp:115 — Concurrent reports with the same name overwrite each other
-- (high) export.cpp:48 — Concurrent snapshots share one temporary pathname
 - (high) main.cpp:62 — User-controlled targets permit response header injection

@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · cpp · run 20261019-210058 (repeat 1)
 
-recall **48/64** · 86 finding(s), 5 unmatched · 2013767 tokens · 196s
+recall **48/64** · 86 finding(s), 4 unmatched · 2013767 tokens · 196s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **48/64** · 86 finding(s), 5 unmatched · 2013767 tokens · 196s
 | P18 | YES | parallel: S02 session tokens come from std::rand, never seeded, writte | review-security: Session tokens are generated from std::rand |
 | P19 | — | parallel: S03 every issued session token is printed in cleartext |  |
 | P20 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify() never checks session expiry; review-security: verify() ignores session expiry |
-| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-security: require_admin() rejects every session |
+| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin always returns false; review-security: require_admin() rejects every session |
 | P22 | YES | parallel: S05 passwords are hashed with a djb2 accumulator: unsalted,  | review-security: Password storage uses a weak unsalted digest |
 | P23 | YES | CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64 | review-security: bearer_token copies an unbounded header into a fixed buffer |
 | P24 | YES | CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no | review-bugs: bearer_token assumes a space and fixed 64-byte buffer |
@@ -70,7 +70,6 @@ recall **48/64** · 86 finding(s), 5 unmatched · 2013767 tokens · 196s
 | P64 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) auth.cpp:49 — require_admin always returns false
 - (critical) linkd.h:49 — Store links_ and quota_ mutated concurrently without synchronization
 - (high) linkd.h:101 — Cache entries_ and hits_ accessed from multiple threads without a lock
 - (medium) config.cpp:21 — LINKD_TIMEOUT_MS is mishandled and treated as seconds

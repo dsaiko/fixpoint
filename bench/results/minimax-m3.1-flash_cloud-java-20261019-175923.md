@@ -1,6 +1,6 @@
 # minimax-m3.1-flash:cloud · java · run 20261019-175923 (repeat 1)
 
-recall **53/69** · 72 finding(s), 5 unmatched · 455293 tokens · 3087s
+recall **53/69** · 72 finding(s), 4 unmatched · 455293 tokens · 3087s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -28,7 +28,7 @@ recall **53/69** · 72 finding(s), 5 unmatched · 455293 tokens · 3087s
 | J22 | YES | JAVA-ONLY verify compares the token with == rather than equals, so aut | review-bugs: verify() compares session tokens with == (reference equality; review-security: Token is compared with == instead of equals, so the auth che |
 | J23 | YES | parallel: S05 passwords are stored as a single unsalted SHA-256, crack | review-security: Passwords are hashed with a single unsalted SHA-256 |
 | J24 | YES | parallel: S06 bearerToken indexes parts[1] without checking, so a malf | review-bugs: bearerToken() throws on a missing or malformed Authorization |
-| J25 | YES | parallel: S07 the admin check is always true, so requireAdmin rejects  | review-security: requireAdmin can never return true, so the admin role check  |
+| J25 | YES | parallel: S07 the admin check is always true, so requireAdmin rejects  | review-bugs: requireAdmin() always returns false; review-security: requireAdmin can never return true, so the admin role check  |
 | J26 | YES | secretEquals is documented as not leaking how much matched and uses St | review-security: secretEquals claims constant-time comparison but uses String |
 | J27 | YES | the sessions map is read and written from every request thread with no | review-concurrency: Authenticator's session map is unsynchronized while being re |
 | J28 | — | JAVA-ONLY hashPassword returns the empty string when the digest is una |  |
@@ -77,6 +77,5 @@ recall **53/69** · 72 finding(s), 5 unmatched · 455293 tokens · 3087s
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/linkd/Main.java:54 — Query values are never URL-decoded and an & in the target truncates it
 - (medium) src/linkd/Main.java:86 — The ttl parameter is parsed outside the try block, so a bad ttl yields a 500
-- (medium) src/linkd/Authenticator.java:62 — requireAdmin() always returns false
 - (low) src/linkd/Main.java:188 — Every response is labelled application/json, including the non-JSON bodies
 - (medium) src/linkd/Main.java:91 — User-controlled target is interpolated into a JSON response without escaping

@@ -1,6 +1,6 @@
 # gpt-6-astra-xhigh · typescript · run 20260905-144718 (repeat 1)
 
-recall **37/63** · 51 finding(s), 7 unmatched · 271148 tokens · 706s
+recall **37/63** · 51 finding(s), 6 unmatched · 271148 tokens · 706s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **37/63** · 51 finding(s), 7 unmatched · 271148 tokens · 706s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Sensitive reports are created without private file permissio |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV fields are written without escaping; review-security: User-controlled CSV cells can execute spreadsheet formulas |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot writes are not made durable before success; review-concurrency: Concurrent processes share the same snapshot temporary file |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot replacement fails across filesystems; review-bugs: Snapshot writes are not made durable before success |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: Parsing an exported report adds a phantom row |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-concurrency: Cache warming discards asynchronous probe failures |
@@ -73,6 +73,5 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/cache.ts:52 — A zero-capacity cache still stores entries
 - (medium) src/store.ts:152 — A failed batch import leaves earlier changes applied
 - (medium) src/store.ts:33 — A generated code collision overwrites an existing link
-- (medium) src/export.ts:45 — Snapshot replacement fails across filesystems
 - (medium) src/worker.ts:41 — Target probes report success without checking reachability
 - (medium) src/main.ts:32 — The janitor interval has no reachable shutdown path

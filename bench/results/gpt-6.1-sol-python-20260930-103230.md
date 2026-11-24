@@ -1,6 +1,6 @@
 # gpt-6.1-sol · python · run 20260930-103230 (repeat 1)
 
-recall **39/66** · 53 finding(s), 11 unmatched · 218285 tokens · 652s
+recall **39/66** · 53 finding(s), 10 unmatched · 218285 tokens · 652s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -47,7 +47,7 @@ recall **39/66** · 53 finding(s), 11 unmatched · 218285 tokens · 652s
 | Y41 | — | parallel: EX02 the report is written with default permissions and with |  |
 | Y42 | YES | parallel: EX03 CSV rows are built by string formatting, so a comma or  | review-bugs: CSV exports do not escape field contents |
 | Y43 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: Snapshots are published before their contents are flushed |
+| Y44 | YES | PY-ONLY (parallel: EX06/EX07) one fixed /tmp name, and the handle is n | review-bugs: Snapshots are published before their contents are flushed; review-bugs: Snapshot writes fail across filesystem boundaries |
 | Y45 | YES | PY-ONLY the default `rows=[]` is shared across calls, so every parse a | review-bugs: Report parsing retains rows from previous calls |
 | Y46 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | Y47 | YES | PY-ONLY the janitor deletes from store.links while consuming the gener | review-bugs: The janitor crashes when it deletes an expired link; review-concurrency: Janitor iterates a dictionary that it deletes from |
@@ -74,7 +74,6 @@ recall **39/66** · 53 finding(s), 11 unmatched · 218285 tokens · 652s
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) cache.py:40 — Updating a full cache unnecessarily evicts another entry
 - (medium) cache.py:73 — Partial cache utilization is reported as zero
-- (medium) export.py:43 — Snapshot writes fail across filesystem boundaries
 - (medium) export.py:65 — Every generated report gains a spurious empty record
 - (medium) store.py:32 — Links created without tags share one mutable list
 - (medium) store.py:45 — Generated code collisions overwrite existing links

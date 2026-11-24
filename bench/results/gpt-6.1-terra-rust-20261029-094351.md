@@ -1,6 +1,6 @@
 # gpt-6.1-terra · rust · run 20261029-094351 (repeat 1)
 
-recall **20/64** · 24 finding(s), 2 unmatched · 233393 tokens · 88s
+recall **21/64** · 24 finding(s), 1 unmatched · 233393 tokens · 88s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -44,7 +44,7 @@ recall **20/64** · 24 finding(s), 2 unmatched · 233393 tokens · 88s
 | RE02 | — | parallel: EX02 the export holding every owner's links is written with  |  |
 | RE03 | YES | parallel: EX03 CSV rows are built with format!, so a comma or quote in | review-bugs: Escape CSV fields in exported reports |
 | RE04 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| RE05 | — | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  |  |
+| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Propagate snapshot rename failures |
 | RE06 | — | parallel: C21 the read error carries the server's filesystem path back |  |
 | RW01 | YES | RUST-ONLY (parallel: X01) add_resolved does load-then-store instead of | review-concurrency: Concurrent resolved increments can be lost |
 | RW02 | YES | the janitor checks for stop only before a 60s sleep, so shutdown waits | review-concurrency: Dropping the janitor handle does not stop its thread |
@@ -70,5 +70,4 @@ recall **20/64** · 24 finding(s), 2 unmatched · 233393 tokens · 88s
 | RM12 | YES | parse_query never percent-decodes, and the POST body is parsed as a qu | review-bugs: Decode query and form parameter values |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) src/export.rs:49 — Propagate snapshot rename failures
 - (medium) src/store.rs:47 — Avoid overwriting an existing link on code collision

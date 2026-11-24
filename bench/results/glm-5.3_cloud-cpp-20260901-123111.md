@@ -1,6 +1,6 @@
 # glm-5.3:cloud · cpp · run 20260901-123111 (repeat 1)
 
-recall **38/64** · 49 finding(s), 4 unmatched · 701297 tokens · 351s
+recall **39/64** · 49 finding(s), 2 unmatched · 701297 tokens · 351s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **38/64** · 49 finding(s), 4 unmatched · 701297 tokens · 351s
 | P18 | YES | parallel: S02 session tokens come from std::rand, never seeded, writte | review-security: Session tokens are minted from unseeded rand() and are predi |
 | P19 | YES | parallel: S03 every issued session token is printed in cleartext | review-security: Session tokens are written to stdout logs on issuance |
 | P20 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify() never checks the session's expiry, so expired token; review-security: verify() never checks expires_at despite issuing 12-hour ses |
-| P21 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin() always returns false because of the || condi; review-security: require_admin is dead code that always returns false |
 | P22 | — | parallel: S05 passwords are hashed with a djb2 accumulator: unsalted,  |  |
 | P23 | YES | CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64 | review-security: bearer_token copies the attacker-controlled Authorization he |
 | P24 | YES | CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no | review-bugs: bearer_token() crashes on any header without a space and ove |
@@ -70,7 +70,5 @@ recall **38/64** · 49 finding(s), 4 unmatched · 701297 tokens · 351s
 | P64 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) auth.cpp:49 — require_admin() always returns false because of the || condition
 - (high) store.cpp:59 — rename() copies a Link through a dangling reference after erasing it
 - (medium) cache.cpp:64 — utilization() is always ~0 and divides by zero when the limit is 0
-- (low) auth.cpp:49 — require_admin is dead code that always returns false
