@@ -237,6 +237,20 @@ else
     ollama show "$MODEL" 2>/dev/null | sed -n '1,8p' || echo "bench: WARNING: ollama show $MODEL failed" >&2
 fi
 
+# Every lens runs inside bench/sandbox.sh, which gives a CLI only the state it
+# needs (a fresh CODEX_HOME for codex, the real config dir for claude) and no
+# ~/.ollama. `ollama launch ...` needs that directory (it saves the selected model
+# there before it starts the harness) and neither bench host has ollama installed,
+# so those routes are refused rather than half-supported: the plain <tag>:cloud
+# route, ollama-codex@, and any shipped agent whose command starts with `ollama`.
+# ollama-direct@, codex@, claude-*, vllm@, OpenRouter ids and the shipped codex and
+# claude agents are the routes that work.
+head_cmd=$(awk '/^command:/ { f = 1; next } f && /^  - / { print $2; exit } f && /^[^ #]/ { exit }' "$CANDIDATE")
+if [ "$head_cmd" = ollama ]; then
+    echo "bench: $MODEL runs through \`ollama launch\`, which needs ~/.ollama state that bench/sandbox.sh does not provide, and every lens now runs inside it. Use ollama-direct@<tag> (the same harness straight to ollama.com, needs OLLAMA_API_KEY) instead." >&2
+    exit 2
+fi
+
 # bench/sandbox.sh confines every lens (read: not the checkout, not ~/.fixpoint;
 # write: not the target, not $HOME), and sandboxes do not nest. The `--sandbox
 # read-only` a codex-harness agent carries is seatbelt (macOS) or bubblewrap

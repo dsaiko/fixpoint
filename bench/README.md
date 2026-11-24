@@ -60,24 +60,66 @@ nothing sits above the target and its path does not name the repository.
 
 **A filesystem boundary.** `config/bench-code.yaml` and `config/bench-design.yaml`
 set `sandbox.command`, which launches every lens through `bench/sandbox.sh
-<target> <ro|rw> -- <agent argv>` (macOS: `sandbox-exec`; Linux: `bwrap`; any
-other system, or a missing tool, refuses to run the agent at all). Inside it:
+<target> <ro|rw> -- <agent argv>`: `sandbox-exec` on macOS, `bwrap` on Linux; any
+other system, or a missing tool, refuses to run the agent at all. The policy is
+what a lens is GIVEN, not everything minus two directories.
 
-- the repository checkout (the directory holding `bench/`) and `~/.fixpoint`
-  do not exist for the lens: not by `cat`, `ls`, `find` or a glob. That closes
-  what the log check below cannot see;
-- it can write only the target (`rw` mode only; the bench runs `ro`), scratch
-  directories, `/dev/null` and its own CLI's state (`~/.codex`, and
-  `$CLAUDE_CONFIG_DIR` or `~/.claude`). It cannot modify the code it reviews or
-  leave anything in `$HOME`;
-- it works for every harness, the claude routes included, because it confines the
-  process and not the log.
+| | macOS | Linux |
+|---|---|---|
+| the checkout, `~/.fixpoint` (resolved if a symlink) | unreadable, unwritable | replaced by an empty tmpfs |
+| the target (staged copy) | readable; writable only in `rw` | bound read-only at its own path (`ro`) |
+| where it can write | its own scratch directory, nothing else | its own scratch directory, which is `/tmp`; the home directory is a tmpfs that vanishes |
+| the staged target's parent | not writable, so it cannot be renamed away | not the host's: `/tmp` is private, so renaming the parent renames nothing |
+| `$HOME` | **readable** (`~/.ssh`, `~/.aws`, other repositories) | replaced by an empty tmpfs, with the toolchain directories (`~/.nvm`, `~/.local`, ...) and the directory the CLI is installed in bound back read-only |
+| processes | shared | own pid and IPC namespaces: `/proc/<pid>/cwd` of fixpoint is not there |
+| `/run`, user D-Bus and system sockets | reachable | masked (only systemd-resolved's directory is bound back, for DNS) |
+| network | open | open |
 
-What it does not do: the lens can still read the rest of `$HOME` (`~/.ssh`,
-`~/.aws`, the CLI's own credential) and use the network; the point is the answer
-key, not a hostile model. fixpoint finds the wrapper by name on `PATH` (a
-relative path would resolve against the staged target), so `run.sh` puts `bench/`
-there, and the wrapper takes the entry back off before it execs the agent.
+The CLI is taken from `argv[0]` of the agent command; an unknown binary is given no
+state at all, and CLI state is **per invocation**:
+
+- **codex** gets a fresh `CODEX_HOME` in the scratch directory. If there is a
+  `~/.codex/auth.json` (ChatGPT auth) the fresh home holds a *symlink* to it, and
+  that one file is readable and writable (a token refresh must persist); nothing
+  is copied, so a killed wrapper leaves no credential behind. The routes that
+  authenticate by environment key (`ollama-direct@`, `codex@`) need nothing else.
+  The live `~/.codex` (sessions, sqlite, `config.toml`) is unreadable and
+  unwritable.
+- **claude** keeps the **real** config directory, because a fresh
+  `CLAUDE_CONFIG_DIR` is "Not logged in" on macOS (the login is a Keychain item
+  named from the directory's path; measured 2026-11-24). Inside it the transcripts
+  (`projects/`, `sessions/`, `file-history/`, `session-env/`, `shell-snapshots/`,
+  `todos/`, `backups/`, `history.jsonl`) cannot be read, and everything that is
+  executable configuration (`settings.json`, `CLAUDE.md`, `commands/`, `skills/`,
+  hooks) cannot be modified. On macOS the state directories are write-only; on
+  Linux they are empty tmpfs mounts. The live codex directory is unreadable.
+
+What a lens can still reach, stated plainly:
+
+- On macOS, all of `$HOME` that is not named above, including other copies of this
+  repository (they hold the same manifests), and the network. The scorer's
+  log check (below) is what still catches a read of the key there.
+- The claude CLI's `.claude.json` is **writable** (it rewrites it): it is global
+  state that includes user-scope MCP servers, so a prompt-injected lens could plant
+  one that runs the next time the operator starts `claude`. It also stays readable.
+  The same goes for `.credentials.json` on Linux. A claude lens also leaves its
+  transcripts in the live `projects/` on macOS, as any claude run does.
+- On Linux the network namespace is shared with the host: abstract unix sockets and
+  services on localhost are reachable.
+- The lens's own scratch directory and, on Linux, the part of `$HOME` it is given
+  back; other users' home directories under their own permissions.
+
+`bench/run.sh` puts `bench/` on `PATH` (fixpoint finds the wrapper by name: a
+relative path would resolve against the staged target) and the wrapper takes that
+entry back off before it starts the agent.
+
+**Not supported inside the wrapper: `ollama launch`.** It needs `~/.ollama` (it
+saves the selected model there before the harness starts) and neither bench host
+has ollama installed. `run.sh` refuses the plain `<tag>:cloud` route,
+`ollama-codex@<tag>` and any shipped agent whose command starts with `ollama`, and
+points at `ollama-direct@<tag>`, the same harness straight to ollama.com.
+`ollama-direct@`, `codex@`, `vllm@`, `claude-*`, OpenRouter ids and the shipped
+codex and claude agents work.
 
 **Sandboxes do not nest.** The `--sandbox read-only` of a codex-harness agent is
 itself seatbelt (macOS) or bubblewrap (Linux) around each shell command, and
@@ -92,17 +134,24 @@ invocation asserts `-agents-sandboxed`, a command-line flag that needs a
 passes it. Run `./fixpoint bench-code` by hand without it and a codex candidate
 stops at validation, before any session.
 
-**What was verified.** On macOS: `bench/sandbox_test.sh` runs real
-`sandbox-exec` probes (a glob and `find` cannot reach the manifest; a `ro` target,
-`$HOME` and the checkout cannot be written; the target can be read), and a codex
-session through the wrapper read its target and was denied the checkout and
-`$HOME`. A full run through it (`ollama-direct@glm-5.3-flash:cloud`, go,
-2026-11-24) scored 37/56 (its earlier go rows, unconfined, are 33 to 40): its three lenses
-ran 7 shell commands between them, all exit 0, none denied. On Linux nothing beyond
-the assembly of `bwrap`'s arguments is tested.
-**The `bwrap` branch has never been run.** It is a first draft written from
-bwrap's documentation and one measured fact (`--tmpfs <repo>` hides the checkout
-on the bench host); check a real run there before trusting a Linux row.
+**What was verified, and where.** `bench/sandbox_test.sh` runs real probes through
+the sandbox of the host it is on (skipped, loudly, where `bwrap` cannot make a
+namespace), each against an unconfined control; the Go test
+`TestShippedBenchConfigsReachTheWrapperWithTheStagedTargetReadOnly` loads both
+shipped configs through the real entry point and checks every lens reaches the
+wrapper with the staged target, `ro` and the candidate's argv. Probes on macOS:
+a glob and `find` cannot reach the manifest; a symlinked
+`~/.fixpoint` is hidden through; the target and its parent cannot be written,
+renamed or replaced; planting a `settings.json` hook, a `CLAUDE.md` or a `commands/`
+entry fails; earlier sessions and transcripts cannot be read; real codex
+and claude sessions ran through it: `ollama-direct@glm-5.3-flash:cloud` on go scored
+39/56 (earlier unconfined go rows: 33 to 40), its three lenses ran 11 shell commands,
+all exit 0, none denied; `claude-haiku-5-5` on design authenticated against the real
+config directory and scored 21/34 with no permission denial (its raw log carries no
+tool calls, so how many it made is not visible).
+The Linux branch has been run by the operator on the bench host (earlier version: the
+mechanics, 35/56 and no sandbox failure); this version's Linux probe has **not
+been run by its author**, only its argument assembly (bwrap stubbed).
 
 **The log check remains as evidence**, not as the boundary: `score.py` writes no
 row when any lens's tool call mentions the checkout, `bench/`, `.fixpoint`, a

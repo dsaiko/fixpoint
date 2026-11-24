@@ -28,16 +28,18 @@ roles:
       - review-concurrency
       - review-security
 
-# Every lens runs inside bench/sandbox.sh: it cannot read the repository checkout
-# (the answer key, the scorer, every earlier model's findings) or ~/.fixpoint, and
-# it can write nowhere but its own CLI's state and scratch. The name is BARE on
-# purpose: fixpoint runs an agent with its working directory in the target, so a
-# relative path would resolve against the staged copy, and the config cannot name
-# the checkout absolutely. bench/run.sh puts bench/ on PATH; run this config by hand
-# the same way (PATH=$PWD/bench:$PATH ./fixpoint bench-code -check
-# --agents-sandboxed: the flag is what lets a codex candidate run with its own
-# sandbox off, which cannot nest inside the wrapper). What the wrapper does and
-# does not enforce: bench/sandbox.sh, bench/README.md.
+# Every lens runs inside bench/sandbox.sh, which hides the repository checkout (the
+# answer key, the scorer, every earlier model's findings) and ~/.fixpoint from it,
+# lets it write only a scratch directory of its own, and gives its CLI only the
+# state it needs (a fresh one for codex). What it does NOT stop (the rest of $HOME on macOS, the network, claude's
+# .claude.json) is listed in bench/README.md. The wrapper name is BARE on purpose:
+# fixpoint runs an agent with its working directory in the target, so a relative
+# path would resolve against the staged copy, and the config cannot name the
+# checkout absolutely. bench/run.sh puts bench/ on PATH; run this config by hand the
+# same way:
+#   PATH=$PWD/bench:$PATH ./fixpoint bench-code -check --agents-sandboxed ...
+# (the flag is what lets a codex candidate run with its own sandbox off, which
+# cannot nest inside the wrapper).
 sandbox:
   command: [sandbox.sh, "{{target}}", "{{target_mode}}", --]
 
