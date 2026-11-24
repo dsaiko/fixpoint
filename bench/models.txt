@@ -1525,3 +1525,22 @@ ollama-direct@hy4:cloud
 #   inkling-2-small 364 -> 363    ollama-codex@beam 348 -> 351 (median of grids)
 # The panel bar reads 420 / 425 as before. EVERY SCORE QUOTED ABOVE THIS NOTE IS
 # ON THE OLD MATCHER and may differ from the table by a few seeds.
+
+# BEAM PYTHON r1 REPLACED, 2026-11-24. ollama-codex@beam:cloud python
+# 20261019-210306 (49/66) is gone from results.csv: its security lens opened an
+# older TYPESCRIPT run's findings, and the two targets share seeded defects. It
+# was kept as "borderline" on 2026-11-23 and removed on the panel's review (run
+# 20261124-104533). That route needs a local ollama neither host has any more, so
+# python was measured again through the route the seat runs, beam-ollama-direct,
+# under isolation on mediabox: 51/66, 0 errors, 0 key reads (run 20261124-114222,
+# repeat 2 of that agent's python). ollama-codex@beam keeps its other python
+# grid (50) and stays complete.
+#
+# PANEL BAR, recomputed on the re-scored grid with that row standing in for
+# beam r1's python: [claude-sonnet, gpt-6-sol, beam] 420 / 425, unchanged.
+#
+# BUT THAT IS NO LONGER THE SEATED PANEL. Since 300a805 the ChatGPT seat is
+# gpt-6.2-sol, and [claude-sonnet, gpt-6.2-sol, beam] covers 434 / 442. Against
+# that bar, in beam's seat: hy4 437 (+3 / -5), inkling-2-small 430 (-4 / -12).
+# The +9 / +4 quoted for hy4 above is against the gpt-6-sol panel; on the panel
+# as seated hy4 is a wash, which only strengthens the decision not to seat it.
