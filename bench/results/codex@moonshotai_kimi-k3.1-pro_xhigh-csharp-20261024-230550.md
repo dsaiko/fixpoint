@@ -1,6 +1,6 @@
 # codex@moonshotai/kimi-k3.1-pro#xhigh · csharp · run 20261024-230550 (repeat 1)
 
-recall **41/68** · 60 finding(s), 11 unmatched · 896950 tokens · 569s
+recall **41/68** · 60 finding(s), 10 unmatched · 896950 tokens · 569s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -49,7 +49,7 @@ recall **41/68** · 60 finding(s), 11 unmatched · 896950 tokens · 569s
 | N43 | YES | parallel: EX03 CSV rows are built by interpolation, so a comma or quot | review-bugs: CSV fields are written without escaping; review-security: User-controlled owner values enable CSV formula injection |
 | N44 | — | ArchiveAll builds a filename straight from the owner string, so an own |  |
 | N45 | — | parallel: EX02 the report holding every owner's links is written with  |  |
-| N46 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-concurrency: Concurrent snapshots overwrite and move one shared temporary; review-security: Predictable shared temporary snapshot path enables symlink o |
+| N46 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot move can fail across filesystems; review-concurrency: Concurrent snapshots overwrite and move one shared temporary |
 | N47 | YES | CS-ONLY async void: the caller cannot await it and an exception inside | review-bugs: Asynchronous export cannot be awaited or observed |
 | N48 | YES | parallel: X01 AddCreated increments with ++ while AddResolved uses Int | review-concurrency: Created-link metric loses concurrent increments |
 | N49 | — | the errors counter is reported by Snapshot and never assigned anywhere |  |
@@ -76,7 +76,6 @@ recall **41/68** · 60 finding(s), 11 unmatched · 896950 tokens · 569s
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) Cache.cs:53 — Peek treats expired entries as present
 - (high) Config.cs:126 — Configuration validation always succeeds
-- (medium) Export.cs:58 — Snapshot move can fail across filesystems
 - (medium) Export.cs:83 — Asynchronous export discards all supplied links
 - (medium) Program.cs:96 — Creation responses can contain invalid JSON
 - (medium) Store.cs:27 — URL validation accepts malformed targets

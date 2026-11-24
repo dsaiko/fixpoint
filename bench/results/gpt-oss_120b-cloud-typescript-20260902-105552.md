@@ -1,6 +1,6 @@
 # gpt-oss:120b-cloud · typescript · run 20260902-105552 (repeat 1)
 
-recall **31/63** · 44 finding(s), 4 unmatched · 1269574 tokens · 406s
+recall **32/63** · 44 finding(s), 3 unmatched · 1269574 tokens · 406s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -56,7 +56,7 @@ recall **31/63** · 44 finding(s), 4 unmatched · 1269574 tokens · 406s
 | T50 | — | the janitor takes the cache and never sweeps it, so expired cache entr |  |
 | T51 | — | TS-ONLY the request body is cast to `any`, so target and owner reach t |  |
 | T52 | — | a bad ttl parses to NaN and produces a link whose expiry is NaN, which |  |
-| T53 | — | parallel: C16 redirect lowercases the code before lookup although code |  |
+| T53 | YES | parallel: C16 redirect lowercases the code before lookup although code | review-bugs: Redirect handler assumes `code` query param exists |
 | T54 | YES | parallel: C17 deleteLink never checks the owner its doc promises to ch | review-security: Delete endpoint lacks ownership verification |
 | T55 | — | parallel: C18 /out redirects to any address in ?next= -- an open redir |  |
 | T56 | YES | parallel: C19 the admin endpoint is gated on a request header the call | review-bugs: Admin quota endpoint trusts only an `x-admin` header; review-security: Admin endpoint trusts client header without authentication |
@@ -71,5 +71,4 @@ recall **31/63** · 44 finding(s), 4 unmatched · 1269574 tokens · 406s
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/store.ts:134 — `extend` resets expiry instead of extending it
 - (high) src/main.ts:51 — `bearerToken` called without checking Authorization header
-- (medium) src/main.ts:97 — Redirect handler assumes `code` query param exists
 - (critical) src/export.ts:60 — Path traversal when reading exported reports

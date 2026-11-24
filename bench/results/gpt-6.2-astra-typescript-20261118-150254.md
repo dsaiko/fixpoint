@@ -1,6 +1,6 @@
 # gpt-6.2-astra · typescript · run 20261118-150254 (repeat 1)
 
-recall **45/63** · 79 finding(s), 15 unmatched · 181745 tokens · 338s
+recall **45/63** · 79 finding(s), 14 unmatched · 181745 tokens · 338s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **45/63** · 79 finding(s), 15 unmatched · 181745 tokens · 338s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Report files can be readable by other local users |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV fields do not round-trip through export and parsing; review-security: Unescaped report fields allow forged CSV rows and spreadshee |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot writes return before the replacement is durable; review-concurrency: Concurrent snapshot writers share one temporary file |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot replacement fails across filesystems; review-bugs: Snapshot writes return before the replacement is durable |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: Parsing a generated report adds a nonexistent final row |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-bugs: Cache warming reports success when a probe fails; review-concurrency: warmCache drops the promises for its per-link work |
@@ -75,7 +75,6 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/store.ts:21 — The absolute URL check accepts targets with no host
 - (medium) src/cache.ts:38 — An expired entry can block cache warming
 - (medium) src/config.ts:50 — A nonnumeric cache size disables the capacity bound
-- (medium) src/export.ts:45 — Snapshot replacement fails across filesystems
 - (medium) src/main.ts:159 — Reports silently omit every link after the first 1,000
 - (medium) src/worker.ts:41 — The reachability probe succeeds for every HTTPS-prefixed string
 - (high) src/main.ts:32 — Importing the request handler starts a janitor that cannot be stopped

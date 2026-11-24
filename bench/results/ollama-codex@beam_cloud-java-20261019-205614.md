@@ -50,8 +50,8 @@ recall **52/69** · 144 finding(s), 23 unmatched · 2394433 tokens · 268s
 | J44 | YES | JAVA-ONLY the FileWriter is closed only on the success path; any excep | review-bugs: FileWriter not closed on exception (file leak); review-concurrency: FileWriter is not closed on exceptions |
 | J45 | — | parallel: EX03 CSV rows are built by concatenation, so a comma or quot |  |
 | J46 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| J47 | YES | parallel: EX06 renameTo's boolean result is discarded and it fails sil | review-bugs: writeSnapshot ignores renameTo result; review-concurrency: writeSnapshot is not durable or atomic across directories |
-| J48 | YES | parallel: EX07 the snapshot temp file has one fixed name in /tmp: a sy | review-security: Snapshot write is not atomic |
+| J47 | YES | parallel: EX06 renameTo's boolean result is discarded and it fails sil | review-bugs: writeSnapshot ignores renameTo result |
+| J48 | YES | parallel: EX07 the snapshot temp file has one fixed name in /tmp: a sy | review-concurrency: writeSnapshot is not durable or atomic across directories; review-security: Snapshot write is not atomic |
 | J49 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | J50 | YES | parallel: X01 addCreated is unsynchronized while addResolved is, so co | review-concurrency: Metrics created and errors are unsynchronized; review-security: Metrics.created is not synchronized |
 | J51 | — | the errors counter is exposed on /stats and never incremented anywhere |  |

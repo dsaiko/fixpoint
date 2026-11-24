@@ -1,6 +1,6 @@
 # codex@google/gemini-4-argon · go · run 20261013-224149 (repeat 2)
 
-recall **42/56** · 63 finding(s), 2 unmatched · 895758 tokens · 438s · 11 retired seed(s) not scored
+recall **42/56** · 63 finding(s), 1 unmatched · 895758 tokens · 438s · 11 retired seed(s) not scored
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -30,7 +30,7 @@ recall **42/56** · 63 finding(s), 2 unmatched · 895758 tokens · 438s · 11 re
 | S03 | YES | every issued session token is written to the log in cleartext | review-security: Plaintext bearer session tokens written to application logs |
 | S04 | YES | Verify never looks at ExpiresAt, so a token works forever despite the  | review-bugs: Authenticator.Verify never checks session expiration; review-security: Verify ignores session expiration and uses non-constant-time |
 | S05 | YES | passwords are stored as a single unsalted SHA-256, crackable offline a | review-security: Unsalted single-round SHA-256 used for password hashing |
-| S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin uses || instead of &&, rejecting all sessions |
+| S07 | YES | the admin check is always true, so RequireAdmin rejects every session  | review-bugs: RequireAdmin uses || instead of &&, rejecting all sessions; review-security: Broken boolean condition in RequireAdmin rejects all session |
 | S08 | YES | the 401 response echoes the rejected token back to the caller | review-security: Unauthorized response reflects raw bearer token and internal |
 | S09 | YES | the sessions map is read and written from every request goroutine with | review-concurrency: Data race and concurrent map panic on Authenticator.sessions |
 | CF01 | — | a malformed LINKD_PORT silently becomes port 0 |  |
@@ -79,4 +79,3 @@ Retired seeds — still matched so their findings are not counted as noise, but 
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) main.go:96 — server.preview does not propagate request context to outbound HTTP call
-- (high) auth.go:84 — Broken boolean condition in RequireAdmin rejects all sessions

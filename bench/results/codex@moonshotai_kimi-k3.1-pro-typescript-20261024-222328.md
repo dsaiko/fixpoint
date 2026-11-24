@@ -1,6 +1,6 @@
 # codex@moonshotai/kimi-k3.1-pro · typescript · run 20261024-222328 (repeat 1)
 
-recall **44/63** · 52 finding(s), 2 unmatched · 835039 tokens · 514s
+recall **44/63** · 52 finding(s), 1 unmatched · 835039 tokens · 514s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **44/63** · 52 finding(s), 2 unmatched · 835039 tokens · 514s
 | T40 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV exports corrupt rows containing commas, quotes, or newli; review-security: CSV export allows spreadsheet formula injection |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-concurrency: Concurrent snapshots share one temporary file |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot rename fails when /tmp and the destination are on d; review-concurrency: Concurrent snapshots share one temporary file |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: Every exported report parses with a phantom final row |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-bugs: warmCache resolves before any asynchronous warm-up finishes; review-concurrency: warmCache returns before its probes finish |
@@ -69,5 +69,4 @@ recall **44/63** · 52 finding(s), 2 unmatched · 835039 tokens · 514s
 | T63 | YES | HARVESTED from calibration (2026-09-01, reported by both baselines). e | review-bugs: Default report requests write and read different files |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) src/export.ts:47 — Snapshot rename fails when /tmp and the destination are on different filesystems
 - (medium) src/main.ts:32 — Janitor interval is started without a lifecycle owner

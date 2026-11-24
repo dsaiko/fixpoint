@@ -1,6 +1,6 @@
 # ollama-codex@glm-5.3-flash:cloud#max · cpp · run 20261124-103744 (repeat 1)
 
-recall **43/64** · 59 finding(s), 4 unmatched · 232788 tokens · 337s
+recall **44/64** · 59 finding(s), 3 unmatched · 232788 tokens · 337s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **43/64** · 59 finding(s), 4 unmatched · 232788 tokens · 337s
 | P18 | YES | parallel: S02 session tokens come from std::rand, never seeded, writte | review-security: Session tokens use seeded-free predictable randomness |
 | P19 | YES | parallel: S03 every issued session token is printed in cleartext | review-security: Session tokens are written to logs |
 | P20 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: Expired sessions remain valid; review-security: Expired sessions remain valid |
-| P21 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: Admin role predicate is always false |
 | P22 | YES | parallel: S05 passwords are hashed with a djb2 accumulator: unsalted,  | review-security: Passwords are stored with an unsalted fast hash |
 | P23 | YES | CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64 | review-security: Authorization header parsing is memory-unsafe |
 | P24 | YES | CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no | review-bugs: Bearer parsing crashes on missing or malformed header |
@@ -71,6 +71,5 @@ recall **43/64** · 59 finding(s), 4 unmatched · 232788 tokens · 337s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) main.cpp:140 — The service never starts listening
-- (medium) auth.cpp:49 — Admin role predicate is always false
 - (medium) export.cpp:26 — Concurrent exports to the same report race with readers
 - (high) store.cpp:65 — Pagination reads one Link object out of bounds

@@ -1,6 +1,6 @@
 # glm-5.3:cloud · python · run 20260901-123329 (repeat 1)
 
-recall **48/66** · 64 finding(s), 3 unmatched · 606987 tokens · 285s
+recall **49/66** · 64 finding(s), 2 unmatched · 606987 tokens · 285s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -34,7 +34,7 @@ recall **48/66** · 64 finding(s), 3 unmatched · 606987 tokens · 285s
 | Y28 | YES | parallel: CA08 eviction drops the first key in insertion order, not th | review-bugs: Eviction picks the oldest-inserted entry, not the least rece |
 | Y29 | — | parallel: CA06 warm's peek and set take the lock separately, so the ja |  |
 | Y30 | YES | PY-ONLY sweep deletes from the dict while iterating it, raising Runtim | review-bugs: sweep() mutates the entries dict while iterating it; review-concurrency: Cache.sweep deletes entries from the dict it is iterating |
-| Y31 | — | PY-ONLY utilization floor-divides before scaling so it always reports  |  |
+| Y31 | YES | PY-ONLY utilization floor-divides before scaling so it always reports  | review-bugs: utilization() reports 0% unless the cache is exactly full |
 | Y32 | YES | PY-ONLY flush holds the non-reentrant Lock and calls delete, which tak | review-bugs: flush() deadlocks on the non-reentrant lock; review-concurrency: Cache.flush deadlocks by re-acquiring its non-reentrant lock |
 | Y33 | — | parallel: CA07 stats reads the hit counter outside the lock while get  |  |
 | Y34 | — | parallel: CF01 a malformed LINKD_PORT is swallowed silently with no lo |  |
@@ -72,6 +72,5 @@ recall **48/66** · 64 finding(s), 3 unmatched · 606987 tokens · 285s
 | Y66 | YES | HARVESTED from calibration (2026-09-01, reported by both baselines). e | review-concurrency: Report endpoint write-then-read of a shared file with no syn |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) cache.py:73 — utilization() reports 0% unless the cache is exactly full
 - (low) config.py:72 — load_file() leaks the file handle it reads
 - (medium) store.py:46 — Quota counter update is a lost-update race under concurrent create

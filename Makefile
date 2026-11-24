@@ -205,6 +205,7 @@ bench-check:
 	python3 bench/score.py --selftest bench/manifest-python.yaml
 	python3 bench/score.py --selftest bench/manifest-design.yaml
 	python3 bench/score.py --leak-selftest
+	python3 bench/score.py --matcher-selftest
 	python3 bench/report.py --selftest
 	sh bench/run_test.sh
 	cd bench/testdata/target-go && go build ./...

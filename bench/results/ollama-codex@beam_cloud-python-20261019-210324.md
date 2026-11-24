@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · python · run 20261019-210324 (repeat 2)
 
-recall **50/66** · 71 finding(s), 8 unmatched · 826889 tokens · 123s
+recall **51/66** · 71 finding(s), 7 unmatched · 826889 tokens · 123s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -34,7 +34,7 @@ recall **50/66** · 71 finding(s), 8 unmatched · 826889 tokens · 123s
 | Y28 | — | parallel: CA08 eviction drops the first key in insertion order, not th |  |
 | Y29 | YES | parallel: CA06 warm's peek and set take the lock separately, so the ja | review-concurrency: warm performs a unlocked check-then-act peek/set pair |
 | Y30 | YES | PY-ONLY sweep deletes from the dict while iterating it, raising Runtim | review-bugs: sweep mutates dict during iteration; review-concurrency: Cache.sweep mutates the entries dict while iterating it |
-| Y31 | — | PY-ONLY utilization floor-divides before scaling so it always reports  |  |
+| Y31 | YES | PY-ONLY utilization floor-divides before scaling so it always reports  | review-bugs: utilization integer division loses percentage |
 | Y32 | YES | PY-ONLY flush holds the non-reentrant Lock and calls delete, which tak | review-bugs: flush deadlocks on non-reentrant lock; review-concurrency: Cache.flush deadlocks by re-acquiring a non-reentrant lock |
 | Y33 | — | parallel: CA07 stats reads the hit counter outside the lock while get  |  |
 | Y34 | YES | parallel: CF01 a malformed LINKD_PORT is swallowed silently with no lo | review-bugs: timeout is stored in milliseconds instead of seconds |
@@ -72,7 +72,6 @@ recall **50/66** · 71 finding(s), 8 unmatched · 826889 tokens · 123s
 | Y66 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (low) cache.py:73 — utilization integer division loses percentage
 - (medium) cache.py:54 — warm treats expired entries as cached
 - (critical) store.py:21 — Store has no synchronization around shared mutable state
 - (high) worker.py:36 — Janitor directly deletes store.links without synchronization

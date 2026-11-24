@@ -1,6 +1,6 @@
 # gpt-6.1-terra · typescript · run 20261029-094530 (repeat 1)
 
-recall **34/63** · 42 finding(s), 2 unmatched · 149273 tokens · 86s
+recall **34/63** · 42 finding(s), 1 unmatched · 149273 tokens · 86s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **34/63** · 42 finding(s), 2 unmatched · 149273 tokens · 86s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Reports containing all owners' links use default file permis |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV values are written without escaping; review-security: Exported CSV permits spreadsheet formula injection |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-concurrency: Concurrent snapshot writers share one temporary file |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot rename fails when the export directory is on anothe; review-concurrency: Concurrent snapshot writers share one temporary file |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: Parsing an exported report adds an empty row |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-bugs: Cache warming returns before probes finish; review-concurrency: Cache warming returns before its probes finish |
@@ -70,4 +70,3 @@ recall **34/63** · 42 finding(s), 2 unmatched · 149273 tokens · 86s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/auth.ts:78 — Missing authorization header throws instead of returning 401
-- (medium) src/export.ts:47 — Snapshot rename fails when the export directory is on another filesystem

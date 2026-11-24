@@ -1,6 +1,6 @@
 # gpt-6-astra-xhigh · csharp · run 20260905-151905 (repeat 1)
 
-recall **31/68** · 46 finding(s), 9 unmatched · 447833 tokens · 796s
+recall **32/68** · 46 finding(s), 8 unmatched · 447833 tokens · 796s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -49,7 +49,7 @@ recall **31/68** · 46 finding(s), 9 unmatched · 447833 tokens · 796s
 | N43 | YES | parallel: EX03 CSV rows are built by interpolation, so a comma or quot | review-bugs: CSV fields are written without escaping |
 | N44 | — | ArchiveAll builds a filename straight from the owner string, so an own |  |
 | N45 | — | parallel: EX02 the report holding every owner's links is written with  |  |
-| N46 | — | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  |  |
+| N46 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-concurrency: Use a unique temporary file for each snapshot |
 | N47 | YES | CS-ONLY async void: the caller cannot await it and an exception inside | review-concurrency: Return an awaitable task from asynchronous export |
 | N48 | YES | parallel: X01 AddCreated increments with ++ while AddResolved uses Int | review-concurrency: Synchronize the created counter |
 | N49 | — | the errors counter is reported by Snapshot and never assigned anywhere |  |
@@ -82,4 +82,3 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) Export.cs:83 — The asynchronous exporter discards every link
 - (medium) Worker.cs:54 — Target probing never checks reachability
 - (high) Program.cs:37 — Supervise detached request tasks
-- (medium) Export.cs:58 — Use a unique temporary file for each snapshot

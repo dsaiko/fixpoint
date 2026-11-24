@@ -1,6 +1,6 @@
 # gpt-6.1-sol · typescript · run 20260930-101352 (repeat 1)
 
-recall **37/63** · 48 finding(s), 5 unmatched · 247223 tokens · 623s
+recall **38/63** · 48 finding(s), 4 unmatched · 247223 tokens · 623s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **37/63** · 48 finding(s), 5 unmatched · 247223 tokens · 623s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Reports are created without enforcing private permissions |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV exports corrupt fields containing commas or newlines; review-security: Unescaped CSV fields permit spreadsheet formula injection |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | — | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  |  |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot writes fail when the export directory is on another |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: Parsing a generated report adds a spurious final row |
 | T45 | YES | the errors counter is reported by snapshot and never incremented anywh | review-bugs: The error metric can never increase |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-concurrency: Cache warming leaves probe failures in detached promises |
@@ -72,5 +72,4 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/main.ts:29 — The request handler has no way to obtain a valid session
 - (medium) src/cache.ts:46 — Updating a full cache evicts an unrelated entry
 - (medium) src/cache.ts:46 — A zero-capacity cache still stores an entry
-- (medium) src/export.ts:47 — Snapshot writes fail when the export directory is on another filesystem
 - (medium) src/worker.ts:41 — Target probes report success without checking reachability

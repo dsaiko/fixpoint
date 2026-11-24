@@ -1,6 +1,6 @@
 # beam-ollama-direct · rust · run 20261028-114451 (repeat 1)
 
-recall **38/64** · 55 finding(s), 7 unmatched · 804345 tokens · 166s
+recall **39/64** · 55 finding(s), 6 unmatched · 804345 tokens · 166s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **38/64** · 55 finding(s), 7 unmatched · 804345 tokens · 166s
 | RA04 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify() does not enforce token expiry; review-security: Token expiry is never enforced |
 | RA05 | — | RUST-ONLY (parallel: S05) passwords are hashed with a djb2-style 64-bi |  |
 | RA06 | YES | RUST-ONLY (parallel: S06) bearer_token indexes parts[1] without checki | review-bugs: bearer_token panics on malformed Authorization header; review-security: bearer_token can panic on malformed Authorization header |
-| RA07 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| RA07 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin() rejects every role |
 | RA08 | YES | RUST-ONLY secret_eq is documented as constant-time and is not: it retu | review-security: secret_eq leaks timing and length |
 | RA09 | — | verify scans every session linearly although the map is already keyed  |  |
 | RC01 | — | RUST-ONLY get takes the WRITE lock on the read path, so every cache re |  |
@@ -70,7 +70,6 @@ recall **38/64** · 55 finding(s), 7 unmatched · 804345 tokens · 166s
 | RM12 | — | parse_query never percent-decodes, and the POST body is parsed as a qu |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) src/auth.rs:68 — require_admin() rejects every role
 - (low) src/cache.rs:51 — peek() reports expired entries as present
 - (medium) src/export.rs:36 — archive_all ignores write errors
 - (high) src/export.rs:49 — write_snapshot ignores rename failure

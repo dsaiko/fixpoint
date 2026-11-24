@@ -1,6 +1,6 @@
 # claude-fable-5-2 · csharp · run 20261110-150415 (repeat 1)
 
-recall **54/68** · 86 finding(s), 11 unmatched · 35331 tokens · 367s
+recall **55/68** · 86 finding(s), 11 unmatched · 35331 tokens · 367s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -44,9 +44,9 @@ recall **54/68** · 86 finding(s), 11 unmatched · 35331 tokens · 367s
 | N38 | — | parallel: CF05 LoadFile swallows every exception, so an unreadable con |  |
 | N39 | — | parallel: CF06 Validate logs the problems it finds and returns true, s |  |
 | N40 | YES | LoadFile parses cache_size with int.Parse inside the try's successor,  | review-bugs: LoadFile crashes on a bad cache_size and hides every read er |
-| N41 | — | parallel: EX01 the report name comes from the query string; Path.Combi |  |
+| N41 | YES | parallel: EX01 the report name comes from the query string; Path.Combi | review-security: ExportCsv does not confine the report name to dir |
 | N42 | YES | CS-ONLY the StreamWriter is closed only on the success path with no `u | review-bugs: StreamWriters are not disposed when a write fails |
-| N43 | YES | parallel: EX03 CSV rows are built by interpolation, so a comma or quot | review-bugs: CSV fields are written without quoting or escaping; review-security: ExportCsv does not confine the report name to dir |
+| N43 | YES | parallel: EX03 CSV rows are built by interpolation, so a comma or quot | review-bugs: CSV fields are written without quoting or escaping; review-security: CSV export is vulnerable to CSV/formula injection |
 | N44 | — | ArchiveAll builds a filename straight from the owner string, so an own |  |
 | N45 | — | parallel: EX02 the report holding every owner's links is written with  |  |
 | N46 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: WriteSnapshot is neither durable nor atomic as documented; review-concurrency: WriteSnapshot uses one fixed temp path, so concurrent snapsh |

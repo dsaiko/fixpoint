@@ -1,6 +1,6 @@
 # codex@moonshotai/kimi-k3.1-pro · java · run 20261024-222106 (repeat 1)
 
-recall **42/69** · 51 finding(s), 6 unmatched · 841891 tokens · 380s
+recall **43/69** · 51 finding(s), 6 unmatched · 841891 tokens · 380s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,8 +24,8 @@ recall **42/69** · 51 finding(s), 6 unmatched · 841891 tokens · 380s
 | J18 | — | parallel: S01 the signing secret falls back to a hardcoded development |  |
 | J19 | YES | parallel: S02 session tokens come from java.util.Random, so they are p | review-security: Predictable PRNG allows session-token prediction |
 | J20 | YES | parallel: S03 every issued session token is printed in cleartext | review-security: Live bearer tokens are written to application logs |
-| J21 | YES | parallel: S04 verify never looks at expiresAt, so a token works foreve | review-bugs: Session tokens are compared by object identity; review-security: Expired sessions remain valid indefinitely |
-| J22 | — | JAVA-ONLY verify compares the token with == rather than equals, so aut |  |
+| J21 | YES | parallel: S04 verify never looks at expiresAt, so a token works foreve | review-security: Expired sessions remain valid indefinitely |
+| J22 | YES | JAVA-ONLY verify compares the token with == rather than equals, so aut | review-bugs: Session tokens are compared by object identity |
 | J23 | — | parallel: S05 passwords are stored as a single unsalted SHA-256, crack |  |
 | J24 | — | parallel: S06 bearerToken indexes parts[1] without checking, so a malf |  |
 | J25 | — | parallel: S07 the admin check is always true, so requireAdmin rejects  |  |

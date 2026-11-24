@@ -1,6 +1,6 @@
 # ollama-direct@inkling-2-small:cloud · cpp · run 20261123-203105 (repeat 1)
 
-recall **51/64** · 78 finding(s), 4 unmatched · 523292 tokens · 427s
+recall **50/64** · 78 finding(s), 4 unmatched · 523292 tokens · 427s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -16,8 +16,8 @@ recall **51/64** · 78 finding(s), 4 unmatched · 523292 tokens · 427s
 | P10 | YES | parallel: C12 extend re-dates an already-expired link, resurrecting a  | review-bugs: extend() revives expired links and does not add to expiry; review-security: extend() resurrects expired links |
 | P11 | YES | parallel: C14 quotas hands out a non-const reference to the store's ow | review-bugs: quotas() returns the internal map by reference despite docum; review-concurrency: quotas() leaks a mutable reference to the internal quota_ ma |
 | P12 | YES | parallel: C13 import_all stores as it validates, so a bad code leaves  | review-bugs: import_all() is not atomic despite its contract |
-| P13 | YES | CPP-ONLY prune erases through the iterator and then increments it: the | review-concurrency: prune() erases map elements while iterating forward |
-| P14 | YES | parallel: C15 prune counts removals into `removed` and then returns th | review-bugs: prune() erases through the loop iterator then increments it |
+| P13 | YES | CPP-ONLY prune erases through the iterator and then increments it: the | review-bugs: prune() erases through the loop iterator then increments it; review-concurrency: prune() erases map elements while iterating forward |
+| P14 | — | parallel: C15 prune counts removals into `removed` and then returns th |  |
 | P15 | YES | CPP-ONLY last_code returns a string_view onto a function-local std::st | review-bugs: last_code returns a string_view to a destroyed local; review-security: last_code returns string_view to a local that is destroyed |
 | P16 | — | CPP-ONLY create returns a raw pointer into the map; any later erase or |  |
 | P17 | YES | parallel: S01 the signing secret falls back to a hardcoded development | review-security: Hardcoded fallback secret 'dev-secret-do-not-use' |

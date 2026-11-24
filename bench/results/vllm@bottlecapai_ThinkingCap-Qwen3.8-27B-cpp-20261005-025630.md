@@ -51,8 +51,8 @@ recall **50/64** · 73 finding(s), 2 unmatched · 62873 tokens · 1014s
 | P45 | YES | CPP-ONLY the errors_ counter has no initializer while its siblings do, | review-bugs: Metrics::errors_ is uninitialized and has no setter — errors; review-security: Metrics::errors_ is an uninitialized member - /stats reads i |
 | P46 | YES | parallel: X01 the counters are plain longs incremented from the janito | review-concurrency: Metrics counters are plain longs incremented from concurrent |
 | P47 | YES | CPP-ONLY (parallel: X02) the janitor erases through the iterator it th | review-bugs: Janitor erases from the store map while iterating: ++it on a; review-concurrency: Janitor thread mutates Store::links_ with no lock while requ |
-| P48 | YES | CPP-ONLY warm_cache never joins its threads, so the vector's destructo | review-concurrency: warm_cache spawns threads it never joins: std::terminate on ; review-concurrency: stop_janitor never joins the janitor thread: torn-down state |
-| P49 | YES | CPP-ONLY the thread lambda captures the loop variable by reference, so | review-bugs: warm_cache() destroys joinable threads without joining (std: |
+| P48 | YES | CPP-ONLY warm_cache never joins its threads, so the vector's destructo | review-concurrency: stop_janitor never joins the janitor thread: torn-down state; review-security: warm_cache never joins its worker threads - guaranteed termi |
+| P49 | YES | CPP-ONLY the thread lambda captures the loop variable by reference, so | review-bugs: warm_cache() destroys joinable threads without joining (std:; review-concurrency: warm_cache spawns threads it never joins: std::terminate on  |
 | P50 | YES | CPP-ONLY check_targets loops with <= and reads one element past the en | review-bugs: check_targets() off-by-one: i <= links.size() reads one elem; review-security: check_targets off-by-one: out-of-bounds read of links[i] at  |
 | P51 | — | CPP-ONLY count_for_owner uses map::operator[], which INSERTS a zero en |  |
 | P52 | — | CPP-ONLY the janitor thread is heap-allocated, never joined and never  |  |

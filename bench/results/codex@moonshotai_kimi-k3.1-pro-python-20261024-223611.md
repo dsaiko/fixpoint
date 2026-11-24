@@ -1,6 +1,6 @@
 # codex@moonshotai/kimi-k3.1-pro · python · run 20261024-223611 (repeat 1)
 
-recall **40/66** · 56 finding(s), 9 unmatched · 728262 tokens · 491s
+recall **41/66** · 56 finding(s), 8 unmatched · 728262 tokens · 491s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -34,7 +34,7 @@ recall **40/66** · 56 finding(s), 9 unmatched · 728262 tokens · 491s
 | Y28 | YES | parallel: CA08 eviction drops the first key in insertion order, not th | review-bugs: Updating an existing key can evict another entry |
 | Y29 | — | parallel: CA06 warm's peek and set take the lock separately, so the ja |  |
 | Y30 | YES | PY-ONLY sweep deletes from the dict while iterating it, raising Runtim | review-bugs: Cache sweep crashes after removing an expired entry |
-| Y31 | — | PY-ONLY utilization floor-divides before scaling so it always reports  |  |
+| Y31 | YES | PY-ONLY utilization floor-divides before scaling so it always reports  | review-bugs: Cache utilization uses integer division before scaling |
 | Y32 | YES | PY-ONLY flush holds the non-reentrant Lock and calls delete, which tak | review-concurrency: Cache flush deadlocks on its own mutex |
 | Y33 | — | parallel: CA07 stats reads the hit counter outside the lock while get  |  |
 | Y34 | — | parallel: CF01 a malformed LINKD_PORT is swallowed silently with no lo |  |
@@ -72,7 +72,6 @@ recall **40/66** · 56 finding(s), 9 unmatched · 728262 tokens · 491s
 | Y66 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (medium) cache.py:73 — Cache utilization uses integer division before scaling
 - (low) export.py:58 — Report reads leak file descriptors
 - (high) auth.py:43 — Session verification races with issuance and revocation
 - (high) export.py:21 — Concurrent same-name reports overwrite and expose partial output

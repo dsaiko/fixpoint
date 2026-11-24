@@ -1,6 +1,6 @@
 # beam-ollama-direct · cpp · run 20261028-115051 (repeat 1)
 
-recall **29/64** · 36 finding(s), 3 unmatched · 1107726 tokens · 226s
+recall **31/64** · 36 finding(s), 2 unmatched · 1107726 tokens · 226s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **29/64** · 36 finding(s), 3 unmatched · 1107726 tokens · 226s
 | P18 | — | parallel: S02 session tokens come from std::rand, never seeded, writte |  |
 | P19 | — | parallel: S03 every issued session token is printed in cleartext |  |
 | P20 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify does not enforce session expiry |
-| P21 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-bugs: require_admin always rejects everyone |
 | P22 | — | parallel: S05 passwords are hashed with a djb2 accumulator: unsalted,  |  |
 | P23 | — | CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64 |  |
 | P24 | YES | CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no | review-bugs: bearer_token overflows fixed buffer and dereferences possibl |
@@ -52,7 +52,7 @@ recall **29/64** · 36 finding(s), 3 unmatched · 1107726 tokens · 226s
 | P46 | YES | parallel: X01 the counters are plain longs incremented from the janito | review-concurrency: Metrics counters are incremented non-atomically from multipl |
 | P47 | YES | CPP-ONLY (parallel: X02) the janitor erases through the iterator it th | review-bugs: janitor erases from the store map while iterating it; review-concurrency: Janitor thread operates on store/cache without synchronizati |
 | P48 | YES | CPP-ONLY warm_cache never joins its threads, so the vector's destructo | review-bugs: warm_cache spawns joinable threads but never joins them; review-concurrency: stop_janitor never joins the janitor thread |
-| P49 | — | CPP-ONLY the thread lambda captures the loop variable by reference, so |  |
+| P49 | YES | CPP-ONLY the thread lambda captures the loop variable by reference, so | review-concurrency: warm_cache launches threads it never joins and captures a da |
 | P50 | YES | CPP-ONLY check_targets loops with <= and reads one element past the en | review-bugs: check_targets reads one past the end of links |
 | P51 | — | CPP-ONLY count_for_owner uses map::operator[], which INSERTS a zero en |  |
 | P52 | — | CPP-ONLY the janitor thread is heap-allocated, never joined and never  |  |
@@ -70,6 +70,5 @@ recall **29/64** · 36 finding(s), 3 unmatched · 1107726 tokens · 226s
 | P64 | — | HARVESTED from calibration (2026-09-01, reported by both baselines). e |  |
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
-- (high) auth.cpp:49 — require_admin always rejects everyone
 - (high) store.cpp:10 — Store maps links_ and quota_ are mutated without synchronization
 - (high) linkd.h:43 — Store::all() leaks a mutable reference to the internal links_ map

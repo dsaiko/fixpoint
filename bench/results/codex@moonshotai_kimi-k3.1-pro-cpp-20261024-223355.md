@@ -1,6 +1,6 @@
 # codex@moonshotai/kimi-k3.1-pro · cpp · run 20261024-223355 (repeat 1)
 
-recall **39/64** · 53 finding(s), 6 unmatched · 594547 tokens · 298s
+recall **40/64** · 53 finding(s), 4 unmatched · 594547 tokens · 298s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,14 +46,14 @@ recall **39/64** · 53 finding(s), 6 unmatched · 594547 tokens · 298s
 | P40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Sensitive reports are created with default file permissions |
 | P41 | YES | parallel: EX03 CSV rows are streamed unescaped, so a comma or quote in | review-concurrency: Concurrent exports of the same report can serve a partial fi; review-security: Unescaped report fields allow CSV formula injection |
 | P42 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: Snapshot writes ignore all I/O and rename failures; review-security: Predictable shared snapshot file permits symlink attacks |
+| P43 | YES | CPP-ONLY (parallel: EX06/EX07) one fixed /tmp name, the rename's resul | review-bugs: Snapshot writes ignore all I/O and rename failures; review-concurrency: Concurrent snapshots share one temporary pathname |
 | P44 | YES | CPP-ONLY format_row returns a pointer to a function-local char array,  | review-bugs: Report formatter returns a dangling pointer |
 | P45 | — | CPP-ONLY the errors_ counter has no initializer while its siblings do, |  |
 | P46 | YES | parallel: X01 the counters are plain longs incremented from the janito | review-concurrency: Request metrics lose updates and race dashboard reads |
 | P47 | YES | CPP-ONLY (parallel: X02) the janitor erases through the iterator it th | review-bugs: Janitor cleanup uses invalid iterators |
 | P48 | YES | CPP-ONLY warm_cache never joins its threads, so the vector's destructo | review-bugs: Cache warming destroys joinable threads before they finish; review-concurrency: Cache warm-up destroys joinable worker threads and never joi |
 | P49 | — | CPP-ONLY the thread lambda captures the loop variable by reference, so |  |
-| P50 | — | CPP-ONLY check_targets loops with <= and reads one element past the en |  |
+| P50 | YES | CPP-ONLY check_targets loops with <= and reads one element past the en | review-bugs: Target checking reads one element past the vector |
 | P51 | — | CPP-ONLY count_for_owner uses map::operator[], which INSERTS a zero en |  |
 | P52 | — | CPP-ONLY the janitor thread is heap-allocated, never joined and never  |  |
 | P53 | — | CPP-ONLY the handler reads query parameters with .at(), which throws s |  |
@@ -71,8 +71,6 @@ recall **39/64** · 53 finding(s), 6 unmatched · 594547 tokens · 298s
 
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) store.cpp:58 — Rename reads a link after erasing it
-- (high) worker.cpp:43 — Target checking reads one element past the vector
 - (high) linkd.h:49 — Store has no synchronization despite concurrent request and janitor access
 - (high) linkd.h:101 — Cache operations race with the janitor and parallel warm-up
 - (high) linkd.h:75 — Session verification returns pointers into an unsynchronized mutable map
-- (high) export.cpp:48 — Concurrent snapshots share one temporary pathname

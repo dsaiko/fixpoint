@@ -1,6 +1,6 @@
 # gpt-6-astra · typescript · run 20260905-140811 (repeat 1)
 
-recall **37/63** · 47 finding(s), 4 unmatched · 236930 tokens · 456s
+recall **38/63** · 47 finding(s), 3 unmatched · 236930 tokens · 456s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -46,7 +46,7 @@ recall **37/63** · 47 finding(s), 4 unmatched · 236930 tokens · 456s
 | T40 | YES | parallel: EX02 the report holding every owner's links is written with  | review-security: Sensitive report files inherit potentially world-readable pe |
 | T41 | YES | parallel: EX03 CSV rows are built by template interpolation, so a comm | review-bugs: CSV serialization and parsing corrupt delimiter-containing f; review-security: Attacker-controlled CSV fields can inject spreadsheet formul |
 | T42 | — | archiveAll builds a filename straight from the owner string, so an own |  |
-| T43 | — | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  |  |
+| T43 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot replacement fails across filesystem boundaries |
 | T44 | YES | TS-ONLY parseReport asserts a header row exists and casts every cell w | review-bugs: Parsing an exported report adds a phantom row |
 | T45 | — | the errors counter is reported by snapshot and never incremented anywh |  |
 | T46 | YES | TS-ONLY warmCache passes an async callback to forEach, which ignores t | review-concurrency: Cache warming discards its asynchronous task promises |
@@ -71,5 +71,4 @@ recall **37/63** · 47 finding(s), 4 unmatched · 236930 tokens · 456s
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) src/main.ts:29 — The request handler cannot obtain any valid sessions
 - (medium) src/cache.ts:46 — A zero-capacity cache still stores an entry
-- (medium) src/export.ts:45 — Snapshot replacement fails across filesystem boundaries
 - (medium) src/worker.ts:41 — The reachability probe succeeds without checking the target

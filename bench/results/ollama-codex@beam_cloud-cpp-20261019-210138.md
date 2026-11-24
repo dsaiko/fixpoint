@@ -1,6 +1,6 @@
 # ollama-codex@beam:cloud · cpp · run 20261019-210138 (repeat 2)
 
-recall **49/64** · 88 finding(s), 11 unmatched · 2198918 tokens · 189s
+recall **50/64** · 88 finding(s), 10 unmatched · 2198918 tokens · 189s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -24,7 +24,7 @@ recall **49/64** · 88 finding(s), 11 unmatched · 2198918 tokens · 189s
 | P18 | YES | parallel: S02 session tokens come from std::rand, never seeded, writte | review-security: Session tokens are generated with std::rand |
 | P19 | YES | parallel: S03 every issued session token is printed in cleartext | review-security: Issued session tokens are logged in plaintext |
 | P20 | YES | parallel: S04 verify never looks at expires_at, so a token works forev | review-bugs: verify does not honor session expiry; review-security: verify() does not check session expiration |
-| P21 | — | parallel: S07 the admin check is always true, so require_admin rejects |  |
+| P21 | YES | parallel: S07 the admin check is always true, so require_admin rejects | review-security: require_admin() always returns false |
 | P22 | YES | parallel: S05 passwords are hashed with a djb2 accumulator: unsalted,  | review-security: Password hashing uses a weak, non-collision-resistant hash |
 | P23 | YES | CPP-ONLY bearer_token strcpy's an attacker-controlled header into a 64 | review-bugs: bearer_token can overflow or dereference null; review-security: bearer_token overflows a fixed stack buffer and dereferences |
 | P24 | — | CPP-ONLY (parallel: S06) strchr returns nullptr when the header has no |  |
@@ -74,7 +74,6 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (high) export.cpp:116 — report reads the wrong file name
 - (medium) linkd.h:38 — quotas exposes a mutable store reference
 - (high) store.cpp:10 — Store maps are accessed concurrently without synchronization
-- (high) auth.cpp:49 — require_admin() always returns false
 - (low) cache.cpp:30 — peek() reports expired entries as cached
 - (medium) config.cpp:20 — LINKD_TIMEOUT_MS (milliseconds) is treated as seconds
 - (high) store.cpp:65 — page() computes an out-of-bounds end index

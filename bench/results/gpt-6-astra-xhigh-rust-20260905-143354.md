@@ -1,6 +1,6 @@
 # gpt-6-astra-xhigh · rust · run 20260905-143354 (repeat 1)
 
-recall **35/64** · 50 finding(s), 11 unmatched · 370423 tokens · 590s
+recall **35/64** · 50 finding(s), 10 unmatched · 370423 tokens · 590s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -44,7 +44,7 @@ recall **35/64** · 50 finding(s), 11 unmatched · 370423 tokens · 590s
 | RE02 | — | parallel: EX02 the export holding every owner's links is written with  |  |
 | RE03 | YES | parallel: EX03 CSV rows are built with format!, so a comma or quote in | review-bugs: CSV fields are written without escaping |
 | RE04 | — | archive_all builds a filename straight from the owner string, so an ow |  |
-| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot success does not provide the promised durability; review-concurrency: Concurrent snapshots share and truncate one temporary file |
+| RE05 | YES | parallel: EX06/EX07 the snapshot temp file has one fixed name in /tmp  | review-bugs: Snapshot installation failures are ignored; review-bugs: Snapshot success does not provide the promised durability |
 | RE06 | — | parallel: C21 the read error carries the server's filesystem path back |  |
 | RW01 | YES | RUST-ONLY (parallel: X01) add_resolved does load-then-store instead of | review-concurrency: Resolved counter increments lose concurrent updates |
 | RW02 | YES | the janitor checks for stop only before a 60s sleep, so shutdown waits | review-concurrency: Dropping the janitor handle leaves its thread running |
@@ -78,6 +78,5 @@ Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/cache.rs:60 — Updating a full cache can remove an unrelated entry
 - (medium) src/cache.rs:86 — Cache warming skips expired entries
 - (medium) src/export.rs:36 — Archive writes can fail while the function reports success
-- (medium) src/export.rs:49 — Snapshot installation failures are ignored
 - (medium) src/cache.rs:105 — Cache sweeping can delete a concurrently refreshed entry
 - (critical) src/main.rs:55 — Idle connections can exhaust threads and terminate the server
