@@ -416,3 +416,4 @@ run,task,target,model,repeat,sessions,errors,findings,matched_seeds,seeds,recall
 20261124-100912,code,csharp,ollama-direct@hy4:cloud,1,3,0,86,51,68,0.75,19,784859,120532,659712,1207,56.33,993af70a5111,0,0,0
 20261124-101719,code,cpp,ollama-direct@hy4:cloud,1,3,0,81,54,64,0.84,7,244798,108596,165120,1049,152.8,993af70a5111,0,0,0
 20261124-102438,code,python,ollama-direct@hy4:cloud,1,3,0,77,55,66,0.83,8,181753,103862,118528,967,192.57,993af70a5111,0,0,0
+20261124-103744,code,cpp,ollama-codex@glm-5.3-flash:cloud#max,1,3,0,59,43,64,0.67,4,183523,49265,136832,337,184.72,993af70a5111,0,0,0
