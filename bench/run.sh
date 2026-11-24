@@ -8,6 +8,11 @@
 # runs the bench config(s) review-only, scores each run against the manifest,
 # and appends to bench/results.csv. The generated agent file is removed on
 # exit. Methodology: bench/README.md.
+#
+# Each lens runs inside bench/sandbox.sh (config/bench-code.yaml's
+# sandbox.command): it cannot read this checkout or ~/.fixpoint, and it can write
+# nothing but its CLI's own state and scratch. That is why this script puts bench/
+# on PATH and rewrites a codex candidate's own sandbox off, below.
 set -eu
 
 MODEL=${1:?usage: bench/run.sh <model> [go|design|all|<lang>,...] [repeats]}
@@ -16,6 +21,14 @@ REPEATS=${3:-1}
 
 cd "$(dirname "$0")/.."
 CANDIDATE=config/agents/bench-candidate.yaml
+
+# config/bench-code.yaml and config/bench-design.yaml confine every lens with
+# `sandbox.command: [sandbox.sh, ...]`, a BARE name: a relative path would resolve
+# against the lens's target (the staged copy), which does not hold bench/.
+# fixpoint looks the name up on PATH, so this directory goes on it; sandbox.sh
+# takes the entry back off before it execs the agent.
+PATH=$(pwd -P)/bench:$PATH
+export PATH
 LOCK=bench/.run.lock
 
 # The bench is inherently SERIAL: one generated candidate agent file, one
@@ -224,6 +237,24 @@ else
     ollama show "$MODEL" 2>/dev/null | sed -n '1,8p' || echo "bench: WARNING: ollama show $MODEL failed" >&2
 fi
 
+# bench/sandbox.sh confines every lens (read: not the checkout, not ~/.fixpoint;
+# write: not the target, not $HOME), and sandboxes do not nest. The `--sandbox
+# read-only` a codex-harness agent carries is seatbelt (macOS) or bubblewrap
+# (Linux) around each of its shell commands; inside the wrapper that cannot start,
+# and every command a lens ran failed with `sandbox_apply: Operation not
+# permitted` (measured 2026-11-24). So the GENERATED candidate turns codex's own
+# sandbox off and the wrapper is what enforces read-only, for the bench only:
+# config/agents/*.yaml keep their `--sandbox read-only`. A claude-harness
+# candidate has no such line and is left as it is.
+if grep -q '^  - --sandbox read-only' "$CANDIDATE"; then
+    sed 's|^\(  - \)--sandbox read-only.*|\1--sandbox danger-full-access # bench/run.sh: the wrapper, bench/sandbox.sh, enforces read-only now; codex'"'"'s own sandbox cannot nest inside it|' \
+        "$CANDIDATE" >"$CANDIDATE.tmp" && mv "$CANDIDATE.tmp" "$CANDIDATE"
+    grep -q '^  - --sandbox danger-full-access' "$CANDIDATE" || {
+        echo "bench: could not switch the codex sandbox off in $CANDIDATE" >&2
+        exit 2
+    }
+fi
+
 make build >/dev/null
 
 run_task() {
@@ -262,8 +293,10 @@ run_task() {
     # answer key, and `.fixpoint/` holds every earlier model's findings. hy4 read
     # both and scored go 53/56 (2026-11-23); two glm-5.3-flash rows of 2026-10-28
     # had read their manifests too. A fresh directory per run has nothing above
-    # the target and does not name the repository in its path; score.py's
-    # key_reads() refuses a row whose lens reached the key anyway.
+    # the target and does not name the repository in its path. bench/sandbox.sh,
+    # which every lens runs inside, then makes the checkout unreadable rather than
+    # merely absent from the path; score.py's key_reads() refuses a row whose
+    # lens reached the key anyway.
     # `pwd -P`: macOS mktemp answers under /var, a symlink to /private/var, and
     # fixpoint refuses a -target with a symlink in any component.
     #

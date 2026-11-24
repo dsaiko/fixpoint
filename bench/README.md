@@ -48,22 +48,66 @@ disqualifies regardless of recall.
 
 ### Isolation: the reviewer must not see the answer key
 
-A lens can read anything its user can; the read-only sandbox confines writes.
-Until 2026-11-23 a lens reviewed `bench/testdata/target-<x>` in place, two
-directories below its own `manifest-<x>.yaml`, and three rows were measured
-by models that read it (hy4 scored go 53/56 that way). So `run.sh` now stages
-every run's target in a fresh directory outside the repository, from git's own
-file list (ignored build output stays behind), and `score.py` writes no row
-when any lens's tool call mentions the checkout, `bench/`, `.fixpoint`, a
-manifest or the scorer (`key_reads()`, tested by `--leak-selftest` and
-end to end in `run_test.sh`).
+A lens can read anything its user can; its read-only sandbox confines writes,
+not reads. Until 2026-11-23 a lens reviewed `bench/testdata/target-<x>` in
+place, two directories below its own `manifest-<x>.yaml`, and three rows were
+measured by models that read it (hy4 scored go 53/56 that way). Two layers
+guard against that now.
 
-That check is evidence, not a boundary. It cannot see a path the shell only
-forms by expansion, and it cannot see the claude-harness routes at all: their
-raw stream holds one result envelope and no tool calls, so `score.py` prints a
-warning and scores those sessions on trust. Confining the lens with
-`sandbox.command` is the fix that would hold. A record-breaking cell is
-suspect until its sessions have been read.
+**Staging.** `run.sh` copies every run's target to a fresh directory outside the
+repository, from git's own file list (ignored build output stays behind), so
+nothing sits above the target and its path does not name the repository.
+
+**A filesystem boundary.** `config/bench-code.yaml` and `config/bench-design.yaml`
+set `sandbox.command`, which launches every lens through `bench/sandbox.sh
+<target> <ro|rw> -- <agent argv>` (macOS: `sandbox-exec`; Linux: `bwrap`; any
+other system, or a missing tool, refuses to run the agent at all). Inside it:
+
+- the repository checkout (the directory holding `bench/`) and `~/.fixpoint`
+  do not exist for the lens: not by `cat`, `ls`, `find` or a glob. That closes
+  what the log check below cannot see;
+- it can write only the target (`rw` mode only; the bench runs `ro`), scratch
+  directories, `/dev/null` and its own CLI's state (`~/.codex`, and
+  `$CLAUDE_CONFIG_DIR` or `~/.claude`). It cannot modify the code it reviews or
+  leave anything in `$HOME`;
+- it works for every harness, the claude routes included, because it confines the
+  process and not the log.
+
+What it does not do: the lens can still read the rest of `$HOME` (`~/.ssh`,
+`~/.aws`, the CLI's own credential) and use the network; the point is the answer
+key, not a hostile model. fixpoint finds the wrapper by name on `PATH` (a
+relative path would resolve against the staged target), so `run.sh` puts `bench/`
+there, and the wrapper takes the entry back off before it execs the agent.
+
+**Sandboxes do not nest.** The `--sandbox read-only` of a codex-harness agent is
+itself seatbelt (macOS) or bubblewrap (Linux) around each shell command, and
+inside the wrapper it cannot start: every command a lens ran failed with
+`sandbox_apply: Operation not permitted`. So `run.sh` rewrites it to `--sandbox
+danger-full-access` in the GENERATED candidate file only, and the wrapper is what
+enforces read-only. The shipped `config/agents/*.yaml` are untouched, and a
+claude-harness candidate has no such line. NOTE: fixpoint's agent validation
+refuses `can_edit: false` together with `--sandbox danger-full-access`
+(`internal/config/config.go`, the `permissionBypassFlag` check in `Validate`), and
+does not yet know that `sandbox.command` is what enforces read-only. Until it does,
+a codex-harness candidate stops at validation, before any session: it fails
+closed, it does not run unconfined. The claude-harness routes are not affected.
+
+**What was verified.** On macOS: `bench/sandbox_test.sh` runs real
+`sandbox-exec` probes (a glob and `find` cannot reach the manifest; a `ro` target,
+`$HOME` and the checkout cannot be written; the target can be read), and a codex
+session through the wrapper read its target and was denied the checkout and
+`$HOME`. On Linux nothing beyond the assembly of `bwrap`'s arguments is tested.
+**The `bwrap` branch has never been run.** It is a first draft written from
+bwrap's documentation and one measured fact (`--tmpfs <repo>` hides the checkout
+on the bench host); check a real run there before trusting a Linux row.
+
+**The log check remains as evidence**, not as the boundary: `score.py` writes no
+row when any lens's tool call mentions the checkout, `bench/`, `.fixpoint`, a
+manifest or the scorer (`key_reads()`, tested by `--leak-selftest` and end to end
+in `run_test.sh`). It cannot see a path formed by shell expansion, and the
+claude-harness routes' raw stream holds one result envelope and no tool calls, so
+`score.py` prints a warning and scores those sessions on trust; the wrapper is
+what covers them. A record-breaking cell is still worth a look at its sessions.
 
 ### The calibration, measured 2026-08-20
 
