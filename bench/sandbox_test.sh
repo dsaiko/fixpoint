@@ -104,13 +104,15 @@ t cat_key cat "$REPO/bench/manifest-go.yaml"
 t cat_glob sh -c 'cat "$REPO"/bench/manifest-*.yaml'
 t cat_deep_glob sh -c 'cat "$REPO"/*/manifest-*.yaml "$REPO"/.fixpoint/*/*.json'
 t find_key sh -c 'find "$REPO" -name "manifest-*" | grep .'
-t ls_repo ls "$REPO"
+# A listing, not just ls: macOS refuses it, but a tmpfs mask on Linux is listable and
+# EMPTY, so what must hold on both is that no entry of the real directory shows.
+t ls_repo sh -c 'ls -A "$REPO" | grep .'
 # The checkout through a process that stands in it (the test starts one, as
 # fixpoint's own cwd is the checkout): reachable as /proc/<pid>/cwd unless the
 # sandbox has its own pid namespace and proc.
 t proc_any_cwd sh -c 'cat /proc/[0-9]*/cwd/bench/manifest-go.yaml 2>/dev/null | grep .'
 t cat_fixpoint_home cat "$HOME/.fixpoint/old.json"
-t ls_fixpoint_home ls "$HOME/.fixpoint"
+t ls_fixpoint_home sh -c 'ls -A "$HOME/.fixpoint" | grep .'
 t cat_real_fixpoint sh -c 'cat "$REALFP"/* 2>/dev/null | grep .'
 t read_target cat "$TARGET/a.txt"
 td write_target sh -c 'echo x >"$TARGET/new.txt"'
@@ -249,7 +251,7 @@ expect "the refusal names the OS" "$base/c2.log" 'unsupported OS'
 
 # ---- (c2) the wrapper's own plumbing, with a stub agent: status, signals, stdin ----
 # The agent is a CHILD (so the scratch directory can be removed afterwards): its
-# exit status, its stdin and a TERM must still reach it and come back.
+# exit status and its stdin must reach it and come back, and a TERM must end it.
 if [ "$os" = Darwin ] || [ "$os" = Linux ]; then
     ok_sandbox=0
     if [ "$os" = Darwin ]; then ok_sandbox=1; fi
@@ -271,8 +273,16 @@ EOF
         [ "$got" = 7 ] || fail "the agent's exit status 7 came back as $got"
         out=$(printf 'PROMPT-TEXT' | (cd "$target" && penv "$tree/bench/sandbox.sh" "$target" ro -- plumb stdin))
         [ "$out" = PROMPT-TEXT ] || fail "stdin did not reach the agent (got '$out')"
-        # TERM to the wrapper reaches the agent, the wrapper exits, and S is gone.
+        # TERM to the wrapper: it exits non-zero, the agent process is gone within a
+        # few seconds, and S is removed. That is what holds on BOTH platforms. Whether
+        # the agent also gets to run its own TERM handler differs: on macOS the wrapper
+        # forwards it; on Linux bwrap does not forward signals and, with --die-with-parent
+        # in a new pid namespace, kills the agent outright when it goes. fixpoint itself
+        # only ever stops an agent with SIGKILL to the process group (internal/agent
+        # KillProcessGroup), which no handler sees on either platform.
+        agents_running() { ps -eo args | grep -c '[p]lumb term' || true; }
         before=$(scratch_count)
+        running_before=$(agents_running)
         (cd "$target" && exec env HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- plumb term) >"$base/term.out" 2>&1 &
         wpid=$!
         n=0
@@ -281,10 +291,21 @@ EOF
             n=$((n + 1))
         done
         kill -TERM "$wpid" 2>/dev/null || true
-        wait "$wpid" 2>/dev/null || true
-        after=$(scratch_count)
-        [ "$after" = "$before" ] || fail "a terminated wrapper left its scratch directory behind"
-        grep -q got-term "$base/term.out" || fail "TERM did not reach the agent"
+        set +e
+        wait "$wpid" 2>/dev/null
+        got=$?
+        set -e
+        [ "$got" != 0 ] || fail "a wrapper terminated by TERM exited 0"
+        n=0
+        while [ "$n" -lt 50 ] && { [ "$(agents_running)" -gt "$running_before" ] || [ "$(scratch_count)" -gt "$before" ]; }; do
+            sleep 0.1
+            n=$((n + 1))
+        done
+        [ "$(agents_running)" -le "$running_before" ] || fail "the agent was still running 5s after its wrapper was terminated"
+        [ "$(scratch_count)" -le "$before" ] || fail "a terminated wrapper left its scratch directory behind"
+        if [ "$os" = Darwin ]; then
+            grep -q got-term "$base/term.out" || fail "TERM did not reach the agent"
+        fi
     else
         echo "bench/sandbox_test.sh: no working sandbox here; the status, stdin and signal checks were skipped." >&2
     fi
@@ -363,7 +384,7 @@ if [ "$can_confine" = 1 ]; then
     if [ "$os" = Linux ]; then
         expect "control: a decoy's /proc/<pid>/cwd reaches the checkout unconfined" "$base/control.out" '^proc_any_cwd=ok$'
     fi
-    for k in cat_key cat_glob find_key cat_fixpoint_home cat_real_fixpoint read_target cat_codex_sessions cat_codex_config cat_claude_transcript cat_claude_session read_claude_settings; do
+    for k in cat_key cat_glob find_key ls_repo ls_fixpoint_home cat_fixpoint_home cat_real_fixpoint read_target cat_codex_sessions cat_codex_config cat_claude_transcript cat_claude_session read_claude_settings; do
         expect "control: $k works unconfined, so its denial below means something" "$base/control.out" "^$k=ok\$"
     done
     snap >"$base/before.snap"
@@ -381,10 +402,10 @@ if [ "$can_confine" = 1 ]; then
         expect "$who: a glob cannot reach the manifest" "$o" '^cat_glob=denied$'
         expect "$who: a deeper glob cannot reach the manifest or the findings" "$o" '^cat_deep_glob=denied$'
         expect "$who: find does not see the manifest" "$o" '^find_key=denied$'
-        expect "$who: the checkout cannot be listed" "$o" '^ls_repo=denied$'
+        expect "$who: the checkout lists no entries" "$o" '^ls_repo=denied$'
         expect "$who: no /proc/<pid>/cwd leads to the checkout" "$o" '^proc_any_cwd=denied$'
         expect "$who: ~/.fixpoint is unreadable" "$o" '^cat_fixpoint_home=denied$'
-        expect "$who: ~/.fixpoint cannot be listed" "$o" '^ls_fixpoint_home=denied$'
+        expect "$who: ~/.fixpoint lists no entries" "$o" '^ls_fixpoint_home=denied$'
         expect "$who: a symlinked ~/.fixpoint hides its real directory" "$o" '^cat_real_fixpoint=denied$'
         expect "$who: the agent's PATH does not name the checkout" "$o" '^path_clean=ok$'
         expect "$who: the target is readable" "$o" '^read_target=ok$'
