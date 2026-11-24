@@ -132,6 +132,21 @@ func (c *Config) applySandbox() {
 // now sees the wrapper as argv[0]: whether it exists, and whether the reviewed
 // material could have supplied it. What is left here is the wrapper's own shape.
 func (c *Config) validateSandbox() error {
+	// -agents-sandboxed claims a wrapper confines the agents; a run without one has
+	// nothing behind the claim, and the refusal it lifts would then be lifted for
+	// no reason. Fail closed, whichever way the two came apart.
+	if c.Loop.AgentsSandboxed {
+		if !c.Sandbox.Enabled() {
+			return errors.New("-agents-sandboxed claims that sandbox.command confines the agents, but this configuration sets no sandbox.command; drop the flag, or configure the wrapper that enforces read-only")
+		}
+		// The target of a pr run is the pull request's content, untrusted by
+		// definition, and fixpoint cannot check that the wrapper honors {{target_mode}}.
+		// Lifting the read-only check for that material would stake it on a wrapper
+		// nobody verified, so it is refused rather than allowed with a warning.
+		if c.Target.Mode == ModePR {
+			return errors.New("-agents-sandboxed is refused in mode pr: the target is the pull request's content, and the CLI's own read-only sandbox is the barrier fixpoint can verify; keep it on, or review the branch in directory or git-diff mode")
+		}
+	}
 	if !c.Sandbox.Enabled() {
 		return nil
 	}

@@ -357,3 +357,135 @@ func TestSandboxDropsAWholeTokenWhenItsPlaceholderIsEmpty(t *testing.T) {
 		t.Errorf("wrapper = %v, want the --bind token dropped whole and the rest intact", got)
 	}
 }
+
+// sandboxedConfig is validConfig with a wrapper in front of every agent and a
+// reviewer whose own argv switches the CLI's sandbox off, the way a codex bench
+// candidate has to run inside a wrapper (sandboxes do not nest).
+func sandboxedConfig(t *testing.T) *Config {
+	t.Helper()
+	c := validConfig(t)
+	rev := c.Agents["rev"]
+	rev.Command = []string{"echo", "exec", "--sandbox", "danger-full-access"}
+	c.Agents["rev"] = rev
+	c.Sandbox = Sandbox{Command: []string{"echo", "{{target}}", "{{target_mode}}", "--"}}
+	c.applySandbox()
+	return c
+}
+
+// Without the flag nothing changes: a wrapper is not, by itself, a reason to
+// believe a reviewer whose argv turns its own sandbox off is still read-only.
+func TestAgentsSandboxedIsRequiredToLiftTheBypassRefusal(t *testing.T) {
+	c := sandboxedConfig(t)
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "lets the agent write files") {
+		t.Fatalf("a read-only reviewer disabling its own sandbox was accepted without -agents-sandboxed: %v", err)
+	}
+}
+
+func TestAgentsSandboxedWithAWrapperLiftsOnlyThatRefusal(t *testing.T) {
+	c := sandboxedConfig(t)
+	c.Loop.AgentsSandboxed = true
+	if err := c.Validate(); err != nil {
+		t.Fatalf("flag + wrapper still refused: %v", err)
+	}
+	// The refusal is lifted for the same argv in every spelling it guards.
+	for _, spelled := range [][]string{
+		{"echo", "exec", "--dangerously-bypass-approvals-and-sandbox"},
+		{"echo", "exec", "-c", "sandbox_mode=danger-full-access"},
+		{"echo", "exec", "--yolo"},
+	} {
+		c := sandboxedConfig(t)
+		c.Loop.AgentsSandboxed = true
+		a := c.Agents["rev"]
+		a.Command = spelled
+		c.Agents["rev"] = a
+		c.applySandbox()
+		if err := c.Validate(); err != nil {
+			t.Errorf("%v: refused although the wrapper is asserted: %v", spelled, err)
+		}
+	}
+}
+
+// Nothing else is relaxed: the flag lifts the one refusal and every other check
+// on the composed argv still runs.
+func TestAgentsSandboxedRelaxesNothingElse(t *testing.T) {
+	t.Run("a missing agent binary", func(t *testing.T) {
+		c := sandboxedConfig(t)
+		c.Loop.AgentsSandboxed = true
+		a := c.Agents["rev"]
+		a.Command = []string{"no-such-binary-for-fixpoint-test", "--sandbox", "danger-full-access"}
+		c.Agents["rev"] = a
+		c.applySandbox()
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "not found on PATH") {
+			t.Fatalf("err = %v, want the missing binary refused", err)
+		}
+	})
+	t.Run("a reviewer that can edit", func(t *testing.T) {
+		c := sandboxedConfig(t)
+		c.Loop.AgentsSandboxed = true
+		a := c.Agents["rev"]
+		a.CanEdit = true
+		c.Agents["rev"] = a
+		c.applySandbox()
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must be read-only") {
+			t.Fatalf("err = %v, want a can_edit reviewer refused", err)
+		}
+	})
+}
+
+// The flag claims a sandbox: with none configured there is nothing behind the
+// claim, and it must be an error rather than a silently lifted check.
+func TestAgentsSandboxedWithoutAWrapperIsAnError(t *testing.T) {
+	c := sandboxedConfig(t)
+	c.Loop.AgentsSandboxed = true
+	c.Sandbox = Sandbox{}
+	for name, a := range c.Agents {
+		a.Sandbox = nil
+		c.Agents[name] = a
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "sets no sandbox.command") {
+		t.Fatalf("err = %v, want the flag refused for claiming a sandbox the config does not have", err)
+	}
+}
+
+// The target of a pr run is untrusted content and fixpoint cannot verify that the
+// wrapper honors {{target_mode}}, so the barrier it can verify stays.
+func TestAgentsSandboxedIsRefusedInPRMode(t *testing.T) {
+	c := sandboxedConfig(t)
+	c.Loop.AgentsSandboxed = true
+	c.Target.Mode = ModePR
+	c.Target.PR = 1
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "refused in mode pr") {
+		t.Fatalf("err = %v, want -agents-sandboxed refused in pr mode", err)
+	}
+}
+
+// An agent that can edit is the coder: its command was never subject to the
+// bypass refusal, and the flag does not change that either way.
+func TestAgentsSandboxedDoesNotChangeAnEditingAgent(t *testing.T) {
+	for _, flag := range []bool{false, true} {
+		c := sandboxedConfig(t)
+		// The wrapper is in front of the reviewer only to keep this test about the
+		// coder: the reviewer goes back to an ordinary read-only command.
+		rev := c.Agents["rev"]
+		rev.Command = []string{"echo"}
+		c.Agents["rev"] = rev
+		coder := c.Agents["coder"]
+		coder.Command = []string{"echo", "exec", "--dangerously-bypass-approvals-and-sandbox"}
+		c.Agents["coder"] = coder
+		c.applySandbox()
+		c.Loop.AgentsSandboxed = flag
+		if err := c.Validate(); err != nil {
+			t.Errorf("flag=%v: the coder's bypass flag was refused: %v", flag, err)
+		}
+		// And the coder still gets the wrapper in rw mode, the reviewer in ro.
+		if got := c.Agents["coder"].Argv()[2]; got != "rw" {
+			t.Errorf("flag=%v: coder wrapper mode = %q, want rw", flag, got)
+		}
+		if got := c.Agents["rev"].Argv()[2]; got != "ro" {
+			t.Errorf("flag=%v: reviewer wrapper mode = %q, want ro", flag, got)
+		}
+	}
+}

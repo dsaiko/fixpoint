@@ -34,7 +34,7 @@ Read this before pointing the tool at code you did not write.
   take only the second flag.
 - **Trust is asserted on the command line only, never in a config file.**
   fixpoint refuses to load a config that sets `loop.trusted_target`,
-  `loop.trusted_bundle` or `loop.allow_untrusted_fix`. Bundles are shadowable and `<project>/config` is
+  `loop.trusted_bundle`, `loop.allow_untrusted_fix` or `loop.agents_sandboxed`. Bundles are shadowable and `<project>/config` is
   searched *first*, so a config key would let the repository under review declare
   itself trustworthy — one line in a hostile repo's own config, authorizing both
   the execution of the agent definitions it ships and the write-capable coder,
@@ -215,6 +215,43 @@ One deliberate exemption is worth knowing about: an argument naming the target
 supplied, because it is the checkout the run is about rather than a file the
 branch can write. Anything *deeper* inside the target still does, and is still
 refused in `pr` mode.
+
+### Agents that switch their own sandbox off: `-agents-sandboxed`
+
+Sandboxes do not nest. A CLI that confines its own shell commands — codex's
+`--sandbox read-only` is seatbelt on macOS and bubblewrap on Linux — cannot start
+that confinement inside a wrapper: on both platforms every command it runs fails.
+The only way to run such an agent inside `sandbox.command` is to switch its own
+sandbox off (`--sandbox danger-full-access`) and let the wrapper be what keeps it
+read-only.
+
+fixpoint refuses that by default, because for a `can_edit: false` agent the
+command's own argv is the one barrier it can read (see [agents](agents.md)).
+`-agents-sandboxed` lifts that one refusal for an invocation: you are asserting
+that `sandbox.command` enforces read-only for the agents it wraps — and fixpoint
+passes it `{{target_mode}}` = `ro` for exactly these. Nothing else is relaxed.
+The flag needs a `sandbox.command` to point at, and without one the load fails
+with a message that says so, rather than quietly lifting a check for a sandbox
+that is not there. Every other check on the composed argv still runs: the binaries
+must resolve, a reviewer may not declare `can_edit: true`, and the pr-mode rules
+about a command that resolves inside the target are unchanged.
+
+It is a flag, like `-trusted-target`, and for the same reason: a config that could
+declare its own agents sandboxed would be one line in the repository under review
+that removes the write barrier from the reviewers reading it, on the strength of a
+wrapper the same repository chose. A config setting `loop.agents_sandboxed`, in the
+task config or in any base it extends, fails to load.
+
+**It is refused in `pr` mode.** The target there is the pull request's content, the
+one input fixpoint treats as hostile, and it cannot check that your wrapper honors
+`{{target_mode}}`. The CLI's own read-only sandbox is the barrier it can verify, so
+it stays on; review the branch in directory or git-diff mode if you need the
+confinement a wrapper gives. The flag appears in the run's applied overrides as
+`agents_sandboxed=true`, beside the trust flags.
+
+The bench is the one shipped user: `bench/run.sh` passes it, with
+`bench/sandbox.sh` as the wrapper, so a codex candidate can run with the answer key
+unreadable.
 
 ### Trust
 
