@@ -60,10 +60,15 @@ func TestShippedBenchConfigsReachTheWrapperWithTheStagedTargetReadOnly(t *testin
 			bin := t.TempDir()
 			rec := filepath.Join(t.TempDir(), "calls")
 			// One printf per call: the lenses run concurrently, and a loop of echoes
-			// from several of them interleaves.
+			// from several of them interleaves. The prompt is read first and handed
+			// on, so each call records how long it was: a lens carries a prompt of
+			// kilobytes, fixpoint's own agent ping a few words.
+			scratch := t.TempDir()
 			wrapper := "#!/bin/sh\n" +
-				"printf 'CALL %s\\n' \"$*\" >>'" + rec + "'\n" +
-				"shift 3\nexec \"$@\"\n"
+				"in=$(mktemp '" + scratch + "/in.XXXXXX')\n" +
+				"cat >\"$in\"\n" +
+				"printf 'CALL %s %s\\n' \"$(wc -c <\"$in\" | tr -d ' ')\" \"$*\" >>'" + rec + "'\n" +
+				"shift 3\nexec \"$@\" <\"$in\"\n"
 			if err := os.WriteFile(filepath.Join(bin, "sandbox.sh"), []byte(wrapper), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -77,16 +82,30 @@ func TestShippedBenchConfigsReachTheWrapperWithTheStagedTargetReadOnly(t *testin
 			if err != nil {
 				t.Fatalf("no lens reached the wrapper:\n%s", buf.String())
 			}
-			calls := strings.Split(strings.TrimSpace(string(data)), "\n")
-			// Every lens, plus fixpoint's own agent ping before the round.
-			if len(calls) < tc.lenses {
-				t.Fatalf("%d call(s) reached the wrapper, want at least %d:\n%s\n%s", len(calls), tc.lenses, data, buf.String())
-			}
-			want := "CALL " + strings.Join([]string{f.repo, "ro", "--", f.script, "--sandbox", "danger-full-access"}, " ")
-			for i, c := range calls {
-				if c != want {
-					t.Errorf("call %d reached the wrapper as\n  %s\nwant\n  %s", i+1, c, want)
+			want := strings.Join([]string{f.repo, "ro", "--", f.script, "--sandbox", "danger-full-access"}, " ")
+			lenses, pings := 0, 0
+			for i, c := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				var size int
+				if _, err := fmt.Sscanf(c, "CALL %d", &size); err != nil {
+					t.Fatalf("call %d is not a recorded call: %q", i+1, c)
 				}
+				args := strings.SplitN(c, " ", 3)[2]
+				if args != want {
+					t.Errorf("call %d reached the wrapper as\n  %s\nwant\n  %s", i+1, args, want)
+				}
+				if size >= 1000 {
+					lenses++
+				} else {
+					pings++
+				}
+			}
+			// Exactly one wrapped call per lens: a lens that bypassed the wrapper
+			// would be missing here, and the agent ping must not stand in for it.
+			if lenses != tc.lenses {
+				t.Errorf("%d lens call(s) reached the wrapper, want exactly %d (plus at most one ping, saw %d):\n%s\n%s", lenses, tc.lenses, pings, data, buf.String())
+			}
+			if pings > 1 {
+				t.Errorf("%d ping calls, want at most 1", pings)
 			}
 		})
 	}
