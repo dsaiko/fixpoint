@@ -16,6 +16,8 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/tree/bench" "$tmp/tree/config/agents" "$tmp/bin"
+# Shipped agents run.sh copies as they are, for the codex-sandbox rewrite below.
+cp "$here/../config/agents/gpt-6.2-sol.yaml" "$here/../config/agents/claude-opus.yaml" "$tmp/tree/config/agents/"
 cp "$here/run.sh" "$here/agent-template-vllm.yaml" "$here/agent-template-ollama-codex.yaml" \
     "$here/agent-template-ollama-direct.yaml" "$here/agent-template-openrouter-codex.yaml" "$tmp/tree/bench/"
 
@@ -29,6 +31,7 @@ cat >"$tmp/bin/make" <<'EOF'
 {
     echo "AUTH=${ANTHROPIC_AUTH_TOKEN-<unset>}"
     echo "APIKEY=${ANTHROPIC_API_KEY-<unset>}"
+    echo "PATH=$PATH"
 } >"$STUB_OUT/env"
 cp config/agents/bench-candidate.yaml "$STUB_OUT/candidate.yaml"
 exit 3
@@ -148,6 +151,29 @@ if run 3 "launch without suffix"; then
     expect "launch candidate keeps xhigh" "$tmp/out/candidate.yaml" '^effort: xhigh '
 fi
 
+# (h2) THE LENS RUNS INSIDE bench/sandbox.sh, and sandboxes do not nest: a codex
+# candidate's own `--sandbox read-only` cannot start there, so the GENERATED file
+# turns it off and the wrapper enforces read-only. The template and the shipped
+# agent files keep read-only; only the candidate is rewritten.
+MODEL='ollama-direct@glm-5.3-flash:cloud'
+if run 3 "codex sandbox rewrite, template" OLLAMA_API_KEY=k; then
+    expect "template candidate has codex's own sandbox off" "$tmp/out/candidate.yaml" '^  - --sandbox danger-full-access '
+    expect "template candidate says the wrapper enforces read-only" "$tmp/out/candidate.yaml" 'bench/sandbox\.sh'
+    expect "template candidate keeps no read-only line" "$tmp/out/candidate.yaml" '^  - --sandbox read-only' !
+    expect "bench/ is on PATH for the wrapper, first" "$tmp/out/env" "^PATH=$(cd "$tmp/tree" && pwd -P)/bench:"
+fi
+expect "the template itself still says read-only" "$here/agent-template-ollama-direct.yaml" '^  - --sandbox read-only$'
+MODEL=gpt-6.2-sol
+if run 3 "codex sandbox rewrite, shipped agent"; then
+    expect "shipped agent's candidate has codex's own sandbox off" "$tmp/out/candidate.yaml" '^  - --sandbox danger-full-access '
+    expect "shipped agent's candidate keeps no read-only line" "$tmp/out/candidate.yaml" '^  - --sandbox read-only' !
+    expect "the rewrite touches the candidate only" "$tmp/tree/config/agents/gpt-6.2-sol.yaml" '^  - --sandbox read-only '
+fi
+MODEL=claude-opus-5-5
+if run 3 "claude harness"; then
+    expect "a claude candidate is not given a codex flag" "$tmp/out/candidate.yaml" 'sandbox' !
+fi
+
 # (i) An effort no route accepts is refused.
 MODEL='ollama-codex@glm-5.3-flash:cloud#ultra'
 run 2 "unknown effort" || true
@@ -186,6 +212,7 @@ cat >"$tmp/bin/make" <<'EOF'
 {
     echo "AUTH=${ANTHROPIC_AUTH_TOKEN-<unset>}"
     echo "APIKEY=${ANTHROPIC_API_KEY-<unset>}"
+    echo "PATH=$PATH"
 } >"$STUB_OUT/env"
 cp config/agents/bench-candidate.yaml "$STUB_OUT/candidate.yaml"
 exit 3

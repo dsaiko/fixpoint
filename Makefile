@@ -208,6 +208,7 @@ bench-check:
 	python3 bench/score.py --matcher-selftest
 	python3 bench/report.py --selftest
 	sh bench/run_test.sh
+	sh bench/sandbox_test.sh
 	cd bench/testdata/target-go && go build ./...
 	# --offline and an out-of-tree CARGO_TARGET_DIR: the target has no
 	# dependencies, and a target/ directory inside the tree would be handed to a
