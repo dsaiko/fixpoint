@@ -251,7 +251,12 @@ confinement a wrapper gives. The flag appears in the run's applied overrides as
 
 The bench is the one shipped user: `bench/run.sh` passes it, with
 `bench/sandbox.sh` as the wrapper, so a codex candidate can run with the answer key
-unreadable.
+unreadable. That wrapper is a worked example of the "mount what the CLI needs"
+shape, and of its limits: it hides the checkout and gives codex a fresh state
+directory, but on macOS the rest of `$HOME` stays readable, a claude lens keeps the
+operator's real config directory (writable `.claude.json`: a user-scope MCP server
+planted there runs the next time you start `claude`), and the network is open on both
+platforms. `bench/README.md` lists exactly what a lens can still reach.
 
 ### Trust
 
