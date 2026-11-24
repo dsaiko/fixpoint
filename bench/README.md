@@ -81,6 +81,7 @@ what a lens is GIVEN, not everything minus two directories.
 | the staged target's parent | not writable, so it cannot be renamed away | not the host's: `/tmp` is private, so renaming the parent renames nothing |
 | `$HOME` | **readable** (`~/.ssh`, `~/.aws`, other repositories) | replaced by an empty tmpfs, with the toolchain directories (`~/.nvm`, `~/.local`, ...) and the directory the CLI is installed in bound back read-only |
 | processes | shared | own pid and IPC namespaces (`/proc/<pid>/cwd` of fixpoint is not there) and its own session (no controlling terminal to inject keystrokes into) |
+| the operator's terminal (TIOCSTI) | the profile denies the ioctl on `/dev/tty*`, `/dev/pty*` and `/dev/console`, so `/dev/tty` and an inherited tty fd both fail (no `setsid`: fixpoint kills the process group on a timeout and macOS has no die-with-parent, so a session of its own would leak agents) | `--new-session`: no controlling terminal |
 | other lenses' scratch directories | unreadable | not there: a `TMPDIR` other than `/tmp` is masked, and `/tmp` is the lens's own |
 | `/run`, user D-Bus and system sockets | reachable | masked (only systemd-resolved's directory is bound back, for DNS) |
 | network | open | open |
@@ -102,7 +103,8 @@ state at all, and CLI state is **per invocation**:
   `CLAUDE_CONFIG_DIR` is "Not logged in" on macOS (the login is a Keychain item
   named from the directory's path; measured 2026-11-24). Inside it the transcripts
   and history (`projects/`, `sessions/`, `file-history/`, `session-env/`,
-  `shell-snapshots/`, `todos/`, `backups/`, `history.jsonl`) cannot be read, and
+  `shell-snapshots/`, `todos/`, `backups/`, `debug/`, `plans/`, `paste-cache/`,
+  `tasks/`, `teams/`, `usage-data/`, `image-cache/`, `history.jsonl`) cannot be read, and
   NOTHING under it can be written on macOS except `.claude.json`: not
   `settings.json`, `CLAUDE.md`, `commands/`, `skills/`, `plugins/`, hooks, and not
   `projects/` or `shell-snapshots/` either (a memory file planted there is read by the
@@ -133,6 +135,12 @@ group, which nothing can trap, so the wrapper's scratch directory (no credential
 it) is left in `TMPDIR` and a stray `bench-sandbox.*` there is that. A TERM sent to
 the wrapper itself removes it; on macOS the agent also gets the TERM, on Linux
 bwrap kills it outright.
+
+`bench/run.sh` runs the wrapper once on a throwaway directory before it sweeps, and
+stops with a non-zero status and the wrapper's own message if it does not work (no
+`bwrap` or `sandbox-exec`, or a `bwrap` that cannot create a namespace): otherwise every
+preflight ping would fail, no row would be written and the sweep would look done. A
+sweep in which no requested target produced a score exits non-zero as well.
 
 `bench/run.sh` puts `bench/` on `PATH` (fixpoint finds the wrapper by name: a
 relative path would resolve against the staged target) and the wrapper takes that
@@ -167,6 +175,19 @@ the goal above, or cost more than they protect):
   readable; the scorer's log check is what catches a read of the key there.
 - Section (a) of `bench/sandbox_test.sh` (the namespace runs) fails where `bwrap`
   cannot create a user namespace, instead of skipping.
+- A ChatGPT token refresh inside the wrapper cannot persist: codex writes a temp file
+  beside `auth.json` and renames it over, which the macOS profile (only that one path
+  is writable) and the Linux file bind both refuse. Refresh the login with a plain
+  `codex` call outside the bench before a ChatGPT-candidate sweep.
+- On macOS a lens can read the environment of same-user processes (the fixpoint
+  parent's, through process-argument queries), so a key fixpoint left out of the
+  agent's environment is still recoverable.
+- On Linux a claude candidate on a third-party route (OpenRouter, vLLM) still sees the
+  operator's Anthropic `.credentials.json`.
+- The CLI state that stays writable and shared (`.claude.json`, `auth.json` on a
+  ChatGPT route) is a channel through which colluding lenses could pass findings to
+  each other; the scorer does not see it.
+- The group SIGKILL fixpoint uses on a timeout is not covered by a test (TERM is).
 
 **Sandboxes do not nest.** The `--sandbox read-only` of a codex-harness agent is
 itself seatbelt (macOS) or bubblewrap (Linux) around each shell command, and

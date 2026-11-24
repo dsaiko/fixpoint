@@ -70,6 +70,8 @@
 #   - The agent can still read most of $HOME on macOS (~/.ssh, ~/.aws, other
 #     repositories, including other CHECKOUTS of this one, which hold the same
 #     manifests), the CLI's own credential, and use the network.
+#   - On macOS the operator's terminal is not hidden but its TIOCSTI ioctl is denied
+#     (see the profile); the Linux sandbox has a session of its own instead.
 #   - On Linux the home directory is hidden except the toolchain directories the
 #     CLI is installed in, but the network namespace is shared with the host:
 #     abstract unix sockets (an X or D-Bus abstract address) and localhost
@@ -192,6 +194,10 @@ IFS=$oldifs
 PATH=$newpath
 export PATH
 
+# The claude config directory's session and transcript state: unreadable (a macOS
+# read deny, a Linux tmpfs mask). history.jsonl is a file and is handled beside this.
+claude_unreadable="projects sessions session-env shell-snapshots todos file-history backups debug plans paste-cache tasks teams usage-data image-cache"
+
 # Which CLI, from argv[0]. An unknown binary is given no state at all.
 cli=${1##*/}
 case $cli in
@@ -208,9 +214,12 @@ agent_path=$(command -v "$1" 2>/dev/null) || agent_path=
 # file means no credential.
 codex_auth=0
 if [ "$cli" = codex ] && [ -f "$repo/bench/.sandbox-codex-auth" ]; then
-    route=
-    read -r route <"$repo/bench/.sandbox-codex-auth" || true
-    [ "$route" != chatgpt ] || codex_auth=1
+    # The WHOLE file must be exactly "chatgpt" and one newline: a second line or any
+    # trailing junk grants nothing (the "x" keeps command substitution from eating the
+    # trailing newline that is part of what is compared).
+    route=$(cat "$repo/bench/.sandbox-codex-auth"; echo x)
+    want=$(printf 'chatgpt\nx')
+    [ "$route" != "$want" ] || codex_auth=1
 fi
 
 os=$(uname -s)
@@ -237,7 +246,17 @@ esac
 S=$(mktemp -d "$tb/bench-sandbox.XXXXXX") || die "cannot create a scratch directory in '$tb'"
 # The trap is installed BEFORE the first check that can fail, or a refusal here
 # would leave the directory behind.
-cleanup() { rm -rf "$S"; }
+# A CLI can leave a descendant still writing into S when the agent itself has exited
+# (codex's plugin clone did): a few tries, a second apart, so the directory is not
+# left behind on that race.
+cleanup() {
+    n=0
+    while [ -e "$S" ] && [ "$n" -lt 5 ]; do
+        rm -rf "$S" 2>/dev/null || true
+        [ ! -e "$S" ] || sleep 1
+        n=$((n + 1))
+    done
+}
 trap cleanup EXIT
 resolved=$(phys "$S")
 [ -n "$resolved" ] || die "cannot resolve the scratch directory"
@@ -252,7 +271,12 @@ child=
 on_signal() {
     [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || true
 }
-trap on_signal TERM INT HUP
+# A signal the wrapper was sent must not be forgotten when the agent, having received
+# it, exits 0: the run was interrupted and the exit status says so (128 + the signal).
+got_signal=0
+trap 'got_signal=143; on_signal' TERM
+trap 'got_signal=130; on_signal' INT
+trap 'got_signal=129; on_signal' HUP
 
 # Where S is, from inside. On Linux it IS the sandbox's /tmp.
 case $os in
@@ -289,7 +313,7 @@ Darwin)
     #      so that no allow above can win for them.
     #
     # WRITABLE, each with its reason:
-    #   /dev/null /dev/tty /dev/dtracehelper  shells and runtimes open them
+    #   /dev/null /dev/dtracehelper           shells and runtimes open them
     #   S                                     scratch, TMPDIR, the codex state
     #   the target, rw mode only              where an editing agent writes
     #   codex: the real auth.json             so a token refresh persists, and only
@@ -322,7 +346,7 @@ Darwin)
     claude)
         prof="$prof
 (deny file-read* (subpath \"$codexdir\"))"
-        for d in projects sessions session-env shell-snapshots todos file-history backups history.jsonl; do
+        for d in $claude_unreadable history.jsonl; do
             prof="$prof
 (deny file-read* (subpath \"$claudedir/$d\"))"
         done
@@ -332,10 +356,17 @@ Darwin)
 (deny file-read* (subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\"))"
         ;;
     esac
+    # The operator's controlling terminal: without a session of its own (setsid would
+    # leak agents past fixpoint's process-group kill on timeout, and macOS has no
+    # die-with-parent) the lens inherits it, and TIOCSTI on /dev/tty or on an inherited
+    # tty fd types into the operator's shell, outside this profile. Denying the ioctl on
+    # the terminal devices stops both, the open /dev/tty and the already-inherited fd.
+    prof="$prof
+(deny file-ioctl (regex #\"^/dev/(tty|pty|console)\"))"
     prof="$prof
 (deny file-write*)
 (allow file-write*
-    (literal \"/dev/null\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\")
+    (literal \"/dev/null\") (literal \"/dev/dtracehelper\")
     (subpath \"$S\"))"
     case $cli in
     codex)
@@ -422,7 +453,7 @@ Linux)
             # by an empty tmpfs: writable for the session, never persisted, and
             # earlier transcripts are not there to read.
             set -- "$@" --ro-bind "$claudedir" "$claudedir"
-            for d in projects sessions session-env shell-snapshots todos file-history backups telemetry cache; do
+            for d in $claude_unreadable telemetry cache; do
                 mkdir -p "$claudedir/$d"
                 set -- "$@" --tmpfs "$claudedir/$d"
             done
@@ -490,4 +521,7 @@ while :; do
     wait "$child" && rc=0 || rc=$?
     kill -0 "$child" 2>/dev/null || break
 done
+if [ "$got_signal" != 0 ] && [ "$rc" = 0 ]; then
+    rc=$got_signal
+fi
 exit "$rc"
