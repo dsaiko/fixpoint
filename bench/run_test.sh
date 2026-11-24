@@ -17,7 +17,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/tree/bench" "$tmp/tree/config/agents" "$tmp/bin"
 # Shipped agents run.sh copies as they are, for the codex-sandbox rewrite below.
-cp "$here/../config/agents/gpt-6.2-sol.yaml" "$here/../config/agents/claude-opus.yaml" "$tmp/tree/config/agents/"
+cp "$here/../config/agents/gpt-6.2-sol.yaml" "$here/../config/agents/claude-opus.yaml" "$here/../config/agents/beam-ollama-direct.yaml" "$tmp/tree/config/agents/"
 cp "$here/run.sh" "$here/agent-template.yaml" "$here/agent-template-vllm.yaml" "$here/agent-template-ollama-codex.yaml" \
     "$here/agent-template-ollama-direct.yaml" "$here/agent-template-openrouter-codex.yaml" "$tmp/tree/bench/"
 
@@ -34,6 +34,7 @@ cat >"$tmp/bin/make" <<'EOF'
     echo "PATH=$PATH"
 } >"$STUB_OUT/env"
 cp config/agents/bench-candidate.yaml "$STUB_OUT/candidate.yaml"
+cp bench/.sandbox-codex-auth "$STUB_OUT/route" 2>/dev/null || echo absent >"$STUB_OUT/route"
 exit 3
 EOF
 chmod +x "$tmp/bin/curl" "$tmp/bin/make"
@@ -60,7 +61,7 @@ run() {
         fails=$((fails + 1))
         return 1
     fi
-    if [ -e "$tmp/tree/bench/.run.lock" ] || [ -e "$tmp/tree/config/agents/bench-candidate.yaml" ]; then
+    if [ -e "$tmp/tree/bench/.run.lock" ] || [ -e "$tmp/tree/config/agents/bench-candidate.yaml" ] || [ -e "$tmp/tree/bench/.sandbox-codex-auth" ]; then
         echo "FAIL $label: left the lock or the candidate behind"
         fails=$((fails + 1))
         return 1
@@ -123,6 +124,8 @@ if run 3 "direct with key" OLLAMA_API_KEY=k; then
     expect "direct candidate model is the bare tag" "$tmp/out/candidate.yaml" '^model: glm-5\.3-flash:cloud$'
     expect "direct candidate effort is the suffix" "$tmp/out/candidate.yaml" '^effort: max '
     expect "direct candidate keeps its key out of the model's shell" "$tmp/out/candidate.yaml" 'shell_environment_policy\.exclude=\["OLLAMA_API_KEY"\]'
+    # The route carries its own key: the wrapper is told NOT to hand over ~/.codex/auth.json.
+    expect "direct candidate is given no ChatGPT login" "$tmp/out/route" '^none$'
     expect "direct candidate ignores the user's codex config" "$tmp/out/candidate.yaml" '^  - --ignore-user-config '
     expect "direct candidate switches the account's apps off" "$tmp/out/candidate.yaml" '^  - -c features\.apps=false '
 fi
@@ -132,6 +135,7 @@ fi
 MODEL='codex@google/gemini-3.7-flash'
 if run 3 "openrouter codex" OPENROUTER_API_KEY=k; then
     expect "openrouter candidate keeps its key out of the model's shell" "$tmp/out/candidate.yaml" 'shell_environment_policy\.exclude=\["OPENROUTER_API_KEY"\]'
+    expect "openrouter candidate is given no ChatGPT login" "$tmp/out/route" '^none$'
     expect "openrouter candidate ignores the user's codex config" "$tmp/out/candidate.yaml" '^  - --ignore-user-config '
     expect "openrouter candidate switches the account's apps off" "$tmp/out/candidate.yaml" '^  - -c features\.apps=false '
 fi
@@ -163,12 +167,18 @@ fi
 expect "the template itself still says read-only" "$here/agent-template-ollama-direct.yaml" '^  - --sandbox read-only$'
 MODEL=gpt-6.2-sol
 if run 3 "codex sandbox rewrite, shipped agent"; then
+    expect "shipped ChatGPT agent is told to be given the login" "$tmp/out/route" '^chatgpt$'
     expect "shipped agent's candidate has codex's own sandbox off" "$tmp/out/candidate.yaml" '^  - --sandbox danger-full-access '
     expect "shipped agent's candidate keeps no read-only line" "$tmp/out/candidate.yaml" '^  - --sandbox read-only' !
     expect "the rewrite touches the candidate only" "$tmp/tree/config/agents/gpt-6.2-sol.yaml" '^  - --sandbox read-only '
 fi
+MODEL=beam-ollama-direct
+if run 3 "shipped codex agent with its own provider"; then
+    expect "a shipped agent that names its own provider is given no ChatGPT login" "$tmp/out/route" '^none$'
+fi
 MODEL=claude-opus-5-5
 if run 3 "claude harness"; then
+    expect "a claude candidate has no codex login route" "$tmp/out/route" '^absent$'
     expect "a claude candidate is not given a codex flag" "$tmp/out/candidate.yaml" 'sandbox' !
 fi
 
@@ -215,6 +225,7 @@ cat >"$tmp/bin/make" <<'EOF'
     echo "PATH=$PATH"
 } >"$STUB_OUT/env"
 cp config/agents/bench-candidate.yaml "$STUB_OUT/candidate.yaml"
+cp bench/.sandbox-codex-auth "$STUB_OUT/route" 2>/dev/null || echo absent >"$STUB_OUT/route"
 exit 3
 EOF
 MODEL='ollama-direct@glm-5.3-flash:cloud'

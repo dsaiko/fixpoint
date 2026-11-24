@@ -145,9 +145,9 @@ implement-go implement-node implement-java implement-web: build
 
 ## bench: measure one model as a reviewer against the seeded targets;
 ## methodology and decision rule in bench/README.md
-##   make bench MODEL=glm-5.2:cloud [TASK=code|design|all] [N=repeats]
+##   make bench MODEL=ollama-direct@glm-5.2:cloud [TASK=code|design|all] [N=repeats]
 bench:
-	@test -n "$(MODEL)" || { echo "usage: make bench MODEL=<ollama-model> [TASK=code|design|all] [N=repeats]"; exit 2; }
+	@test -n "$(MODEL)" || { echo "usage: make bench MODEL=<ollama-direct@tag|claude-*|codex@id|...> [TASK=code|design|all] [N=repeats]"; exit 2; }
 	bench/run.sh "$(MODEL)" "$(or $(TASK),all)" "$(or $(N),1)"
 
 ## bench-readme: regenerate the results table in README.md AND the standings

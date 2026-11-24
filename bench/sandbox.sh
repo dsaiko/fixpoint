@@ -22,6 +22,10 @@
 # internal/agent), a signal no handler sees on either platform, and the wrapper's
 # scratch directory is then left in TMPDIR (it holds no credential, see below).
 #
+# The goal is BENCH INTEGRITY (the key, past runs, other lenses' findings, writes
+# outside the places given), not a defence of the operator against a hostile
+# model: the lens still holds its CLI's provider key and the network.
+#
 # THE PRINCIPLE is to expose what a lens needs and nothing else, so the policy
 # is built from what is granted, not from what is denied:
 #
@@ -36,10 +40,12 @@
 #     other binary gets no state at all):
 #       codex   a fresh CODEX_HOME inside S (on Linux that is under /tmp, and codex
 #               prints "could not create PATH aliases: Refusing to create helper
-#               binaries under temporary dir" and carries on; harmless so far). The only thing put in it is a SYMLINK
-#               to the real ~/.codex/auth.json when there is one (ChatGPT auth;
-#               the ollama-direct@ and codex@ routes authenticate by env key and
-#               need nothing). The symlink, not a copy, so no credential is ever
+#               binaries under temporary dir" and carries on; harmless so far). On a
+#               route that authenticates with the operator's ChatGPT login (run.sh
+#               says so in bench/.sandbox-codex-auth; no file, no login) the only
+#               thing put in it is a SYMLINK to the real ~/.codex/auth.json. A route
+#               with its own key (ollama-direct@, codex@ via OpenRouter) is given
+#               no login at all. The symlink, not a copy, so no credential is ever
 #               written to scratch and a killed wrapper leaves none behind. The
 #               rest of the real ~/.codex (sessions, sqlite, config.toml) is
 #               unreadable and unwritable.
@@ -51,9 +57,10 @@
 #               credential out would also risk a refresh-token rotation that logs
 #               the operator out. So: settings.json, CLAUDE.md, commands/,
 #               skills/, plugins/ (plugin hooks, skills, commands and MCP servers) and hooks
-#               cannot be modified; projects/, sessions/,
-#               file-history/ and the other transcript stores cannot be read (on
-#               macOS they are write-only, on Linux an empty tmpfs). What stays
+#               cannot be modified; projects/, sessions/, file-history/ and the
+#               other transcript stores and history.jsonl cannot be read, and on
+#               macOS cannot be written either (on Linux they are empty tmpfs, and
+#               history.jsonl an empty file). What stays
 #               WRITABLE is .claude.json, which is global state that includes
 #               user-scope MCP servers: a lens that writes one there plants code
 #               that runs the next time the operator starts claude. That cannot
@@ -193,6 +200,19 @@ codex | claude) ;;
 esac
 agent_path=$(command -v "$1" 2>/dev/null) || agent_path=
 
+# Whether this codex route authenticates with the operator's ChatGPT login. Only
+# then is ~/.codex/auth.json given to the lens. A route that carries its own API key
+# (ollama-direct@, codex@ via OpenRouter, anything with a model_provider of its own)
+# needs no login and gets none. bench/run.sh knows the route and says so in
+# bench/.sandbox-codex-auth; the wrapper does not guess from the command line, and no
+# file means no credential.
+codex_auth=0
+if [ "$cli" = codex ] && [ -f "$repo/bench/.sandbox-codex-auth" ]; then
+    route=
+    read -r route <"$repo/bench/.sandbox-codex-auth" || true
+    [ "$route" != chatgpt ] || codex_auth=1
+fi
+
 os=$(uname -s)
 case $os in
 Darwin) command -v sandbox-exec >/dev/null 2>&1 || die "sandbox-exec not found; refusing to run the agent unconfined" ;;
@@ -215,20 +235,23 @@ case "$tb/" in
 "$target"/*) die "TMPDIR '$tb' is the target or inside it '$target'; the scratch directory must not be part of what is reviewed" ;;
 esac
 S=$(mktemp -d "$tb/bench-sandbox.XXXXXX") || die "cannot create a scratch directory in '$tb'"
-S=$(phys "$S")
-[ -n "$S" ] || die "cannot resolve the scratch directory"
+# The trap is installed BEFORE the first check that can fail, or a refusal here
+# would leave the directory behind.
+cleanup() { rm -rf "$S"; }
+trap cleanup EXIT
+resolved=$(phys "$S")
+[ -n "$resolved" ] || die "cannot resolve the scratch directory"
+S=$resolved
 plain "$S"
 chmod 700 "$S"
 
 child=
-cleanup() { rm -rf "$S"; }
 # A signal is forwarded to the agent and the wait below resumes; EXIT removes S
 # whichever way the wrapper ends. (A SIGKILL cannot be trapped, which is why no
 # credential is ever copied into S: see the codex note above.)
 on_signal() {
     [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || true
 }
-trap cleanup EXIT
 trap on_signal TERM INT HUP
 
 # Where S is, from inside. On Linux it IS the sandbox's /tmp.
@@ -241,9 +264,15 @@ esac
 TMPDIR=$inner
 export TMPDIR
 case $cli in
+claude)
+    # The claude CLI's shell tool makes /private/tmp/claude-<uid>/<cwd slug>, shared by
+    # every lens on this target; with this variable it makes it under S instead.
+    CLAUDE_CODE_TMPDIR=$inner
+    export CLAUDE_CODE_TMPDIR
+    ;;
 codex)
     mkdir "$S/codex"
-    if [ -f "$codexdir/auth.json" ]; then
+    if [ "$codex_auth" = 1 ] && [ -f "$codexdir/auth.json" ]; then
         ln -s "$codexdir/auth.json" "$S/codex/auth.json"
     fi
     CODEX_HOME=$inner/codex
@@ -263,37 +292,36 @@ Darwin)
     #   /dev/null /dev/tty /dev/dtracehelper  shells and runtimes open them
     #   S                                     scratch, TMPDIR, the codex state
     #   the target, rw mode only              where an editing agent writes
-    #   codex: the real auth.json             so a token refresh persists
-    #   claude: the state paths named below   the CLI will not run without them
-    #           and its own tool directory under /private/tmp/claude-<uid>
-    #           plus the /tmp/claude-<hex>-cwd file its shell tool ends every
-    #           command by writing (without it each command exits 1)
+    #   codex: the real auth.json             so a token refresh persists, and only
+    #                                         on a route that authenticates with it
+    #   claude: .claude.json and its siblings the CLI rewrites it on every start
+    #
+    # Other lenses running at the same time have scratch directories of their own
+    # beside S: those are unreadable (their codex sessions are their findings), and
+    # the claude CLI is pointed at S for its shell-tool directory, so two lenses on
+    # the same target do not share /private/tmp/claude-<uid>/<cwd slug>.
     #
     # Deliberately NOT writable: /tmp and /var/tmp (the staged target sits in a
     # host temp directory, and a writable ancestor lets the agent rename it away
     # and put another tree at its path; only S is writable, and it is a sibling).
-    # The claude CLI makes its own working directory for its shell tool at
-    # /private/tmp/claude-<uid>/<cwd with every non-alphanumeric as ->, and its
-    # tool calls fail without it. Only that one directory is opened: the rest of
-    # claude-<uid> holds the operator's other live claude sessions' scratch.
-    ctmp=/private/tmp/claude-$(id -u)
-    cslug=$(printf '%s' "$target" | sed 's/[^A-Za-z0-9]/-/g')
     prof='(version 1)
 (allow default)'
     prof="$prof
-(deny file-read* (subpath \"$repo\") (subpath \"$fpdir\"))"
+(deny file-read* (subpath \"$repo\") (subpath \"$fpdir\") (prefix \"$tb/bench-sandbox.\"))
+(allow file-read* (subpath \"$S\"))"
     # What each CLI may NOT see of the other's state, and of its own.
     case $cli in
     codex)
         prof="$prof
-(deny file-read* (subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\"))
+(deny file-read* (subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\"))"
+        if [ "$codex_auth" = 1 ]; then
+            prof="$prof
 (allow file-read* (literal \"$codexdir/auth.json\"))"
+        fi
         ;;
     claude)
         prof="$prof
-(deny file-read* (subpath \"$codexdir\") (subpath \"$ctmp\"))
-(allow file-read* (literal \"$ctmp\"))
-(allow file-read* (subpath \"$ctmp/$cslug\"))"
+(deny file-read* (subpath \"$codexdir\"))"
         for d in projects sessions session-env shell-snapshots todos file-history backups history.jsonl; do
             prof="$prof
 (deny file-read* (subpath \"$claudedir/$d\"))"
@@ -311,18 +339,19 @@ Darwin)
     (subpath \"$S\"))"
     case $cli in
     codex)
-        prof="$prof
+        if [ "$codex_auth" = 1 ]; then
+            prof="$prof
 (allow file-write* (literal \"$codexdir/auth.json\"))"
+        fi
         ;;
     claude)
-        # Transcripts and per-session state: written, never read back (denied
-        # above). .claude.json and its temp and lock siblings: the CLI rewrites it.
+        # .claude.json and its temp and lock siblings: the CLI rewrites it. Nothing
+        # else under the config directory is writable: not settings.json, not
+        # plugins/, not projects/ (a memory/MEMORY.md planted there is read by the
+        # operator's next session), not shell-snapshots/. The CLI runs without them;
+        # a lens's transcript is simply not kept.
         prof="$prof
-(allow file-write* (subpath \"$ctmp/$cslug\") (regex #\"^/private/tmp/claude-[0-9a-f]+-cwd$\") (prefix \"$claudejson\")"
-        for d in projects sessions session-env shell-snapshots todos file-history backups telemetry cache; do
-            prof="$prof (subpath \"$claudedir/$d\")"
-        done
-        prof="$prof)"
+(allow file-write* (prefix \"$claudejson\"))"
         ;;
     esac
     if [ "$mode" = rw ]; then
@@ -382,7 +411,7 @@ Linux)
     codex)
         # Only the credential is bound, writable so a token refresh persists; the
         # fresh CODEX_HOME in S symlinks to it.
-        if [ -f "$codexdir/auth.json" ]; then
+        if [ "$codex_auth" = 1 ] && [ -f "$codexdir/auth.json" ]; then
             set -- "$@" --bind "$codexdir/auth.json" "$codexdir/auth.json"
         fi
         ;;
@@ -397,6 +426,10 @@ Linux)
                 mkdir -p "$claudedir/$d"
                 set -- "$@" --tmpfs "$claudedir/$d"
             done
+            # A file, not a directory, so not a tmpfs: it is replaced by an empty one.
+            if [ -f "$claudedir/history.jsonl" ]; then
+                set -- "$@" --ro-bind /dev/null "$claudedir/history.jsonl"
+            fi
             if [ -f "$claudedir/.credentials.json" ]; then
                 set -- "$@" --bind "$claudedir/.credentials.json" "$claudedir/.credentials.json"
             fi
@@ -411,6 +444,12 @@ Linux)
     # writable from here: bound next, the target appears at its own path inside
     # a directory this sandbox made up, and renaming that directory renames
     # nothing on the host.
+    # A TMPDIR other than /tmp holds the other lenses' scratch directories (their
+    # findings) beside this one's; it is masked, and the target is bound back below.
+    case $tb in
+    /tmp | / | "$home") ;;
+    *) set -- "$@" --tmpfs "$tb" ;;
+    esac
     set -- "$@" --bind "$S" /tmp
     if [ "$mode" = rw ]; then
         set -- "$@" --bind "$target" "$target"
@@ -432,8 +471,10 @@ Linux)
     # --dev /dev: a fresh /dev (null, tty, urandom, a private shm). --proc /proc
     # in a NEW pid namespace, or /proc/<fixpoint's pid>/cwd would reach the
     # checkout through the shared /proc. --die-with-parent ties the agent to the
-    # wrapper's lifetime.
-    set -- bwrap --die-with-parent --unshare-pid --unshare-ipc --ro-bind / / --dev /dev --proc /proc "$@"
+    # wrapper's lifetime. --new-session gives it a session of its own: without one it
+    # shares the operator's controlling terminal and can inject keystrokes into it
+    # (TIOCSTI); the agent is still killed when bwrap goes, by the parent-death signal.
+    set -- bwrap --die-with-parent --new-session --unshare-pid --unshare-ipc --ro-bind / / --dev /dev --proc /proc "$@"
     ;;
 esac
 

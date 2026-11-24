@@ -58,7 +58,7 @@ home=$base/home
 mkdir -p "$tree/bench" "$tree/.fixpoint/run" "$home/.local/bin" "$base/realfp"
 # ~/.fixpoint is a SYMLINK to a directory elsewhere: the profile must hide the real one.
 ln -s "$base/realfp" "$home/.fixpoint"
-mkdir -p "$home/.codex/sessions" "$home/.claude/projects/p" "$home/.claude/sessions"
+mkdir -p "$home/.codex/sessions" "$home/.claude/projects/p" "$home/.claude/sessions" "$home/.claude/shell-snapshots"
 cp "$SANDBOX_SH" "$tree/bench/sandbox.sh"
 chmod +x "$tree/bench/sandbox.sh"
 echo 'KEY-IN-CHECKOUT' >"$tree/bench/manifest-go.yaml"
@@ -69,6 +69,7 @@ echo 'CODEX-AUTH' >"$home/.codex/auth.json"
 echo 'model = "x"' >"$home/.codex/config.toml"
 echo 'CLAUDE-TRANSCRIPT' >"$home/.claude/projects/p/t.jsonl"
 echo 'CLAUDE-SESSION' >"$home/.claude/sessions/s.json"
+echo 'CLAUDE-HISTORY' >"$home/.claude/history.jsonl"
 echo '{"hooks":{}}' >"$home/.claude/settings.json"
 echo 'CLAUDE-MD' >"$home/.claude/CLAUDE.md"
 echo '{"mcpServers":{}}' >"$home/.claude.json"
@@ -139,9 +140,22 @@ td write_claude_md sh -c 'echo planted >"$CLAUDE_CONFIG_DIR/CLAUDE.md"'
 td write_claude_plugins sh -c 'mkdir -p "$CLAUDE_CONFIG_DIR/plugins/marketplaces" && echo x >"$CLAUDE_CONFIG_DIR/plugins/marketplaces/x"'
 td write_claude_commands sh -c 'mkdir "$CLAUDE_CONFIG_DIR/commands" && echo x >"$CLAUDE_CONFIG_DIR/commands/x.md"'
 t read_claude_settings cat "$CLAUDE_CONFIG_DIR/settings.json"
+# What a claude lens would leave for the operator's NEXT session: a planted memory
+# file under projects/, a shell snapshot; and what it must not read: the history.
+# (cat | grep ., not cat: on Linux the history is bound over by an EMPTY file.)
+t cat_claude_history sh -c 'cat "$CLAUDE_CONFIG_DIR/history.jsonl" 2>/dev/null | grep .'
+td write_claude_projects sh -c 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/-x/memory" && echo planted >"$CLAUDE_CONFIG_DIR/projects/-x/memory/MEMORY.md"'
+td write_claude_snapshots sh -c 'echo planted >"$CLAUDE_CONFIG_DIR/shell-snapshots/snapshot-x.sh"'
+# The claude CLI's shell tool directory is per invocation, not the one every lens on
+# this target shares.
+t claude_tmpdir_is_scratch sh -c '[ -n "$CLAUDE_CODE_TMPDIR" ] && [ "$CLAUDE_CODE_TMPDIR" = "$TMPDIR" ]'
+# Another lens's scratch directory, which holds its findings (the test starts a lens
+# that leaves a file there and passes its host path).
+t read_other_scratch sh -c '[ -n "$SECRETPATH" ] && cat "$SECRETPATH"'
 # What the CLI is given: the codex state is fresh and holds the credential.
 t codex_home_is_fresh sh -c '[ -n "$CODEX_HOME" ] && [ "$CODEX_HOME" != "$HOME/.codex" ]'
 t codex_home_auth cat "$CODEX_HOME/auth.json"
+t cat_codex_auth cat "$HOME/.codex/auth.json"
 t codex_home_no_sessions sh -c '[ -z "$(ls "$CODEX_HOME/sessions" 2>/dev/null)" ]'
 t codex_home_writable sh -c 'echo x >"$CODEX_HOME/new"'
 # Sockets that start processes as the operator, outside any sandbox.
@@ -154,6 +168,19 @@ t path_clean sh -c 'case ":$PATH:" in *":$REPO/bench:"*) exit 1 ;; esac'
 t see_ssh sh -c '[ -e "$HOME/.ssh" ]'
 EOF
 chmod +x "$home/.local/bin/probe.sh"
+# Used by the pty probe (Linux): the controlling-terminal field of /proc/self/stat.
+cat >"$home/.local/bin/ttyprobe" <<'EOF'
+#!/bin/sh
+echo "tty_nr=$(sed 's/.*) //' /proc/self/stat | cut -d' ' -f5)"
+EOF
+# A lens that leaves a file in its own scratch directory, for another to try to read.
+cat >"$home/.local/bin/hold" <<'EOF'
+#!/bin/sh
+echo SECRET >"$TMPDIR/secret"
+echo ready
+while :; do sleep 1; done
+EOF
+chmod +x "$home/.local/bin/ttyprobe" "$home/.local/bin/hold"
 for who in codex claude other; do
     cat >"$home/.local/bin/$who" <<EOF
 #!/bin/sh
@@ -281,6 +308,9 @@ refused "a HOME with a quote" "$target" "$target" HOME="$qd"
 mkdir -p "$base/c\"laude" "$base/t\"mp"
 refused "a CLAUDE_CONFIG_DIR with a quote" "$target" "$target" CLAUDE_CONFIG_DIR="$base/c\"laude"
 refused "a TMPDIR with a quote" "$target" "$target" TMPDIR="$base/t\"mp"
+# A refusal that comes AFTER the scratch directory exists (S itself has the quote)
+# must not leave it behind.
+[ "$(scratch_count "$base/t\"mp")" = 0 ] || fail "a refusal after mktemp left its scratch directory behind"
 mkdir -p "$base/tr\"ee/bench"
 cp "$tree/bench/sandbox.sh" "$base/tr\"ee/bench/sandbox.sh"
 set +e
@@ -412,6 +442,7 @@ for who in codex claude other; do
         fi
         [ "$(tail -4 "$out" | tr '\n' '|')" = "$who|--flag|two words|-|" ] || fail "linux $who $mode: the agent's argv did not arrive intact at the end"
         expect "linux $who $mode: new pid namespace" "$out" '^--unshare-pid$'
+        expect "linux $who $mode: its own session, off the operator's terminal" "$out" '^--new-session$'
         expect "linux $who $mode: new ipc namespace" "$out" '^--unshare-ipc$'
         expect "linux $who $mode: /run is masked" "$out" '^/run$'
         expect "linux $who $mode: no network namespace unshare (the CLI needs the API)" "$out" '^--unshare-(net|all)$' !
@@ -432,16 +463,32 @@ for who in codex claude other; do
         # nothing binds the real state directories wholesale
         expect "linux $who $mode: ~/.codex is not bound as a directory" "$out" "^$home/.codex\$" !
         case $who in
-        codex) expect "linux codex $mode: only the credential file is bound" "$out" "^$home/.codex/auth.json\$" ;;
+        codex)
+            # no route file: no login is handed over
+            expect "linux codex $mode: no login without the chatgpt route" "$out" "^$home/.codex/auth.json\$" !
+            ;;
         claude)
             expect "linux claude $mode: transcripts are replaced by tmpfs" "$out" "^$home/.claude/projects\$"
             expect "linux claude $mode: the config dir is read-only" "$out" "^$home/.claude\$"
             [ "$(grep -x -B1 -F "$home/.claude" "$out" | head -1)" = "--ro-bind" ] || fail "linux claude $mode: the config dir is not bound read-only"
+            [ "$(grep -x -B2 -F "$home/.claude/history.jsonl" "$out" | head -1)" = "--ro-bind" ] && [ "$(grep -x -B1 -F "$home/.claude/history.jsonl" "$out" | head -1)" = /dev/null ] ||
+                fail "linux claude $mode: history.jsonl is not replaced by an empty file"
             ;;
         other) expect "linux other $mode: no CLI state at all" "$out" "^$home/\\.(claude|codex)" ! ;;
         esac
     done
 done
+
+# The chatgpt route binds the one credential file, writable, and nothing else of ~/.codex;
+# a TMPDIR other than /tmp is masked, so another lens's scratch directory under it is
+# not visible.
+echo chatgpt >"$tree/bench/.sandbox-codex-auth"
+mkdir -p "$base/ptmp"
+(cd "$target" && env HOME="$home" TMPDIR="$base/ptmp" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$base/lbin:$home/.local/bin:/usr/bin:/bin" \
+    /bin/sh "$tree/bench/sandbox.sh" "$target" ro -- codex x) >"$base/l-chatgpt.out" 2>"$base/l-chatgpt.err" || fail "linux chatgpt route: the wrapper failed: $(cat "$base/l-chatgpt.err")"
+[ "$(grep -x -B1 -F "$home/.codex/auth.json" "$base/l-chatgpt.out" | head -1)" = "--bind" ] || fail "linux chatgpt route: the login is not bound writable"
+expect "linux: a TMPDIR other than /tmp is masked" "$base/l-chatgpt.out" "^$(cd "$base/ptmp" && pwd -P)\$"
+rm -f "$tree/bench/.sandbox-codex-auth"
 
 # ---- (d) the real boundary --------------------------------------------------------
 can_confine=0
@@ -466,7 +513,7 @@ if [ "$can_confine" = 1 ]; then
     if [ "$os" = Linux ]; then
         expect "control: a decoy's /proc/<pid>/cwd reaches the checkout unconfined" "$base/control.out" '^proc_any_cwd=ok$'
     fi
-    for k in cat_key cat_glob find_key ls_repo ls_fixpoint_home cat_fixpoint_home cat_real_fixpoint read_target cat_codex_sessions cat_codex_config cat_claude_transcript cat_claude_session read_claude_settings; do
+    for k in cat_codex_auth cat_claude_history cat_key cat_glob find_key ls_repo ls_fixpoint_home cat_fixpoint_home cat_real_fixpoint read_target cat_codex_sessions cat_codex_config cat_claude_transcript cat_claude_session read_claude_settings; do
         expect "control: $k works unconfined, so its denial below means something" "$base/control.out" "^$k=ok\$"
     done
     snap >"$base/before.snap"
@@ -526,7 +573,14 @@ if [ "$can_confine" = 1 ]; then
     done
     # what each CLI IS given
     expect "codex: its CODEX_HOME is a fresh directory" "$base/codex.out" '^codex_home_is_fresh=ok$'
-    expect "codex: its credential is reachable through it" "$base/codex.out" '^codex_home_auth=ok$'
+    # No route file: this is a route that carries its own key, so there is no login in
+    # the fresh home and the live one is unreadable, even though it exists.
+    expect "codex: no ChatGPT login without the chatgpt route" "$base/codex.out" '^codex_home_auth=denied$'
+    for who in codex claude other; do
+        expect "$who: the live codex login is unreadable without the chatgpt route" "$base/$who.out" '^cat_codex_auth=denied$'
+        expect "$who: claude's prompt history is unreadable" "$base/$who.out" '^cat_claude_history=denied$'
+    done
+    expect "claude: its shell-tool directory is its own scratch" "$base/claude.out" '^claude_tmpdir_is_scratch=ok$'
     expect "codex: it starts with no sessions" "$base/codex.out" '^codex_home_no_sessions=ok$'
     expect "codex: its fresh state is writable" "$base/codex.out" '^codex_home_writable=ok$'
     if [ "$os" = Darwin ]; then
@@ -538,12 +592,66 @@ if [ "$can_confine" = 1 ]; then
     expect "claude: CLAUDE.md cannot be modified" "$base/claude.out" '^write_claude_md=denied$'
     expect "claude: commands/ cannot be added" "$base/claude.out" '^write_claude_commands=denied$'
     expect "claude: plugins/ (hooks, skills, MCP servers) cannot be written" "$base/claude.out" '^write_claude_plugins=denied$'
+    if [ "$os" = Darwin ]; then
+        # A memory file planted under projects/ is read by the operator's next session.
+        expect "claude: the live projects/ cannot be written" "$base/claude.out" '^write_claude_projects=denied$'
+        expect "claude: shell-snapshots/ cannot be written" "$base/claude.out" '^write_claude_snapshots=denied$'
+    fi
     expect "claude: settings.json can still be read" "$base/claude.out" '^read_claude_settings=ok$'
     for who in codex other; do
         expect "$who: the live claude transcripts are unreadable" "$base/$who.out" '^cat_claude_transcript=denied$'
         expect "$who: the live claude settings are unreadable" "$base/$who.out" '^read_claude_settings=denied$'
     done
     expect "claude: the live codex config is unreadable" "$base/claude.out" '^cat_codex_config=denied$'
+
+    # The chatgpt route: only then is the login handed over (to a codex lens, and not to
+    # any other binary), through a symlink in the fresh CODEX_HOME to the one file.
+    echo chatgpt >"$tree/bench/.sandbox-codex-auth"
+    run_probe codex ro "$base/codex-chatgpt.out"
+    run_probe other ro "$base/other-chatgpt.out"
+    rm -f "$tree/bench/.sandbox-codex-auth"
+    # A route file that says anything but chatgpt hands nothing over either.
+    echo none >"$tree/bench/.sandbox-codex-auth"
+    run_probe codex ro "$base/codex-none.out"
+    rm -f "$tree/bench/.sandbox-codex-auth"
+    expect "codex: a route file saying none hands over no login" "$base/codex-none.out" '^codex_home_auth=denied$'
+    expect "codex: ... and the live login stays unreadable" "$base/codex-none.out" '^cat_codex_auth=denied$'
+    expect "codex: the chatgpt route gets the login through its fresh home" "$base/codex-chatgpt.out" '^codex_home_auth=ok$'
+    expect "codex: ... and nothing else of the live ~/.codex" "$base/codex-chatgpt.out" '^cat_codex_config=denied$'
+    expect "codex: ... whose sessions stay unreadable" "$base/codex-chatgpt.out" '^cat_codex_sessions=denied$'
+    expect "another binary is not given the login even on the chatgpt route" "$base/other-chatgpt.out" '^cat_codex_auth=denied$'
+    snap >"$base/after.snap"
+    cmp -s "$base/before.snap" "$base/after.snap" || fail "the chatgpt route changed the host"
+
+    # Parallel lenses: another lens's scratch directory (its findings) is not readable.
+    mkdir -p "$base/ptmp"
+    (cd "$target" && exec env HOME="$home" TMPDIR="$base/ptmp" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- hold) >"$base/hold.out" 2>&1 &
+    holdpid=$!
+    n=0
+    while ! grep -q ready "$base/hold.out" 2>/dev/null && [ "$n" -lt 100 ]; do
+        sleep 0.1
+        n=$((n + 1))
+    done
+    grep -q ready "$base/hold.out" || fail "the first lens never started: $(cat "$base/hold.out")"
+    holdscratch=$(ls -d "$base"/ptmp/bench-sandbox.* 2>/dev/null | head -1)
+    [ -n "$holdscratch" ] && [ "$(cat "$holdscratch/secret" 2>/dev/null)" = SECRET ] || fail "the first lens left no file in its scratch directory to try to read (control)"
+    (cd "$target" && penv TMPDIR="$base/ptmp" SECRETPATH="$holdscratch/secret" "$tree/bench/sandbox.sh" "$target" ro -- "$home/.local/bin/other") >"$base/second.out" 2>"$base/second.err" || fail "the second lens could not run: $(cat "$base/second.err")"
+    expect "a second lens cannot read the first one's scratch directory" "$base/second.out" '^read_other_scratch=denied$'
+    kill -TERM "$holdpid" 2>/dev/null || true
+    wait "$holdpid" 2>/dev/null || true
+
+    # Linux: a new session, so no controlling terminal to inject keystrokes into
+    # (TIOCSTI). Needs a pty to mean anything; python3 makes one.
+    if [ "$os" = Linux ] && command -v python3 >/dev/null 2>&1; then
+        ptyrun() { python3 -c 'import pty,sys; sys.exit(pty.spawn(sys.argv[1:]) >> 8)' "$@" 2>&1 | tr -d '\r'; }
+        ptyrun "$home/.local/bin/ttyprobe" >"$base/tty-control.out" || true
+        if grep -q '^tty_nr=[1-9]' "$base/tty-control.out"; then
+            (cd "$target" && ptyrun env HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- ttyprobe) >"$base/tty.out" || true
+            expect "linux: the lens has no controlling terminal" "$base/tty.out" '^tty_nr=0$'
+        else
+            echo "bench/sandbox_test.sh: could not give a probe a controlling terminal here; the new-session check was skipped." >&2
+        fi
+    fi
 
     # rw: the target is the only extra place to write; nothing else opens.
     wr=$(mktemp -d)

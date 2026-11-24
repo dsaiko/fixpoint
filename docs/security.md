@@ -251,12 +251,22 @@ confinement a wrapper gives. The flag appears in the run's applied overrides as
 
 The bench is the one shipped user: `bench/run.sh` passes it, with
 `bench/sandbox.sh` as the wrapper, so a codex candidate can run with the answer key
-unreadable. That wrapper is a worked example of the "mount what the CLI needs"
+unreadable. The wrapper's goal is bench integrity (the answer key, past runs and
+other lenses' findings stay unreadable, and nothing is written outside the places the
+lens is given), not a general defence of the operator against a hostile model: the
+lens still holds the provider key its CLI needs and can use the network. Inside it
+codex's own sandbox is off, so writes are confined by the wrapper alone. That wrapper is a worked example of the "mount what the CLI needs"
 shape, and of its limits: it hides the checkout and gives codex a fresh state
 directory, but on macOS the rest of `$HOME` stays readable, a claude lens keeps the
 operator's real config directory (writable `.claude.json`: a user-scope MCP server
 planted there runs the next time you start `claude`), and the network is open on both
-platforms. `bench/README.md` lists exactly what a lens can still reach.
+platforms. `bench/README.md` lists exactly what a lens can still reach, and the
+known limitations review found and left open: state relocated outside `$HOME` stays
+readable on Linux; the `/run` mask assumes systemd-resolved; a custom
+`CLAUDE_CONFIG_DIR` blocks claude's config rewrite on Linux; a target path ending in
+a newline is unsupported; a signal before the agent is spawned is swallowed; provider
+keys are readable by the lens through `/proc/<pid>/environ` of its ancestors; the
+test's namespace runs fail instead of skipping where `bwrap` has no user namespace.
 
 ### Trust
 
