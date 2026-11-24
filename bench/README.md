@@ -58,6 +58,15 @@ guard against that now.
 repository, from git's own file list (ignored build output stays behind), so
 nothing sits above the target and its path does not name the repository.
 
+**What this protects, and what it does not.** The goal is BENCH INTEGRITY: a lens
+must not read the answer key, past runs, or another lens's findings, and must not
+write anywhere but the places it is given. It is not a general defence of the
+operator against a hostile model. The lens still holds the provider key its CLI
+needs (the CLI's own process environment carries it, and so does every process
+between the wrapper and the CLI), it can use the network, and codex's own sandbox is
+OFF inside the wrapper (it cannot nest), so what keeps a codex lens from writing is
+the wrapper alone.
+
 **A filesystem boundary.** `config/bench-code.yaml` and `config/bench-design.yaml`
 set `sandbox.command`, which launches every lens through `bench/sandbox.sh
 <target> <ro|rw> -- <agent argv>`: `sandbox-exec` on macOS, `bwrap` on Linux; any
@@ -71,29 +80,39 @@ what a lens is GIVEN, not everything minus two directories.
 | where it can write | its own scratch directory, nothing else | its own scratch directory, which is `/tmp`; the home directory is a tmpfs that vanishes |
 | the staged target's parent | not writable, so it cannot be renamed away | not the host's: `/tmp` is private, so renaming the parent renames nothing |
 | `$HOME` | **readable** (`~/.ssh`, `~/.aws`, other repositories) | replaced by an empty tmpfs, with the toolchain directories (`~/.nvm`, `~/.local`, ...) and the directory the CLI is installed in bound back read-only |
-| processes | shared | own pid and IPC namespaces: `/proc/<pid>/cwd` of fixpoint is not there |
+| processes | shared | own pid and IPC namespaces (`/proc/<pid>/cwd` of fixpoint is not there) and its own session (no controlling terminal to inject keystrokes into) |
+| other lenses' scratch directories | unreadable | not there: a `TMPDIR` other than `/tmp` is masked, and `/tmp` is the lens's own |
 | `/run`, user D-Bus and system sockets | reachable | masked (only systemd-resolved's directory is bound back, for DNS) |
 | network | open | open |
 
 The CLI is taken from `argv[0]` of the agent command; an unknown binary is given no
 state at all, and CLI state is **per invocation**:
 
-- **codex** gets a fresh `CODEX_HOME` in the scratch directory. If there is a
-  `~/.codex/auth.json` (ChatGPT auth) the fresh home holds a *symlink* to it, and
-  that one file is readable and writable (a token refresh must persist); nothing
-  is copied, so a killed wrapper leaves no credential behind. The routes that
-  authenticate by environment key (`ollama-direct@`, `codex@`) need nothing else.
-  The live `~/.codex` (sessions, sqlite, `config.toml`) is unreadable and
-  unwritable.
+- **codex** gets a fresh `CODEX_HOME` in the scratch directory. On a route that
+  authenticates with the operator's ChatGPT login the fresh home holds a *symlink*
+  to `~/.codex/auth.json`, and that one file is readable and writable (a token
+  refresh must persist); nothing is copied, so a killed wrapper leaves no
+  credential behind. Whether the route is a ChatGPT one is decided by `run.sh`,
+  which knows the candidate (a codex agent that names a `model_provider` of its own
+  carries its own key), and written to `bench/.sandbox-codex-auth` for the wrapper:
+  `ollama-direct@`, `codex@` via OpenRouter and every other route with its own key
+  get no `auth.json` at all, and without that file no login is handed over. The live
+  `~/.codex` (sessions, sqlite, `config.toml`) is unreadable and unwritable.
 - **claude** keeps the **real** config directory, because a fresh
   `CLAUDE_CONFIG_DIR` is "Not logged in" on macOS (the login is a Keychain item
   named from the directory's path; measured 2026-11-24). Inside it the transcripts
-  (`projects/`, `sessions/`, `file-history/`, `session-env/`, `shell-snapshots/`,
-  `todos/`, `backups/`, `history.jsonl`) cannot be read, and everything that is
-  executable configuration (`settings.json`, `CLAUDE.md`, `commands/`, `skills/`,
-  `plugins/`, hooks) cannot be modified. A claude lens runs without being able to
-  write `plugins/`, `ide/` or `statsig/` (checked with a real `claude -p` session). On macOS the state directories are write-only; on
-  Linux they are empty tmpfs mounts. The live codex directory is unreadable.
+  and history (`projects/`, `sessions/`, `file-history/`, `session-env/`,
+  `shell-snapshots/`, `todos/`, `backups/`, `history.jsonl`) cannot be read, and
+  NOTHING under it can be written on macOS except `.claude.json`: not
+  `settings.json`, `CLAUDE.md`, `commands/`, `skills/`, `plugins/`, hooks, and not
+  `projects/` or `shell-snapshots/` either (a memory file planted there is read by the
+  operator's next session). A claude lens runs without any of that (checked with a
+  real `claude -p` session): it just keeps no transcript. On Linux the state
+  directories are empty tmpfs mounts, writable and thrown away, and `history.jsonl`
+  is replaced by an empty file. The CLI's shell-tool directory is pointed into the
+  lens's own scratch (`CLAUDE_CODE_TMPDIR`), so two lenses on the same target do not
+  share `/private/tmp/claude-<uid>/<cwd slug>`. The live codex directory is
+  unreadable.
 
 What a lens can still reach, stated plainly:
 
@@ -103,8 +122,7 @@ What a lens can still reach, stated plainly:
 - The claude CLI's `.claude.json` is **writable** (it rewrites it): it is global
   state that includes user-scope MCP servers, so a prompt-injected lens could plant
   one that runs the next time the operator starts `claude`. It also stays readable.
-  The same goes for `.credentials.json` on Linux. A claude lens also leaves its
-  transcripts in the live `projects/` on macOS, as any claude run does.
+  The same goes for `.credentials.json` on Linux.
 - On Linux the network namespace is shared with the host: abstract unix sockets and
   services on localhost are reachable.
 - The lens's own scratch directory and, on Linux, the part of `$HOME` it is given
@@ -127,6 +145,28 @@ has ollama installed. `run.sh` refuses the plain `<tag>:cloud` route,
 points at `ollama-direct@<tag>`, the same harness straight to ollama.com.
 `ollama-direct@`, `codex@`, `vllm@`, `claude-*`, OpenRouter ids and the shipped
 codex and claude agents work.
+
+**Known limitations**, found in review and left open on purpose (they are outside
+the goal above, or cost more than they protect):
+
+- CLI state relocated outside `$HOME` (a symlinked `~/.codex`, an external
+  `CLAUDE_CONFIG_DIR`) stays readable on Linux: only paths under the home are replaced.
+- The `/run` mask assumes systemd-resolved for DNS; a host whose `/etc/resolv.conf`
+  points elsewhere under `/run` has no name resolution inside.
+- A custom `CLAUDE_CONFIG_DIR` blocks claude's rewrite of its own config on Linux
+  (the directory is bound read-only; only `.claude.json` is bound back).
+- A target path ending in a newline is not supported (command substitution strips it).
+- A signal that arrives before the agent is spawned is swallowed, and the run goes on.
+- Provider keys are readable by the lens: the CLI process, and every process between
+  the wrapper and it, carries them in its environment, and `/proc/<pid>/environ` of
+  an ancestor is readable by its children. Moving them out of the wrapper's own
+  environment would not help while the CLI itself must hold the key; codex's
+  `shell_environment_policy.exclude` keeps it out of the shell tool's environment, not
+  out of `/proc`.
+- On macOS the rest of `$HOME`, including other checkouts of this repository, is
+  readable; the scorer's log check is what catches a read of the key there.
+- Section (a) of `bench/sandbox_test.sh` (the namespace runs) fails where `bwrap`
+  cannot create a user namespace, instead of skipping.
 
 **Sandboxes do not nest.** The `--sandbox read-only` of a codex-harness agent is
 itself seatbelt (macOS) or bubblewrap (Linux) around each shell command, and
@@ -314,9 +354,10 @@ across the panel is <4%, so non-overlap is the panel's whole value).
 ## Running it
 
 ```sh
-make bench MODEL=glm-5.2:cloud                 # the calibrated pair, 1 repeat
-make bench MODEL=kimi-k3:cloud TASK=go N=3     # one target, 3 repeats
-make bench MODEL=kimi-k3:cloud TASK=go,design  # a list of targets
+make bench MODEL=ollama-direct@glm-5.2:cloud                 # the calibrated pair, 1 repeat
+make bench MODEL=ollama-direct@kimi-k3:cloud TASK=go N=3     # one target, 3 repeats
+make bench MODEL=ollama-direct@kimi-k3:cloud TASK=go,design  # a list of targets
+make bench MODEL=claude-haiku-5-5 TASK=design                # a claude-harness candidate
 make bench-check                               # validate the manifests, no model
 make bench-seeds                               # per-seed hit rate: what still discriminates
 python3 bench/report.py                        # scores, plus recall per target
@@ -435,8 +476,11 @@ variable. Both take a `#<effort>` suffix (`ollama-direct@glm-5.3-flash:cloud#max
 glm's catalog has no `xhigh`), and the pair is only comparable run the SAME DAY,
 interleaved -- on 2026-10-28 beam's launch route scored 109 on three targets that
 had given it 144 nine days before. That day's full glm-5.3-flash grid put the two
-routes level: panel 408 direct, 406 launched. Anything else runs the ollama
-template. Results append
+routes level: panel 408 direct, 406 launched. A bare tag (`glm-5.2:cloud`) runs the
+`ollama launch claude` template and `ollama-codex@` the `ollama launch codex` one,
+but BOTH launch routes are refused by `run.sh` now that every lens runs inside
+`bench/sandbox.sh` (see "Isolation"); the measurements above were taken before that,
+and `ollama-direct@` is how the same models are run today. Results append
 to `results.csv` (committed — measurements are project knowledge); per-run
 seed tables land in `results/`. Re-score an old run without re-paying for it:
 
