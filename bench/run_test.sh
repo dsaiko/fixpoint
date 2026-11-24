@@ -18,7 +18,7 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/tree/bench" "$tmp/tree/config/agents" "$tmp/bin"
 # Shipped agents run.sh copies as they are, for the codex-sandbox rewrite below.
 cp "$here/../config/agents/gpt-6.2-sol.yaml" "$here/../config/agents/claude-opus.yaml" "$tmp/tree/config/agents/"
-cp "$here/run.sh" "$here/agent-template-vllm.yaml" "$here/agent-template-ollama-codex.yaml" \
+cp "$here/run.sh" "$here/agent-template.yaml" "$here/agent-template-vllm.yaml" "$here/agent-template-ollama-codex.yaml" \
     "$here/agent-template-ollama-direct.yaml" "$here/agent-template-openrouter-codex.yaml" "$tmp/tree/bench/"
 
 cat >"$tmp/bin/curl" <<'EOF'
@@ -136,20 +136,18 @@ if run 3 "openrouter codex" OPENROUTER_API_KEY=k; then
     expect "openrouter candidate switches the account's apps off" "$tmp/out/candidate.yaml" '^  - -c features\.apps=false '
 fi
 
-# (h) ollama-codex@ takes the same suffix, on its own template, and needs no key.
-MODEL='ollama-codex@glm-5.3-flash:cloud#max'
-if run 3 "launch with suffix"; then
-    expect "launch candidate runs ollama launch" "$tmp/out/candidate.yaml" '^  - launch$'
-    expect "launch candidate never names ollama.com" "$tmp/out/candidate.yaml" 'ollama\.com' !
-    expect "launch candidate effort is the suffix" "$tmp/out/candidate.yaml" '^effort: max '
-    # The flag would drop the profile `ollama launch` hands codex its provider in.
-    expect "launch candidate keeps the user's codex config" "$tmp/out/candidate.yaml" '^  - --ignore-user-config' !
-    expect "launch candidate switches the account's apps off" "$tmp/out/candidate.yaml" '^  - -c features\.apps=false '
-fi
-MODEL=ollama-codex@glm-5.3-flash:cloud
-if run 3 "launch without suffix"; then
-    expect "launch candidate keeps xhigh" "$tmp/out/candidate.yaml" '^effort: xhigh '
-fi
+# (h) EVERY lens runs inside bench/sandbox.sh, which provides no ~/.ollama, and
+# `ollama launch` needs it (it saves the selected model there before it starts the
+# harness) while neither bench host has ollama installed: those routes are refused
+# before make runs, with a pointer at the route that works. Not half-supported.
+cp "$here/../config/agents/beam-ollama-codex.yaml" "$tmp/tree/config/agents/"
+for refused in 'ollama-codex@glm-5.3-flash:cloud#max' 'ollama-codex@glm-5.3-flash:cloud' 'glm-5.3-flash:cloud' 'beam-ollama-codex'; do
+    MODEL=$refused
+    run 2 "ollama launch route $refused" || true
+    [ -e "$tmp/out/env" ] && { echo "FAIL $refused: make ran for a refused route"; fails=$((fails + 1)); }
+    expect "$refused: the refusal names ollama-direct" "$tmp/out/log" 'ollama-direct@'
+    expect "$refused: the refusal names the state it needs" "$tmp/out/log" '~/\.ollama'
+done
 
 # (h2) THE LENS RUNS INSIDE bench/sandbox.sh, and sandboxes do not nest: a codex
 # candidate's own `--sandbox read-only` cannot start there, so the GENERATED file
