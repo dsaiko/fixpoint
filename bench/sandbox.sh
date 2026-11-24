@@ -11,8 +11,16 @@
 # against the staged target). There is no unconfined path out of this script: a
 # missing sandbox tool, an unsupported OS or a bad argument is a non-zero exit
 # before the agent starts. The agent runs as a child, not by exec, so that its
-# scratch state is removed afterwards; its exit status and any TERM/INT/HUP
-# pass through.
+# scratch state is removed afterwards; its exit status and stdin pass through.
+#
+# SIGNALS. TERM, INT and HUP to the wrapper are forwarded to the sandbox tool, the
+# wrapper exits non-zero and removes S. On macOS the agent then receives the TERM and
+# may run its own handler. On Linux it does not: bwrap does not forward signals and,
+# with --die-with-parent in a new pid namespace, kills the agent outright when it
+# goes, so the agent is simply gone. That is also all fixpoint ever does to an agent:
+# on a timeout or cancel it SIGKILLs the whole process group (KillProcessGroup in
+# internal/agent), a signal no handler sees on either platform, and the wrapper's
+# scratch directory is then left in TMPDIR (it holds no credential, see below).
 #
 # THE PRINCIPLE is to expose what a lens needs and nothing else, so the policy
 # is built from what is granted, not from what is denied:
@@ -26,7 +34,9 @@
 #     TMPDIR, mode 700, removed on exit) and, in `rw` mode, the target.
 #   - CLI state is DISPOSABLE. The CLI is taken from argv[0] (codex, claude; any
 #     other binary gets no state at all):
-#       codex   a fresh CODEX_HOME inside S. The only thing put in it is a SYMLINK
+#       codex   a fresh CODEX_HOME inside S (on Linux that is under /tmp, and codex
+#               prints "could not create PATH aliases: Refusing to create helper
+#               binaries under temporary dir" and carries on; harmless so far). The only thing put in it is a SYMLINK
 #               to the real ~/.codex/auth.json when there is one (ChatGPT auth;
 #               the ollama-direct@ and codex@ routes authenticate by env key and
 #               need nothing). The symlink, not a copy, so no credential is ever
