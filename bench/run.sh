@@ -244,8 +244,10 @@ fi
 # and every command a lens ran failed with `sandbox_apply: Operation not
 # permitted` (measured 2026-11-24). So the GENERATED candidate turns codex's own
 # sandbox off and the wrapper is what enforces read-only, for the bench only:
-# config/agents/*.yaml keep their `--sandbox read-only`. A claude-harness
-# candidate has no such line and is left as it is.
+# config/agents/*.yaml keep their `--sandbox read-only`. fixpoint refuses a
+# read-only agent with its own sandbox off unless the invocation passes
+# --agents-sandboxed, which run_task does. A claude-harness candidate has no
+# such line and is left as it is.
 if grep -q '^  - --sandbox read-only' "$CANDIDATE"; then
     sed 's|^\(  - \)--sandbox read-only.*|\1--sandbox danger-full-access # bench/run.sh: the wrapper, bench/sandbox.sh, enforces read-only now; codex'"'"'s own sandbox cannot nest inside it|' \
         "$CANDIDATE" >"$CANDIDATE.tmp" && mv "$CANDIDATE.tmp" "$CANDIDATE"
@@ -336,7 +338,10 @@ run_task() {
         rm -f "$marker"
         return 1
     fi
-    ./fixpoint "$cfg" -target "$stage/repo" --trusted-target --trusted-bundle || {
+    # --agents-sandboxed is the operator's assertion, per invocation, that
+    # sandbox.command (bench/sandbox.sh) confines the lens. Without it fixpoint's
+    # validation refuses a codex candidate whose own sandbox is off (see above).
+    ./fixpoint "$cfg" -target "$stage/repo" --trusted-target --trusted-bundle --agents-sandboxed || {
         # exit 4 is review-only's normal termination; anything else is the
         # candidate failing, which the bench records rather than hides.
         code=$?
