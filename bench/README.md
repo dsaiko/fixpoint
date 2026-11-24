@@ -109,6 +109,12 @@ What a lens can still reach, stated plainly:
 - The lens's own scratch directory and, on Linux, the part of `$HOME` it is given
   back; other users' home directories under their own permissions.
 
+A terminated or timed-out lens: fixpoint stops an agent by SIGKILLing its process
+group, which nothing can trap, so the wrapper's scratch directory (no credential in
+it) is left in `TMPDIR` and a stray `bench-sandbox.*` there is that. A TERM sent to
+the wrapper itself removes it; on macOS the agent also gets the TERM, on Linux
+bwrap kills it outright.
+
 `bench/run.sh` puts `bench/` on `PATH` (fixpoint finds the wrapper by name: a
 relative path would resolve against the staged target) and the wrapper takes that
 entry back off before it starts the agent.
