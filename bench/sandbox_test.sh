@@ -47,9 +47,10 @@ expect() {
     [ "$hit" = 1 ] || fail "$1"
 }
 
-# scratch_count: how many wrapper scratch directories the host temp directory holds
-# now; a run must leave it as it found it, whatever else is lying about.
-scratch_count() { ls "${TMPDIR:-/tmp}" 2>/dev/null | grep -c '^bench-sandbox\.' || true; }
+# scratch_count <dir>: how many wrapper scratch directories <dir> holds. Every run
+# below gets a TMPDIR of its own, so the count is this test's alone and a sandbox run
+# by someone else on the same host cannot skew it.
+scratch_count() { ls "$1" 2>/dev/null | grep -c '^bench-sandbox\.' || true; }
 
 # ---- the stand-in world -------------------------------------------------------
 tree=$base/tree
@@ -135,6 +136,7 @@ t cat_claude_transcript cat "$CLAUDE_CONFIG_DIR/projects/p/t.jsonl"
 t cat_claude_session cat "$CLAUDE_CONFIG_DIR/sessions/s.json"
 td write_claude_settings sh -c 'echo "{\"hooks\":{\"SessionStart\":[]}}" >"$CLAUDE_CONFIG_DIR/settings.json"'
 td write_claude_md sh -c 'echo planted >"$CLAUDE_CONFIG_DIR/CLAUDE.md"'
+td write_claude_plugins sh -c 'mkdir -p "$CLAUDE_CONFIG_DIR/plugins/marketplaces" && echo x >"$CLAUDE_CONFIG_DIR/plugins/marketplaces/x"'
 td write_claude_commands sh -c 'mkdir "$CLAUDE_CONFIG_DIR/commands" && echo x >"$CLAUDE_CONFIG_DIR/commands/x.md"'
 t read_claude_settings cat "$CLAUDE_CONFIG_DIR/settings.json"
 # What the CLI is given: the codex state is fresh and holds the credential.
@@ -223,6 +225,80 @@ got=$?
 set -e
 [ "$got" != 0 ] && ! grep -q '^RAN$' "$base/a6.log" || fail "a TMPDIR inside the checkout was accepted"
 
+# refused <label> <cwd> <target> [NAME=value ...]: the wrapper must exit non-zero and
+# the agent (/bin/echo RAN) must never run.
+refused() {
+    label=$1
+    cdir=$2
+    tgt=$3
+    shift 3
+    set +e
+    (cd "$cdir" && penv "$@" "$tree/bench/sandbox.sh" "$tgt" ro -- /bin/echo RAN) >"$base/refused.log" 2>&1
+    got=$?
+    set -e
+    if [ "$got" = 0 ] || grep -q '^RAN$' "$base/refused.log"; then
+        fail "$label was accepted (exit $got)"
+    elif ! grep -q -- "$REFUSAL" "$base/refused.log"; then
+        # Refused, but by something else: on macOS a quote in the profile text makes
+        # sandbox-exec itself fail, which would pass this test with plain() deleted.
+        fail "$label was refused, but not by the wrapper's own check ($REFUSAL): $(head -c 200 "$base/refused.log")"
+    fi
+}
+
+REFUSAL='TMPDIR'
+# A TMPDIR that is the target or inside it would put the always-writable scratch
+# directory inside what must stay read-only. `TMPDIR=.` from the agent's own
+# directory IS the target.
+mkdir -p "$target/sub" "$base/ok-tmp"
+refused "a TMPDIR inside the target" "$target" "$target" TMPDIR="$target/sub"
+refused "a TMPDIR that is the target" "$target" "$target" TMPDIR="$target"
+refused "TMPDIR=. run from the target" "$target" "$target" TMPDIR=.
+# ... while a TMPDIR beside it, and the default, are fine.
+(cd "$target" && penv TMPDIR="$base/ok-tmp" "$tree/bench/sandbox.sh" "$target" ro -- /bin/echo RAN) >"$base/ok.log" 2>&1 ||
+    fail "a TMPDIR beside the target was refused: $(cat "$base/ok.log")"
+grep -q '^RAN$' "$base/ok.log" || fail "the agent did not run with a TMPDIR beside the target"
+
+# plain(): a path the macOS profile would carry as TEXT must not contain a quote, a
+# backslash or a newline, or it would change what the profile says. Every path in the
+# profile goes through it, so each source of a path is tried: the target, the
+# checkout, HOME, CLAUDE_CONFIG_DIR, TMPDIR (the scratch directory), and the symlinked
+# ~/.fixpoint and ~/.codex that resolve to such a directory. The check runs before the
+# OS split, so this holds on Linux as well.
+REFUSAL='contains a quote, a backslash or a newline'
+nlc=$(printf '\nx')
+nlc=${nlc%x}
+qd=$base/'we"ird'
+bs=$base/'back\slash'
+nld=$base/"new${nlc}line"
+for d in "$qd" "$bs" "$nld"; do
+    mkdir -p "$d"
+    echo 'TARGET' >"$d/a.txt"
+done
+refused "a target whose name has a quote" "$qd" "$qd"
+refused "a target whose name has a backslash" "$bs" "$bs"
+refused "a target whose name has a newline" "$nld" "$nld"
+refused "a HOME with a quote" "$target" "$target" HOME="$qd"
+mkdir -p "$base/c\"laude" "$base/t\"mp"
+refused "a CLAUDE_CONFIG_DIR with a quote" "$target" "$target" CLAUDE_CONFIG_DIR="$base/c\"laude"
+refused "a TMPDIR with a quote" "$target" "$target" TMPDIR="$base/t\"mp"
+mkdir -p "$base/tr\"ee/bench"
+cp "$tree/bench/sandbox.sh" "$base/tr\"ee/bench/sandbox.sh"
+set +e
+(cd "$target" && penv "$base/tr\"ee/bench/sandbox.sh" "$target" ro -- /bin/echo RAN) >"$base/refused.log" 2>&1
+got=$?
+set -e
+{ [ "$got" != 0 ] && ! grep -q '^RAN$' "$base/refused.log" && grep -q -- "$REFUSAL" "$base/refused.log"; } || fail "a checkout whose path has a quote was not refused by plain(): $(head -c 200 "$base/refused.log")"
+# ~/.fixpoint and ~/.codex as symlinks to such a directory: only their RESOLVED
+# paths carry the quote.
+for dot in .fixpoint .codex; do
+    h=$base/home$dot
+    mkdir -p "$h" "$base/ln\"$dot"
+    ln -s "$base/ln\"$dot" "$h/$dot"
+    refused "a $dot that resolves to a path with a quote" "$target" "$target" HOME="$h"
+done
+
+REFUSAL=''
+
 # ---- (c) FAIL CLOSED ------------------------------------------------------------
 # No sandbox tool on PATH, or an OS with none, and the agent does not run. PATH
 # holds only what the wrapper itself needs; the agent is named by absolute path so
@@ -280,16 +356,22 @@ EOF
         # in a new pid namespace, kills the agent outright when it goes. fixpoint itself
         # only ever stops an agent with SIGKILL to the process group (internal/agent
         # KillProcessGroup), which no handler sees on either platform.
-        agents_running() { ps -eo args | grep -c '[p]lumb term' || true; }
-        before=$(scratch_count)
-        running_before=$(agents_running)
-        (cd "$target" && exec env HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- plumb term) >"$base/term.out" 2>&1 &
+        # The agent carries a token no other run on the host can have, and the run has a
+        # TMPDIR of its own, so neither count can be skewed by a concurrent sandbox.
+        token=term-$$-$(date +%s)
+        mkdir -p "$base/term-tmp"
+        agent_running() { ps -eo args | grep -c "[p]lumb term $token" || true; }
+        (cd "$target" && exec env HOME="$home" TMPDIR="$base/term-tmp" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$home/.local/bin:$PATH" "$tree/bench/sandbox.sh" "$target" ro -- plumb term "$token") >"$base/term.out" 2>&1 &
         wpid=$!
         n=0
         while ! grep -q started "$base/term.out" 2>/dev/null && [ "$n" -lt 100 ]; do
             sleep 0.1
             n=$((n + 1))
         done
+        # Without this the rest could pass because the agent never ran at all.
+        grep -q started "$base/term.out" || fail "the agent never started, so the TERM checks below mean nothing: $(cat "$base/term.out")"
+        [ "$(agent_running)" -ge 1 ] || fail "the agent is not running before the TERM"
+        [ "$(scratch_count "$base/term-tmp")" = 1 ] || fail "the wrapper has no scratch directory while the agent runs"
         kill -TERM "$wpid" 2>/dev/null || true
         set +e
         wait "$wpid" 2>/dev/null
@@ -297,12 +379,12 @@ EOF
         set -e
         [ "$got" != 0 ] || fail "a wrapper terminated by TERM exited 0"
         n=0
-        while [ "$n" -lt 50 ] && { [ "$(agents_running)" -gt "$running_before" ] || [ "$(scratch_count)" -gt "$before" ]; }; do
+        while [ "$n" -lt 50 ] && { [ "$(agent_running)" -gt 0 ] || [ "$(scratch_count "$base/term-tmp")" -gt 0 ]; }; do
             sleep 0.1
             n=$((n + 1))
         done
-        [ "$(agents_running)" -le "$running_before" ] || fail "the agent was still running 5s after its wrapper was terminated"
-        [ "$(scratch_count)" -le "$before" ] || fail "a terminated wrapper left its scratch directory behind"
+        [ "$(agent_running)" = 0 ] || fail "the agent was still running 5s after its wrapper was terminated"
+        [ "$(scratch_count "$base/term-tmp")" = 0 ] || fail "a terminated wrapper left its scratch directory behind"
         if [ "$os" = Darwin ]; then
             grep -q got-term "$base/term.out" || fail "TERM did not reach the agent"
         fi
@@ -391,11 +473,12 @@ if [ "$can_confine" = 1 ]; then
 
     # run_probe <who> <mode> <outfile>
     run_probe() {
-        (cd "$target" && penv "$tree/bench/sandbox.sh" "$target" "$2" -- "$home/.local/bin/$1") >"$3" 2>"$3.err" ||
+        (cd "$target" && penv TMPDIR="$base/ptmp" "$tree/bench/sandbox.sh" "$target" "$2" -- "$home/.local/bin/$1") >"$3" 2>"$3.err" ||
             fail "the probe could not run as $1 in $2 mode: $(cat "$3.err")"
     }
     for who in codex claude other; do
-        scratch_before=$(scratch_count)
+        mkdir -p "$base/ptmp"
+        scratch_before=$(scratch_count "$base/ptmp")
         run_probe "$who" ro "$base/$who.out"
         o=$base/$who.out
         expect "$who: the checkout's manifest is unreadable" "$o" '^cat_key=denied$'
@@ -436,7 +519,7 @@ if [ "$can_confine" = 1 ]; then
             diff "$base/before.snap" "$base/after.snap" | sed 's/^/    /' || true
         fi
         # S is removed, whichever way the agent ended
-        [ "$(scratch_count)" = "$scratch_before" ] || fail "$who: a scratch directory was left behind"
+        [ "$(scratch_count "$base/ptmp")" = "$scratch_before" ] || fail "$who: a scratch directory was left behind"
         # a repaired world for the next persona (Linux binds do not change the host,
         # but a mac failure above could have)
         snap >"$base/before.snap"
@@ -454,6 +537,7 @@ if [ "$can_confine" = 1 ]; then
     expect "claude: settings.json cannot be modified (a SessionStart hook)" "$base/claude.out" '^write_claude_settings=denied$'
     expect "claude: CLAUDE.md cannot be modified" "$base/claude.out" '^write_claude_md=denied$'
     expect "claude: commands/ cannot be added" "$base/claude.out" '^write_claude_commands=denied$'
+    expect "claude: plugins/ (hooks, skills, MCP servers) cannot be written" "$base/claude.out" '^write_claude_plugins=denied$'
     expect "claude: settings.json can still be read" "$base/claude.out" '^read_claude_settings=ok$'
     for who in codex other; do
         expect "$who: the live claude transcripts are unreadable" "$base/$who.out" '^cat_claude_transcript=denied$'
