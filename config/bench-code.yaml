@@ -34,8 +34,10 @@ roles:
 # purpose: fixpoint runs an agent with its working directory in the target, so a
 # relative path would resolve against the staged copy, and the config cannot name
 # the checkout absolutely. bench/run.sh puts bench/ on PATH; run this config by hand
-# the same way (PATH=$PWD/bench:$PATH ./fixpoint bench-code -check). What the wrapper
-# does and does not enforce: bench/sandbox.sh, bench/README.md.
+# the same way (PATH=$PWD/bench:$PATH ./fixpoint bench-code -check
+# --agents-sandboxed: the flag is what lets a codex candidate run with its own
+# sandbox off, which cannot nest inside the wrapper). What the wrapper does and
+# does not enforce: bench/sandbox.sh, bench/README.md.
 sandbox:
   command: [sandbox.sh, "{{target}}", "{{target_mode}}", --]
 
