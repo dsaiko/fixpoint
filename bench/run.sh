@@ -266,16 +266,44 @@ run_task() {
     # key_reads() refuses a row whose lens reached the key anyway.
     # `pwd -P`: macOS mktemp answers under /var, a symlink to /private/var, and
     # fixpoint refuses a -target with a symlink in any component.
-    work=$(mktemp -d)
-    work=$(cd "$work" && pwd -P)
-    # Checked by hand: run_task is called under `||`, where `set -e` is off, and
-    # a failed copy would otherwise send the panel to review an empty directory.
-    if ! cp -R "$target" "$work/repo"; then
-        echo "bench: could not copy $target to $work/repo; nothing to score" >&2
-        rm -rf "$work" "$marker"
+    #
+    # EVERY STEP IS CHECKED BY HAND: run_task is called under `||`, where
+    # `set -e` is off. An unchecked `work=$(mktemp -d)` that failed left work
+    # empty, `cd ""` stays put under dash, and the cleanup below would then have
+    # been `rm -rf` of the checkout itself (review run 20261124-104533). $work is
+    # only ever what mktemp returned; $stage, the resolved path, is never removed.
+    work=$(mktemp -d) || work=
+    if [ -z "$work" ] || [ ! -d "$work" ]; then
+        echo "bench: mktemp -d failed; nothing to score" >&2
+        rm -f "$marker"
         return 1
     fi
-    ./fixpoint "$cfg" -target "$work/repo" --trusted-target --trusted-bundle || {
+    stage=$(cd "$work" && pwd -P) || stage=
+    root=$(pwd -P)
+    # A TMPDIR inside the checkout would put the copy back under the key.
+    case "$stage/" in
+    / | "$root"/*)
+        echo "bench: the scratch directory '$stage' is empty or inside the checkout ($root); set TMPDIR elsewhere" >&2
+        rm -rf "$work"
+        rm -f "$marker"
+        return 1
+        ;;
+    esac
+    # Only what git would show a reviewer, as fixpoint's own collector did when
+    # the target sat in the worktree: tracked and untracked-but-not-ignored.
+    # A plain `cp -R` also carried ignored build output (the 10 MB `linkd` that
+    # `make bench-check` leaves in target-go, target-csharp/obj), so what a
+    # model was shown depended on which host had built what.
+    if ! mkdir "$stage/repo" ||
+        ! (cd "$target" && git ls-files -z --cached --others --exclude-standard . | tar -cf - --null -T -) |
+        tar -xf - -C "$stage/repo" ||
+        [ -z "$(ls -A "$stage/repo")" ]; then
+        echo "bench: could not stage $target in $stage/repo; nothing to score" >&2
+        rm -rf "$work"
+        rm -f "$marker"
+        return 1
+    fi
+    ./fixpoint "$cfg" -target "$stage/repo" --trusted-target --trusted-bundle || {
         # exit 4 is review-only's normal termination; anything else is the
         # candidate failing, which the bench records rather than hides.
         code=$?

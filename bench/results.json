@@ -115,18 +115,18 @@
    "effort": null,
    "route": "ollama/codex",
    "pays": "sub (ollama)",
-   "points": 387,
+   "points": 388,
    "possible": 484,
    "incomplete": false,
-   "tokens": 1739837,
-   "points_per_mtok": 222.4,
-   "cost_usd": 3.14,
+   "tokens": 1617111,
+   "points_per_mtok": 239.9,
+   "cost_usd": 2.97,
    "cost_per_point_usd": 0.008,
    "notional": true,
    "caching_era": "cached",
-   "cached_input_share": 0.788,
-   "cost_per_point_uncached_usd": 0.014,
-   "seconds": 9129,
+   "cached_input_share": 0.77,
+   "cost_per_point_uncached_usd": 0.012,
+   "seconds": 8631,
    "sessions": 23,
    "errors": 0,
    "contract_failures": 0,
@@ -137,11 +137,6 @@
     "last": "2026-11-24"
    },
    "by_target": {
-    "go": {
-     "found": 42,
-     "of": 56,
-     "deflated": false
-    },
     "design": {
      "found": 20,
      "of": 34,
@@ -162,11 +157,6 @@
      "of": 63,
      "deflated": false
     },
-    "csharp": {
-     "found": 51,
-     "of": 68,
-     "deflated": false
-    },
     "cpp": {
      "found": 54,
      "of": 64,
@@ -175,6 +165,16 @@
     "python": {
      "found": 55,
      "of": 66,
+     "deflated": false
+    },
+    "go": {
+     "found": 46,
+     "of": 56,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 48,
+     "of": 68,
      "deflated": false
     }
    }

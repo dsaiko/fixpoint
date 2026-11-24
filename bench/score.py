@@ -402,15 +402,33 @@ def selftest(manifest_path):
 #
 # Only tool-call INPUTS are read -- a codex shell command, a claude tool_use --
 # never tool output, so a path that merely appears in a directory listing is
-# not an offence. The patterns are paths no target contains (checked: none of
-# bench/testdata matches), so a hit is the model looking past its target.
+# not an offence. The patterns are words no target contains (checked: none of
+# bench/testdata matches), and since the reviewed copy sits in an empty scratch
+# directory, ANY mention of the checkout, of bench/ or of .fixpoint is the model
+# looking past its target -- globs included (`bench/m*`, `.fixpoint/2026*`).
+#
+# WHAT THIS CANNOT SEE (review run 20261124-104533), so nobody mistakes it for
+# a boundary: (1) a path that only exists after the shell expands it
+# (`cat /*/*/fix*/b*/m*`); (2) the claude-harness routes entirely -- their raw
+# stream is `--output-format json`, one result envelope with no tool events, so
+# those sessions are reported by unaudited() and scored on trust. The boundary
+# that would hold is a filesystem sandbox (sandbox.command) around the lens.
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 KEY_PATHS = re.compile(
-    r"manifest-[a-z]+\.yaml"
+    r"manifest"
     r"|score\.py"
-    r"|bench/(?:results|summaries|README|report)"
-    r"|results[\w.-]*\.(?:csv|json)"
-    r"|\.fixpoint/\d{8}-\d{6}"
+    r"|\bbench/"
+    r"|testdata"
+    r"|results[\w.*?-]*\.(?:csv|json)"
+    r"|\.fixpoint"
+    r"|" + re.escape(str(REPO_ROOT))
 )
+
+
+def printable(text, limit=200):
+    """A tool input made safe to print: it is MODEL-CONTROLLED text, and an
+    escape sequence in it would otherwise reach the operator's terminal."""
+    return text[:limit].encode("unicode_escape").decode("ascii")
 
 
 def tool_inputs(raw_path):
@@ -448,6 +466,12 @@ def key_reads(run_dir):
     return hits
 
 
+def unaudited(run_dir):
+    """Session files that carry no tool-call record at all, so nothing was checked."""
+    return [raw.name for raw in sorted(pathlib.Path(run_dir).glob("round-*/*.raw"))
+            if not any(True for _ in tool_inputs(raw))]
+
+
 def leak_selftest():
     """key_reads() against the calls that leaked, and the ones that must not trip it."""
     import tempfile
@@ -457,12 +481,20 @@ def leak_selftest():
         "/bin/zsh -lc 'cat .fixpoint/20260913-222951/round-1/review-x.json'",
         "/bin/zsh -lc 'ls bench/results | head'",
         "/bin/zsh -lc 'grep -n kimi results.csv'",
+        # Globs and directory-wide reads name no key file literally.
+        "/bin/zsh -lc 'cat bench/m*'",
+        "/bin/zsh -lc 'cat ../../manifest-*.yaml'",
+        "/bin/zsh -lc 'ls .fixpoint/2026*/round-1'",
+        "/bin/zsh -lc 'tar c bench/ | tar t'",
+        f"/bin/zsh -lc 'grep -r seeds {REPO_ROOT}'",
     ]
     clean = [
         "/bin/zsh -lc 'nl -ba main.go store.go'",
         "/bin/zsh -lc 'for p in /AGENTS.md /Users/AGENTS.md; do cat $p; done'",
         "/bin/zsh -lc 'ls -la ..'",
         "/bin/zsh -lc 'grep -rn Results src/'",
+        "/bin/zsh -lc 'git status --short; git log --oneline -5'",
+        "/bin/zsh -lc 'go env GOROOT; cat go.mod'",
     ]
     fails = []
     with tempfile.TemporaryDirectory() as d:
@@ -487,6 +519,23 @@ def leak_selftest():
             fails.append(f"flagged a clean call in {name}")
         if len(key_reads(d)) != len(want):
             fails.append(f"counted {len(key_reads(d))} calls, want {len(want)} (output or repeats counted)")
+        # No sessions to inspect is not a leak: a re-scored extract under
+        # bench/summaries/ has no round-*/ at all, and must still score.
+        empty = pathlib.Path(d, "empty")
+        empty.mkdir()
+        pathlib.Path(d, "notes").mkdir()
+        pathlib.Path(d, "notes", "round-1").mkdir()
+        pathlib.Path(d, "notes", "round-1", "x.md").write_text("manifest-go.yaml")
+        for case in (empty, pathlib.Path(d, "notes"), pathlib.Path(d, "absent")):
+            if key_reads(case) != []:
+                fails.append(f"key_reads({case.name}) is not empty")
+        # A session with no tool-call record is named, not silently passed.
+        rnd.joinpath("envelope.raw").write_text(json.dumps({"type": "result", "result": "ok"}) + "\n")
+        if unaudited(d) != ["envelope.raw"]:
+            fails.append(f"unaudited() = {unaudited(d)}, want ['envelope.raw']")
+    esc = printable("cat manifest-go.yaml \x1b]52;c;AAAA\x07\x1b[2K")
+    if "\x1b" in esc or "\x07" in esc or "\\x1b" not in esc:
+        fails.append(f"printable() let a control character through: {esc!r}")
     if fails:
         print("score.py --leak-selftest FAILED:\n  " + "\n  ".join(fails))
         return 1
@@ -576,10 +625,15 @@ def main():
                  f"measurement and no row was written. Re-run it.")
     leaks = key_reads(pathlib.Path(summary_path).parent)
     if leaks:
-        shown = "\n  ".join(f"{name}: {call[:200]}" for name, call in leaks[:8])
+        shown = "\n  ".join(f"{name}: {printable(call)}" for name, call in leaks[:8])
         sys.exit(f"bench: {model} {target}: a lens read the answer key or earlier "
                  f"results ({len(leaks)} call(s)), so this is not a measurement and "
                  f"no row was written:\n  {shown}")
+    blind = unaudited(pathlib.Path(summary_path).parent)
+    if blind:
+        print(f"bench: WARNING {model} {target}: {len(blind)} session(s) carry no tool-call "
+              f"record ({', '.join(blind[:3])}), so the answer-key check saw nothing there",
+              file=sys.stderr)
     mtok = (tok_in + tok_out) / 1e6
     eff = round(found / mtok, 2) if mtok else 0.0
 
