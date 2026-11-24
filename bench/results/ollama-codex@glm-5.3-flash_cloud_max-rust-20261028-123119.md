@@ -1,6 +1,6 @@
 # ollama-codex@glm-5.3-flash:cloud#max · rust · run 20261028-123119 (repeat 1)
 
-recall **41/64** · 56 finding(s), 4 unmatched · 1713233 tokens · 493s
+recall **41/64** · 56 finding(s), 5 unmatched · 1713233 tokens · 493s
 
 | seed | found | note | matched by |
 |---|---|---|---|
@@ -62,7 +62,7 @@ recall **41/64** · 56 finding(s), 4 unmatched · 1713233 tokens · 493s
 | RM09 | — | RUST-ONLY the auth path calls bearer_token on an absent Authorization  |  |
 | RM10 | YES | parallel: C26 janitor.stop() sits after an infinite accept loop, so it | review-concurrency: Connections can leak request threads indefinitely |
 | RM11 | — | parallel: C25 no read or write timeout is ever set on an accepted stre |  |
-| RM13 | YES | export_csv defaults an empty name to links.csv but read_report is hand | review-bugs: Default report name is written and read inconsistently; review-security: Report filename permits path traversal and file overwrite/re |
+| RM13 | YES | export_csv defaults an empty name to links.csv but read_report is hand | review-bugs: Default report name is written and read inconsistently |
 | RM14 | — | a bad ttl parses to 0 and mints an already-expired link, and a large v |  |
 | RM15 | YES | every handler writes its HTTP response while still holding the global  | review-concurrency: Store mutex is held across file and network I/O |
 | RM16 | YES | the link owner is taken from the request body instead of the authentic | review-security: Link owner is client-controlled |
@@ -72,5 +72,6 @@ recall **41/64** · 56 finding(s), 4 unmatched · 1713233 tokens · 493s
 Unmatched findings (noise, or genuinely new — skim before dismissing):
 - (medium) src/cache.rs:60 — Zero-capacity cache can grow without bound
 - (medium) src/export.rs:49 — Snapshot rename failures are ignored
+- (critical) src/main.rs:213 — Report filename permits path traversal and file overwrite/read
 - (high) src/main.rs:216 — Any authenticated user can export every owner's links
 - (high) src/main.rs:150 — Link listing ignores ownership and pagination limits

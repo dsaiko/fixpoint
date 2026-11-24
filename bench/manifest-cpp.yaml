@@ -304,7 +304,7 @@ seeds:
     anchor: 'std::string path = dir + "/" + report + ".csv";'
     span: 6
     need: 1
-    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", arbitrary]
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "../", arbitrary]
     note: "parallel: EX01 the report name comes from the query string and is concatenated onto dir unchecked"
   - id: P40
     file: export.cpp

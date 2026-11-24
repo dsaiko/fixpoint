@@ -43,11 +43,11 @@
    "effort": null,
    "route": "anthropic",
    "pays": "sub (claude)",
-   "points": 403,
+   "points": 404,
    "possible": 484,
    "incomplete": false,
    "tokens": 1148911,
-   "points_per_mtok": 350.8,
+   "points_per_mtok": 351.6,
    "cost_usd": 25.41,
    "cost_per_point_usd": 0.063,
    "notional": true,
@@ -91,7 +91,7 @@
      "deflated": false
     },
     "csharp": {
-     "found": 54,
+     "found": 55,
      "of": 68,
      "deflated": false
     },
@@ -115,11 +115,11 @@
    "effort": null,
    "route": "ollama/codex",
    "pays": "sub (ollama)",
-   "points": 388,
+   "points": 389,
    "possible": 484,
    "incomplete": false,
    "tokens": 1617111,
-   "points_per_mtok": 239.9,
+   "points_per_mtok": 240.6,
    "cost_usd": 2.97,
    "cost_per_point_usd": 0.008,
    "notional": true,
@@ -158,7 +158,7 @@
      "deflated": false
     },
     "cpp": {
-     "found": 54,
+     "found": 55,
      "of": 64,
      "deflated": false
     },
@@ -187,13 +187,13 @@
    "effort": "high",
    "route": "cli",
    "pays": "sub (claude)",
-   "points": 376,
+   "points": 377,
    "possible": 484,
    "incomplete": false,
    "tokens": 905855,
-   "points_per_mtok": 415.1,
+   "points_per_mtok": 416.2,
    "cost_usd": 14.12,
-   "cost_per_point_usd": 0.038,
+   "cost_per_point_usd": 0.037,
    "notional": true,
    "caching_era": "cached",
    "cached_input_share": 0.736,
@@ -225,7 +225,7 @@
      "deflated": false
     },
     "java": {
-     "found": 52,
+     "found": 53,
      "of": 69,
      "deflated": false
     },
@@ -331,11 +331,11 @@
    "effort": null,
    "route": "anthropic",
    "pays": "sub (claude)",
-   "points": 372,
+   "points": 371,
    "possible": 484,
    "incomplete": false,
    "tokens": 913873,
-   "points_per_mtok": 407.1,
+   "points_per_mtok": 406.0,
    "cost_usd": 10.02,
    "cost_per_point_usd": 0.027,
    "notional": true,
@@ -369,7 +369,7 @@
      "deflated": false
     },
     "java": {
-     "found": 56,
+     "found": 55,
      "of": 69,
      "deflated": false
     },
@@ -403,11 +403,11 @@
    "effort": null,
    "route": "anthropic",
    "pays": "sub (claude)",
-   "points": 369,
+   "points": 371,
    "possible": 484,
    "incomplete": false,
    "tokens": 847251,
-   "points_per_mtok": 435.5,
+   "points_per_mtok": 437.9,
    "cost_usd": 4.93,
    "cost_per_point_usd": 0.013,
    "notional": true,
@@ -441,7 +441,7 @@
      "deflated": false
     },
     "java": {
-     "found": 53,
+     "found": 54,
      "of": 69,
      "deflated": false
     },
@@ -456,7 +456,7 @@
      "deflated": false
     },
     "cpp": {
-     "found": 54,
+     "found": 55,
      "of": 64,
      "deflated": false
     },
@@ -475,11 +475,11 @@
    "effort": null,
    "route": "anthropic",
    "pays": "sub (claude)",
-   "points": 365,
+   "points": 367,
    "possible": 484,
    "incomplete": false,
    "tokens": 852453,
-   "points_per_mtok": 428.2,
+   "points_per_mtok": 430.5,
    "cost_usd": 24.62,
    "cost_per_point_usd": 0.067,
    "notional": true,
@@ -513,7 +513,7 @@
      "deflated": false
     },
     "java": {
-     "found": 53,
+     "found": 55,
      "of": 69,
      "deflated": false
     },
@@ -547,11 +547,11 @@
    "effort": null,
    "route": "ollama/codex",
    "pays": "sub (ollama)",
-   "points": 364,
+   "points": 363,
    "possible": 484,
    "incomplete": false,
    "tokens": 1567565,
-   "points_per_mtok": 232.2,
+   "points_per_mtok": 231.6,
    "cost_usd": 0.76,
    "cost_per_point_usd": 0.002,
    "notional": true,
@@ -600,7 +600,7 @@
      "deflated": false
     },
     "cpp": {
-     "found": 51,
+     "found": 50,
      "of": 64,
      "deflated": false
     },
@@ -619,11 +619,11 @@
    "effort": null,
    "route": "anthropic",
    "pays": "sub (claude)",
-   "points": 356,
+   "points": 358,
    "possible": 484,
    "incomplete": false,
    "tokens": 1708088,
-   "points_per_mtok": 208.4,
+   "points_per_mtok": 209.6,
    "cost_usd": 0.57,
    "cost_per_point_usd": 0.002,
    "notional": true,
@@ -657,7 +657,7 @@
      "deflated": false
     },
     "java": {
-     "found": 51,
+     "found": 52,
      "of": 69,
      "deflated": false
     },
@@ -672,7 +672,7 @@
      "deflated": false
     },
     "cpp": {
-     "found": 47,
+     "found": 48,
      "of": 64,
      "deflated": false
     },
@@ -685,89 +685,17 @@
   },
   {
    "rank": 10,
-   "candidate": "codex@google/gemini-4-argon",
-   "baseline": false,
-   "model": "codex@google/gemini-4-argon",
-   "effort": null,
-   "route": "openrouter/codex",
-   "pays": "credits",
-   "points": 348,
-   "possible": 484,
-   "incomplete": false,
-   "tokens": 4983598,
-   "points_per_mtok": 69.8,
-   "cost_usd": 13.62,
-   "cost_per_point_usd": 0.039,
-   "notional": false,
-   "caching_era": "cached",
-   "cached_input_share": 0.449,
-   "cost_per_point_uncached_usd": 0.059,
-   "seconds": 3701,
-   "sessions": 23,
-   "errors": 0,
-   "contract_failures": 0,
-   "timeouts": 0,
-   "other_failures": 0,
-   "measured": {
-    "first": "2026-10-13",
-    "last": "2026-10-13"
-   },
-   "by_target": {
-    "design": {
-     "found": 14,
-     "of": 34,
-     "deflated": false
-    },
-    "go": {
-     "found": 42,
-     "of": 56,
-     "deflated": false
-    },
-    "rust": {
-     "found": 50,
-     "of": 64,
-     "deflated": false
-    },
-    "java": {
-     "found": 53,
-     "of": 69,
-     "deflated": false
-    },
-    "typescript": {
-     "found": 49,
-     "of": 63,
-     "deflated": false
-    },
-    "csharp": {
-     "found": 44,
-     "of": 68,
-     "deflated": false
-    },
-    "cpp": {
-     "found": 48,
-     "of": 64,
-     "deflated": false
-    },
-    "python": {
-     "found": 48,
-     "of": 66,
-     "deflated": false
-    }
-   }
-  },
-  {
-   "rank": 11,
    "candidate": "ollama-codex@beam:cloud",
    "baseline": false,
    "model": "ollama-codex@beam:cloud",
    "effort": null,
    "route": "ollama/codex",
    "pays": "sub (ollama)",
-   "points": 348,
+   "points": 351,
    "possible": 484,
    "incomplete": false,
    "tokens": 2887603,
-   "points_per_mtok": 120.5,
+   "points_per_mtok": 121.6,
    "cost_usd": null,
    "cost_per_point_usd": null,
    "notional": true,
@@ -801,12 +729,12 @@
      "deflated": false
     },
     "java": {
-     "found": 51,
+     "found": 52,
      "of": 69,
      "deflated": false
     },
     "typescript": {
-     "found": 50,
+     "found": 51,
      "of": 63,
      "deflated": false
     },
@@ -821,7 +749,79 @@
      "deflated": false
     },
     "python": {
+     "found": 50,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 11,
+   "candidate": "codex@google/gemini-4-argon",
+   "baseline": false,
+   "model": "codex@google/gemini-4-argon",
+   "effort": null,
+   "route": "openrouter/codex",
+   "pays": "credits",
+   "points": 350,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 4983598,
+   "points_per_mtok": 70.2,
+   "cost_usd": 13.62,
+   "cost_per_point_usd": 0.039,
+   "notional": false,
+   "caching_era": "cached",
+   "cached_input_share": 0.449,
+   "cost_per_point_uncached_usd": 0.059,
+   "seconds": 3701,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-13",
+    "last": "2026-10-13"
+   },
+   "by_target": {
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "go": {
+     "found": 42,
+     "of": 56,
+     "deflated": false
+    },
+    "rust": {
+     "found": 50,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 54,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
      "found": 49,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 44,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 49,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 48,
      "of": 66,
      "deflated": false
     }
@@ -1195,11 +1195,11 @@
    "effort": null,
    "route": "ollama",
    "pays": "sub (ollama)",
-   "points": 319,
+   "points": 320,
    "possible": 484,
    "incomplete": false,
    "tokens": 1818863,
-   "points_per_mtok": 175.4,
+   "points_per_mtok": 175.9,
    "cost_usd": 7.58,
    "cost_per_point_usd": 0.024,
    "notional": true,
@@ -1233,7 +1233,7 @@
      "deflated": false
     },
     "java": {
-     "found": 44,
+     "found": 45,
      "of": 69,
      "deflated": false
     },
@@ -1333,6 +1333,78 @@
   },
   {
    "rank": 19,
+   "candidate": "glm-5.3:cloud",
+   "baseline": false,
+   "model": "glm-5.3:cloud",
+   "effort": null,
+   "route": "ollama",
+   "pays": "sub (ollama)",
+   "points": 314,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 4706916,
+   "points_per_mtok": 66.7,
+   "cost_usd": 7.31,
+   "cost_per_point_usd": 0.023,
+   "notional": true,
+   "caching_era": "uncached",
+   "cached_input_share": null,
+   "cost_per_point_uncached_usd": 0.023,
+   "seconds": 2540,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-08-31",
+    "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 39,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 39,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 48,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 42,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 44,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 39,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 49,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 20,
    "candidate": "qwen/qwen3.8-27b",
    "baseline": false,
    "model": "qwen/qwen3.8-27b",
@@ -1398,78 +1470,6 @@
     },
     "python": {
      "found": 42,
-     "of": 66,
-     "deflated": false
-    }
-   }
-  },
-  {
-   "rank": 20,
-   "candidate": "glm-5.3:cloud",
-   "baseline": false,
-   "model": "glm-5.3:cloud",
-   "effort": null,
-   "route": "ollama",
-   "pays": "sub (ollama)",
-   "points": 313,
-   "possible": 484,
-   "incomplete": false,
-   "tokens": 4706916,
-   "points_per_mtok": 66.5,
-   "cost_usd": 7.31,
-   "cost_per_point_usd": 0.023,
-   "notional": true,
-   "caching_era": "uncached",
-   "cached_input_share": null,
-   "cost_per_point_uncached_usd": 0.023,
-   "seconds": 2540,
-   "sessions": 23,
-   "errors": 0,
-   "contract_failures": 0,
-   "timeouts": 0,
-   "other_failures": 0,
-   "measured": {
-    "first": "2026-08-31",
-    "last": "2026-09-01"
-   },
-   "by_target": {
-    "go": {
-     "found": 39,
-     "of": 56,
-     "deflated": false
-    },
-    "design": {
-     "found": 14,
-     "of": 34,
-     "deflated": false
-    },
-    "rust": {
-     "found": 39,
-     "of": 64,
-     "deflated": false
-    },
-    "java": {
-     "found": 49,
-     "of": 69,
-     "deflated": false
-    },
-    "typescript": {
-     "found": 42,
-     "of": 63,
-     "deflated": false
-    },
-    "csharp": {
-     "found": 44,
-     "of": 68,
-     "deflated": false
-    },
-    "cpp": {
-     "found": 38,
-     "of": 64,
-     "deflated": false
-    },
-    "python": {
-     "found": 48,
      "of": 66,
      "deflated": false
     }
@@ -1555,11 +1555,11 @@
    "effort": null,
    "route": "ollama",
    "pays": "sub (ollama)",
-   "points": 310,
+   "points": 311,
    "possible": 484,
    "incomplete": false,
    "tokens": 5937436,
-   "points_per_mtok": 52.2,
+   "points_per_mtok": 52.4,
    "cost_usd": 1.66,
    "cost_per_point_usd": 0.005,
    "notional": true,
@@ -1613,7 +1613,7 @@
      "deflated": false
     },
     "python": {
-     "found": 42,
+     "found": 43,
      "of": 66,
      "deflated": false
     }
@@ -1627,11 +1627,11 @@
    "effort": null,
    "route": "vllm",
    "pays": "rented GPU",
-   "points": 307,
+   "points": 308,
    "possible": 484,
    "incomplete": false,
    "tokens": 1113179,
-   "points_per_mtok": 275.8,
+   "points_per_mtok": 276.7,
    "cost_usd": 1.64,
    "cost_per_point_usd": 0.005,
    "notional": true,
@@ -1670,7 +1670,7 @@
      "deflated": false
     },
     "typescript": {
-     "found": 40,
+     "found": 41,
      "of": 63,
      "deflated": false
     },
@@ -1765,17 +1765,89 @@
   },
   {
    "rank": 25,
+   "candidate": "codex@moonshotai/kimi-k3.1-pro#xhigh",
+   "baseline": false,
+   "model": "codex@moonshotai/kimi-k3.1-pro#xhigh",
+   "effort": null,
+   "route": "openrouter/codex",
+   "pays": "credits",
+   "points": 302,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 625863,
+   "points_per_mtok": 482.5,
+   "cost_usd": 3.56,
+   "cost_per_point_usd": 0.012,
+   "notional": false,
+   "caching_era": "cached",
+   "cached_input_share": 0.919,
+   "cost_per_point_uncached_usd": 0.044,
+   "seconds": 3677,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-10-24",
+    "last": "2026-10-24"
+   },
+   "by_target": {
+    "go": {
+     "found": 37,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 15,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 39,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 47,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 34,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 41,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 46,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 43,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 26,
    "candidate": "ollama-codex@glm-5.3-flash:cloud#max",
    "baseline": false,
    "model": "ollama-codex@glm-5.3-flash:cloud#max",
    "effort": null,
    "route": "ollama/codex",
    "pays": "sub (ollama)",
-   "points": 301,
+   "points": 302,
    "possible": 484,
    "incomplete": false,
    "tokens": 1402843,
-   "points_per_mtok": 214.6,
+   "points_per_mtok": 215.3,
    "cost_usd": 0.48,
    "cost_per_point_usd": 0.002,
    "notional": true,
@@ -1829,80 +1901,8 @@
      "deflated": false
     },
     "cpp": {
-     "found": 43,
-     "of": 64,
-     "deflated": false
-    }
-   }
-  },
-  {
-   "rank": 26,
-   "candidate": "codex@moonshotai/kimi-k3.1-pro#xhigh",
-   "baseline": false,
-   "model": "codex@moonshotai/kimi-k3.1-pro#xhigh",
-   "effort": null,
-   "route": "openrouter/codex",
-   "pays": "credits",
-   "points": 300,
-   "possible": 484,
-   "incomplete": false,
-   "tokens": 625863,
-   "points_per_mtok": 479.3,
-   "cost_usd": 3.56,
-   "cost_per_point_usd": 0.012,
-   "notional": false,
-   "caching_era": "cached",
-   "cached_input_share": 0.919,
-   "cost_per_point_uncached_usd": 0.044,
-   "seconds": 3677,
-   "sessions": 23,
-   "errors": 0,
-   "contract_failures": 0,
-   "timeouts": 0,
-   "other_failures": 0,
-   "measured": {
-    "first": "2026-10-24",
-    "last": "2026-10-24"
-   },
-   "by_target": {
-    "go": {
-     "found": 37,
-     "of": 56,
-     "deflated": false
-    },
-    "design": {
-     "found": 15,
-     "of": 34,
-     "deflated": false
-    },
-    "rust": {
-     "found": 39,
-     "of": 64,
-     "deflated": false
-    },
-    "java": {
-     "found": 47,
-     "of": 69,
-     "deflated": false
-    },
-    "typescript": {
-     "found": 34,
-     "of": 63,
-     "deflated": false
-    },
-    "csharp": {
-     "found": 41,
-     "of": 68,
-     "deflated": false
-    },
-    "cpp": {
      "found": 44,
      "of": 64,
-     "deflated": false
-    },
-    "python": {
-     "found": 43,
-     "of": 66,
      "deflated": false
     }
    }
@@ -1915,11 +1915,11 @@
    "effort": "high",
    "route": "cli",
    "pays": "sub (chatgpt)",
-   "points": 298,
+   "points": 299,
    "possible": 484,
    "incomplete": false,
    "tokens": 569942,
-   "points_per_mtok": 522.9,
+   "points_per_mtok": 524.6,
    "cost_usd": 8.36,
    "cost_per_point_usd": 0.028,
    "notional": true,
@@ -1958,7 +1958,7 @@
      "deflated": false
     },
     "typescript": {
-     "found": 41,
+     "found": 42,
      "of": 63,
      "deflated": false
     },
@@ -1987,17 +1987,17 @@
    "effort": null,
    "route": "openrouter/codex",
    "pays": "credits",
-   "points": 293,
+   "points": 296,
    "possible": 484,
    "incomplete": false,
    "tokens": 815932,
-   "points_per_mtok": 359.1,
+   "points_per_mtok": 362.8,
    "cost_usd": 3.76,
    "cost_per_point_usd": 0.013,
    "notional": false,
    "caching_era": "cached",
    "cached_input_share": 0.881,
-   "cost_per_point_uncached_usd": 0.044,
+   "cost_per_point_uncached_usd": 0.043,
    "seconds": 3486,
    "sessions": 23,
    "errors": 0,
@@ -2025,7 +2025,7 @@
      "deflated": false
     },
     "java": {
-     "found": 42,
+     "found": 43,
      "of": 69,
      "deflated": false
     },
@@ -2040,12 +2040,12 @@
      "deflated": false
     },
     "cpp": {
-     "found": 39,
+     "found": 40,
      "of": 64,
      "deflated": false
     },
     "python": {
-     "found": 40,
+     "found": 41,
      "of": 66,
      "deflated": false
     }
@@ -2059,11 +2059,11 @@
    "effort": null,
    "route": "ollama/codex",
    "pays": "sub (ollama)",
-   "points": 289,
+   "points": 290,
    "possible": 484,
    "incomplete": false,
    "tokens": 1511258,
-   "points_per_mtok": 191.2,
+   "points_per_mtok": 191.9,
    "cost_usd": 0.49,
    "cost_per_point_usd": 0.002,
    "notional": true,
@@ -2092,7 +2092,7 @@
      "deflated": false
     },
     "rust": {
-     "found": 37,
+     "found": 38,
      "of": 64,
      "deflated": false
     },
@@ -2125,61 +2125,61 @@
   },
   {
    "rank": 30,
-   "candidate": "glm-5.2:cloud",
+   "candidate": "x-ai/grok-4.6",
    "baseline": false,
-   "model": "glm-5.2:cloud",
+   "model": "x-ai/grok-4.6",
    "effort": null,
-   "route": "ollama",
-   "pays": "sub (ollama)",
-   "points": 278,
+   "route": "openrouter",
+   "pays": "credits",
+   "points": 280,
    "possible": 484,
    "incomplete": false,
-   "tokens": 3596257,
-   "points_per_mtok": 77.3,
-   "cost_usd": 5.72,
+   "tokens": 1427795,
+   "points_per_mtok": 196.1,
+   "cost_usd": 6.0,
    "cost_per_point_usd": 0.021,
-   "notional": true,
-   "caching_era": "uncached",
-   "cached_input_share": null,
+   "notional": false,
+   "caching_era": "cached",
+   "cached_input_share": 0.409,
    "cost_per_point_uncached_usd": 0.021,
-   "seconds": 3948,
+   "seconds": 7955,
    "sessions": 23,
    "errors": 0,
    "contract_failures": 0,
    "timeouts": 0,
    "other_failures": 0,
    "measured": {
-    "first": "2026-09-01",
+    "first": "2026-08-20",
     "last": "2026-09-01"
    },
    "by_target": {
     "go": {
-     "found": 33,
+     "found": 32,
      "of": 56,
      "deflated": false
     },
     "design": {
-     "found": 14,
+     "found": 11,
      "of": 34,
      "deflated": false
     },
     "rust": {
-     "found": 35,
+     "found": 38,
      "of": 64,
      "deflated": false
     },
     "java": {
-     "found": 42,
+     "found": 39,
      "of": 69,
      "deflated": false
     },
     "typescript": {
-     "found": 37,
+     "found": 42,
      "of": 63,
      "deflated": false
     },
     "csharp": {
-     "found": 38,
+     "found": 37,
      "of": 68,
      "deflated": false
     },
@@ -2189,7 +2189,7 @@
      "deflated": false
     },
     "python": {
-     "found": 39,
+     "found": 41,
      "of": 66,
      "deflated": false
     }
@@ -2269,32 +2269,104 @@
   },
   {
    "rank": 32,
-   "candidate": "x-ai/grok-4.6",
+   "candidate": "glm-5.2:cloud",
    "baseline": false,
-   "model": "x-ai/grok-4.6",
+   "model": "glm-5.2:cloud",
    "effort": null,
-   "route": "openrouter",
-   "pays": "credits",
+   "route": "ollama",
+   "pays": "sub (ollama)",
    "points": 277,
    "possible": 484,
    "incomplete": false,
-   "tokens": 1427795,
-   "points_per_mtok": 194.0,
-   "cost_usd": 6.0,
-   "cost_per_point_usd": 0.022,
-   "notional": false,
-   "caching_era": "cached",
-   "cached_input_share": 0.409,
-   "cost_per_point_uncached_usd": 0.022,
-   "seconds": 7955,
+   "tokens": 3596257,
+   "points_per_mtok": 77.0,
+   "cost_usd": 5.72,
+   "cost_per_point_usd": 0.021,
+   "notional": true,
+   "caching_era": "uncached",
+   "cached_input_share": null,
+   "cost_per_point_uncached_usd": 0.021,
+   "seconds": 3948,
    "sessions": 23,
    "errors": 0,
    "contract_failures": 0,
    "timeouts": 0,
    "other_failures": 0,
    "measured": {
-    "first": "2026-08-20",
+    "first": "2026-09-01",
     "last": "2026-09-01"
+   },
+   "by_target": {
+    "go": {
+     "found": 33,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 14,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 35,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 41,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 37,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 38,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 40,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 39,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 33,
+   "candidate": "gpt-6-astra-xhigh",
+   "baseline": false,
+   "model": "gpt-6-astra",
+   "effort": "xhigh",
+   "route": "cli",
+   "pays": "sub (chatgpt)",
+   "points": 273,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 607708,
+   "points_per_mtok": 449.2,
+   "cost_usd": 14.94,
+   "cost_per_point_usd": 0.055,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.827,
+   "cost_per_point_uncached_usd": 0.124,
+   "seconds": 5617,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-09-05",
+    "last": "2026-09-05"
    },
    "by_target": {
     "go": {
@@ -2303,55 +2375,55 @@
      "deflated": false
     },
     "design": {
-     "found": 11,
+     "found": 14,
      "of": 34,
      "deflated": false
     },
     "rust": {
-     "found": 38,
+     "found": 35,
      "of": 64,
      "deflated": false
     },
     "java": {
-     "found": 38,
+     "found": 36,
      "of": 69,
      "deflated": false
     },
     "typescript": {
-     "found": 41,
+     "found": 37,
      "of": 63,
      "deflated": false
     },
     "csharp": {
-     "found": 37,
+     "found": 32,
      "of": 68,
      "deflated": false
     },
     "cpp": {
-     "found": 39,
+     "found": 45,
      "of": 64,
      "deflated": false
     },
     "python": {
-     "found": 41,
+     "found": 42,
      "of": 66,
      "deflated": false
     }
    }
   },
   {
-   "rank": 33,
+   "rank": 34,
    "candidate": "deepseek-v4-pro:cloud",
    "baseline": false,
    "model": "deepseek-v4-pro:cloud",
    "effort": null,
    "route": "ollama",
    "pays": "sub (ollama)",
-   "points": 270,
+   "points": 272,
    "possible": 484,
    "incomplete": false,
    "tokens": 3546238,
-   "points_per_mtok": 76.1,
+   "points_per_mtok": 76.7,
    "cost_usd": 2.83,
    "cost_per_point_usd": 0.01,
    "notional": true,
@@ -2380,12 +2452,12 @@
      "deflated": false
     },
     "rust": {
-     "found": 33,
+     "found": 34,
      "of": 64,
      "deflated": false
     },
     "java": {
-     "found": 42,
+     "found": 43,
      "of": 69,
      "deflated": false
     },
@@ -2406,78 +2478,6 @@
     },
     "python": {
      "found": 38,
-     "of": 66,
-     "deflated": false
-    }
-   }
-  },
-  {
-   "rank": 34,
-   "candidate": "gpt-6-astra-xhigh",
-   "baseline": false,
-   "model": "gpt-6-astra",
-   "effort": "xhigh",
-   "route": "cli",
-   "pays": "sub (chatgpt)",
-   "points": 270,
-   "possible": 484,
-   "incomplete": false,
-   "tokens": 607708,
-   "points_per_mtok": 444.3,
-   "cost_usd": 14.94,
-   "cost_per_point_usd": 0.055,
-   "notional": true,
-   "caching_era": "cached",
-   "cached_input_share": 0.827,
-   "cost_per_point_uncached_usd": 0.125,
-   "seconds": 5617,
-   "sessions": 23,
-   "errors": 0,
-   "contract_failures": 0,
-   "timeouts": 0,
-   "other_failures": 0,
-   "measured": {
-    "first": "2026-09-05",
-    "last": "2026-09-05"
-   },
-   "by_target": {
-    "go": {
-     "found": 32,
-     "of": 56,
-     "deflated": false
-    },
-    "design": {
-     "found": 14,
-     "of": 34,
-     "deflated": false
-    },
-    "rust": {
-     "found": 35,
-     "of": 64,
-     "deflated": false
-    },
-    "java": {
-     "found": 34,
-     "of": 69,
-     "deflated": false
-    },
-    "typescript": {
-     "found": 37,
-     "of": 63,
-     "deflated": false
-    },
-    "csharp": {
-     "found": 31,
-     "of": 68,
-     "deflated": false
-    },
-    "cpp": {
-     "found": 45,
-     "of": 64,
-     "deflated": false
-    },
-    "python": {
-     "found": 42,
      "of": 66,
      "deflated": false
     }
@@ -2563,11 +2563,11 @@
    "effort": "high",
    "route": "cli",
    "pays": "sub (chatgpt)",
-   "points": 265,
+   "points": 266,
    "possible": 484,
    "incomplete": false,
    "tokens": 533834,
-   "points_per_mtok": 496.4,
+   "points_per_mtok": 498.3,
    "cost_usd": 10.58,
    "cost_per_point_usd": 0.04,
    "notional": true,
@@ -2606,7 +2606,7 @@
      "deflated": false
     },
     "typescript": {
-     "found": 37,
+     "found": 38,
      "of": 63,
      "deflated": false
     },
@@ -2635,13 +2635,13 @@
    "effort": "high",
    "route": "cli",
    "pays": "sub (chatgpt)",
-   "points": 254,
+   "points": 257,
    "possible": 484,
    "incomplete": false,
    "tokens": 576550,
-   "points_per_mtok": 440.6,
+   "points_per_mtok": 445.8,
    "cost_usd": 2.17,
-   "cost_per_point_usd": 0.009,
+   "cost_per_point_usd": 0.008,
    "notional": true,
    "caching_era": "cached",
    "cached_input_share": 0.777,
@@ -2673,12 +2673,12 @@
      "deflated": false
     },
     "java": {
-     "found": 37,
+     "found": 39,
      "of": 69,
      "deflated": false
     },
     "typescript": {
-     "found": 37,
+     "found": 38,
      "of": 63,
      "deflated": false
     },
@@ -2707,11 +2707,11 @@
    "effort": null,
    "route": "ollama",
    "pays": "sub (ollama)",
-   "points": 251,
+   "points": 252,
    "possible": 484,
    "incomplete": false,
    "tokens": 6569978,
-   "points_per_mtok": 38.2,
+   "points_per_mtok": 38.4,
    "cost_usd": 4.56,
    "cost_per_point_usd": 0.018,
    "notional": true,
@@ -2765,7 +2765,7 @@
      "deflated": false
     },
     "python": {
-     "found": 36,
+     "found": 37,
      "of": 66,
      "deflated": false
     }
@@ -2779,11 +2779,11 @@
    "effort": null,
    "route": "ollama",
    "pays": "sub (ollama)",
-   "points": 249,
+   "points": 250,
    "possible": 484,
    "incomplete": false,
    "tokens": 4499460,
-   "points_per_mtok": 55.3,
+   "points_per_mtok": 55.6,
    "cost_usd": 1.19,
    "cost_per_point_usd": 0.005,
    "notional": true,
@@ -2802,7 +2802,7 @@
    },
    "by_target": {
     "go": {
-     "found": 28,
+     "found": 29,
      "of": 56,
      "deflated": false
     },
@@ -2923,17 +2923,17 @@
    "effort": null,
    "route": "ollama",
    "pays": "sub (ollama)",
-   "points": 242,
+   "points": 241,
    "possible": 484,
    "incomplete": false,
    "tokens": 1561494,
-   "points_per_mtok": 155.0,
+   "points_per_mtok": 154.3,
    "cost_usd": 2.54,
-   "cost_per_point_usd": 0.01,
+   "cost_per_point_usd": 0.011,
    "notional": true,
    "caching_era": "uncached",
    "cached_input_share": null,
-   "cost_per_point_uncached_usd": 0.01,
+   "cost_per_point_uncached_usd": 0.011,
    "seconds": 2876,
    "sessions": 23,
    "errors": 0,
@@ -2956,7 +2956,7 @@
      "deflated": false
     },
     "rust": {
-     "found": 33,
+     "found": 32,
      "of": 64,
      "deflated": false
     },
@@ -2995,11 +2995,11 @@
    "effort": null,
    "route": "ollama",
    "pays": "sub (ollama)",
-   "points": 236,
+   "points": 237,
    "possible": 484,
    "incomplete": false,
    "tokens": 8458314,
-   "points_per_mtok": 27.9,
+   "points_per_mtok": 28.0,
    "cost_usd": 1.41,
    "cost_per_point_usd": 0.006,
    "notional": true,
@@ -3038,7 +3038,7 @@
      "deflated": false
     },
     "typescript": {
-     "found": 31,
+     "found": 32,
      "of": 63,
      "deflated": false
     },
@@ -3067,11 +3067,11 @@
    "effort": "high",
    "route": "cli",
    "pays": "sub (chatgpt)",
-   "points": 223,
+   "points": 224,
    "possible": 484,
    "incomplete": false,
    "tokens": 353685,
-   "points_per_mtok": 630.5,
+   "points_per_mtok": 633.3,
    "cost_usd": 0.56,
    "cost_per_point_usd": 0.003,
    "notional": true,
@@ -3095,7 +3095,7 @@
      "deflated": false
     },
     "rust": {
-     "found": 20,
+     "found": 21,
      "of": 64,
      "deflated": false
     },
@@ -3283,11 +3283,11 @@
    "effort": "xhigh",
    "route": "cli",
    "pays": "sub (chatgpt)",
-   "points": 215,
+   "points": 218,
    "possible": 347,
    "incomplete": true,
    "tokens": 913809,
-   "points_per_mtok": 235.3,
+   "points_per_mtok": 238.6,
    "cost_usd": null,
    "cost_per_point_usd": null,
    "notional": true,
@@ -3316,7 +3316,7 @@
      "deflated": false
     },
     "rust": {
-     "found": 38,
+     "found": 39,
      "of": 64,
      "deflated": false
     },
@@ -3331,7 +3331,7 @@
      "deflated": false
     },
     "cpp": {
-     "found": 29,
+     "found": 31,
      "of": 64,
      "deflated": false
     }

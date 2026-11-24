@@ -303,7 +303,7 @@ seeds:
     anchor: "const path = join(dir, `${reportName}.csv`);"
     span: 6
     need: 1
-    keywords: ["path traversal", traversal, sanitiz, escape, outside, "..", join, arbitrary]
+    keywords: ["path traversal", traversal, sanitiz, escape, outside, "../", join, arbitrary]
     note: "parallel: EX01 the report name comes from the query string and is joined onto dir unchecked"
   - id: T40
     file: src/export.ts
