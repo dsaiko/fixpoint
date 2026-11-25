@@ -262,9 +262,10 @@ excepted), and every path in `FIXPOINT_SANDBOX_HIDE` (colon-separated, from your
 environment, never from a config) for what no symlink leads to. The working
 directory, the toolchains, the agent's install directory and the CLI state are
 bound back on top. Not hidden: a symlink target under a system root (`/usr`,
-`/etc`, `/opt`, `/var`, ...), which holds nothing of yours and which the agent
-needs. A `FIXPOINT_SANDBOX_HIDE` entry that does not exist, or that is or holds
-the working directory, stops the agent before it starts.
+`/etc`, `/opt`, `/var/lib`, ...), which holds nothing of yours and which the agent
+needs, or one holding `TMPDIR`, which would hide the agent's scratch directory
+with it. A `FIXPOINT_SANDBOX_HIDE` entry that does not exist, or that is or holds
+the working directory or `TMPDIR`, stops the agent before it starts.
 
 CLI state is decided from the agent's binary name. **codex** gets a fresh
 `CODEX_HOME` holding only a link to the real `auth.json`, and none at all on a

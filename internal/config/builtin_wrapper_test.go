@@ -409,6 +409,7 @@ func TestBuiltinWrapperRefusesAHideListItCannotHonor(t *testing.T) {
 		"missing":  filepath.Join(o.x, "nope"),
 		"ancestor": o.repos,
 		"target":   o.a,
+		"tmpdir":   o.tmp,
 	} {
 		out, err := o.probe(t, "ro", "FIXPOINT_SANDBOX_HIDE="+hide)
 		if err == nil {

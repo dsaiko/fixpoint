@@ -375,9 +375,12 @@ IFS=$oldifs
 #
 #   derived   the target of every symlink in $HOME down to depth 2 that leads out
 #             of it. Not hidden: a target inside $HOME (already hidden), inside
-#             <dir> or <dir> itself (what is under review), or under a system
-#             root (/usr, /etc, /opt, /var, ...; nothing of the operator's, and
-#             hiding it would break the agent: ~/bin/x -> /opt/x/bin/x is common).
+#             <dir> or <dir> itself (what is under review), under a system root
+#             (/usr, /etc, /opt, /var/lib, ...; nothing of the operator's, and
+#             hiding it would break the agent: ~/bin/x -> /opt/x/bin/x is common),
+#             or holding TMPDIR (S would be hidden with it). /var and /private as
+#             a whole are NOT system roots: /var/www is somebody's data, and on
+#             macOS every temporary directory is under /private/var.
 #   FIXPOINT_SANDBOX_HIDE  colon-separated, from the operator's environment and
 #             never from a config: what no symlink leads to. Each entry must exist
 #             and must not hold <dir>; a bad entry stops the agent before it
@@ -385,7 +388,7 @@ IFS=$oldifs
 system_root() {
     [ "$1" = / ] && return 0
     case "$1/" in
-    /usr/* | /bin/* | /sbin/* | /lib/* | /lib32/* | /lib64/* | /libx32/* | /etc/* | /opt/* | /nix/* | /snap/* | /proc/* | /sys/* | /dev/* | /run/* | /var/* | /tmp/* | /boot/* | /System/* | /Library/* | /Applications/* | /private/*) return 0 ;;
+    /usr/* | /bin/* | /sbin/* | /lib/* | /lib32/* | /lib64/* | /libx32/* | /etc/* | /opt/* | /nix/* | /snap/* | /proc/* | /sys/* | /dev/* | /run/* | /boot/* | /tmp/* | /var/lib/* | /var/cache/* | /var/run/* | /var/tmp/* | /System/* | /Library/* | /Applications/* | /private/etc/* | /private/var/run/* | /private/var/db/* | /private/tmp/*) return 0 ;;
     esac
     return 1
 }
@@ -415,6 +418,7 @@ for l in $links; do
     inside "$r" "$home" && continue
     inside "$r" "$target" && continue
     system_root "$r" && continue
+    inside "$tb" "$r" && continue
     case $r in
     *\"* | *\\*) die "the symlink '$l' leads to '$r', which contains a quote or a backslash; this wrapper cannot hide it, so it refuses to run" ;;
     esac
@@ -432,6 +436,7 @@ for p in $list; do
     [ -n "$r" ] || die "FIXPOINT_SANDBOX_HIDE: cannot resolve '$p'"
     plain "$r"
     inside "$target" "$r" && die "FIXPOINT_SANDBOX_HIDE: '$r' is or contains the reviewed directory '$target'"
+    inside "$tb" "$r" && die "FIXPOINT_SANDBOX_HIDE: '$r' is or contains TMPDIR '$tb', where the agent's scratch directory lives"
     if inside "$r" "$target"; then
         hidden_late="$hidden_late$nl$r"
     else
