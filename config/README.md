@@ -744,7 +744,10 @@ sandboxes itself takes the same block.
 
 `FIXPOINT_SANDBOX_RO` and `FIXPOINT_SANDBOX_RW` (colon-separated paths, from your
 environment and never from a config file) add what the wrapper does not know: a
-CLI installed somewhere unusual, a toolchain cache. A codex ChatGPT login that
+CLI installed somewhere unusual, a toolchain cache. Trees outside `$HOME` that a
+symlink in `$HOME` leads to are hidden like `$HOME` itself, the reviewed
+directory bound back; `FIXPOINT_SANDBOX_HIDE` (same format) hides more, and an
+entry that does not exist or holds the reviewed directory stops the run. A codex ChatGPT login that
 codex refreshes during a session is copied back to your `auth.json` afterwards,
 but only when it names the same account. Read the header of
 `sandbox/fixpoint-sandbox` for exactly what is mounted, and
@@ -780,7 +783,7 @@ sandbox.
 **The agent environment is filtered.** Each agent receives a non-secret baseline —
 `PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LANGUAGE`/`LC_ALL`/`LC_CTYPE`,
 `TERM`, `TZ`, `USER`/`LOGNAME`, the `XDG_*` config paths, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
-`FIXPOINT_SANDBOX_RO`/`FIXPOINT_SANDBOX_RW` (paths for the sandbox wrapper, which
+`FIXPOINT_SANDBOX_RO`/`FIXPOINT_SANDBOX_RW`/`FIXPOINT_SANDBOX_HIDE` (paths for the sandbox wrapper, which
 runs with the agent's environment), TLS trust
 (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`,
 `REQUESTS_CA_BUNDLE`), and proxy settings — plus the variables its own

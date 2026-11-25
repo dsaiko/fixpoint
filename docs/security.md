@@ -253,7 +253,18 @@ What it does, per platform:
 - **macOS, sandbox-exec.** File *contents* under `$HOME` unreadable except the
   same allowlist (names stay visible, which keeps path resolution working); writes
   denied everywhere except the scratch directory, a writable working directory and
-  the CLI's state files; terminal ioctls denied. Outside `$HOME` stays readable.
+  the CLI's state files; terminal ioctls denied.
+
+**Trees outside `$HOME` are hidden the same way** when they are yours: the target
+of every symlink in `$HOME`, down to depth 2, that leads out of it (`~/oddin ->
+/tank/enc/oddin` puts every repository there out of reach, the reviewed one
+excepted), and every path in `FIXPOINT_SANDBOX_HIDE` (colon-separated, from your
+environment, never from a config) for what no symlink leads to. The working
+directory, the toolchains, the agent's install directory and the CLI state are
+bound back on top. Not hidden: a symlink target under a system root (`/usr`,
+`/etc`, `/opt`, `/var`, ...), which holds nothing of yours and which the agent
+needs. A `FIXPOINT_SANDBOX_HIDE` entry that does not exist, or that is or holds
+the working directory, stops the agent before it starts.
 
 CLI state is decided from the agent's binary name. **codex** gets a fresh
 `CODEX_HOME` holding only a link to the real `auth.json`, and none at all on a
@@ -274,8 +285,10 @@ material cannot put a file, with its read-only mode under test
 The shipped codex agents declare `when_sandboxed`, so their own sandbox is
 switched off only inside it.
 
-What it leaves open, beyond what every wrapper leaves open: the network; on macOS
-everything outside `$HOME`; on Linux everything world-readable outside `$HOME`;
+What it leaves open, beyond what every wrapper leaves open: the network; what is
+readable outside `$HOME` that no symlink in `$HOME` leads to and
+`FIXPOINT_SANDBOX_HIDE` does not name (on Linux what your user can read, read-only;
+on macOS the same, plus nothing writable);
 `.claude.json`, which can declare user-scope MCP servers, stays writable (the CLI
 rewrites it on every start), so a lens could plant one that runs the next time you
 start `claude`; and on Linux a custom `CLAUDE_CONFIG_DIR` puts `.claude.json` inside the
@@ -283,6 +296,20 @@ read-only config directory, which blocks claude's rewrite of it (the bench
 wrapper, which shares this layout, has the same limitation). The coder is
 confined like the reviewers, so a `go test` it runs builds with a cold cache
 (`GOCACHE` points into the scratch directory).
+
+A mount below `/` can stay writable inside the Linux sandbox, and it is not a
+hole. `--ro-bind / /` remounts every submount read-only, but bubblewrap skips a
+submount it gets `EACCES` for — one your user cannot reach because a directory
+on the way to it is not searchable — on the reasoning that it is out of reach
+either way. `/proc/self/mountinfo` inside then still lists it `rw`. The agent
+runs as your user with your groups, so it cannot reach it either: what protects
+those mounts is the same directory permission that protected them before, and
+the sandbox adds nothing there. (On mediabox: the backup datasets under
+`/tank/enc/backups`, and Docker's overlays under `/var/lib/docker`, root-only.)
+A directory you can reach is remounted read-only. Check yours with
+`bwrap --ro-bind / / --dev /dev --proc /proc cat /proc/self/mountinfo`, and
+confirm that each `rw` entry outside `/dev`, `/proc` and `/tmp` is one
+`ls` cannot open.
 
 ### Agents that switch their own sandbox off: `-agents-sandboxed`
 

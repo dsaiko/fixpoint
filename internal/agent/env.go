@@ -64,7 +64,7 @@ var baselineEnv = []string{
 	// The shipped sandbox wrapper's extra mounts (config/sandbox/fixpoint-sandbox).
 	// cmd.Env applies to the wrapper too, since it is what fixpoint execs, so a
 	// variable it reads has to survive this filter. Paths, not secrets.
-	"FIXPOINT_SANDBOX_RO", "FIXPOINT_SANDBOX_RW",
+	"FIXPOINT_SANDBOX_RO", "FIXPOINT_SANDBOX_RW", "FIXPOINT_SANDBOX_HIDE",
 	"SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
 	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
 	"http_proxy", "https_proxy", "all_proxy", "no_proxy",

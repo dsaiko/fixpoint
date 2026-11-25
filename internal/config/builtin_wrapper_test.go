@@ -296,3 +296,176 @@ func TestBuiltinWrapperGivesClaudeItsConfigButNotItsTranscripts(t *testing.T) {
 		}
 	}
 }
+
+// outsideRig adds the layout the $HOME tmpfs alone does not cover: a symlink in
+// $HOME leading out of it to a tree of repositories, the reviewed one among
+// them, as `~/oddin -> /tank/enc/oddin` does on a real box. The probe is an
+// unknown CLI, so it gets no CLI state.
+type outsideRig struct {
+	wrapperRig
+	repos, a, b, x string
+}
+
+func newOutsideRig(t *testing.T) outsideRig {
+	t.Helper()
+	r := newWrapperRig(t)
+	outside := filepath.Join(filepath.Dir(r.home), "outside")
+	o := outsideRig{
+		wrapperRig: r,
+		repos:      filepath.Join(outside, "repos"),
+		a:          filepath.Join(outside, "repos", "a"),
+		b:          filepath.Join(outside, "repos", "b"),
+		x:          filepath.Join(outside, "x"),
+	}
+	for _, d := range []string{o.a, o.b, o.x} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, body := range map[string]string{
+		filepath.Join(o.a, "code.go"): "package a\n",
+		filepath.Join(o.b, "secret"):  "SECRET-B\n",
+		filepath.Join(o.x, "secret"):  "SECRET-X\n",
+		filepath.Join(r.bin, "probe"): `#!/bin/sh
+cat code.go
+cat "$PROBE_B/secret" 2>/dev/null && echo LEAK-b
+ls "$PROBE_B" >/dev/null 2>&1 && echo LIST-b
+cat "$PROBE_X/secret" 2>/dev/null && echo LEAK-x
+(echo w > "$PWD/written") 2>/dev/null && echo WROTE-a
+exit 0
+`,
+	} {
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(o.repos, filepath.Join(r.home, "repos")); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+func (o outsideRig) probe(t *testing.T, mode string, extraEnv ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", o.wrapper, o.a, mode, "--", "probe")
+	cmd.Dir = o.a
+	cmd.Env = append([]string{
+		"HOME=" + o.home,
+		"TMPDIR=" + o.tmp,
+		"PATH=" + o.bin + ":/usr/bin:/bin:/usr/sbin:/sbin",
+		"FIXPOINT_SANDBOX_RO=" + o.bin,
+		"PROBE_B=" + o.b,
+		"PROBE_X=" + o.x,
+	}, extraEnv...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// A tree reached through a symlink in $HOME is the operator's as much as $HOME
+// is: the other repositories in it are hidden, while the reviewed one, inside
+// that tree, stays readable (and writable in rw only).
+func TestBuiltinWrapperHidesTreesSymlinkedFromHome(t *testing.T) {
+	o := newOutsideRig(t)
+	for _, mode := range []string{"ro", "rw"} {
+		out, err := o.probe(t, mode)
+		if err != nil {
+			t.Fatalf("%s: wrapper failed: %v\n%s", mode, err, out)
+		}
+		if !strings.Contains(out, "package a") {
+			t.Errorf("%s: the reviewed directory inside the hidden tree is not readable:\n%s", mode, out)
+		}
+		for _, leak := range []string{"LEAK-b", "LIST-b"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("%s: %s -- another repository beside the target is visible:\n%s", mode, leak, out)
+			}
+		}
+		if wrote := strings.Contains(out, "WROTE-a"); wrote != (mode == "rw") {
+			t.Errorf("%s: write to the target = %v:\n%s", mode, wrote, out)
+		}
+	}
+}
+
+// FIXPOINT_SANDBOX_HIDE hides what no symlink in $HOME leads to.
+func TestBuiltinWrapperHidesTheOperatorsExtraPaths(t *testing.T) {
+	o := newOutsideRig(t)
+	out, err := o.probe(t, "ro", "FIXPOINT_SANDBOX_HIDE="+o.x)
+	if err != nil {
+		t.Fatalf("wrapper failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "LEAK-x") {
+		t.Errorf("a FIXPOINT_SANDBOX_HIDE path is readable:\n%s", out)
+	}
+	if !strings.Contains(out, "package a") {
+		t.Errorf("the target is not readable:\n%s", out)
+	}
+}
+
+// A hide list that cannot be honored stops the agent before it starts: a path
+// that does not exist, and one that holds the target (hiding it would hide the
+// work, and binding the target back would make the entry mean nothing).
+func TestBuiltinWrapperRefusesAHideListItCannotHonor(t *testing.T) {
+	o := newOutsideRig(t)
+	for name, hide := range map[string]string{
+		"missing":  filepath.Join(o.x, "nope"),
+		"ancestor": o.repos,
+		"target":   o.a,
+	} {
+		out, err := o.probe(t, "ro", "FIXPOINT_SANDBOX_HIDE="+hide)
+		if err == nil {
+			t.Errorf("%s: FIXPOINT_SANDBOX_HIDE=%s was accepted:\n%s", name, hide, out)
+		}
+		if strings.Contains(out, "package a") {
+			t.Errorf("%s: the agent ran:\n%s", name, out)
+		}
+	}
+}
+
+// What is bound back on top of a hidden tree: a toolchain whose directory in
+// $HOME is a symlink into one, and the agent's own install directory inside one.
+// Hiding either would make the agent fail to start rather than leak.
+func TestBuiltinWrapperBindsBackToolchainsAndTheAgentInsideAHiddenTree(t *testing.T) {
+	o := newOutsideRig(t)
+	cargo := filepath.Join(o.repos, "..", "cargo")
+	tools := filepath.Join(o.repos, "..", "tools", "bin")
+	for _, d := range []string{cargo, tools} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cargo, tools = phys(t, cargo), phys(t, tools)
+	if err := os.WriteFile(filepath.Join(cargo, "tool"), []byte("CARGO-OK\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tools, "inhidden"), []byte("#!/bin/sh\ncat \"$HOME/.cargo/tool\"\ncat "+filepath.Join(cargo, "tool")+" | sed s/CARGO/REAL/\ncat \"$PROBE_B/secret\" 2>/dev/null && echo LEAK-b\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for link, to := range map[string]string{".cargo": cargo, "tools": filepath.Dir(tools)} {
+		if err := os.Symlink(to, filepath.Join(o.home, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("/bin/sh", o.wrapper, o.a, "ro", "--", filepath.Join(tools, "inhidden"))
+	cmd.Dir = o.a
+	cmd.Env = []string{"HOME=" + o.home, "TMPDIR=" + o.tmp, "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "PROBE_B=" + o.b}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("an agent installed inside a hidden tree did not start: %v\n%s", err, out)
+	}
+	for _, want := range []string{"CARGO-OK", "REAL-OK"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("missing %s: a symlinked toolchain was not bound back:\n%s", want, out)
+		}
+	}
+	if strings.Contains(string(out), "LEAK-b") {
+		t.Errorf("binding the agent back exposed the rest of the tree:\n%s", out)
+	}
+}
+
+func phys(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}

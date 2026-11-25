@@ -21,8 +21,11 @@
 #
 # WHAT THE AGENT GETS
 #   read          <dir>; the system (root read-only on Linux, everything outside
-#                 $HOME on macOS); the toolchain directories under $HOME a CLI is
-#                 installed in; FIXPOINT_SANDBOX_RO
+#                 $HOME on macOS) EXCEPT the hidden trees below; the toolchain
+#                 directories under $HOME a CLI is installed in; FIXPOINT_SANDBOX_RO
+#   hidden        $HOME, and like it every tree outside $HOME that a symlink in
+#                 $HOME (depth 2) leads to, and FIXPOINT_SANDBOX_HIDE. <dir> and
+#                 the exceptions above are bound back on top.
 #   read+write    <dir> in rw mode only; a private scratch directory S (TMPDIR,
 #                 removed on exit); FIXPOINT_SANDBOX_RW
 #   CLI state     taken from the basename of argv[0]:
@@ -44,10 +47,10 @@
 #     other   no state at all. Bind what it needs with FIXPOINT_SANDBOX_RO/_RW.
 #   GOCACHE is pointed into S: the real build cache is not writable in here.
 #
-# FIXPOINT_SANDBOX_RO and FIXPOINT_SANDBOX_RW are colon-separated lists of extra
-# paths, for a CLI or a toolchain this script does not know. They come from the
-# operator's environment (fixpoint passes them through to the wrapper) and never
-# from a config file.
+# FIXPOINT_SANDBOX_RO, FIXPOINT_SANDBOX_RW and FIXPOINT_SANDBOX_HIDE are
+# colon-separated lists of extra paths: to bind for a CLI or a toolchain this
+# script does not know, or to hide. They come from the operator's environment
+# (fixpoint passes them through to the wrapper) and never from a config file.
 #
 # PLATFORMS
 #   Linux  bubblewrap: root read-only, /run masked (DNS's resolve directory bound
@@ -58,8 +61,8 @@
 #   macOS  sandbox-exec: file CONTENTS under $HOME unreadable except what is
 #          listed above (names stay visible -- metadata is not denied, which is
 #          what keeps path resolution working), writes denied everywhere except S,
-#          rw <dir> and the CLI state files, terminal ioctls denied. Everything
-#          outside $HOME stays readable.
+#          rw <dir> and the CLI state files, terminal ioctls denied. The hidden
+#          trees outside $HOME the same as $HOME; the rest stays readable.
 #   other  refused.
 #
 # SANDBOXES DO NOT NEST: codex's own --sandbox cannot start in here, which is why
@@ -363,6 +366,101 @@ IFS=$nl
 for d in $toolchains; do [ -z "$d" ] || plain "$d"; done
 IFS=$oldifs
 
+# Trees OUTSIDE $HOME that are the operator's as much as $HOME is. Hiding $HOME
+# alone left them readable through the root: `~/oddin -> /tank/enc/oddin` put
+# every other repository in reach of an agent reviewing one of them. Hidden the
+# same way $HOME is (an empty tmpfs on Linux, file contents unreadable on macOS),
+# with the same exceptions bound back on top: <dir>, the toolchains, the agent's
+# install directory, the CLI state, the extra paths, a worktree's git directory.
+#
+#   derived   the target of every symlink in $HOME down to depth 2 that leads out
+#             of it. Not hidden: a target inside $HOME (already hidden), inside
+#             <dir> or <dir> itself (what is under review), or under a system
+#             root (/usr, /etc, /opt, /var, ...; nothing of the operator's, and
+#             hiding it would break the agent: ~/bin/x -> /opt/x/bin/x is common).
+#   FIXPOINT_SANDBOX_HIDE  colon-separated, from the operator's environment and
+#             never from a config: what no symlink leads to. Each entry must exist
+#             and must not hold <dir>; a bad entry stops the agent before it
+#             starts. An entry INSIDE <dir> is hidden on top of it.
+system_root() {
+    [ "$1" = / ] && return 0
+    case "$1/" in
+    /usr/* | /bin/* | /sbin/* | /lib/* | /lib32/* | /lib64/* | /libx32/* | /etc/* | /opt/* | /nix/* | /snap/* | /proc/* | /sys/* | /dev/* | /run/* | /var/* | /tmp/* | /boot/* | /System/* | /Library/* | /Applications/* | /private/*) return 0 ;;
+    esac
+    return 1
+}
+# resolve <path>: the physical path a symlink leads to, or nothing.
+resolve() {
+    if [ -d "$1" ]; then
+        phys "$1"
+    elif [ -e "$1" ]; then
+        readlink -f "$1" 2>/dev/null || true
+    fi
+}
+hidden=       # hidden before <dir> is bound, so <dir> stays visible inside them
+hidden_late=  # FIXPOINT_SANDBOX_HIDE entries inside <dir>, hidden on top of it
+addhidden() { # addhidden <path>, already physical and plain
+    case "$nl$hidden$nl" in
+    *"$nl$1$nl"*) return 0 ;;
+    esac
+    hidden="$hidden$nl$1"
+}
+links=$(find "$home" -mindepth 1 -maxdepth 2 -type l 2>/dev/null) || links=
+oldifs=$IFS
+IFS=$nl
+for l in $links; do
+    [ -L "$l" ] || continue
+    r=$(resolve "$l")
+    [ -n "$r" ] || continue # dangling
+    inside "$r" "$home" && continue
+    inside "$r" "$target" && continue
+    system_root "$r" && continue
+    case $r in
+    *\"* | *\\*) die "the symlink '$l' leads to '$r', which contains a quote or a backslash; this wrapper cannot hide it, so it refuses to run" ;;
+    esac
+    addhidden "$r"
+done
+IFS=$oldifs
+list=${FIXPOINT_SANDBOX_HIDE:-}
+oldifs=$IFS
+IFS=:
+set -f
+for p in $list; do
+    [ -n "$p" ] || continue
+    [ -e "$p" ] || die "FIXPOINT_SANDBOX_HIDE: '$p' does not exist"
+    r=$(physany "$p")
+    [ -n "$r" ] || die "FIXPOINT_SANDBOX_HIDE: cannot resolve '$p'"
+    plain "$r"
+    inside "$target" "$r" && die "FIXPOINT_SANDBOX_HIDE: '$r' is or contains the reviewed directory '$target'"
+    if inside "$r" "$target"; then
+        hidden_late="$hidden_late$nl$r"
+    else
+        addhidden "$r"
+    fi
+done
+set +f
+IFS=$oldifs
+# What lives inside a hidden tree and must be bound back read-only: a toolchain
+# whose real directory is in one (~/.cargo -> /data/cargo), and the agent's own
+# install directory -- the top-level directory under the hidden one holding it.
+backs=
+oldifs=$IFS
+IFS=$nl
+for h in $hidden; do
+    [ -n "$h" ] || continue
+    for d in $toolchains; do
+        [ -n "$d" ] || continue
+        p=$(phys "$d")
+        [ -n "$p" ] && inside "$p" "$h" && backs="$backs$nl$p"
+    done
+    if [ -n "$agent_real" ] && inside "$agent_real" "$h"; then
+        rest=${agent_real#"$h"/}
+        backs="$backs$nl$h/${rest%%/*}"
+    fi
+done
+for d in $backs; do [ -z "$d" ] || plain "$d"; done
+IFS=$oldifs
+
 case $os in
 Darwin)
     # SBPL is last-match-wins, so the order is load-bearing: denies, then what is
@@ -377,9 +475,26 @@ Darwin)
     prof="(version 1)
 (allow default)
 (deny file-read-data (subpath \"$home\"))"
+    # The trees outside $HOME, exactly as $HOME: contents unreadable, names
+    # visible, and everything allowed back below wins over them.
+    oldifs=$IFS
+    IFS=$nl
+    for h in $hidden; do
+        [ -n "$h" ] && prof="$prof$nl(deny file-read-data (subpath \"$h\"))"
+    done
+    IFS=$oldifs
     rr deny "(prefix \"$tb/fixpoint-sandbox.\")"
     rd "$S"
     rd "$target"
+    oldifs=$IFS
+    IFS=$nl
+    for d in $hidden_late; do
+        [ -n "$d" ] && rr deny "(subpath \"$d\")"
+    done
+    for d in $backs; do
+        [ -n "$d" ] && rd "$d"
+    done
+    IFS=$oldifs
     oldifs=$IFS
     IFS=$nl
     for d in $toolchains $extra_ro $extra_rw $gitdirs; do
@@ -456,6 +571,19 @@ Linux)
     *) set -- "$@" --tmpfs "$tb" ;;
     esac
     set -- "$@" --bind "$S" /tmp
+    # The trees outside $HOME, before $HOME's own tmpfs: one of them may hold
+    # $HOME, and everything bound back below sits on top of them.
+    oldifs=$IFS
+    IFS=$nl
+    for h in $hidden; do
+        [ -n "$h" ] || continue
+        if [ -d "$h" ]; then
+            set -- "$@" --tmpfs "$h"
+        else
+            set -- "$@" --ro-bind /dev/null "$h"
+        fi
+    done
+    IFS=$oldifs
     set -- "$@" --tmpfs "$home"
     # CLI state relocated OUTSIDE $HOME is not hidden by the tmpfs above.
     for state in "$codexdir" "$claudedir"; do
@@ -465,7 +593,7 @@ Linux)
     done
     oldifs=$IFS
     IFS=$nl
-    for d in $toolchains; do
+    for d in $toolchains $backs; do
         [ -n "$d" ] && [ -e "$d" ] && set -- "$@" --ro-bind "$d" "$d"
     done
     IFS=$oldifs
@@ -505,6 +633,18 @@ Linux)
     else
         set -- "$@" --ro-bind "$target" "$target"
     fi
+    # The operator's hide entries inside <dir>: after it, or it would cover them.
+    oldifs=$IFS
+    IFS=$nl
+    for h in $hidden_late; do
+        [ -n "$h" ] || continue
+        if [ -d "$h" ]; then
+            set -- "$@" --tmpfs "$h"
+        else
+            set -- "$@" --ro-bind /dev/null "$h"
+        fi
+    done
+    IFS=$oldifs
     n=0
     while [ "$n" -lt "$argc" ]; do
         a=$1
