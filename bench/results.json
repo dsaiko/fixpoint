@@ -24,11 +24,11 @@
  "possible": 484,
  "measured": {
   "first": "2026-08-20",
-  "last": "2026-11-24"
+  "last": "2026-11-25"
  },
  "totals": {
-  "candidates": 50,
-  "sessions": 1202,
+  "candidates": 51,
+  "sessions": 1225,
   "targets": 8,
   "contract_failures": 4,
   "timeouts": 3,
@@ -2053,6 +2053,78 @@
   },
   {
    "rank": 29,
+   "candidate": "ollama-direct@mimo-v2.6-flash:cloud",
+   "baseline": false,
+   "model": "ollama-direct@mimo-v2.6-flash:cloud",
+   "effort": null,
+   "route": "ollama/codex",
+   "pays": "sub (ollama)",
+   "points": 296,
+   "possible": 484,
+   "incomplete": false,
+   "tokens": 821876,
+   "points_per_mtok": 360.2,
+   "cost_usd": 0.19,
+   "cost_per_point_usd": 0.001,
+   "notional": true,
+   "caching_era": "cached",
+   "cached_input_share": 0.786,
+   "cost_per_point_uncached_usd": 0.001,
+   "seconds": 2464,
+   "sessions": 23,
+   "errors": 0,
+   "contract_failures": 0,
+   "timeouts": 0,
+   "other_failures": 0,
+   "measured": {
+    "first": "2026-11-25",
+    "last": "2026-11-25"
+   },
+   "by_target": {
+    "go": {
+     "found": 36,
+     "of": 56,
+     "deflated": false
+    },
+    "design": {
+     "found": 13,
+     "of": 34,
+     "deflated": false
+    },
+    "rust": {
+     "found": 43,
+     "of": 64,
+     "deflated": false
+    },
+    "java": {
+     "found": 43,
+     "of": 69,
+     "deflated": false
+    },
+    "typescript": {
+     "found": 46,
+     "of": 63,
+     "deflated": false
+    },
+    "csharp": {
+     "found": 34,
+     "of": 68,
+     "deflated": false
+    },
+    "cpp": {
+     "found": 42,
+     "of": 64,
+     "deflated": false
+    },
+    "python": {
+     "found": 39,
+     "of": 66,
+     "deflated": false
+    }
+   }
+  },
+  {
+   "rank": 30,
    "candidate": "ollama-direct@glm-5.3-flash:cloud#max",
    "baseline": false,
    "model": "ollama-direct@glm-5.3-flash:cloud#max",
@@ -2124,7 +2196,7 @@
    }
   },
   {
-   "rank": 30,
+   "rank": 31,
    "candidate": "x-ai/grok-4.6",
    "baseline": false,
    "model": "x-ai/grok-4.6",
@@ -2196,7 +2268,7 @@
    }
   },
   {
-   "rank": 31,
+   "rank": 32,
    "candidate": "claude-fable-5",
    "baseline": false,
    "model": "claude-fable-5",
@@ -2268,7 +2340,7 @@
    }
   },
   {
-   "rank": 32,
+   "rank": 33,
    "candidate": "glm-5.2:cloud",
    "baseline": false,
    "model": "glm-5.2:cloud",
@@ -2340,7 +2412,7 @@
    }
   },
   {
-   "rank": 33,
+   "rank": 34,
    "candidate": "gpt-6-astra-xhigh",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2412,7 +2484,7 @@
    }
   },
   {
-   "rank": 34,
+   "rank": 35,
    "candidate": "deepseek-v4-pro:cloud",
    "baseline": false,
    "model": "deepseek-v4-pro:cloud",
@@ -2484,7 +2556,7 @@
    }
   },
   {
-   "rank": 35,
+   "rank": 36,
    "candidate": "claude-opus-4-8",
    "baseline": false,
    "model": "claude-opus-4-8",
@@ -2556,7 +2628,7 @@
    }
   },
   {
-   "rank": 36,
+   "rank": 37,
    "candidate": "gpt-6-astra",
    "baseline": false,
    "model": "gpt-6-astra",
@@ -2628,7 +2700,7 @@
    }
   },
   {
-   "rank": 37,
+   "rank": 38,
    "candidate": "gpt-6.1-sol",
    "baseline": false,
    "model": "gpt-6.1-sol",
@@ -2700,7 +2772,7 @@
    }
   },
   {
-   "rank": 38,
+   "rank": 39,
    "candidate": "minimax-m3:cloud",
    "baseline": false,
    "model": "minimax-m3:cloud",
@@ -2772,7 +2844,7 @@
    }
   },
   {
-   "rank": 39,
+   "rank": 40,
    "candidate": "deepseek-v4-flash:0731-cloud",
    "baseline": false,
    "model": "deepseek-v4-flash:0731-cloud",
@@ -2844,7 +2916,7 @@
    }
   },
   {
-   "rank": 40,
+   "rank": 41,
    "candidate": "claude-sonnet-5",
    "baseline": false,
    "model": "claude-sonnet-5",
@@ -2916,7 +2988,7 @@
    }
   },
   {
-   "rank": 41,
+   "rank": 42,
    "candidate": "kimi-k2.7-code:cloud",
    "baseline": false,
    "model": "kimi-k2.7-code:cloud",
@@ -2988,7 +3060,7 @@
    }
   },
   {
-   "rank": 42,
+   "rank": 43,
    "candidate": "gpt-oss:120b-cloud",
    "baseline": false,
    "model": "gpt-oss:120b-cloud",
@@ -3060,7 +3132,7 @@
    }
   },
   {
-   "rank": 43,
+   "rank": 44,
    "candidate": "gpt-6.1-terra",
    "baseline": false,
    "model": "gpt-6.1-terra",
@@ -3132,7 +3204,7 @@
    }
   },
   {
-   "rank": 44,
+   "rank": 45,
    "candidate": "gpt-5.6-terra",
    "baseline": false,
    "model": "gpt-5.6-terra",
@@ -3204,7 +3276,7 @@
    }
   },
   {
-   "rank": 45,
+   "rank": 46,
    "candidate": "gpt-6-sol",
    "baseline": false,
    "model": "gpt-6-sol",
@@ -3276,7 +3348,7 @@
    }
   },
   {
-   "rank": 46,
+   "rank": 47,
    "candidate": "beam-ollama-direct",
    "baseline": false,
    "model": "beam:cloud",
@@ -3338,7 +3410,7 @@
    }
   },
   {
-   "rank": 47,
+   "rank": 48,
    "candidate": "qwen3.5:397b-cloud",
    "baseline": false,
    "model": "qwen3.5:397b-cloud",
@@ -3410,7 +3482,7 @@
    }
   },
   {
-   "rank": 48,
+   "rank": 49,
    "candidate": "gemma4:31b-cloud",
    "baseline": false,
    "model": "gemma4:31b-cloud",
@@ -3482,7 +3554,7 @@
    }
   },
   {
-   "rank": 49,
+   "rank": 50,
    "candidate": "muse-spark-open:cloud",
    "baseline": false,
    "model": "muse-spark-open:cloud",
@@ -3554,7 +3626,7 @@
    }
   },
   {
-   "rank": 50,
+   "rank": 51,
    "candidate": "beam-ollama-direct-fallback",
    "baseline": false,
    "model": "beam-ollama-direct-fallback",

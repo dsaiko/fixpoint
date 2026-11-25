@@ -1544,3 +1544,25 @@ ollama-direct@hy4:cloud
 # that bar, in beam's seat: hy4 437 (+3 / -5), inkling-2-small 430 (-4 / -12).
 # The +9 / +4 quoted for hy4 above is against the gpt-6-sol panel; on the panel
 # as seated hy4 is a wash, which only strengthens the decision not to seat it.
+
+# mimo-v2.6-flash (Xiaomi), same route as inkling and hy4 above: codex harness
+# straight to ollama.com, effort xhigh.
+ollama-direct@mimo-v2.6-flash:cloud
+#
+# MEASURED 2026-11-25 on mediabox, full 8-target grid, 1 repeat, 0 errors, 0
+# contract failures, 0 answer-key reads, every row under isolation. ollama card
+# $0.14 / $0.28 / $0.0028 cached (ollama.com/pricing, no off-peak row).
+#
+#   mimo-v2.6-flash  296/484  29th of 51  0.82M tok  2464s  ~$0.19
+#   go 36  design 13  rust 43  java 43  typescript 46  csharp 34  cpp 42  python 39
+#
+# The cheapest sweep on the ollama route and among the most token-efficient
+# (360 pts/Mtok, level with Fable 5.2), but the score is mid-table: 56 below
+# beam through codex (352), 34 below minimax-m3.1-flash (330) at a similar card.
+#
+# PANEL, counted from the first run per target in bench/results/ (non-retired
+# seeds), [claude-sonnet-5-5, gpt-6.2-sol] + the beam seat. In beam's seat:
+# vs ollama-codex@beam 417 against 437 (+6 / -26); vs beam-ollama-direct 417
+# against 421 (+9 / -13). Marginal over sonnet + gpt-6.2-sol +11. NOT a seat:
+# it loses coverage in beam's seat on either route, and a 4th seat would be a
+# second ollama payer.

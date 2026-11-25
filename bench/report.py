@@ -288,6 +288,9 @@ OLLAMA_RATES = {
     "kimi-k2.6":         (0.95, 4.00, 0.16),
     "kimi-k2.7-code":    (0.95, 4.00, 0.19),
     "kimi-k3":           (3.00, 15.00, 0.30),
+    # mimo-v2.6-flash (Xiaomi), added 2026-11-25 the day it was benched
+    # (ollama.com/pricing, no off-peak row).
+    "mimo-v2.6-flash":   (0.14, 0.28, 0.0028),
     "minimax-m2.7":      (0.30, 1.20, 0.06),
     "minimax-m3":        (0.60, 2.40, 0.12),
     # minimax-m3.1-flash, added 2026-10-19 the day it was benched: a quarter of
