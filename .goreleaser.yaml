@@ -144,9 +144,15 @@ homebrew_casks:
         # The release is unsigned and un-notarized. Homebrew quarantines what a
         # cask downloads, and Gatekeeper then makes the binary hang from a
         # terminal instead of printing anything. Clear it at install.
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/fixpoint"]
+        #
+        # install_steps, not install: the raw-Ruby hook is written as a
+        # `postflight` block, which Homebrew deprecated in favour of
+        # `postflight_steps` and warns about on every brew command. Needs
+        # GoReleaser 2.19 or later. A steps block takes no Ruby, so the macOS
+        # guard is on_macos rather than `if OS.mac?`.
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/fixpoint"]
           end
 
 release:

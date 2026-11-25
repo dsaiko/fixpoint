@@ -10,7 +10,7 @@ CONFIG  := fix-code
 GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 STATICCHECK   := go run honnef.co/go/tools/cmd/staticcheck@v0.8.2
 GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.7.0
-GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.18.0
+GORELEASER    := go run github.com/goreleaser/goreleaser/v2@v2.20.3
 
 .PHONY: list all build test test-race cover cover-html vet fmt fmt-check lint staticcheck vulncheck audit tidy tidy-check check check-live bench bench-seeds bench-readme bench-publish implement-go implement-node implement-java implement-web \
         fix-code fix-branch fix-pr review-code review-branch review-pr review-design create-design clean clean-logs run help \
