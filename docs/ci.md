@@ -41,7 +41,6 @@ jobs:
         with:
           fetch-depth: 0   # the diff needs the base commit
 
-      # The repository is private, so the asset needs an authenticated download.
       # Unpack it whole and put the DIRECTORY on PATH: fixpoint compiles no
       # fallback configuration into the binary, so a binary installed away from
       # its `config/` bundle refuses to run and prints where it looked.

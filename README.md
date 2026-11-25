@@ -214,9 +214,16 @@ fallback configuration into the executable: the prompts drive an agent that
 edits files with permission checks disabled and the configs hold the trust
 gates, so a binary on its own refuses to run and prints where it looked.
 
-The repository is private, so the assets need an authenticated download rather
-than a bare `curl`, and there is no Homebrew tap — a formula fetches by URL and
-brew cannot authenticate here.
+On macOS the shortest route is Homebrew. The cask installs the binary with its
+bundle beside it and clears the quarantine attribute an unsigned download
+would otherwise carry:
+
+```sh
+brew install --cask dsaiko/tap/fixpoint
+fixpoint -version
+```
+
+Everything else is a release asset, fetched here with `gh`.
 
 No tag in the commands below: `gh release download` takes the latest release
 when none is given, so these stay correct across releases rather than pinning a

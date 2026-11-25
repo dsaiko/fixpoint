@@ -109,19 +109,61 @@ nfpms:
     # in ~/.fixpoint or in a project, never by editing the installed copy
     # (config/README.md).
 
+# Homebrew, as a CASK in dsaiko/homebrew-tap. A cask rather than a formula for
+# two reasons. GoReleaser has deprecated `brews` in favour of this, and
+# `goreleaser check` -- which CI runs on every change -- fails on a deprecated
+# key. And a cask installs the archive as it is: it unpacks the whole tarball
+# into the Caskroom and links only the binary onto PATH, so `config/` stays
+# beside the real executable, which is the first place the bundle search path
+# looks once it has resolved the symlink. Nothing here has to restate the
+# bundle's shape, so nothing here can flatten it.
+#
+# The generated cask carries the Linux archives too, for Homebrew on Linux; the
+# deb/rpm/apk/archlinux packages above remain the native route there.
+homebrew_casks:
+  - name: fixpoint
+    ids: [fixpoint]
+    binaries: [fixpoint]
+    homepage: https://github.com/dsaiko/fixpoint
+    description: Agent-agnostic automation loop for writing, reviewing and fixing code with AI panels
+    directory: Casks
+    repository:
+      owner: dsaiko
+      name: homebrew-tap
+      # The workflow's own GITHUB_TOKEN cannot write to another repository, so
+      # this is a separate token with contents:write on the tap alone.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "{{ .ProjectName }} {{ .Version }}"
+    # A prerelease tag publishes its GitHub Release and leaves the tap alone.
+    skip_upload: auto
+    hooks:
+      post:
+        # The release is unsigned and un-notarized. Homebrew quarantines what a
+        # cask downloads, and Gatekeeper then makes the binary hang from a
+        # terminal instead of printing anything. Clear it at install.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/fixpoint"]
+          end
+
 release:
-  # Private repository today: the assets are reachable with `gh release
-  # download`, not with a bare curl. README says so where it tells people how to
-  # install.
   draft: false
   prerelease: auto
   mode: replace
   footer: |
     ## Install
 
-    The repository is private, so the assets need `gh` rather than a bare curl.
+    **macOS, with Homebrew** — the cask installs the binary and its bundle
+    together and clears the quarantine attribute:
 
-    **macOS** — `Darwin_arm64` for Apple Silicon, `Darwin_x86_64` for Intel:
+    ```sh
+    brew install --cask dsaiko/tap/fixpoint
+    ```
+
+    **macOS, by hand** — `Darwin_arm64` for Apple Silicon, `Darwin_x86_64` for Intel:
 
     ```sh
     gh release download {{ .Tag }} --repo dsaiko/fixpoint --pattern '*Darwin_arm64.tar.gz'
@@ -166,10 +208,6 @@ release:
     The `config/` directory in the archive is the bundle: keep it beside the
     binary, or copy it to `~/.fixpoint/`. A binary without a bundle refuses to
     run and prints every location it searched.
-
-    No Homebrew formula: a tap has to fetch the archive by URL and brew cannot
-    authenticate to a private repository, so the formula would fail for
-    everyone. It arrives when the repository does.
 
 changelog:
   use: github

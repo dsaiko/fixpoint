@@ -2,13 +2,13 @@ name: release
 
 # Cross-platform release on a v* tag: the same audit gate CI runs, then
 # GoReleaser produces tar.gz archives for linux/darwin on amd64/arm64, deb, rpm,
-# apk and archlinux packages, a checksums.txt, and the GitHub Release.
+# apk and archlinux packages, a checksums.txt, the GitHub Release, and the
+# Homebrew cask in dsaiko/homebrew-tap.
 #
-# No Homebrew job. A tap formula has to fetch the archive by URL, and this
-# repository is private -- brew cannot authenticate to it, so a formula would
-# publish an install command that fails for everyone including its author. Add
-# it when the repository is public; the archives are already the shape a formula
-# wants (binary and bundle at the archive root, no wrapping directory).
+# The cask is pushed to ANOTHER repository, which this workflow's GITHUB_TOKEN
+# cannot write to. It needs the HOMEBREW_TAP_GITHUB_TOKEN secret: a token with
+# contents:write on dsaiko/homebrew-tap and nothing else. Without it the GitHub
+# Release is still created and the run then fails at the cask.
 on:
   push:
     tags: ["v*"]
@@ -71,6 +71,7 @@ jobs:
             ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--snapshot --skip=publish' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
       # An archive that installs nothing usable is the failure this project is
       # most exposed to: the binary carries no fallback configuration, so a
