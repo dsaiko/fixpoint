@@ -100,6 +100,14 @@ usage:
 prompt_via: stdin
 timeout: 30m # cloud-served models are slower; matched to the panel (see claude-opus.yaml)
 can_edit: false
+# Inside a sandbox wrapper (-sandbox builtin, or sandbox.command with
+# -agents-sandboxed) codex's own sandbox cannot start -- sandboxes do not nest, and
+# every command it ran would fail -- so the wrapper becomes the write barrier and
+# this one is switched off. Applied only when the run asserts that; see
+# config/README.md, "when_sandboxed".
+when_sandboxed:
+  replace:
+    "--sandbox read-only": "--sandbox danger-full-access"
 
 # The provider block reads the key from here. OPENAI_API_KEY is deliberately not
 # passed: codex must not be able to fall back to a first-party endpoint and bill

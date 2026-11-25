@@ -293,19 +293,19 @@ func TestWrapperArgumentDeeperInsideTheTargetIsStillRefused(t *testing.T) {
 	}
 }
 
-// REGRESSION (review run 20260916-085129, finding i5). {{target}} is expanded
-// once, from target.path, but create runs invoke their agents inside the
-// assignment snapshot and implement's coder inside the output directory. The
-// wrapper would bind one directory while the agent worked in another: a
-// confinement that is configured, reported, and aimed at the wrong place.
-func TestSandboxIsRefusedWherePlaceholdersWouldNameTheWrongDirectory(t *testing.T) {
+// REGRESSION (review run 20260916-085129, finding i5), and its real fix.
+// {{target}} used to be expanded once, from target.path, while create runs invoke
+// their agents inside the assignment snapshot and implement's coder inside the
+// output directory -- so those runs were refused. The wrapper is now expanded per
+// invocation for the directory the agent runs in (Agent.ArgvIn), and both
+// pipelines are accepted.
+func TestSandboxIsAcceptedForCreateAndImplement(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cfg  func(*Config)
-		want string
 	}{
-		{"create", func(c *Config) { c.Create = Create{Propose: "propose"} }, "create run"},
-		{"implement", func(c *Config) { c.Roles.Planner = RoleRef{Agent: "mock", Prompt: "plan"} }, "implement run"},
+		{"create", func(c *Config) { c.Create = Create{Propose: "propose"} }},
+		{"implement", func(c *Config) { c.Roles.Planner = RoleRef{Agent: "mock", Prompt: "plan"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := &Config{
@@ -315,14 +315,211 @@ func TestSandboxIsRefusedWherePlaceholdersWouldNameTheWrongDirectory(t *testing.
 			}
 			tc.cfg(c)
 			c.applySandbox()
-			err := c.validateSandbox()
-			if err == nil {
-				t.Fatalf("a %s with a sandbox was accepted; {{target}} names a directory its agents do not run in", tc.name)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("the refusal does not say which pipeline: %v", err)
+			if err := c.validateSandbox(); err != nil {
+				t.Fatalf("a %s with a sandbox was refused: %v", tc.name, err)
 			}
 		})
+	}
+}
+
+// The wrapper confines the directory the invocation RUNS in, not target.path.
+func TestArgvInExpandsTheTargetForTheInvocationsDirectory(t *testing.T) {
+	c := cfgWithSandbox("/repo", "wrap", "{{target}}", "{{target_mode}}", "{{agent}}", "--")
+	coder := c.Agents["coder"]
+	got := coder.ArgvIn("/out/project")
+	want := []string{"wrap", "/out/project", "rw", "coder", "--", "claude", "--yolo"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("ArgvIn = %v, want %v", got, want)
+	}
+	// For the ordinary invocation, in target.path, it is exactly Argv.
+	if strings.Join(coder.ArgvIn("/repo"), "|") != strings.Join(coder.Argv(), "|") {
+		t.Errorf("ArgvIn(target.path) = %v, differs from Argv %v", coder.ArgvIn("/repo"), coder.Argv())
+	}
+	// A relative directory is what exec.Cmd.Dir resolves against fixpoint's cwd;
+	// the wrapper, started IN it, must not be handed it relative.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := coder.ArgvIn("sub"); got[1] != filepath.Join(wd, "sub") {
+		t.Errorf("relative dir reached the wrapper as %q, want %q", got[1], filepath.Join(wd, "sub"))
+	}
+}
+
+func TestArgvInWithoutASandboxIsArgv(t *testing.T) {
+	c := cfgWithSandbox("/repo")
+	if got := c.Agents["rev"].ArgvIn("/elsewhere"); strings.Join(got, " ") != "claude -p" {
+		t.Errorf("ArgvIn = %v; no wrapper must mean the bare command", got)
+	}
+}
+
+// codexLike is a read-only agent whose own sandbox has to be switched off inside
+// a wrapper, the shape of the shipped codex agents.
+func codexLike() Agent {
+	return Agent{
+		Command:       []string{"codex", "exec", "--sandbox read-only", "-"},
+		WhenSandboxed: AgentWhenSandboxed{Replace: map[string]string{"--sandbox read-only": "--sandbox danger-full-access"}},
+	}
+}
+
+func TestWhenSandboxedSwapsOnlyUnderTheAssertion(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		wrapper  []string
+		asserted bool
+		want     string
+	}{
+		{"no wrapper", nil, false, "read-only"},
+		// A wrapper the operator has not vouched for: the CLI's own sandbox stays,
+		// and so does the refusal that reads the argv.
+		{"wrapper, not asserted", []string{"wrap", "--"}, false, "read-only"},
+		{"wrapper, asserted", []string{"wrap", "--"}, true, "danger-full-access"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{
+				Target:  Target{Mode: ModeDirectory, Path: "/repo"},
+				Sandbox: Sandbox{Command: tc.wrapper},
+				Loop:    Loop{AgentsSandboxed: tc.asserted},
+				Agents:  map[string]Agent{"cx": codexLike()},
+			}
+			c.applySandbox()
+			if argv := strings.Join(c.Agents["cx"].Argv(), " "); !strings.Contains(argv, "--sandbox "+tc.want) {
+				t.Errorf("argv = %q, want --sandbox %s", argv, tc.want)
+			}
+		})
+	}
+}
+
+// The swap must not reach back into a command slice another config shares.
+func TestWhenSandboxedDoesNotMutateTheSharedCommand(t *testing.T) {
+	a := codexLike()
+	c := &Config{
+		Target:  Target{Mode: ModeDirectory, Path: "/repo"},
+		Sandbox: Sandbox{Command: []string{"wrap", "--"}},
+		Loop:    Loop{AgentsSandboxed: true},
+		Agents:  map[string]Agent{"cx": a},
+	}
+	c.applySandbox()
+	if a.Command[2] != "--sandbox read-only" {
+		t.Errorf("the original command was modified: %v", a.Command)
+	}
+}
+
+func TestWhenSandboxedRefusesAKeyThatMatchesNothing(t *testing.T) {
+	a := codexLike()
+	a.WhenSandboxed.Replace = map[string]string{"--sandbox readonly": "--sandbox danger-full-access"}
+	err := a.WhenSandboxed.validate("cx", a.Command)
+	if err == nil || !strings.Contains(err.Error(), "matches no element") {
+		t.Fatalf("err = %v, want a refusal of the stale key", err)
+	}
+	a.WhenSandboxed.Replace = map[string]string{"--sandbox read-only": " "}
+	if err := a.WhenSandboxed.validate("cx", a.Command); err == nil || !strings.Contains(err.Error(), "empty replacement") {
+		t.Fatalf("err = %v, want a refusal of the empty replacement", err)
+	}
+	// Already applied: matched through its replacement.
+	applied := []string{"codex", "--sandbox danger-full-access"}
+	if err := codexLike().WhenSandboxed.validate("cx", applied); err != nil {
+		t.Errorf("an applied swap was refused: %v", err)
+	}
+}
+
+// fakeBuiltin points the builtin search at a directory holding a wrapper file.
+func fakeBuiltin(t *testing.T, dir string, create bool) string {
+	t.Helper()
+	p := filepath.Join(dir, "sandbox", "fixpoint-sandbox")
+	if create {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := builtinSandboxDirs
+	builtinSandboxDirs = func() []string { return []string{dir} }
+	t.Cleanup(func() { builtinSandboxDirs = old })
+	return p
+}
+
+func TestSandboxBuiltinUsesTheShippedWrapperAndAsserts(t *testing.T) {
+	p := fakeBuiltin(t, t.TempDir(), true)
+	c := &Config{
+		Target:  Target{Mode: ModeDirectory, Path: "/repo"},
+		Sandbox: Sandbox{Command: []string{"bundle-wrapper", "--"}},
+		Agents:  map[string]Agent{"cx": codexLike()},
+	}
+	if err := (Overrides{Sandbox: SandboxBuiltin}).applySandboxChoice(c); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/bin/sh", p, "{{target}}", "{{target_mode}}", "--"}
+	if strings.Join(c.Sandbox.Command, "|") != strings.Join(want, "|") {
+		t.Errorf("sandbox.command = %v, want %v (the bundle's wrapper REPLACED)", c.Sandbox.Command, want)
+	}
+	if !c.Sandbox.Builtin || !c.Loop.AgentsSandboxed {
+		t.Errorf("builtin=%v agents_sandboxed=%v, want both set", c.Sandbox.Builtin, c.Loop.AgentsSandboxed)
+	}
+	c.applySandbox()
+	if argv := strings.Join(c.Agents["cx"].Argv(), " "); !strings.Contains(argv, "danger-full-access") {
+		t.Errorf("argv = %q: builtin did not switch codex's own sandbox off", argv)
+	}
+}
+
+func TestSandboxBuiltinMissingIsAStartupError(t *testing.T) {
+	fakeBuiltin(t, t.TempDir(), false)
+	c := &Config{Target: Target{Mode: ModeDirectory, Path: "/repo"}}
+	err := (Overrides{Sandbox: SandboxBuiltin}).applySandboxChoice(c)
+	if err == nil || !strings.Contains(err.Error(), "not found beside this binary") {
+		t.Fatalf("err = %v, want a refusal naming where it looked", err)
+	}
+	if c.Sandbox.Enabled() {
+		t.Error("a missing wrapper left a sandbox configured")
+	}
+}
+
+func TestSandboxBuiltinRefusesAPathWithASpace(t *testing.T) {
+	fakeBuiltin(t, filepath.Join(t.TempDir(), "with space"), true)
+	err := (Overrides{Sandbox: SandboxBuiltin}).applySandboxChoice(&Config{})
+	if err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("err = %v, want a refusal of the spaced path", err)
+	}
+}
+
+// off overrules the environment; it never removes what a bundle configured.
+func TestSandboxOffLeavesTheBundlesWrapper(t *testing.T) {
+	c := &Config{Sandbox: Sandbox{Command: []string{"bundle-wrapper", "--"}}}
+	if err := (Overrides{Sandbox: SandboxOff}).applySandboxChoice(c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Sandbox.Enabled() {
+		t.Error("-sandbox off removed the bundle's sandbox.command")
+	}
+}
+
+func TestSandboxChoiceRefusesAnUnknownValue(t *testing.T) {
+	err := (Overrides{Sandbox: "on"}).applySandboxChoice(&Config{})
+	if err == nil || !strings.Contains(err.Error(), SandboxEnv) {
+		t.Fatalf("err = %v, want a refusal that names the variable too", err)
+	}
+}
+
+// The pr-mode refusal of -agents-sandboxed stands for a wrapper fixpoint did not
+// ship, and is lifted for its own.
+func TestPRModeAcceptsOnlyTheBuiltinWrapperAsConfining(t *testing.T) {
+	for _, builtin := range []bool{false, true} {
+		c := &Config{
+			Target:  Target{Mode: ModePR, Path: "/repo"},
+			Sandbox: Sandbox{Command: []string{"/bin/sh", "--"}, Builtin: builtin},
+			Loop:    Loop{AgentsSandboxed: true},
+			Agents:  map[string]Agent{"rev": {Command: []string{"claude"}}},
+		}
+		c.applySandbox()
+		err := c.validateSandbox()
+		if builtin && err != nil {
+			t.Errorf("builtin wrapper refused in pr mode: %v", err)
+		}
+		if !builtin && (err == nil || !strings.Contains(err.Error(), "mode pr")) {
+			t.Errorf("err = %v, want the pr-mode refusal for a wrapper fixpoint did not ship", err)
+		}
 	}
 }
 

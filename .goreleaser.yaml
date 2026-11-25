@@ -87,6 +87,9 @@ nfpms:
     recommends:
       # pr mode shells to `gh`; everything else works without it.
       - gh
+      # -sandbox builtin runs every agent under bwrap; without it that flag
+      # refuses to start an agent rather than run one unconfined.
+      - bubblewrap
     contents:
       # type: tree, for the same reason the archive does not strip parents: the
       # bundle IS its shape. A plain directory entry flattens agents/ and

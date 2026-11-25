@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -58,10 +60,97 @@ type Sandbox struct {
 	// one argv element instead of becoming two arguments.
 	//
 	// Placeholders:
-	//   {{target}}       the absolute path of the directory under review
+	//   {{target}}       the absolute path of the directory the invocation works in
+	//                    (target.path, or create's snapshot and implement's output
+	//                    directory; expanded per invocation, see Agent.ArgvIn)
 	//   {{target_mode}}  "rw" for an agent declared can_edit, "ro" otherwise
 	//   {{agent}}        the agent's name, for a wrapper that keeps per-agent profiles
 	Command []string `yaml:"command"`
+
+	// Builtin records that Command is fixpoint's OWN wrapper, chosen by the
+	// operator with -sandbox builtin or FIXPOINT_SANDBOX=builtin, rather than one a
+	// bundle file named. Never read from YAML: whether a wrapper is the shipped one
+	// is a fact about where it was found, which a config file cannot vouch for.
+	//
+	// It matters in exactly one place. -agents-sandboxed is refused in pr mode
+	// because fixpoint cannot check that an arbitrary wrapper honors
+	// {{target_mode}}; the shipped wrapper is fixpoint's own code, found beside the
+	// binary and never in a bundle the target can shadow, and its read-only mode is
+	// tested -- so for it, and only for it, the assertion holds there too.
+	Builtin bool `yaml:"-"`
+}
+
+// The operator's choice of wrapper, from -sandbox or FIXPOINT_SANDBOX.
+const (
+	// SandboxBuiltin selects the wrapper shipped with this binary.
+	SandboxBuiltin = "builtin"
+	// SandboxOff withdraws a SandboxBuiltin chosen through the environment, for one
+	// invocation. It never removes a sandbox.command a bundle configured: turning a
+	// confinement off is that file's business, not a flag's (see Overrides.apply).
+	SandboxOff = "off"
+	// SandboxEnv is the environment variable that sets the choice for every run,
+	// so a machine can be sandboxed by default without each command line saying
+	// so. The -sandbox flag wins over it.
+	SandboxEnv = "FIXPOINT_SANDBOX"
+)
+
+// builtinSandboxRel is where the shipped wrapper sits inside a bundle directory.
+const builtinSandboxRel = "sandbox/fixpoint-sandbox"
+
+// builtinSandboxDirs lists the directories searched for the shipped wrapper. Only
+// the bundle locations tied to the BINARY: a project's config/ or ~/.fixpoint is
+// shadowable by what is under review, and a wrapper found there would be the
+// reviewed repository choosing its own confinement. A variable so tests can point
+// it at a fixture.
+var builtinSandboxDirs = binaryBundleDirs
+
+// findBuiltinSandbox returns the shipped wrapper's path, or "" and the places it
+// looked.
+func findBuiltinSandbox() (string, []string) {
+	var searched []string
+	for _, dir := range builtinSandboxDirs() {
+		p := filepath.Join(dir, filepath.FromSlash(builtinSandboxRel))
+		searched = append(searched, p)
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
+			return p, searched
+		}
+	}
+	return "", searched
+}
+
+// applySandboxChoice folds -sandbox / FIXPOINT_SANDBOX into the configuration.
+//
+// builtin REPLACES whatever sandbox.command the bundle set, and asserts
+// agents_sandboxed: the shipped wrapper enforces {{target_mode}} itself, which is
+// the claim the flag makes, so an operator who picked it has nothing further to
+// assert. off is a no-op on the configuration; it exists so the command line can
+// overrule the environment.
+func (o Overrides) applySandboxChoice(c *Config) error {
+	switch o.Sandbox {
+	case "", SandboxOff:
+		return nil
+	case SandboxBuiltin:
+	default:
+		return fmt.Errorf("-sandbox %q (or %s): want %q or %q", o.Sandbox, SandboxEnv, SandboxBuiltin, SandboxOff)
+	}
+	p, searched := findBuiltinSandbox()
+	if p == "" {
+		return fmt.Errorf("-sandbox builtin: fixpoint's own wrapper was not found beside this binary (searched %s); the bundle shipped with the binary is incomplete -- reinstall, or run with -sandbox off", strings.Join(searched, ", "))
+	}
+	// Command elements are split on whitespace, so a path with a space in it would
+	// become two arguments and exec something else. Refused, not quoted: there is no
+	// quoting in that syntax to reach for.
+	if strings.ContainsAny(p, " \t\n") {
+		return fmt.Errorf("-sandbox builtin: the wrapper's path %q contains whitespace, which sandbox.command cannot carry as one argument; install fixpoint under a path without spaces", p)
+	}
+	// Run by /bin/sh rather than exec'd, so a packager or an unpacker that dropped
+	// the executable bit cannot turn the wrapper into a startup failure.
+	c.Sandbox = Sandbox{
+		Command: []string{"/bin/sh", p, "{{target}}", "{{target_mode}}", "--"},
+		Builtin: true,
+	}
+	c.Loop.AgentsSandboxed = true
+	return nil
 }
 
 // Enabled reports whether a wrapper is configured.
@@ -88,41 +177,62 @@ func sandboxPlaceholders(targetPath, agentName string, canEdit bool) map[string]
 // -target changes what {{target}} means -- and before validation, so the checks
 // that guard an agent command (it resolves to a real binary; in pr mode it does
 // not resolve inside the target) see the wrapper that will actually be exec'd.
+//
+// The expansion stored in Agent.Sandbox is against target.path, which is what
+// those checks inspect. The template is kept beside it so an invocation that runs
+// somewhere else can be expanded for where it runs (Agent.ArgvIn).
 func (c *Config) applySandbox() {
 	if !c.Sandbox.Enabled() {
 		return
 	}
 	for name, a := range c.Agents {
-		values := sandboxPlaceholders(c.Target.Path, name, a.CanEdit)
-		var argv []string
-		for _, tok := range c.Sandbox.Command {
-			// Split before substitution, for the reason Agent.Argv documents: a value is
-			// then always exactly one argv element however it is spelled, so a target path
-			// with a space in it cannot introduce an argument of its own.
-			fields := strings.Fields(tok)
-			subs := make([]string, 0, len(fields))
-			drop := false
-			for _, f := range fields {
-				sub, keep := expandToken(f, values)
-				if !keep {
-					drop = true
-					break
+		a.Sandbox = expandSandbox(c.Sandbox.Command, sandboxPlaceholders(c.Target.Path, name, a.CanEdit))
+		a.sandboxTmpl = append([]string(nil), c.Sandbox.Command...)
+		a.sandboxName = name
+		if c.Loop.AgentsSandboxed && len(a.WhenSandboxed.Replace) > 0 {
+			// A copy: the slice may be shared with the agent definition another config
+			// in the same process loaded.
+			cmd := append([]string(nil), a.Command...)
+			for i, tok := range cmd {
+				if r, ok := a.WhenSandboxed.Replace[strings.TrimSpace(tok)]; ok {
+					cmd[i] = r
 				}
-				subs = append(subs, sub)
 			}
-			// The WHOLE token goes, exactly as Agent.Argv drops one: "--bind {{target}}"
-			// is a flag and its value, and dropping only the value would leave a dangling
-			// --bind that swallows whatever argument follows it -- in a sandbox wrapper,
-			// the next mount or the agent command itself (review run 20260916-085129,
-			// finding i13).
-			if drop {
-				continue
-			}
-			argv = append(argv, subs...)
+			a.Command = cmd
 		}
-		a.Sandbox = argv
 		c.Agents[name] = a
 	}
+}
+
+// expandSandbox renders a wrapper template for one set of placeholder values.
+func expandSandbox(tmpl []string, values map[string]string) []string {
+	var argv []string
+	for _, tok := range tmpl {
+		// Split before substitution, for the reason Agent.Argv documents: a value is
+		// then always exactly one argv element however it is spelled, so a target path
+		// with a space in it cannot introduce an argument of its own.
+		fields := strings.Fields(tok)
+		subs := make([]string, 0, len(fields))
+		drop := false
+		for _, f := range fields {
+			sub, keep := expandToken(f, values)
+			if !keep {
+				drop = true
+				break
+			}
+			subs = append(subs, sub)
+		}
+		// The WHOLE token goes, exactly as Agent.Argv drops one: "--bind {{target}}"
+		// is a flag and its value, and dropping only the value would leave a dangling
+		// --bind that swallows whatever argument follows it -- in a sandbox wrapper,
+		// the next mount or the agent command itself (review run 20260916-085129,
+		// finding i13).
+		if drop {
+			continue
+		}
+		argv = append(argv, subs...)
+	}
+	return argv
 }
 
 // validateSandbox rejects a wrapper that cannot work, before a run spends
@@ -143,8 +253,8 @@ func (c *Config) validateSandbox() error {
 		// definition, and fixpoint cannot check that the wrapper honors {{target_mode}}.
 		// Lifting the read-only check for that material would stake it on a wrapper
 		// nobody verified, so it is refused rather than allowed with a warning.
-		if c.Target.Mode == ModePR {
-			return errors.New("-agents-sandboxed is refused in mode pr: the target is the pull request's content, and the CLI's own read-only sandbox is the barrier fixpoint can verify; keep it on, or review the branch in directory or git-diff mode")
+		if c.Target.Mode == ModePR && !c.Sandbox.Builtin {
+			return errors.New("-agents-sandboxed is refused in mode pr: the target is the pull request's content, and the CLI's own read-only sandbox is the barrier fixpoint can verify; keep it on, use fixpoint's own wrapper (-sandbox builtin), or review the branch in directory or git-diff mode")
 		}
 	}
 	if !c.Sandbox.Enabled() {
@@ -162,21 +272,6 @@ func (c *Config) validateSandbox() error {
 			return fmt.Errorf("sandbox.command[%d] uses %s, which is not a sandbox placeholder; it would be passed to the wrapper verbatim. Available: %s",
 				i, ph, strings.Join(sandboxPlaceholderNames(), ", "))
 		}
-	}
-	// {{target}} is expanded ONCE, from target.path, but the create and implement
-	// pipelines deliberately run agents somewhere else: create in the assignment
-	// snapshot, implement's coder in the output directory. The wrapper would then
-	// bind and mode-flag a directory the agent is not in, while the agent works in
-	// one the wrapper never mounted -- a confinement that is configured, reported,
-	// and aimed at the wrong place. That is the failure mode this file's own
-	// doc says a security control must not have, so it is refused rather than
-	// approximated (review run 20260916-085129, finding i5). Making the expansion
-	// per-invocation is the real fix and is not done here.
-	switch {
-	case c.IsCreate():
-		return errors.New("sandbox.command is set, but a create run invokes its agents inside the assignment snapshot rather than target.path, so {{target}} would name a directory the agent is not working in. Run create without a sandbox, or point target.path at the snapshot")
-	case c.IsImplement():
-		return errors.New("sandbox.command is set, but an implement run invokes its coder inside the output directory rather than target.path, so {{target}} would name the design's directory while the coder writes somewhere the wrapper never mounted. Run implement without a sandbox")
 	}
 	// A wrapper whose first element expands to nothing would silently exec the
 	// agent CLI directly -- the confinement the operator configured would be absent

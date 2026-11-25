@@ -53,6 +53,19 @@ which keeps the agent out of reviewer pools. A plan-mode flag alone
 (`--mode plan`) is not enough either: fixpoint cannot verify it, and a reviewer
 reading untrusted code is exactly where an unenforced claim fails.
 
+A CLI that enforces read-only with a sandbox of its own (codex's
+`--sandbox read-only`) cannot start it inside another one, so under
+`-sandbox builtin` or an asserted `sandbox.command` it has to be switched off and
+the wrapper becomes the write barrier. Say how in the agent file itself:
+
+    when_sandboxed:
+      replace:
+        "--sandbox read-only": "--sandbox danger-full-access"
+
+The key is a `command` element exactly as written; one that matches nothing is a
+validation error. The swap is applied only when the run asserts the wrapper
+confines the agents, so the same file stays enforced read-only everywhere else.
+
 ## effort (claude)
 
 Reasoning budget per request; all five levels verified with `claude -p`:

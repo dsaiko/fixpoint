@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/dsaiko/fixpoint/internal/config"
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
@@ -137,5 +139,33 @@ func TestSandboxUnknownPlaceholderIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "{{targt}}") {
 		t.Errorf("the refusal does not name the typo:\n%s", buf.String())
+	}
+}
+
+// FIXPOINT_SANDBOX sets the default; a typed -sandbox, including -sandbox off,
+// overrules it for one invocation.
+func TestSandboxSettingFlagOverrulesTheEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		args      []string
+		want      string
+	}{
+		{"neither", "", nil, ""},
+		{"environment", "builtin", nil, "builtin"},
+		{"environment, padded", " builtin\n", nil, "builtin"},
+		{"flag", "", []string{"-sandbox", "builtin"}, "builtin"},
+		{"flag off beats environment", "builtin", []string{"-sandbox", "off"}, "off"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.SandboxEnv, tc.env)
+			fs := flag.NewFlagSet("t", flag.ContinueOnError)
+			v := fs.String("sandbox", "", "")
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatal(err)
+			}
+			if got := sandboxSetting(fs, *v); got != tc.want {
+				t.Errorf("sandboxSetting = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -555,6 +556,40 @@ type Agent struct {
 	// pool opt itself out of the confinement the operator configured for the panel,
 	// and the agent files are exactly the bundle files a repository can ship.
 	Sandbox []string `yaml:"-"`
+
+	// sandboxTmpl and sandboxName are what Sandbox was expanded FROM, kept so the
+	// wrapper can be expanded again for the directory an invocation actually runs
+	// in (see ArgvIn). Derived like Sandbox, never read from YAML.
+	sandboxTmpl []string
+	sandboxName string
+
+	// WhenSandboxed adjusts the command when a sandbox wrapper, rather than the
+	// CLI itself, is what keeps this agent read-only. See AgentWhenSandboxed.
+	WhenSandboxed AgentWhenSandboxed `yaml:"when_sandboxed"`
+}
+
+// AgentWhenSandboxed is how an agent file says what its command becomes inside a
+// sandbox wrapper.
+//
+// It exists because sandboxes do not nest. codex confines its own shell commands
+// (`--sandbox read-only` is seatbelt on macOS and bubblewrap on Linux), and that
+// confinement cannot start inside a wrapper: every command it runs fails. So under
+// a wrapper the CLI's own sandbox has to be switched off and the wrapper becomes
+// the write barrier. Doing that by shadowing every codex agent file with a second
+// copy would leave two files per agent to keep in step; this keeps the one file
+// and states the swap beside the flag it swaps.
+//
+// It is applied ONLY when the run asserts that the wrapper confines the agents
+// (loop.agents_sandboxed, set by -agents-sandboxed or -sandbox builtin). Without
+// that assertion the command is left alone, and the refusal that reads a
+// read-only agent's argv for a permission bypass still stands between it and an
+// unconfined run.
+type AgentWhenSandboxed struct {
+	// Replace maps a command element, exactly as written in `command`, to the
+	// element that takes its place. A key that matches no element is refused at
+	// validation: a stale entry would silently leave the CLI's own sandbox on inside
+	// the wrapper, where every command it runs fails.
+	Replace map[string]string `yaml:"replace"`
 }
 
 // AgentUsage describes where a CLI reports its token usage and cost, so fixpoint
@@ -729,6 +764,33 @@ type AgentEnv struct {
 	InheritAll bool `yaml:"inherit_all"`
 }
 
+// validate refuses a replacement that matches nothing in the command. An element
+// already replaced (applySandbox ran) counts as matched through its replacement.
+func (w AgentWhenSandboxed) validate(name string, command []string) error {
+	keys := make([]string, 0, len(w.Replace))
+	for k := range w.Replace {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		found := false
+		for _, tok := range command {
+			t := strings.TrimSpace(tok)
+			if t == k || t == strings.TrimSpace(w.Replace[k]) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("agents.%s: when_sandboxed.replace %q matches no element of command; under a sandbox wrapper the CLI's own sandbox would stay on and every command it runs would fail -- spell the key exactly as the command element", name, k)
+		}
+		if strings.TrimSpace(w.Replace[k]) == "" {
+			return fmt.Errorf("agents.%s: when_sandboxed.replace %q has an empty replacement; an element is swapped, not deleted", name, k)
+		}
+	}
+	return nil
+}
+
 // placeholderValues maps each supported command placeholder to its
 // configured value. Supporting a new optional setting means adding one entry
 // here; Argv's expansion rules apply to it automatically.
@@ -764,6 +826,27 @@ func (a Agent) Argv() []string {
 	// reads argv[0] is therefore asking about the wrapper alone -- see ExecHeads,
 	// which is what the executable-provenance checks must use.
 	return append(append([]string(nil), a.Sandbox...), a.commandArgv()...)
+}
+
+// ArgvIn is Argv for an invocation whose working directory is dir. With a sandbox
+// wrapper configured, {{target}} is expanded to dir rather than to target.path:
+// the create pipeline runs its agents in the assignment snapshot and implement
+// runs its coder in the output directory, and a wrapper bound to target.path
+// there would confine a directory the agent is not working in. For every other
+// invocation dir IS target.path, so the result equals Argv.
+//
+// A relative dir is made absolute against fixpoint's own working directory, which
+// is what exec.Cmd.Dir resolves it against; the wrapper, started IN dir, would
+// otherwise resolve it a second time.
+func (a Agent) ArgvIn(dir string) []string {
+	if len(a.sandboxTmpl) == 0 || dir == "" {
+		return a.Argv()
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	wrapper := expandSandbox(a.sandboxTmpl, sandboxPlaceholders(dir, a.sandboxName, a.CanEdit))
+	return append(wrapper, a.commandArgv()...)
 }
 
 // commandArgv renders the agent's OWN command template into argv, without the
@@ -2105,6 +2188,9 @@ func (c *Config) Validate() error {
 			return err
 		}
 		if err := c.validateAgentCommand(name, a); err != nil {
+			return err
+		}
+		if err := a.WhenSandboxed.validate(name, a.Command); err != nil {
 			return err
 		}
 		// A read-only claim contradicted by the command's own argv. Reviewers are

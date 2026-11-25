@@ -87,8 +87,9 @@ Read this before pointing the tool at code you did not write.
   can be prompt-injected into reading a host secret (`~/.ssh`,
   `~/.aws/credentials`, `.env`) and quoting it into a finding. Point reviewers
   at untrusted content only on a host without sensitive files, or launch them
-  through [`sandbox.command`](#confining-agents-with-sandboxcommand) — which is
-  this advice made executable rather than left to the operator.
+  through [fixpoint's own wrapper](#fixpoints-own-wrapper--sandbox-builtin)
+  (`-sandbox builtin`) or a [`sandbox.command`](#confining-agents-with-sandboxcommand)
+  of yours — which is this advice made executable rather than left to the operator.
 - **The process-group kill is the only containment, and a descendant can escape
   it.** Every agent, verify command and git subprocess runs as a process-group
   leader, and fixpoint SIGKILLs the whole group the moment the leader exits — so an
@@ -165,7 +166,7 @@ agent CLI is its argument. Three placeholders are expanded, per agent:
 
 | Placeholder | Expands to |
 |---|---|
-| `{{target}}` | The absolute path of the directory under review. |
+| `{{target}}` | The absolute path of the directory the invocation works in: the target, or for create the assignment snapshot and for implement's coder the output directory. Expanded per invocation. |
 | `{{target_mode}}` | `rw` for an agent declared `can_edit`, `ro` for every other — so a reviewer and the coder beside it get the same wrapper with different access. |
 | `{{agent}}` | The agent's name, for a wrapper that keeps per-agent profiles. |
 
@@ -174,7 +175,7 @@ through verbatim: a typo in a mount argument would confine the wrong path. A
 wrapper that expands to nothing at all is refused for the sharper version of the
 same reason — the run would be unconfined while the configuration said otherwise.
 
-**fixpoint implements no sandbox and does not try to.** Which primitive fits
+**fixpoint implements no sandbox primitive and does not try to.** Which primitive fits
 (bubblewrap, a podman/docker container, `sandbox-exec`, a transient systemd scope)
 and which paths must be mounted are properties of your machine, not of this
 program. What fixpoint knows and your wrapper cannot is which target is under
@@ -202,19 +203,74 @@ It also covers agents only. Verify commands are argv you wrote and git is
 fixpoint's own; confining either would change what the deterministic gate
 measures, so neither goes through the wrapper.
 
-And it is **refused for create and implement runs**. Those pipelines invoke their
-agents in the assignment snapshot and the output directory rather than in
-`target.path`, so `{{target}}` — expanded once, from the config — would name a
-directory the agent is not working in: the wrapper would bind one tree while the
-CLI wrote to another. A confinement aimed at the wrong place is the failure mode
-this feature exists to prevent, so it fails closed instead of approximating.
-Expanding the placeholders per invocation is the real fix and is not implemented.
+Create and implement runs are covered too. Their agents work outside
+`target.path` — create's in the assignment snapshot, implement's coder in the
+output directory — so `{{target}}` is expanded for each invocation from the
+directory it actually runs in, rather than once from the config. (Until it was,
+both pipelines were refused outright: a wrapper bound to one directory while the
+agent wrote in another is a confinement configured, reported and aimed at the
+wrong place.)
 
 One deliberate exemption is worth knowing about: an argument naming the target
 **root** (`--ro-bind {{target}}`) does not count as a path the reviewed material
 supplied, because it is the checkout the run is about rather than a file the
 branch can write. Anything *deeper* inside the target still does, and is still
 refused in `pr` mode.
+
+### fixpoint's own wrapper: `-sandbox builtin`
+
+Writing a wrapper is the part of the above most operators will not do, so one
+ships with fixpoint: `config/sandbox/fixpoint-sandbox`, installed in the bundle
+beside the binary. `-sandbox builtin` uses it for one run; `FIXPOINT_SANDBOX=builtin`
+in your environment makes it the default, and `-sandbox off` overrules the
+variable for one run. Both are read from the invocation, never from a config file
+— a config can be the reviewed repository's, and so can a bundle: the wrapper is
+looked up only in the bundle locations tied to the binary
+(`<binary dir>/config`, `<prefix>/share/fixpoint`), never in a project's
+`config/` or `~/.fixpoint`, which the material under review can shadow. It
+replaces any `sandbox.command` the bundle set.
+
+What it does, per platform:
+
+- **Linux, bubblewrap.** The root read-only; `/run` masked (the user bus and the
+  Docker socket live there); `$HOME` an empty tmpfs with only the toolchain
+  directories a CLI is installed in bound back; `/tmp` replaced by a private
+  scratch directory; the working directory bound read-only, or writable for a
+  `can_edit` agent; own PID and IPC namespaces, its own session, killed with the
+  wrapper. Needs unprivileged user namespaces.
+- **macOS, sandbox-exec.** File *contents* under `$HOME` unreadable except the
+  same allowlist (names stay visible, which keeps path resolution working); writes
+  denied everywhere except the scratch directory, a writable working directory and
+  the CLI's state files; terminal ioctls denied. Outside `$HOME` stays readable.
+
+CLI state is decided from the agent's binary name. **codex** gets a fresh
+`CODEX_HOME` holding only a link to the real `auth.json`, and none at all on a
+route with a `model_provider` of its own; when codex refreshes the login during
+the session, the wrapper copies it back afterwards, but only if it names the same
+`account_id` — a lens that wrote a login of its own choosing into its scratch must
+not be able to sign you into that account. **claude** gets its real config
+directory read-only with every transcript store emptied, and `.claude.json` and
+`.credentials.json` writable because the CLI rewrites them. Any other CLI gets no
+state; `FIXPOINT_SANDBOX_RO` / `FIXPOINT_SANDBOX_RW` (colon-separated paths from
+your environment) bind what it needs.
+
+It implies `-agents-sandboxed`, and unlike any other wrapper it is accepted in `pr`
+mode: the refusal below exists because fixpoint cannot check that a wrapper honors
+`{{target_mode}}`, and this one is fixpoint's own code, found where the reviewed
+material cannot put a file, with its read-only mode under test
+(`internal/config/builtin_wrapper_test.go` runs it through the host's real sandbox).
+The shipped codex agents declare `when_sandboxed`, so their own sandbox is
+switched off only inside it.
+
+What it leaves open, beyond what every wrapper leaves open: the network; on macOS
+everything outside `$HOME`; on Linux everything world-readable outside `$HOME`;
+`.claude.json`, which can declare user-scope MCP servers, stays writable (the CLI
+rewrites it on every start), so a lens could plant one that runs the next time you
+start `claude`; and on Linux a custom `CLAUDE_CONFIG_DIR` puts `.claude.json` inside the
+read-only config directory, which blocks claude's rewrite of it (the bench
+wrapper, which shares this layout, has the same limitation). The coder is
+confined like the reviewers, so a `go test` it runs builds with a cold cache
+(`GOCACHE` points into the scratch directory).
 
 ### Agents that switch their own sandbox off: `-agents-sandboxed`
 
@@ -230,6 +286,8 @@ command's own argv is the one barrier it can read (see [agents](agents.md)).
 `-agents-sandboxed` lifts that one refusal for an invocation: you are asserting
 that `sandbox.command` enforces read-only for the agents it wraps — and fixpoint
 passes it `{{target_mode}}` = `ro` for exactly these. Nothing else is relaxed.
+An agent file states the swap itself with `when_sandboxed.replace`, applied only
+under this assertion, so one file serves both a confined and an unconfined run.
 The flag needs a `sandbox.command` to point at, and without one the load fails
 with a message that says so, rather than quietly lifting a check for a sandbox
 that is not there. Every other check on the composed argv still runs: the binaries
@@ -242,9 +300,9 @@ that removes the write barrier from the reviewers reading it, on the strength of
 wrapper the same repository chose. A config setting `loop.agents_sandboxed`, in the
 task config or in any base it extends, fails to load.
 
-**It is refused in `pr` mode.** The target there is the pull request's content, the
-one input fixpoint treats as hostile, and it cannot check that your wrapper honors
-`{{target_mode}}`. The CLI's own read-only sandbox is the barrier it can verify, so
+**It is refused in `pr` mode**, for every wrapper but fixpoint's own (above). The
+target there is the pull request's content, the one input fixpoint treats as
+hostile, and it cannot check that your wrapper honors `{{target_mode}}`. The CLI's own read-only sandbox is the barrier it can verify, so
 it stays on; review the branch in directory or git-diff mode if you need the
 confinement a wrapper gives. The flag appears in the run's applied overrides as
 `agents_sandboxed=true`, beside the trust flags.

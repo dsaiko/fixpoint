@@ -455,3 +455,30 @@ func TestShippedCodexAgentsIgnoreUserConfig(t *testing.T) {
 		t.Fatal("no codex-harness agent found; the detection broke, or the bundle lost every codex route")
 	}
 }
+
+// Every shipped read-only agent whose CLI sandboxes itself must say what its
+// command becomes inside a wrapper. Without it, -sandbox builtin leaves codex's
+// own sandbox on inside bubblewrap or sandbox-exec, where it cannot start, and
+// every command the reviewer runs fails: a panel that reports clean because its
+// codex seat could not look at anything.
+func TestShippedSelfSandboxingAgentsDeclareWhenSandboxed(t *testing.T) {
+	for name, a := range shippedAgents(t) {
+		if a.CanEdit || !slices.Contains(a.Command, "--sandbox read-only") {
+			continue
+		}
+		if got := a.WhenSandboxed.Replace["--sandbox read-only"]; got != "--sandbox danger-full-access" {
+			t.Errorf("%s: when_sandboxed.replace[\"--sandbox read-only\"] = %q, want \"--sandbox danger-full-access\"", name, got)
+		}
+		if err := a.WhenSandboxed.validate(name, a.Command); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// The shipped wrapper must sit where -sandbox builtin looks for it.
+func TestShippedBundleCarriesTheBuiltinWrapper(t *testing.T) {
+	p := filepath.Join("..", "..", projectBundleDir, filepath.FromSlash(builtinSandboxRel))
+	if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
+		t.Fatalf("%s: %v; -sandbox builtin would fail on every install", p, err)
+	}
+}

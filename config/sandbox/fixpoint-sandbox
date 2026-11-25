@@ -1,0 +1,536 @@
+#!/bin/sh
+# fixpoint's own agent wrapper: what `-sandbox builtin` (or FIXPOINT_SANDBOX=builtin)
+# runs every agent through. fixpoint calls it as
+#
+#   /bin/sh fixpoint-sandbox <dir> <ro|rw> -- <the agent's own argv...>
+#
+# where <dir> is the directory the invocation works in (the target, or for create
+# and implement the snapshot or output directory) and <ro|rw> is whether the agent
+# is declared can_edit. It is found only beside the fixpoint binary, never in a
+# bundle a project or ~/.fixpoint can shadow (internal/config/sandbox.go).
+#
+# THE GOAL is to keep a prompt-injected agent away from the operator's OTHER
+# secrets and from writing anywhere but where it is meant to: ~/.ssh, ~/.aws,
+# ~/.config, other repositories, earlier agents' transcripts. It is NOT credential
+# isolation from the agent itself: the CLI authenticates as the operator, so its
+# own credential is inside with it, and the network is open because the CLI
+# needs the API (docs/security.md, "What it does not close").
+#
+# THERE IS NO UNCONFINED PATH OUT: a missing sandbox tool, an unsupported OS or a
+# bad argument is a non-zero exit before the agent starts.
+#
+# WHAT THE AGENT GETS
+#   read          <dir>; the system (root read-only on Linux, everything outside
+#                 $HOME on macOS); the toolchain directories under $HOME a CLI is
+#                 installed in; FIXPOINT_SANDBOX_RO
+#   read+write    <dir> in rw mode only; a private scratch directory S (TMPDIR,
+#                 removed on exit); FIXPOINT_SANDBOX_RW
+#   CLI state     taken from the basename of argv[0]:
+#     codex   a FRESH CODEX_HOME inside S. On a ChatGPT-login route the only thing
+#             in it is a symlink to the real auth.json; a route with a
+#             model_provider of its own (an API key) gets no login at all. When
+#             codex refreshes the token it replaces that symlink with a new file in
+#             S; on exit the wrapper copies it back over the real auth.json, ONLY if
+#             it still names the same account_id -- a refresh token rotates, and a
+#             refresh lost with S would log the operator out. The rest of the real
+#             CODEX_HOME (sessions, history, config.toml) is not there.
+#     claude  the REAL config directory, read-only, with its transcript and
+#             session stores emptied (other projects' conversations are exactly
+#             what must not be readable); .claude.json and .credentials.json stay
+#             writable because the CLI rewrites them. .claude.json can declare
+#             user-scope MCP servers, so a lens could plant one there that runs the
+#             next time the operator starts claude: that cannot be closed while the
+#             CLI needs to write the file.
+#     other   no state at all. Bind what it needs with FIXPOINT_SANDBOX_RO/_RW.
+#   GOCACHE is pointed into S: the real build cache is not writable in here.
+#
+# FIXPOINT_SANDBOX_RO and FIXPOINT_SANDBOX_RW are colon-separated lists of extra
+# paths, for a CLI or a toolchain this script does not know. They come from the
+# operator's environment (fixpoint passes them through to the wrapper) and never
+# from a config file.
+#
+# PLATFORMS
+#   Linux  bubblewrap: root read-only, /run masked (DNS's resolve directory bound
+#          back), $HOME replaced by an empty tmpfs with only the toolchains, the
+#          CLI state and <dir> bound back, /tmp replaced by S, own PID and IPC
+#          namespaces and a session of its own, killed with the wrapper. Needs
+#          unprivileged user namespaces (bwrap says so if it has none).
+#   macOS  sandbox-exec: file CONTENTS under $HOME unreadable except what is
+#          listed above (names stay visible -- metadata is not denied, which is
+#          what keeps path resolution working), writes denied everywhere except S,
+#          rw <dir> and the CLI state files, terminal ioctls denied. Everything
+#          outside $HOME stays readable.
+#   other  refused.
+#
+# SANDBOXES DO NOT NEST: codex's own --sandbox cannot start in here, which is why
+# the shipped codex agents declare `when_sandboxed` and fixpoint swaps their flag
+# when this wrapper is in use.
+set -eu
+
+nl='
+'
+me=fixpoint-sandbox
+
+die() {
+    echo "$me: $*" >&2
+    exit 2
+}
+
+usage="usage: $me <dir> <ro|rw> -- <agent argv...>"
+[ $# -ge 4 ] || die "$usage"
+target=$1
+mode=$2
+shift 2
+[ "$1" = -- ] || die "$usage"
+shift
+[ $# -ge 1 ] || die "no agent command after --"
+case $mode in
+ro | rw) ;;
+*) die "mode '$mode' is not ro or rw" ;;
+esac
+
+# The macOS profile is text: a quote, a backslash or a newline in a path would
+# change what it says, so such a path is refused rather than escaped. Linux gets
+# the same rule so the two platforms accept the same layouts.
+plain() {
+    case $1 in
+    *\"* | *\\* | *"$nl"*) die "path '$1' contains a quote, a backslash or a newline" ;;
+    esac
+}
+
+# phys <dir> prints the physical path of an existing directory, or nothing.
+phys() { (cd "$1" 2>/dev/null && pwd -P) || true; }
+
+# physany <path> is phys for a file or a directory.
+physany() {
+    if [ -d "$1" ]; then
+        phys "$1"
+    elif [ -e "$1" ]; then
+        d=$(phys "$(dirname "$1")")
+        [ -n "$d" ] && printf '%s/%s\n' "$d" "$(basename "$1")"
+    fi
+}
+
+# inside <path> <dir>: is path dir itself or below it?
+inside() {
+    case "$1/" in
+    "$2"/*) return 0 ;;
+    esac
+    return 1
+}
+
+[ -d "$target" ] || die "'$target' is not a directory"
+target=$(phys "$target")
+[ -n "$target" ] || die "cannot resolve the directory"
+[ -n "${HOME:-}" ] && [ -d "$HOME" ] || die "HOME is not set to a directory"
+home=$(phys "$HOME")
+[ -n "$home" ] || die "cannot resolve HOME"
+plain "$target"
+plain "$home"
+# Handing the agent the home directory, or a directory holding it, is handing it
+# everything this script exists to hide.
+[ "$target" != / ] || die "refusing to confine an agent to /"
+inside "$home" "$target" && die "'$target' is or contains your home directory, which is what this wrapper hides; review a project directory instead"
+
+codexdir=${CODEX_HOME:-$home/.codex}
+[ ! -e "$codexdir" ] || codexdir=$(phys "$codexdir")
+[ -n "$codexdir" ] || die "CODEX_HOME exists but is not a directory I can resolve"
+claudedir=${CLAUDE_CONFIG_DIR:-$home/.claude}
+[ ! -e "$claudedir" ] || claudedir=$(phys "$claudedir")
+[ -n "$claudedir" ] || die "the claude config dir exists but is not a directory I can resolve"
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    claudejson=$claudedir/.claude.json
+else
+    claudejson=$home/.claude.json
+fi
+for p in "$codexdir" "$claudedir" "$claudejson"; do plain "$p"; done
+for state in "$codexdir" "$claudedir"; do
+    inside "$state" "$target" && die "'$target' contains the CLI state directory '$state'; review a directory that does not"
+done
+
+# The operator's extra paths. Each must exist; a writable one may not be or hold
+# $HOME, and none may be the target's ancestor in rw (that would make the whole
+# target's parent writable).
+extra_ro=
+extra_rw=
+addextra() { # addextra <var> <ro|rw>
+    eval "list=\${$1:-}"
+    oldifs=$IFS
+    IFS=:
+    set -f
+    for p in $list; do
+        [ -n "$p" ] || continue
+        [ -e "$p" ] || die "$1: '$p' does not exist"
+        r=$(physany "$p")
+        [ -n "$r" ] || die "$1: cannot resolve '$p'"
+        plain "$r"
+        inside "$home" "$r" && die "$1: '$r' is or contains your home directory"
+        if [ "$2" = rw ]; then
+            inside "$target" "$r" && [ "$r" != "$target" ] && die "$1: '$r' contains the reviewed directory; make the directory itself writable with can_edit, not its parent"
+            extra_rw="$extra_rw$nl$r"
+        else
+            extra_ro="$extra_ro$nl$r"
+        fi
+    done
+    set +f
+    IFS=$oldifs
+}
+addextra FIXPOINT_SANDBOX_RO ro
+addextra FIXPOINT_SANDBOX_RW rw
+
+# A git worktree's .git is a file naming the real git directory, usually outside
+# the target; without it every git command the agent runs fails. Bound read-only.
+gitdirs=
+if [ -f "$target/.git" ]; then
+    gd=$(sed -n 's/^gitdir: //p' "$target/.git" | head -n 1)
+    case $gd in
+    /*) ;;
+    ?*) gd=$target/$gd ;;
+    esac
+    if [ -n "$gd" ] && [ -d "$gd" ]; then
+        gd=$(phys "$gd")
+        common=$gd
+        if [ -f "$gd/commondir" ]; then
+            c=$(head -n 1 "$gd/commondir")
+            case $c in
+            /*) ;;
+            *) c=$gd/$c ;;
+            esac
+            [ ! -d "$c" ] || common=$(phys "$c")
+        fi
+        for g in "$gd" "$common"; do
+            plain "$g"
+            inside "$home" "$g" && die "the worktree's git directory '$g' is or contains your home directory"
+            gitdirs="$gitdirs$nl$g"
+        done
+    fi
+fi
+
+# Which CLI, from argv[0]. An unknown binary is given no state at all.
+cli=${1##*/}
+case $cli in
+codex | claude) ;;
+*) cli=other ;;
+esac
+agent_path=$(command -v "$1" 2>/dev/null) || agent_path=
+agent_real=
+if [ -n "$agent_path" ]; then
+    agent_real=$(physany "$agent_path")
+    # A symlink to the real install (npm's bin links do this).
+    if [ -L "$agent_path" ] && command -v readlink >/dev/null 2>&1; then
+        l=$(readlink -f "$agent_path" 2>/dev/null) || l=
+        [ -z "$l" ] || agent_real=$l
+    fi
+fi
+
+# A codex route that carries a model_provider of its own authenticates with that
+# provider's key and needs no ChatGPT login, so it is given none: an ollama or
+# OpenRouter model has no business holding the operator's OpenAI token.
+codex_auth=0
+if [ "$cli" = codex ]; then
+    codex_auth=1
+    for a in "$@"; do
+        case $a in
+        model_provider=* | *.model_provider=*) codex_auth=0 ;;
+        esac
+    done
+    [ -f "$codexdir/auth.json" ] || codex_auth=0
+fi
+
+# The account the real login belongs to, read before the agent runs. A refreshed
+# login is copied back only if it names the same one: a lens that wrote a file of
+# its own into S must not be able to log the operator into someone else's account.
+acct() { sed -n 's/.*"account_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -n 1; }
+codex_acct=
+[ "$codex_auth" = 0 ] || codex_acct=$(acct "$codexdir/auth.json")
+
+os=$(uname -s)
+case $os in
+Darwin) command -v sandbox-exec >/dev/null 2>&1 || die "sandbox-exec not found; refusing to run the agent unconfined" ;;
+Linux) command -v bwrap >/dev/null 2>&1 || die "bwrap (bubblewrap) not found; install it, or run fixpoint with -sandbox off. Refusing to run the agent unconfined" ;;
+*) die "unsupported OS '$os'; refusing to run the agent unconfined" ;;
+esac
+
+# The per-invocation scratch directory S.
+tb=$(phys "${TMPDIR:-/tmp}")
+[ -n "$tb" ] || die "TMPDIR '${TMPDIR:-/tmp}' is not a directory"
+inside "$tb" "$target" && die "TMPDIR '$tb' is the reviewed directory or inside it; the scratch directory must not be part of what is reviewed"
+inside "$tb" "$home" && [ "$os" = Linux ] && die "TMPDIR '$tb' is inside your home directory, which this wrapper hides; point TMPDIR elsewhere"
+S=$(mktemp -d "$tb/fixpoint-sandbox.XXXXXX") || die "cannot create a scratch directory in '$tb'"
+
+# Copy a refreshed codex login back. Runs on every exit, outside the sandbox.
+codex_writeback() {
+    [ "$codex_auth" = 1 ] && [ -n "$codex_acct" ] || return 0
+    new=$S/codex/auth.json
+    [ -f "$new" ] && [ ! -L "$new" ] || return 0
+    size=$(wc -c <"$new" | tr -d ' ')
+    [ "$size" -gt 0 ] && [ "$size" -lt 65536 ] || return 0
+    [ "$(acct "$new")" = "$codex_acct" ] || {
+        echo "$me: WARNING: codex wrote a login for a different account; NOT copied back to $codexdir/auth.json" >&2
+        return 0
+    }
+    cmp -s "$new" "$codexdir/auth.json" && return 0
+    tmp=$codexdir/.auth.json.$me.$$
+    (umask 077 && cp "$new" "$tmp") && mv -f "$tmp" "$codexdir/auth.json" || {
+        rm -f "$tmp"
+        echo "$me: WARNING: could not copy the refreshed codex login back to $codexdir/auth.json" >&2
+    }
+}
+
+# A CLI can leave a descendant still writing into S when the agent itself has
+# exited: a few tries, a second apart, so the directory is not left behind.
+cleanup() {
+    codex_writeback || true
+    n=0
+    while [ -e "$S" ] && [ "$n" -lt 5 ]; do
+        rm -rf "$S" 2>/dev/null || true
+        [ ! -e "$S" ] || sleep 1
+        n=$((n + 1))
+    done
+}
+trap cleanup EXIT
+resolved=$(phys "$S")
+[ -n "$resolved" ] || die "cannot resolve the scratch directory"
+S=$resolved
+plain "$S"
+chmod 700 "$S"
+
+child=
+on_signal() {
+    [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || true
+}
+# A signal the wrapper was sent must not be forgotten when the agent, having
+# received it, exits 0: the run was interrupted and the exit status says so.
+got_signal=0
+trap 'got_signal=143; on_signal' TERM
+trap 'got_signal=130; on_signal' INT
+trap 'got_signal=129; on_signal' HUP
+
+# Where S is, from inside. On Linux it IS the sandbox's /tmp.
+case $os in
+Linux) inner=/tmp ;;
+*) inner=$S ;;
+esac
+
+TMPDIR=$inner
+GOCACHE=$inner/go-build
+export TMPDIR GOCACHE
+case $cli in
+claude)
+    # The claude CLI's shell tool otherwise makes /tmp/claude-<uid>/<cwd slug>,
+    # shared by every lens on this directory.
+    CLAUDE_CODE_TMPDIR=$inner
+    export CLAUDE_CODE_TMPDIR
+    ;;
+codex)
+    mkdir "$S/codex"
+    if [ "$codex_auth" = 1 ]; then
+        # A symlink, not a copy, so no credential is written to scratch unless codex
+        # itself refreshes it (and then the write-back above picks it up).
+        ln -s "$codexdir/auth.json" "$S/codex/auth.json"
+    fi
+    CODEX_HOME=$inner/codex
+    export CODEX_HOME
+    ;;
+esac
+
+# The claude config directory's session and transcript state: other projects'
+# conversations. history.jsonl is a file and is handled beside these.
+claude_unreadable="projects sessions session-env shell-snapshots todos file-history backups debug plans paste-cache tasks teams usage-data image-cache"
+
+# Toolchain directories under $HOME a CLI or its interpreter is installed in,
+# bound back read-only. Whole ~/.local is NOT among them: ~/.local/share holds
+# keyrings and other applications' data.
+toolchains=
+for d in .nvm .npm-global .volta .fnm .asdf .bun .cargo .rustup .deno .pyenv .local/bin .local/lib go/pkg/mod; do
+    [ -d "$home/$d" ] && toolchains="$toolchains$nl$home/$d"
+done
+# The directory the agent binary really lives in, when that is under $HOME: its
+# top-level directory there, or for ~/.local/share/<app> that app's directory.
+case $agent_real in
+"$home"/.local/share/*)
+    rest=${agent_real#"$home"/.local/share/}
+    toolchains="$toolchains$nl$home/.local/share/${rest%%/*}"
+    ;;
+"$home"/.local/*) ;;
+"$home"/*)
+    rest=${agent_real#"$home"/}
+    toolchains="$toolchains$nl$home/${rest%%/*}"
+    ;;
+esac
+oldifs=$IFS
+IFS=$nl
+for d in $toolchains; do [ -z "$d" ] || plain "$d"; done
+IFS=$oldifs
+
+case $os in
+Darwin)
+    # SBPL is last-match-wins, so the order is load-bearing: denies, then what is
+    # allowed back from them, then the denies that nothing may override.
+    rd() { prof="$prof$nl(allow file-read-data (subpath \"$1\"))"; }
+    prof="(version 1)
+(allow default)
+(deny file-read-data (subpath \"$home\"))
+(deny file-read* (prefix \"$tb/fixpoint-sandbox.\"))
+(allow file-read* (subpath \"$S\"))"
+    rd "$target"
+    oldifs=$IFS
+    IFS=$nl
+    for d in $toolchains $extra_ro $extra_rw $gitdirs; do
+        [ -n "$d" ] && rd "$d"
+    done
+    IFS=$oldifs
+    # The keychain: claude's login lives there. Its items stay behind securityd's
+    # own access control; what is readable here is the encrypted database.
+    [ ! -d "$home/Library/Keychains" ] || rd "$home/Library/Keychains"
+    case $cli in
+    codex)
+        prof="$prof
+(deny file-read* (subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\"))"
+        [ "$codex_auth" = 0 ] || prof="$prof
+(allow file-read* (literal \"$codexdir/auth.json\"))"
+        ;;
+    claude)
+        prof="$prof
+(allow file-read* (subpath \"$claudedir\") (prefix \"$claudejson\"))
+(deny file-read* (subpath \"$codexdir\"))"
+        for d in $claude_unreadable history.jsonl; do
+            prof="$prof
+(deny file-read* (subpath \"$claudedir/$d\"))"
+        done
+        ;;
+    *)
+        prof="$prof
+(deny file-read* (subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\"))"
+        ;;
+    esac
+    # The operator's terminal: TIOCSTI on it types into the operator's shell,
+    # outside this profile.
+    prof="$prof
+(deny file-ioctl (regex #\"^/dev/(tty|pty|console)\"))
+(deny file-write*)
+(allow file-write* (literal \"/dev/null\") (literal \"/dev/dtracehelper\") (subpath \"$S\"))"
+    case $cli in
+    codex)
+        [ "$codex_auth" = 0 ] || prof="$prof
+(allow file-write* (literal \"$codexdir/auth.json\"))"
+        ;;
+    claude)
+        prof="$prof
+(allow file-write* (prefix \"$claudejson\"))"
+        ;;
+    esac
+    oldifs=$IFS
+    IFS=$nl
+    for d in $extra_rw; do
+        [ -n "$d" ] && prof="$prof
+(allow file-write* (subpath \"$d\"))"
+    done
+    IFS=$oldifs
+    if [ "$mode" = rw ]; then
+        prof="$prof
+(allow file-write* (subpath \"$target\"))"
+    else
+        prof="$prof
+(deny file-write* (subpath \"$target\"))"
+    fi
+    set -- sandbox-exec -p "$prof" "$@"
+    ;;
+Linux)
+    # POSIX sh has no arrays, so the bwrap arguments are appended after the
+    # agent's argv in "$@" and the agent's argv is rotated behind them at the end.
+    # Later mounts sit on top of earlier ones.
+    argc=$#
+    # /run: the user D-Bus socket lets a process start anything as the operator
+    # OUTSIDE this sandbox, and /run/docker.sock is root. DNS needs the directory
+    # systemd-resolved's /etc/resolv.conf points into.
+    set -- "$@" --tmpfs /run
+    [ ! -d /run/systemd/resolve ] || set -- "$@" --ro-bind /run/systemd/resolve /run/systemd/resolve
+    # /tmp is S. Replaced FIRST, so everything bound below -- $HOME's state, the
+    # extra paths, the reviewed directory -- stays visible even where it lives under
+    # /tmp or $TMPDIR. A TMPDIR other than /tmp holds the other invocations' scratch
+    # directories beside this one's, so it is masked.
+    case $tb in
+    /tmp | /) ;;
+    *) set -- "$@" --tmpfs "$tb" ;;
+    esac
+    set -- "$@" --bind "$S" /tmp
+    set -- "$@" --tmpfs "$home"
+    # CLI state relocated OUTSIDE $HOME is not hidden by the tmpfs above.
+    for state in "$codexdir" "$claudedir"; do
+        if [ -d "$state" ] && ! inside "$state" "$home"; then
+            set -- "$@" --tmpfs "$state"
+        fi
+    done
+    oldifs=$IFS
+    IFS=$nl
+    for d in $toolchains; do
+        [ -n "$d" ] && [ -e "$d" ] && set -- "$@" --ro-bind "$d" "$d"
+    done
+    IFS=$oldifs
+    case $cli in
+    codex)
+        [ "$codex_auth" = 0 ] || set -- "$@" --bind "$codexdir/auth.json" "$codexdir/auth.json"
+        ;;
+    claude)
+        if [ -d "$claudedir" ]; then
+            # The transcript directories are created in the real directory if
+            # missing, because a mount point has to exist; each is then an empty
+            # tmpfs: writable for the session, never persisted.
+            set -- "$@" --ro-bind "$claudedir" "$claudedir"
+            for d in $claude_unreadable telemetry cache; do
+                mkdir -p "$claudedir/$d"
+                set -- "$@" --tmpfs "$claudedir/$d"
+            done
+            [ ! -f "$claudedir/history.jsonl" ] || set -- "$@" --ro-bind /dev/null "$claudedir/history.jsonl"
+            [ ! -f "$claudedir/.credentials.json" ] || set -- "$@" --bind "$claudedir/.credentials.json" "$claudedir/.credentials.json"
+        fi
+        [ ! -f "$claudejson" ] || set -- "$@" --bind "$claudejson" "$claudejson"
+        ;;
+    esac
+    # The operator's extra paths and a worktree's git directory.
+    oldifs=$IFS
+    IFS=$nl
+    for d in $extra_ro $gitdirs; do
+        [ -n "$d" ] && set -- "$@" --ro-bind "$d" "$d"
+    done
+    for d in $extra_rw; do
+        [ -n "$d" ] && set -- "$@" --bind "$d" "$d"
+    done
+    IFS=$oldifs
+    # Last of the mounts, so nothing above (a tmpfs on /tmp or on $HOME) hides it.
+    if [ "$mode" = rw ]; then
+        set -- "$@" --bind "$target" "$target"
+    else
+        set -- "$@" --ro-bind "$target" "$target"
+    fi
+    n=0
+    while [ "$n" -lt "$argc" ]; do
+        a=$1
+        shift
+        set -- "$@" "$a"
+        n=$((n + 1))
+    done
+    # A fresh /dev and /proc in a new PID namespace (or /proc/<fixpoint's pid>
+    # would reach outside); --die-with-parent ties the agent to this wrapper;
+    # --new-session keeps it off the operator's terminal (TIOCSTI).
+    set -- bwrap --die-with-parent --new-session --unshare-pid --unshare-ipc \
+        --ro-bind / / --dev /dev --proc /proc --chdir "$target" "$@"
+    ;;
+esac
+
+# The agent is a child, so S can be cleaned up afterwards. Its stdin is the
+# wrapper's: the agents read their prompt from stdin.
+exec 3<&0
+"$@" <&3 3<&- &
+child=$!
+exec 3<&-
+rc=0
+while :; do
+    wait "$child" && rc=0 || rc=$?
+    kill -0 "$child" 2>/dev/null || break
+done
+if [ "$got_signal" != 0 ] && [ "$rc" = 0 ]; then
+    rc=$got_signal
+fi
+exit "$rc"

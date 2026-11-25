@@ -83,6 +83,14 @@ usage:
 prompt_via: stdin
 timeout: 30m # cloud-served models are slower; matched to the panel (see claude-opus.yaml)
 can_edit: false
+# Inside a sandbox wrapper (-sandbox builtin, or sandbox.command with
+# -agents-sandboxed) codex's own sandbox cannot start -- sandboxes do not nest, and
+# every command it ran would fail -- so the wrapper becomes the write barrier and
+# this one is switched off. Applied only when the run asserts that; see
+# config/README.md, "when_sandboxed".
+when_sandboxed:
+  replace:
+    "--sandbox read-only": "--sandbox danger-full-access"
 
 # Only these variables reach the agent, on top of a non-secret baseline (PATH,
 # HOME, locale, TLS trust, proxy settings). `ollama launch` configures codex's

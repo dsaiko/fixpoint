@@ -96,6 +96,7 @@ Flags:
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
 	trustedBundle := fs.Bool("trusted-bundle", false, "assert only that the bundle files resolved from inside the target may be run; trusts no other target content and permits no fix round")
 	agentsSandboxed := fs.Bool("agents-sandboxed", false, "assert that sandbox.command confines the agents, so a read-only agent may switch its own CLI's sandbox off (codex --sandbox danger-full-access); needs sandbox.command, refused in pr mode")
+	sandboxChoice := fs.String("sandbox", "", "run every agent inside fixpoint's own wrapper (builtin: bubblewrap on Linux, sandbox-exec on macOS), or off to overrule "+config.SandboxEnv+" for this run (empty = use "+config.SandboxEnv+")")
 	post := fs.Bool("post", false, "publish the review on the pull request as a COMMENT: findings become visible, no verdict is acted on")
 	postRunDir := fs.String("post-run", "", "publish the review a FINISHED run already produced, from its .fixpoint/<run> directory; invokes no agent")
 	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
@@ -208,6 +209,7 @@ Flags:
 		TrustedTarget:     *trustedTarget,
 		TrustedBundle:     *trustedBundle,
 		AgentsSandboxed:   *agentsSandboxed,
+		Sandbox:           sandboxSetting(fs, *sandboxChoice),
 		NoCoverageCheck:   *noCoverageCheck,
 		PlanOnly:          *planOnly,
 		Plan:              paths["plan"],
@@ -627,6 +629,17 @@ func contradictoryFlags(fs *flag.FlagSet) error {
 func flagTrue(fs *flag.FlagSet, name string) bool {
 	f := fs.Lookup(name)
 	return f != nil && f.Value.String() == "true"
+}
+
+// sandboxSetting is -sandbox when it was typed, and FIXPOINT_SANDBOX otherwise.
+// The variable is read here, from the invocation, and never from YAML: a config
+// can come from the repository under review, and the choice of confinement must
+// not.
+func sandboxSetting(fs *flag.FlagSet, typed string) string {
+	if !flagUnset(fs, "sandbox") {
+		return typed
+	}
+	return strings.TrimSpace(os.Getenv(config.SandboxEnv))
 }
 
 // flagUnset reports whether the named flag was left off the command line, which

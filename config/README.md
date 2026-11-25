@@ -673,8 +673,9 @@ sets only the working directory, with no filesystem sandbox. A reviewer fed
 untrusted content can be prompt-injected into reading a host secret
 (`~/.ssh/id_rsa`, `~/.aws/credentials`, a `.env`) and quoting it into a finding.
 That path has no trust gate. Point reviewers at untrusted content only on a host
-without sensitive files, or set `sandbox.command` and launch every agent inside a
-confinement of your own — see "Confining agents" below.
+without sensitive files, or run every agent inside a sandbox: fixpoint's own
+(`-sandbox builtin`, or `FIXPOINT_SANDBOX=builtin` to make it the default) or a
+`sandbox.command` of yours — see "Confining agents" below.
 
 **Agents do not load the target's agent settings.** Every shipped
 `claude`-backed agent passes `--setting-sources user`, so settings come from
@@ -710,9 +711,46 @@ reachable, not whether a compromised reviewer can talk. A container does not hel
 with the remainder: the agents' own API tokens have to be inside it for the CLIs to
 work at all — which is the one thing `sandbox.command` cannot fix either.
 
-**Confining agents.** `sandbox.command` launches every agent through a wrapper of
-your choosing, which is the documented "run it in a container" advice made
-executable:
+**Confining agents with fixpoint's own wrapper.** `-sandbox builtin` runs every
+agent through `sandbox/fixpoint-sandbox`, which ships in the bundle beside the
+binary: bubblewrap on Linux (install the `bubblewrap` package), `sandbox-exec` on
+macOS. Set `FIXPOINT_SANDBOX=builtin` in your shell profile to make it the
+default, and `-sandbox off` overrules that for one run. The agent sees the
+directory it works in (read-only for a reviewer, writable for the coder), the
+system, the toolchain directories under `$HOME` its CLI is installed in, and its
+own CLI state: codex a fresh `CODEX_HOME` holding only the login, claude its real
+config directory with every transcript store emptied. The rest of `$HOME` —
+`~/.ssh`, `~/.aws`, `~/.config`, your other repositories, earlier sessions'
+transcripts — is not there on Linux and unreadable on macOS, and nothing outside
+those directories is writable.
+
+Codex's own `--sandbox read-only` cannot start inside another sandbox, so the
+shipped codex agents declare what their command becomes there:
+
+```yaml
+when_sandboxed:
+  replace:
+    "--sandbox read-only": "--sandbox danger-full-access"
+```
+
+The swap is applied only when the run asserts that a wrapper confines the agents
+— `-sandbox builtin` does, since its read-only mode is fixpoint's own code; a
+`sandbox.command` of yours needs `-agents-sandboxed` — and a key that matches no
+element of `command` fails validation. An agent file of yours for a CLI that
+sandboxes itself takes the same block.
+
+`FIXPOINT_SANDBOX_RO` and `FIXPOINT_SANDBOX_RW` (colon-separated paths, from your
+environment and never from a config file) add what the wrapper does not know: a
+CLI installed somewhere unusual, a toolchain cache. A codex ChatGPT login that
+codex refreshes during a session is copied back to your `auth.json` afterwards,
+but only when it names the same account. Read the header of
+`sandbox/fixpoint-sandbox` for exactly what is mounted, and
+[Security model](../docs/security.md#fixpoints-own-wrapper--sandbox-builtin) for
+what it cannot close.
+
+**Confining agents with a wrapper of your own.** `sandbox.command` launches every
+agent through a wrapper of your choosing, which is the documented "run it in a
+container" advice made executable:
 
 ```yaml
 sandbox:
@@ -720,14 +758,15 @@ sandbox:
 ```
 
 The wrapper is prepended to the agent's argv, so fixpoint execs it and the CLI is
-its argument. `{{target}}` is the directory under review, `{{target_mode}}` is `rw`
+its argument. `{{target}}` is the directory the invocation works in (the target;
+for create, the assignment snapshot; for implement's coder, the output
+directory), `{{target_mode}}` is `rw`
 for an agent with `can_edit` and `ro` for every other, and `{{agent}}` is the
 agent's name. Mount the target and the one credential directory the CLI needs and
 nothing else, and the read surface two paragraphs up closes: the reviewer cannot
 quote `~/.ssh` because `~/.ssh` is not there. fixpoint implements no sandbox
 itself — which primitive fits and which paths must be mounted are properties of
-your machine. It is refused for create and implement runs, whose agents work
-outside `target.path`. Full detail, including what it cannot close, is in
+your machine. Full detail, including what it cannot close, is in
 [Security model](../docs/security.md#confining-agents-with-sandboxcommand).
 
 **fixpoint removes credential-shaped paths from collection unconditionally**, in
@@ -737,7 +776,9 @@ sandbox.
 
 **The agent environment is filtered.** Each agent receives a non-secret baseline —
 `PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LANGUAGE`/`LC_ALL`/`LC_CTYPE`,
-`TERM`, `TZ`, `USER`/`LOGNAME`, the `XDG_*` config paths, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, TLS trust
+`TERM`, `TZ`, `USER`/`LOGNAME`, the `XDG_*` config paths, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+`FIXPOINT_SANDBOX_RO`/`FIXPOINT_SANDBOX_RW` (paths for the sandbox wrapper, which
+runs with the agent's environment), TLS trust
 (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`,
 `REQUESTS_CA_BUNDLE`), and proxy settings — plus the variables its own
 `agents/*.yaml` declares under `env.pass` / `env.set`. Nothing else is present in

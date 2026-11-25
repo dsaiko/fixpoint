@@ -234,7 +234,9 @@ func RedactSecrets(s string) string { return redactSecrets(s) }
 // container/VM, and do not grant it env.inherit_all -- an escaped descendant
 // keeps whatever environment its agent was given.
 func Run(ctx context.Context, a config.Agent, prompt, dir string) Result {
-	argv := a.Argv()
+	// ArgvIn, not Argv: a sandbox wrapper confines the directory this invocation
+	// runs in, which for create and implement is not target.path.
+	argv := a.ArgvIn(dir)
 	// Defensive: config validation rejects an empty command, but an agent
 	// reaching Run with no argv (e.g. a blank pool entry that slipped past
 	// validation) would otherwise index argv[0] and panic the whole process.

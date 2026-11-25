@@ -130,6 +130,9 @@ type Overrides struct {
 	// from writing, which lets such an agent's argv switch its own CLI's sandbox off;
 	// see Loop.AgentsSandboxed.
 	AgentsSandboxed bool
+	// Sandbox is -sandbox, or FIXPOINT_SANDBOX when the flag was not given:
+	// SandboxBuiltin, SandboxOff or "". See Overrides.applySandboxChoice.
+	Sandbox string
 	// NoCoverageCheck waives §4.2 rule 6 for this invocation (§7.4).
 	NoCoverageCheck bool
 	// PlanOnly stops an implement run after the plan is validated (§7.4).
@@ -315,6 +318,9 @@ func (o Overrides) Applied() []string {
 	if o.AgentsSandboxed {
 		out = append(out, "agents_sandboxed=true")
 	}
+	if o.Sandbox == SandboxBuiltin {
+		out = append(out, "sandbox=builtin")
+	}
 	if o.Gate != "" {
 		out = append(out, "gate="+o.Gate)
 	}
@@ -402,6 +408,9 @@ func LoadBundle(r *Resolver, nameOrPath, projectRoot string, ov Overrides) (*Loa
 	// Validate (run by the caller) sees the value the run will actually use.
 	ov.apply(cfg)
 	if err := ov.applyTarget(cfg); err != nil {
+		return nil, err
+	}
+	if err := ov.applySandboxChoice(cfg); err != nil {
 		return nil, err
 	}
 	// After the overrides, because -target decides what {{target}} expands to, and
