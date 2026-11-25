@@ -37,6 +37,15 @@ import (
 //     variable. Diagnosed the hard way on 2026-08-24: `claude auth login`
 //     succeeded and check-live kept failing, because the two were not looking at
 //     the same store. USER is already below for the account half of that lookup.
+//   - CODEX_HOME: codex's counterpart, and the same failure with a different
+//     message. It is where `codex` keeps auth.json, so an operator who logs in
+//     under a relocated CODEX_HOME (a per-project one from direnv, say) has a
+//     login the agent cannot see: without the variable codex falls back to
+//     ~/.codex, finds no auth.json there and answers 401, while `codex login
+//     status` in the operator's own shell says "Logged in using ChatGPT".
+//     Reported from a Mac on 2026-11-25. It is a path and not a credential, and
+//     the shipped codex agents pass --ignore-user-config, so the config.toml in
+//     that directory still does not reach a reviewer.
 //   - TLS trust: SSL_CERT_FILE, SSL_CERT_DIR, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE,
 //     REQUESTS_CA_BUNDLE. Behind a corporate MITM proxy, dropping these makes
 //     every HTTPS call fail certificate verification.
@@ -51,7 +60,7 @@ var baselineEnv = []string{
 	"LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TERM", "TZ",
 	"USER", "LOGNAME",
 	"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
-	"CLAUDE_CONFIG_DIR",
+	"CLAUDE_CONFIG_DIR", "CODEX_HOME",
 	"SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
 	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
 	"http_proxy", "https_proxy", "all_proxy", "no_proxy",

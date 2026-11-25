@@ -70,7 +70,7 @@ can_edit: false
 # cannot see. See config/README.md.
 env:
   pass:
-  # codex reads ~/.codex when logged in; these cover API-key auth.
+  # codex reads ~/.codex (or $CODEX_HOME, which is passed through) when logged in; these cover API-key auth.
     - OPENAI_API_KEY
     - CODEX_API_KEY
 

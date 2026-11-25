@@ -737,7 +737,7 @@ sandbox.
 
 **The agent environment is filtered.** Each agent receives a non-secret baseline —
 `PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LANGUAGE`/`LC_ALL`/`LC_CTYPE`,
-`TERM`, `TZ`, `USER`/`LOGNAME`, the `XDG_*` config paths, `CLAUDE_CONFIG_DIR`, TLS trust
+`TERM`, `TZ`, `USER`/`LOGNAME`, the `XDG_*` config paths, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, TLS trust
 (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`,
 `REQUESTS_CA_BUNDLE`), and proxy settings — plus the variables its own
 `agents/*.yaml` declares under `env.pass` / `env.set`. Nothing else is present in
@@ -749,7 +749,10 @@ credentials; without the TLS entries, HTTPS fails certificate verification behin
 corporate proxy. `CLAUDE_CONFIG_DIR` is the same hazard with a sharper edge — on
 macOS `claude` derives its keychain item from that path, so an operator who exports
 it logs in to a different credential store than an agent that never receives it,
-and the agent reports an expired OAuth session rather than a missing variable. One
+and the agent reports an expired OAuth session rather than a missing variable.
+`CODEX_HOME` is codex's version of it: that directory holds `auth.json`, so
+without the variable an agent looks in `~/.codex`, finds no login and gets a 401
+while `codex login status` in your shell reports you logged in. One
 caveat — proxy variables can embed credentials
 (`http://user:pass@proxy`), so they are the single baseline entry that may carry a
 secret; the redactor masks URI passwords, and an operator who cannot accept that
