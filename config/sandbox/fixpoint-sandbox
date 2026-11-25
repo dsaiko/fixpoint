@@ -366,13 +366,19 @@ IFS=$oldifs
 case $os in
 Darwin)
     # SBPL is last-match-wins, so the order is load-bearing: denies, then what is
-    # allowed back from them, then the denies that nothing may override.
-    rd() { prof="$prof$nl(allow file-read-data (subpath \"$1\"))"; }
+    # allowed back from them, then the denies that nothing may override. And a rule
+    # naming file-read* does NOT override one naming file-read-data, in either
+    # direction (measured on macOS 26: after a file-read-data deny on $HOME, an
+    # exact-path file-read* allow still left the file unreadable). So every read
+    # rule below is written for BOTH operations, through rr; only the $HOME deny is
+    # file-read-data alone, which leaves names and metadata visible.
+    rr() { verb=$1; shift; prof="$prof$nl($verb file-read* $*)$nl($verb file-read-data $*)"; }
+    rd() { rr allow "(subpath \"$1\")"; }
     prof="(version 1)
 (allow default)
-(deny file-read-data (subpath \"$home\"))
-(deny file-read* (prefix \"$tb/fixpoint-sandbox.\"))
-(allow file-read* (subpath \"$S\"))"
+(deny file-read-data (subpath \"$home\"))"
+    rr deny "(prefix \"$tb/fixpoint-sandbox.\")"
+    rd "$S"
     rd "$target"
     oldifs=$IFS
     IFS=$nl
@@ -385,23 +391,18 @@ Darwin)
     [ ! -d "$home/Library/Keychains" ] || rd "$home/Library/Keychains"
     case $cli in
     codex)
-        prof="$prof
-(deny file-read* (subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\"))"
-        [ "$codex_auth" = 0 ] || prof="$prof
-(allow file-read* (literal \"$codexdir/auth.json\"))"
+        rr deny "(subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\")"
+        [ "$codex_auth" = 0 ] || rr allow "(literal \"$codexdir/auth.json\")"
         ;;
     claude)
-        prof="$prof
-(allow file-read* (subpath \"$claudedir\") (prefix \"$claudejson\"))
-(deny file-read* (subpath \"$codexdir\"))"
+        rr allow "(subpath \"$claudedir\") (prefix \"$claudejson\")"
+        rr deny "(subpath \"$codexdir\")"
         for d in $claude_unreadable history.jsonl; do
-            prof="$prof
-(deny file-read* (subpath \"$claudedir/$d\"))"
+            rr deny "(subpath \"$claudedir/$d\")"
         done
         ;;
     *)
-        prof="$prof
-(deny file-read* (subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\"))"
+        rr deny "(subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\")"
         ;;
     esac
     # The operator's terminal: TIOCSTI on it types into the operator's shell,

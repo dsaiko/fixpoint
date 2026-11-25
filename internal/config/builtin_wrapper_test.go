@@ -91,6 +91,19 @@ func newWrapperRig(t *testing.T) wrapperRig {
 	write(filepath.Join(r.realCodex, "sessions", "old.jsonl"), "SECRET-TRANSCRIPT\n", 0o600)
 	write(filepath.Join(r.realCodex, "auth.json"), `{"tokens":{"account_id":"acct-1","refresh_token":"r1"}}`, 0o600)
 	write(filepath.Join(r.target, "code.go"), "package main\n", 0o644)
+	write(filepath.Join(r.home, ".claude", "settings.json"), "CLAUDE-SETTINGS\n", 0o600)
+	write(filepath.Join(r.home, ".claude", "projects", "p", "t.jsonl"), "SECRET-CLAUDE-TRANSCRIPT\n", 0o600)
+	write(filepath.Join(r.home, ".claude.json"), "{}\n", 0o600)
+	write(filepath.Join(r.home, "proj", "code.go"), "package inhome\n", 0o644)
+	write(filepath.Join(r.bin, "claude"), `#!/bin/sh
+cat code.go
+cat "$HOME/.claude/settings.json" 2>/dev/null && echo CFG-OK
+cat "$HOME/.claude/projects/p/t.jsonl" 2>/dev/null && echo LEAK-claude-transcript
+cat "$HOME/.codex/auth.json" 2>/dev/null && echo LEAK-codex-auth
+cat "$HOME/.ssh/id_ed25519" 2>/dev/null && echo LEAK-ssh
+echo '{"n":1}' > "$HOME/.claude.json" && echo CJSON-OK
+exit 0
+`, 0o755)
 	write(filepath.Join(r.bin, "codex"), `#!/bin/sh
 cat code.go
 cat "$HOME/.ssh/id_ed25519" 2>/dev/null && echo LEAK-ssh
@@ -107,9 +120,15 @@ exit 0
 
 func (r wrapperRig) run(t *testing.T, mode string, extraEnv []string, args ...string) string {
 	t.Helper()
-	argv := append([]string{r.wrapper, r.target, mode, "--", "codex"}, args...)
+	return r.runAs(t, r.target, "codex", mode, extraEnv, args...)
+}
+
+// runAs runs the probe named cli (codex or claude) confined to target.
+func (r wrapperRig) runAs(t *testing.T, target, cli, mode string, extraEnv []string, args ...string) string {
+	t.Helper()
+	argv := append([]string{r.wrapper, target, mode, "--", cli}, args...)
 	cmd := exec.Command("/bin/sh", argv...)
-	cmd.Dir = r.target
+	cmd.Dir = target
 	cmd.Env = append([]string{
 		"HOME=" + r.home,
 		"TMPDIR=" + r.tmp,
@@ -237,5 +256,43 @@ func TestBuiltinWrapperHidesRelocatedCodexState(t *testing.T) {
 	}
 	if !strings.Contains(out, "acct-1") {
 		t.Errorf("relocated CODEX_HOME login was not handed over:\n%s", out)
+	}
+}
+
+// The usual layout: the project lives under $HOME. On macOS that means the target
+// is allowed back from the $HOME read deny, which is exactly where an allow that
+// names the wrong operation silently loses.
+func TestBuiltinWrapperReadsATargetInsideHome(t *testing.T) {
+	r := newWrapperRig(t)
+	out := r.runAs(t, filepath.Join(r.home, "proj"), "codex", "ro", nil)
+	if !strings.Contains(out, "package inhome") {
+		t.Fatalf("the agent could not read a target inside $HOME:\n%s", out)
+	}
+	for _, leak := range []string{"LEAK-ssh", "LEAK-transcript", "WROTE-target"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("%s:\n%s", leak, out)
+		}
+	}
+	if !strings.Contains(out, "acct-1") {
+		t.Errorf("the codex login was not handed over:\n%s", out)
+	}
+}
+
+func TestBuiltinWrapperGivesClaudeItsConfigButNotItsTranscripts(t *testing.T) {
+	r := newWrapperRig(t)
+	out := r.runAs(t, filepath.Join(r.home, "proj"), "claude", "ro", nil)
+	if !strings.Contains(out, "package inhome") {
+		t.Fatalf("claude could not read its target:\n%s", out)
+	}
+	if !strings.Contains(out, "CFG-OK") {
+		t.Errorf("claude could not read its own config directory:\n%s", out)
+	}
+	if !strings.Contains(out, "CJSON-OK") {
+		t.Errorf("claude could not rewrite .claude.json:\n%s", out)
+	}
+	for _, leak := range []string{"LEAK-claude-transcript", "LEAK-codex-auth", "LEAK-ssh"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("%s:\n%s", leak, out)
+		}
 	}
 }
