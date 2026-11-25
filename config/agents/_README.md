@@ -55,7 +55,7 @@ reading untrusted code is exactly where an unenforced claim fails.
 
 A CLI that enforces read-only with a sandbox of its own (codex's
 `--sandbox read-only`) cannot start it inside another one, so under
-`-sandbox builtin` or an asserted `sandbox.command` it has to be switched off and
+fixpoint's own wrapper (the default) or an asserted `sandbox.command` it has to be switched off and
 the wrapper becomes the write barrier. Say how in the agent file itself:
 
     when_sandboxed:

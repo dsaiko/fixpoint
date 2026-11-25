@@ -1797,7 +1797,7 @@ func TestPlanAndContinueFlagsReachConfigAsAbsolutePaths(t *testing.T) {
 			// exact prefix is the fixture's working directory, which is not this
 			// test's -- asserting the property rather than a literal is also what
 			// keeps this from becoming a test that restates its own setup.
-			re := regexp.MustCompile(tc.key + `=(\S+)`)
+			re := regexp.MustCompile(tc.key + `=([^\s,]+)`)
 			m := re.FindStringSubmatch(buf.String())
 			if m == nil {
 				t.Fatalf("no %s= in the applied overrides -- the flag never reached the config:\n%s", tc.key, buf.String())

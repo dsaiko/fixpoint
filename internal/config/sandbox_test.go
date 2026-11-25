@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -435,10 +436,52 @@ func fakeBuiltin(t *testing.T, dir string, create bool) string {
 			t.Fatal(err)
 		}
 	}
-	old := builtinSandboxDirs
+	old, oldCheck := builtinSandboxDirs, sandboxHostCheck
 	builtinSandboxDirs = func() []string { return []string{dir} }
-	t.Cleanup(func() { builtinSandboxDirs = old })
+	sandboxHostCheck = func() error { return nil }
+	t.Cleanup(func() { builtinSandboxDirs, sandboxHostCheck = old, oldCheck })
 	return p
+}
+
+// auto, the command line's default, keeps a bundle's own wrapper...
+func TestSandboxAutoKeepsTheBundlesWrapper(t *testing.T) {
+	fakeBuiltin(t, t.TempDir(), true)
+	c := &Config{Sandbox: Sandbox{Command: []string{"bundle-wrapper", "--"}}}
+	if err := (Overrides{Sandbox: SandboxAuto}).applySandboxChoice(c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Sandbox.Builtin || c.Sandbox.Command[0] != "bundle-wrapper" || c.Loop.AgentsSandboxed {
+		t.Errorf("auto replaced the bundle's wrapper: %+v, agents_sandboxed=%v", c.Sandbox, c.Loop.AgentsSandboxed)
+	}
+}
+
+// ...and is the shipped wrapper for a bundle that sets none, never nothing.
+func TestSandboxAutoIsBuiltinWithoutABundleWrapper(t *testing.T) {
+	p := fakeBuiltin(t, t.TempDir(), true)
+	c := &Config{}
+	if err := (Overrides{Sandbox: SandboxAuto}).applySandboxChoice(c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Sandbox.Builtin || len(c.Sandbox.Command) < 2 || c.Sandbox.Command[1] != p || !c.Loop.AgentsSandboxed {
+		t.Errorf("auto without a bundle wrapper = %+v, agents_sandboxed=%v; want the shipped wrapper", c.Sandbox, c.Loop.AgentsSandboxed)
+	}
+}
+
+// A host without bwrap fails at startup, not at the first agent, and is never
+// treated as "run them unconfined".
+func TestSandboxBuiltinRefusesAHostWithoutTheSandboxTool(t *testing.T) {
+	fakeBuiltin(t, t.TempDir(), true)
+	sandboxHostCheck = func() error { return errors.New("bubblewrap (bwrap) is not installed") }
+	for _, choice := range []string{SandboxAuto, SandboxBuiltin} {
+		c := &Config{}
+		err := (Overrides{Sandbox: choice}).applySandboxChoice(c)
+		if err == nil || !strings.Contains(err.Error(), "bwrap") || !strings.Contains(err.Error(), "-sandbox off") {
+			t.Errorf("%s: err = %v; want the missing tool named and the explicit way out", choice, err)
+		}
+		if c.Sandbox.Enabled() {
+			t.Errorf("%s: a sandbox was configured although the host cannot run it", choice)
+		}
+	}
 }
 
 func TestSandboxBuiltinUsesTheShippedWrapperAndAsserts(t *testing.T) {

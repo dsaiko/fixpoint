@@ -86,10 +86,11 @@ Read this before pointing the tool at code you did not write.
   flags block edits but do not confine reads: a reviewer fed untrusted content
   can be prompt-injected into reading a host secret (`~/.ssh`,
   `~/.aws/credentials`, `.env`) and quoting it into a finding. Point reviewers
-  at untrusted content only on a host without sensitive files, or launch them
-  through [fixpoint's own wrapper](#fixpoints-own-wrapper--sandbox-builtin)
-  (`-sandbox builtin`) or a [`sandbox.command`](#confining-agents-with-sandboxcommand)
-  of yours — which is this advice made executable rather than left to the operator.
+  at untrusted content only on a host without sensitive files, or keep them
+  inside [fixpoint's own wrapper](#fixpoints-own-wrapper--sandbox-builtin) — the
+  default — or a [`sandbox.command`](#confining-agents-with-sandboxcommand) of
+  yours, which is this advice made executable rather than left to the operator.
+  This bullet describes a run with `-sandbox off`.
 - **The process-group kill is the only containment, and a descendant can escape
   it.** Every agent, verify command and git subprocess runs as a process-group
   leader, and fixpoint SIGKILLs the whole group the moment the leader exits — so an
@@ -221,14 +222,25 @@ refused in `pr` mode.
 
 Writing a wrapper is the part of the above most operators will not do, so one
 ships with fixpoint: `config/sandbox/fixpoint-sandbox`, installed in the bundle
-beside the binary. `-sandbox builtin` uses it for one run; `FIXPOINT_SANDBOX=builtin`
-in your environment makes it the default, and `-sandbox off` overrules the
-variable for one run. Both are read from the invocation, never from a config file
-— a config can be the reviewed repository's, and so can a bundle: the wrapper is
-looked up only in the bundle locations tied to the binary
-(`<binary dir>/config`, `<prefix>/share/fixpoint`), never in a project's
-`config/` or `~/.fixpoint`, which the material under review can shadow. It
-replaces any `sandbox.command` the bundle set.
+beside the binary, and **it is on by default**. `-sandbox` (or
+`FIXPOINT_SANDBOX` in your environment; the flag wins) picks one of:
+
+| Value | Agents run inside |
+|---|---|
+| `auto` (default) | the bundle's own `sandbox.command` if it sets one, otherwise this wrapper |
+| `builtin` | this wrapper, replacing any `sandbox.command` the bundle set |
+| `off` | the bundle's `sandbox.command` if it sets one, otherwise **nothing** |
+
+So a run is unconfined only when you said `off`. When the wrapper cannot run —
+it is missing beside the binary, or the host has no `bwrap` — fixpoint refuses to
+start rather than fall back, and says how to opt out. Every run logs one
+`sandbox:` line naming what confines its agents, `NONE` included.
+
+The choice is read from the invocation, never from a config file — a config can
+be the reviewed repository's, and so can a bundle: the wrapper is looked up only
+in the bundle locations tied to the binary (`<binary dir>/config`,
+`<prefix>/share/fixpoint`), never in a project's `config/` or `~/.fixpoint`, which
+the material under review can shadow.
 
 What it does, per platform:
 

@@ -53,6 +53,11 @@ jobs:
           tar xzf fixpoint_*_Linux_x86_64.tar.gz -C "$HOME/.local/fixpoint"
           echo "$HOME/.local/fixpoint" >> "$GITHUB_PATH"
 
+      # Every agent runs inside fixpoint's own sandbox by default, which needs
+      # bubblewrap on Linux; without it the run refuses to start.
+      - name: Install bubblewrap
+        run: sudo apt-get install -y bubblewrap
+
       # Install whatever agent CLIs your panel names, and give each one its
       # credential as a repository secret. An agent's env.pass names the
       # variables it receives; nothing else in the environment reaches it.
@@ -85,10 +90,12 @@ the pull request's and nobody is watching the run.
   `pull_request_target` to "fix" it: that runs with your secrets against the
   fork's code, which is precisely the exposure the split exists to prevent. Review
   forks on a machine you control instead.
-- **Consider `sandbox.command`.** A CI runner is disposable, which removes much of
-  the motive — but the agent still holds your API key and can still read the
-  runner's filesystem. See
-  [Confining agents](security.md#confining-agents-with-sandboxcommand).
+- **Keep the sandbox on.** Every agent runs inside fixpoint's own wrapper by
+  default. A runner is disposable, which removes much of the motive — but the
+  agent still holds your API key and could otherwise read the runner's
+  filesystem. If the runner cannot create the user namespaces bubblewrap needs,
+  the run says so and refuses; `-sandbox off` is the explicit way past it. See
+  [fixpoint's own wrapper](security.md#fixpoints-own-wrapper--sandbox-builtin).
 
 ## Deciding what to do with inconclusive
 

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -82,15 +84,20 @@ type Sandbox struct {
 
 // The operator's choice of wrapper, from -sandbox or FIXPOINT_SANDBOX.
 const (
-	// SandboxBuiltin selects the wrapper shipped with this binary.
+	// SandboxAuto is what the command line uses when neither the flag nor the
+	// environment says anything: the bundle's own sandbox.command when it declares
+	// one, and the shipped wrapper otherwise. A run is never unconfined by default;
+	// that takes an explicit SandboxOff.
+	SandboxAuto = "auto"
+	// SandboxBuiltin selects the wrapper shipped with this binary, replacing any
+	// sandbox.command the bundle set.
 	SandboxBuiltin = "builtin"
-	// SandboxOff withdraws a SandboxBuiltin chosen through the environment, for one
-	// invocation. It never removes a sandbox.command a bundle configured: turning a
-	// confinement off is that file's business, not a flag's (see Overrides.apply).
+	// SandboxOff withdraws the shipped wrapper. It never removes a sandbox.command
+	// a bundle configured: turning a confinement off is that file's business, not a
+	// flag's (see Overrides.apply). With no such command the agents run unconfined.
 	SandboxOff = "off"
-	// SandboxEnv is the environment variable that sets the choice for every run,
-	// so a machine can be sandboxed by default without each command line saying
-	// so. The -sandbox flag wins over it.
+	// SandboxEnv is the environment variable that sets the choice for every run.
+	// The -sandbox flag wins over it.
 	SandboxEnv = "FIXPOINT_SANDBOX"
 )
 
@@ -118,30 +125,59 @@ func findBuiltinSandbox() (string, []string) {
 	return "", searched
 }
 
+// sandboxHostCheck reports whether this host has the program the shipped wrapper
+// confines with, so a missing one stops the run at startup instead of at the first
+// agent. A variable so tests do not depend on the host.
+var sandboxHostCheck = func() error {
+	switch runtime.GOOS {
+	case "linux":
+		if _, err := exec.LookPath("bwrap"); err != nil {
+			return errors.New("bubblewrap (bwrap) is not installed, and it is what confines the agents on Linux; install it (apt install bubblewrap, dnf install bubblewrap)")
+		}
+	case "darwin":
+		if _, err := exec.LookPath("sandbox-exec"); err != nil {
+			return errors.New("sandbox-exec was not found, and it is what confines the agents on macOS")
+		}
+	default:
+		return fmt.Errorf("fixpoint's own wrapper supports Linux and macOS, not %s", runtime.GOOS)
+	}
+	return nil
+}
+
 // applySandboxChoice folds -sandbox / FIXPOINT_SANDBOX into the configuration.
 //
 // builtin REPLACES whatever sandbox.command the bundle set, and asserts
 // agents_sandboxed: the shipped wrapper enforces {{target_mode}} itself, which is
 // the claim the flag makes, so an operator who picked it has nothing further to
-// assert. off is a no-op on the configuration; it exists so the command line can
-// overrule the environment.
+// assert. auto keeps a bundle's own sandbox.command and is builtin otherwise. off
+// (and "", which only a caller that is not the command line passes) leaves the
+// configuration as the bundle wrote it.
 func (o Overrides) applySandboxChoice(c *Config) error {
+	why := "-sandbox builtin:"
 	switch o.Sandbox {
 	case "", SandboxOff:
 		return nil
+	case SandboxAuto:
+		if c.Sandbox.Enabled() {
+			return nil
+		}
+		why = "agents run inside fixpoint's own sandbox by default, but"
 	case SandboxBuiltin:
 	default:
-		return fmt.Errorf("-sandbox %q (or %s): want %q or %q", o.Sandbox, SandboxEnv, SandboxBuiltin, SandboxOff)
+		return fmt.Errorf("-sandbox %q (or %s): want %q, %q or %q", o.Sandbox, SandboxEnv, SandboxAuto, SandboxBuiltin, SandboxOff)
+	}
+	if err := sandboxHostCheck(); err != nil {
+		return fmt.Errorf("%s %w; or pass -sandbox off (%s=off) to run the agents unconfined", why, err, SandboxEnv)
 	}
 	p, searched := findBuiltinSandbox()
 	if p == "" {
-		return fmt.Errorf("-sandbox builtin: fixpoint's own wrapper was not found beside this binary (searched %s); the bundle shipped with the binary is incomplete -- reinstall, or run with -sandbox off", strings.Join(searched, ", "))
+		return fmt.Errorf("%s fixpoint's own wrapper was not found beside this binary (searched %s); the bundle shipped with the binary is incomplete -- reinstall, or pass -sandbox off (%s=off) to run the agents unconfined", why, strings.Join(searched, ", "), SandboxEnv)
 	}
 	// Command elements are split on whitespace, so a path with a space in it would
 	// become two arguments and exec something else. Refused, not quoted: there is no
 	// quoting in that syntax to reach for.
 	if strings.ContainsAny(p, " \t\n") {
-		return fmt.Errorf("-sandbox builtin: the wrapper's path %q contains whitespace, which sandbox.command cannot carry as one argument; install fixpoint under a path without spaces", p)
+		return fmt.Errorf("%s the wrapper's path %q contains whitespace, which sandbox.command cannot carry as one argument; install fixpoint under a path without spaces", why, p)
 	}
 	// Run by /bin/sh rather than exec'd, so a packager or an unpacker that dropped
 	// the executable bit cannot turn the wrapper into a startup failure.

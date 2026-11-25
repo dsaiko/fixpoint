@@ -131,7 +131,8 @@ type Overrides struct {
 	// see Loop.AgentsSandboxed.
 	AgentsSandboxed bool
 	// Sandbox is -sandbox, or FIXPOINT_SANDBOX when the flag was not given:
-	// SandboxBuiltin, SandboxOff or "". See Overrides.applySandboxChoice.
+	// SandboxAuto (the command line's default), SandboxBuiltin, SandboxOff, or ""
+	// from a caller that is not the command line. See Overrides.applySandboxChoice.
 	Sandbox string
 	// NoCoverageCheck waives §4.2 rule 6 for this invocation (§7.4).
 	NoCoverageCheck bool
@@ -271,6 +272,17 @@ func (o Overrides) applyTarget(c *Config) error {
 	return nil
 }
 
+// sandboxAsserted reports whether -sandbox / FIXPOINT_SANDBOX said more than the
+// default. auto is not an override; what it resolved to is logged on its own
+// line (see the command's logSource).
+func (o Overrides) sandboxAsserted() bool {
+	switch o.Sandbox {
+	case SandboxBuiltin, SandboxOff:
+		return true
+	}
+	return false
+}
+
 // Applied names the overrides that changed the configuration, for the run log.
 // It reports what was ASSERTED, so a flag whose value the config already set
 // still appears: the operator's assertion is the thing worth recording.
@@ -318,8 +330,8 @@ func (o Overrides) Applied() []string {
 	if o.AgentsSandboxed {
 		out = append(out, "agents_sandboxed=true")
 	}
-	if o.Sandbox == SandboxBuiltin {
-		out = append(out, "sandbox=builtin")
+	if o.sandboxAsserted() {
+		out = append(out, "sandbox="+o.Sandbox)
 	}
 	if o.Gate != "" {
 		out = append(out, "gate="+o.Gate)

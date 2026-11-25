@@ -13,6 +13,65 @@ import (
 	"github.com/dsaiko/fixpoint/internal/model"
 )
 
+// TestMain runs this package's tests with FIXPOINT_SANDBOX=off. Their agents are
+// shell-script fixtures run from a test binary that has no bundle beside it, so
+// the default (auto, which needs fixpoint's own wrapper when a bundle sets no
+// sandbox.command) would refuse every run before it started. A test about the
+// default sets the variable itself.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(config.SandboxEnv, config.SandboxOff); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(m.Run())
+}
+
+// With nothing chosen, a run whose bundle sets no sandbox.command must not start
+// its agents unconfined: when fixpoint's own wrapper is missing it is refused,
+// and the refusal names the explicit way out.
+func TestSandboxDefaultRefusesToRunUnconfined(t *testing.T) {
+	t.Setenv(config.SandboxEnv, "")
+	f := newFixture(t)
+	cfg := f.configFile("directory", "", "  review_only: true")
+	var buf bytes.Buffer
+	if got := run([]string{"-config", cfg}, &buf, &buf); got != 1 {
+		t.Fatalf("run() = %d, want 1; stderr:\n%s", got, buf.String())
+	}
+	for _, want := range []string{"by default", "-sandbox off"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+// The default keeps a bundle's own wrapper: auto is builtin only for a bundle
+// that sets none.
+func TestSandboxDefaultKeepsTheBundlesOwnWrapper(t *testing.T) {
+	t.Setenv(config.SandboxEnv, "")
+	f := newFixture(t)
+	wrap, log := wrapperScript(t)
+	cfg := withSandbox(t, f.configFile("directory", "", "  review_only: true"), wrap, "--")
+	var buf bytes.Buffer
+	run([]string{"-config", cfg}, &buf, &buf)
+	if !strings.Contains(buf.String(), "sandbox: the bundle's sandbox.command") {
+		t.Errorf("the run does not report the bundle's wrapper:\n%s", buf.String())
+	}
+	if _, err := os.Stat(log); err != nil {
+		t.Errorf("the bundle's wrapper was not exec'd: %v\n%s", err, buf.String())
+	}
+}
+
+// An unconfined run says so on its own line.
+func TestSandboxOffIsReportedAsUnconfined(t *testing.T) {
+	f := newFixture(t)
+	cfg := f.configFile("directory", "", "  review_only: true")
+	var buf bytes.Buffer
+	run([]string{"-config", cfg, "-sandbox", "off"}, &buf, &buf)
+	if !strings.Contains(buf.String(), "sandbox: NONE") {
+		t.Errorf("an unconfined run is not reported as one:\n%s", buf.String())
+	}
+}
+
 // wrapperScript writes a stand-in sandbox: it records the argv and the working
 // directory it was handed, then execs the real command. A container is not
 // available in a unit test, and is not what needs proving -- what needs proving
@@ -150,7 +209,7 @@ func TestSandboxSettingFlagOverrulesTheEnvironment(t *testing.T) {
 		args      []string
 		want      string
 	}{
-		{"neither", "", nil, ""},
+		{"neither: auto, never unconfined", "", nil, config.SandboxAuto},
 		{"environment", "builtin", nil, "builtin"},
 		{"environment, padded", " builtin\n", nil, "builtin"},
 		{"flag", "", []string{"-sandbox", "builtin"}, "builtin"},

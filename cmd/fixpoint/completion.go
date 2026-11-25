@@ -123,7 +123,7 @@ const zshFlagPairs = `'--list:list the configs available here' ` +
 	`'--trusted-target:assert the target holds trusted code, permitting fixes' ` +
 	`'--trusted-bundle:assert only the bundle inside the target may be run' ` +
 	`'--agents-sandboxed:assert sandbox.command confines the agents' ` +
-	`'--sandbox:run the agents in the shipped wrapper (builtin|off)' ` +
+	`'--sandbox:what confines the agents (auto|builtin|off)' ` +
 	`'--allow-untrusted-fix:permit fix rounds in pr mode' ` +
 	`'--post:publish the review on the pull request as a comment' ` +
 	`'--post-verdict:with --post, let the review approve or request changes' ` +
@@ -165,7 +165,7 @@ complete -c fixpoint -l pr -r -d 'override target.pr in pr mode'
 complete -c fixpoint -l trusted-target -d 'assert the target holds trusted code, permitting fixes'
 complete -c fixpoint -l trusted-bundle -d 'assert only the bundle inside the target may be run'
 complete -c fixpoint -l agents-sandboxed -d 'assert sandbox.command confines the agents'
-complete -c fixpoint -l sandbox -r -a 'builtin off' -d 'run the agents in the shipped wrapper'
+complete -c fixpoint -l sandbox -r -a 'auto builtin off' -d 'what confines the agents'
 complete -c fixpoint -l allow-untrusted-fix -d 'permit fix rounds in pr mode'
 complete -c fixpoint -l post -d 'publish the review on the pull request as a comment'
 complete -c fixpoint -l post-verdict -d 'with --post, let the review approve or request changes'

@@ -96,7 +96,7 @@ Flags:
 	trustedTarget := fs.Bool("trusted-target", false, "assert the directory/git-diff target holds only trusted code, permitting fix rounds (fail-closed without this)")
 	trustedBundle := fs.Bool("trusted-bundle", false, "assert only that the bundle files resolved from inside the target may be run; trusts no other target content and permits no fix round")
 	agentsSandboxed := fs.Bool("agents-sandboxed", false, "assert that sandbox.command confines the agents, so a read-only agent may switch its own CLI's sandbox off (codex --sandbox danger-full-access); needs sandbox.command, refused in pr mode")
-	sandboxChoice := fs.String("sandbox", "", "run every agent inside fixpoint's own wrapper (builtin: bubblewrap on Linux, sandbox-exec on macOS), or off to overrule "+config.SandboxEnv+" for this run (empty = use "+config.SandboxEnv+")")
+	sandboxChoice := fs.String("sandbox", "", "what confines the agents: auto (the default: the bundle's sandbox.command if it sets one, else fixpoint's own wrapper -- bubblewrap on Linux, sandbox-exec on macOS), builtin (always the own wrapper), or off (no own wrapper; unconfined unless the bundle sets sandbox.command); default from "+config.SandboxEnv)
 	post := fs.Bool("post", false, "publish the review on the pull request as a COMMENT: findings become visible, no verdict is acted on")
 	postRunDir := fs.String("post-run", "", "publish the review a FINISHED run already produced, from its .fixpoint/<run> directory; invokes no agent")
 	postVerdict := fs.Bool("post-verdict", false, "with -post, publish the verdict itself -- approving, or requesting changes on someone's PR")
@@ -639,7 +639,10 @@ func sandboxSetting(fs *flag.FlagSet, typed string) string {
 	if !flagUnset(fs, "sandbox") {
 		return typed
 	}
-	return strings.TrimSpace(os.Getenv(config.SandboxEnv))
+	if env := strings.TrimSpace(os.Getenv(config.SandboxEnv)); env != "" {
+		return env
+	}
+	return config.SandboxAuto
 }
 
 // flagUnset reports whether the named flag was left off the command line, which
@@ -838,6 +841,20 @@ func logSource(logf func(string, ...any), l *config.Loaded) {
 	// this permitted?" and not just "which config was it?".
 	if applied := l.Overrides.Applied(); len(applied) > 0 {
 		logf("  overridden by flags: %s", strings.Join(applied, ", "))
+	}
+	logf("%s", sandboxLine(l.Config.Sandbox))
+}
+
+// sandboxLine says what confines the agents, on every run: the one line that
+// answers "could that agent read my ~/.ssh?" without opening a config file.
+func sandboxLine(s config.Sandbox) string {
+	switch {
+	case s.Builtin && len(s.Command) > 1:
+		return "sandbox: fixpoint's own wrapper (" + s.Command[1] + ")"
+	case s.Enabled():
+		return "sandbox: the bundle's sandbox.command (" + s.Command[0] + ")"
+	default:
+		return "sandbox: NONE -- agents run unconfined and can read everything this user can (-sandbox off)"
 	}
 }
 

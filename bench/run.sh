@@ -390,7 +390,9 @@ run_task() {
     # --agents-sandboxed is the operator's assertion, per invocation, that
     # sandbox.command (bench/sandbox.sh) confines the lens. Without it fixpoint's
     # validation refuses a codex candidate whose own sandbox is off (see above).
-    ./fixpoint "$cfg" -target "$stage/repo" --trusted-target --trusted-bundle --agents-sandboxed || {
+    # --sandbox auto pins the bundle's wrapper: an operator's FIXPOINT_SANDBOX=builtin
+    # would otherwise replace bench/sandbox.sh, which also hides this checkout.
+    ./fixpoint "$cfg" -target "$stage/repo" --trusted-target --trusted-bundle --agents-sandboxed --sandbox auto || {
         # exit 4 is review-only's normal termination; anything else is the
         # candidate failing, which the bench records rather than hides.
         code=$?

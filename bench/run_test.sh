@@ -253,6 +253,7 @@ if run 1 "isolated target" OLLAMA_API_KEY=k STUB_MAKE_OK=1 STUB_TREE="$tmp/tree"
     # fixpoint's validation, because bench/sandbox.sh is what confines the lens.
     expect "fixpoint is told the agents are sandboxed" "$tmp/out/fixpoint" '^ARGS=.* --agents-sandboxed( |$)'
     expect "fixpoint still gets the trust assertions" "$tmp/out/fixpoint" '^ARGS=.* --trusted-target --trusted-bundle '
+    expect "fixpoint keeps bench/sandbox.sh whatever FIXPOINT_SANDBOX says" "$tmp/out/fixpoint" '^ARGS=.* --sandbox auto( |$)'
     expect "the target is a copy, not bench/testdata" "$tmp/out/fixpoint" 'bench/testdata' !
     expect "the copy's path names no symlink" "$tmp/out/fixpoint" '^PHYS='
     if [ -f "$tmp/out/fixpoint" ]; then
