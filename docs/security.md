@@ -268,11 +268,19 @@ with it. A `FIXPOINT_SANDBOX_HIDE` entry that does not exist, or that is or hold
 the working directory or `TMPDIR`, stops the agent before it starts.
 
 CLI state is decided from the agent's binary name. **codex** gets a fresh
-`CODEX_HOME` holding only a link to the real `auth.json`, and none at all on a
-route with a `model_provider` of its own; when codex refreshes the login during
-the session, the wrapper copies it back afterwards, but only if it names the same
-`account_id` — a lens that wrote a login of its own choosing into its scratch must
-not be able to sign you into that account. **claude** gets its real config
+`CODEX_HOME` holding only a link to `$CODEX_HOME/.fixpoint-sandbox/auth.json`, a
+copy of your login that every sandboxed codex shares, and none at all on a route
+with a `model_provider` of its own. codex saves a refreshed login by renaming a
+temp file over the file the link resolves to, under a lock file beside it, so the
+copy and its lock have to be one directory for all seats: three lenses refreshing
+at once then take turns, as they would outside. The wrapper syncs the copy with
+the real `auth.json` before the agent starts and when it exits, under the lock
+codex itself takes on the real login: the newer `last_refresh` wins, and only a
+login naming the same `account_id` is copied back — a lens that wrote one of its
+own choosing must not be able to sign you into that account. fixpoint kills a
+timed-out agent with a group `SIGKILL`, which skips the exit sync; the next
+start makes it, so the refresh is not lost. The real `CODEX_HOME` is never
+writable inside: its `config.toml` runs commands. **claude** gets its real config
 directory read-only with every transcript store emptied, and `.claude.json` and
 `.credentials.json` writable because the CLI rewrites them. Any other CLI gets no
 state; `FIXPOINT_SANDBOX_RO` / `FIXPOINT_SANDBOX_RW` (colon-separated paths from

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -3430,6 +3431,8 @@ func (o *Orchestrator) Ping(ctx context.Context) error {
 	type ping struct {
 		err error
 		dur time.Duration
+		// out is what the last attempt printed, for codexLoginRejected.
+		out string
 	}
 	results := make([]ping, len(names))
 	var wg sync.WaitGroup
@@ -3445,10 +3448,12 @@ func (o *Orchestrator) Ping(ctx context.Context) error {
 			// and a false-negative preflight aborts a wanted run.
 			var err error
 			var dur time.Duration
+			var out string
 			for range 2 {
 				res := agent.Run(ctx, a, "Reply with the single word: OK", o.cfg.Target.Path)
 				err = res.Err
 				dur += res.Duration
+				out = res.Stdout + "\n" + res.Stderr
 				if err == nil && strings.TrimSpace(res.Stdout) == "" {
 					err = errors.New("no output")
 				}
@@ -3456,26 +3461,74 @@ func (o *Orchestrator) Ping(ctx context.Context) error {
 					break
 				}
 			}
-			results[i] = ping{err: err, dur: dur}
+			results[i] = ping{err: err, dur: dur, out: out}
 		}(i, name)
 	}
 	wg.Wait()
 
-	var failed []string
+	var failed, loginRejected []string
 	for i, name := range names {
 		p := results[i]
 		desc := agentDesc(o.cfg.Agents[name])
-		if p.err != nil {
+		switch {
+		case p.err == nil:
+			o.logf("ping: %s %s ok (%s)", name, desc, p.dur.Round(time.Second))
+		case codexLoginRejected(o.cfg.Agents[name], p.err, p.out):
+			o.logf("ping: %s %s FAILED (%s): %v", name, desc, p.dur.Round(time.Second), p.err)
+			loginRejected = append(loginRejected, name)
+		default:
 			o.logf("ping: %s %s FAILED (%s): %v", name, desc, p.dur.Round(time.Second), p.err)
 			failed = append(failed, name)
-		} else {
-			o.logf("ping: %s %s ok (%s)", name, desc, p.dur.Round(time.Second))
 		}
 	}
+	var msgs []string
+	if len(loginRejected) > 0 {
+		u := operatorName()
+		msgs = append(msgs, fmt.Sprintf("codex login of %s rejected (401) and refresh failed; run `codex login` as %s (%s)", u, u, strings.Join(loginRejected, ", ")))
+	}
 	if len(failed) > 0 {
-		return fmt.Errorf("agent(s) not working: %s", strings.Join(failed, ", "))
+		msgs = append(msgs, "agent(s) not working: "+strings.Join(failed, ", "))
+	}
+	if len(msgs) > 0 {
+		return errors.New(strings.Join(msgs, "; "))
 	}
 	return nil
+}
+
+// codexLoginRejected reports whether a failed ping is codex refusing the
+// operator's ChatGPT login: the server answered 401 and codex's own recovery --
+// reload the login, then refresh it -- did not get past it. Its messages
+// (codex-rs, login/src/auth/manager.rs and the app-server's workspace routing)
+// are "workspace routing discovery unauthorized (401)" and "Your access token
+// could not be refreshed ...". A route with a model_provider of its own
+// authenticates with an API key, not the login, and is left to the generic report.
+func codexLoginRejected(a config.Agent, err error, out string) bool {
+	if len(a.Command) == 0 || filepath.Base(a.Command[0]) != "codex" {
+		return false
+	}
+	for _, arg := range a.Command {
+		if strings.Contains(arg, "model_provider=") {
+			return false
+		}
+	}
+	text := strings.ToLower(err.Error() + "\n" + out)
+	for _, sign := range []string{"unauthorized (401)", "401 unauthorized", "access token could not be refreshed"} {
+		if strings.Contains(text, sign) {
+			return true
+		}
+	}
+	return false
+}
+
+// operatorName is the account fixpoint runs as, whose codex login the agents use.
+func operatorName() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return "this user"
 }
 
 // agentDesc renders an agent's model (and effort, when set) for log lines:

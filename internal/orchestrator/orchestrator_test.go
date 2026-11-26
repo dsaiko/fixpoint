@@ -11294,3 +11294,42 @@ func TestSalvageCostBillsEveryEarlierAttempt(t *testing.T) {
 		t.Error("a step that ran once must get no banner")
 	}
 }
+
+// A codex whose login the server rejects, and whose refresh did not get past it,
+// is reported as exactly that, with what to run -- not as a broken agent. A
+// provider route answering 401 is an API key problem, reported as before.
+func TestPingNamesARejectedCodexLogin(t *testing.T) {
+	bin := t.TempDir()
+	codex := filepath.Join(bin, "codex")
+	if err := os.WriteFile(codex, []byte("#!/bin/sh\necho 'workspace routing discovery unauthorized (401)' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		login bool
+	}{
+		{"chatgpt login", []string{"exec"}, true},
+		{"provider route", []string{"exec", "-c", "model_provider=ollama-cloud"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, config.Loop{MaxIterations: 1, CleanRoundsToStop: 1})
+			a := f.cfg.Agents["mock"]
+			a.Command = append([]string{codex}, tc.args...)
+			f.cfg.Agents["mock"] = a
+			err := f.orchestrator().Ping(t.Context())
+			if err == nil {
+				t.Fatal("Ping() = nil, want the failure")
+			}
+			u := operatorName()
+			want := "codex login of " + u + " rejected (401) and refresh failed; run `codex login` as " + u + " (mock)"
+			if tc.login {
+				if err.Error() != want {
+					t.Errorf("Ping() = %q, want %q", err, want)
+				}
+			} else if err.Error() != "agent(s) not working: mock" {
+				t.Errorf("Ping() = %q, want the generic report for a provider route", err)
+			}
+		})
+	}
+}

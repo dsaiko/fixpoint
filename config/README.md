@@ -747,9 +747,11 @@ environment and never from a config file) add what the wrapper does not know: a
 CLI installed somewhere unusual, a toolchain cache. Trees outside `$HOME` that a
 symlink in `$HOME` leads to are hidden like `$HOME` itself, the reviewed
 directory bound back; `FIXPOINT_SANDBOX_HIDE` (same format) hides more, and an
-entry that does not exist or holds the reviewed directory stops the run. A codex ChatGPT login that
-codex refreshes during a session is copied back to your `auth.json` afterwards,
-but only when it names the same account. Read the header of
+entry that does not exist or holds the reviewed directory stops the run. A codex ChatGPT login lives
+in the sandbox as a copy in `$CODEX_HOME/.fixpoint-sandbox/`, shared by every
+sandboxed codex so a refresh saves and the seats do not refresh over each other;
+it is synced with your `auth.json` before and after each agent, the newer one
+winning and only for the same account. Read the header of
 `sandbox/fixpoint-sandbox` for exactly what is mounted, and
 [Security model](../docs/security.md#fixpoints-own-wrapper--sandbox-builtin) for
 what it cannot close.
