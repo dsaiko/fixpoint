@@ -34,26 +34,47 @@ locked() {
     shift
     if command -v flock >/dev/null 2>&1; then flock -w 30 "$l" "$@"; else lockf -k -t 30 "$l" "$@"; fi
 }
-fail() { echo "workspace routing discovery unauthorized (401)"; exit 1; }
+fail() {
+    echo "fake codex: $1" >&2
+    echo "workspace routing discovery unauthorized (401)"
+    exit 1
+}
 if [ "${1-}" = __refresh ]; then
     t=$2
     old=$(rt "$t")
-    cur=$(cat "$FAKE_SERVER/current")
-    if [ "$old" != "$cur" ]; then echo "$old" >>"$FAKE_SERVER/reused"; exit 1; fi
+    cur=$(cat "$FAKE_SERVER/current") || fail "cannot reach the auth server"
+    if [ "$old" != "$cur" ]; then
+        echo "$old" >>"$FAKE_SERVER/reused"
+        fail "refresh token $old reused"
+    fi
     [ -z "${FAKE_SLOW:-}" ] || sleep "$FAKE_SLOW"
     n=$((${cur#r} + 1))
     echo "r$n" >"$FAKE_SERVER/current"
-    tmp=$(mktemp "${t%/*}/.auth-XXXXXX") || exit 1
-    printf '{"tokens":{"account_id":"%s","refresh_token":"r%s"},"last_refresh":"2030-01-01T00:%02d:00Z"}' "${FAKE_ACCT:-acct-1}" "$n" "$n" >"$tmp" || exit 1
-    mv -f "$tmp" "$t" 2>/dev/null || { rm -f "$tmp"; exit 1; }
+    tmp=$(mktemp "${t%/*}/.auth-XXXXXX") || fail "cannot create a temp file beside $t"
+    printf '{"tokens":{"account_id":"%s","refresh_token":"r%s"},"last_refresh":"2030-01-01T00:%02d:00Z"}' "${FAKE_ACCT:-acct-1}" "$n" "$n" >"$tmp" || fail "cannot write $tmp"
+    mv -f "$tmp" "$t" 2>/dev/null || {
+        rm -f "$tmp"
+        fail "cannot rename the temp file over $t"
+    }
     exit 0
 fi
 f=$CODEX_HOME/auth.json
 [ -e "$f" ] || { echo "not logged in"; exit 1; }
-t=$(readlink -f "$f") || fail
+# Resolved link by link, as codex's resolve_auth_file does (lstat + readlink).
+t=$f
+n=0
+while [ -L "$t" ]; do
+    l=$(readlink "$t") || fail "cannot read the link $t"
+    case $l in
+    /*) t=$l ;;
+    *) t=${t%/*}/$l ;;
+    esac
+    n=$((n + 1))
+    [ "$n" -lt 40 ] || fail "too many links"
+done
 echo "LOGIN $(rt "$t")"
 if [ -n "${FAKE_REFRESH:-}" ]; then
-    locked "${t%.json}.json.lock" /bin/sh "$0" __refresh "$t" || fail
+    locked "${t%.json}.json.lock" /bin/sh "$0" __refresh "$t" || fail "the save under ${t%.json}.json.lock failed"
     echo "REFRESHED $(rt "$t")"
 fi
 if [ -n "${FAKE_EVIL:-}" ]; then
