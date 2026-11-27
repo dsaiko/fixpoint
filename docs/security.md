@@ -372,9 +372,7 @@ readable on Linux; the `/run` mask assumes systemd-resolved; a custom
 `CLAUDE_CONFIG_DIR` blocks claude's config rewrite on Linux; a target path ending in
 a newline is unsupported; a signal before the agent is spawned is swallowed; provider
 keys are readable by the lens through `/proc/<pid>/environ` of its ancestors; the
-test's namespace runs fail instead of skipping where `bwrap` has no user namespace; a
-ChatGPT token refresh cannot persist from inside the wrapper (codex renames a temp file
-over `auth.json`); on macOS a lens can read same-user processes' environments; on Linux
+test's namespace runs fail instead of skipping where `bwrap` has no user namespace; on macOS a lens can read same-user processes' environments; on Linux
 a claude candidate on a third-party route still sees the Anthropic `.credentials.json`;
 the writable CLI state (`.claude.json`, `auth.json`) is a channel colluding lenses could
 use, unseen by the scorer; and the timeout's group SIGKILL path is untested.

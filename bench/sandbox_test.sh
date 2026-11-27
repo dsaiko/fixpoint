@@ -81,7 +81,10 @@ echo 'KEY-IN-CHECKOUT' >"$tree/bench/manifest-go.yaml"
 echo 'KEY-IN-CHECKOUT' >"$tree/.fixpoint/run/findings.json"
 echo 'KEY-IN-HOME-FIXPOINT' >"$base/realfp/old.json"
 echo 'CODEX-SESSION' >"$home/.codex/sessions/s.jsonl"
-echo 'CODEX-AUTH' >"$home/.codex/auth.json"
+# codex_login <account> <refresh token> <last_refresh>: an auth.json as codex writes it
+# (the fields the wrapper's sync reads).
+codex_login() { printf '{"tokens":{"account_id":"%s","refresh_token":"%s"},"last_refresh":"%s"}\n' "$1" "$2" "$3"; }
+codex_login acct-bench CODEX-AUTH 2026-11-01T00:00:00Z >"$home/.codex/auth.json"
 echo 'model = "x"' >"$home/.codex/config.toml"
 echo 'CLAUDE-TRANSCRIPT' >"$home/.claude/projects/p/t.jsonl"
 echo 'CLAUDE-SESSION' >"$home/.claude/sessions/s.json"
@@ -126,6 +129,8 @@ t() {
     # What came back, whatever the exit status said: a sentinel in the output is a leak.
     if grep -q 'KEY-IN' "$TMPDIR/o.$name" 2>/dev/null; then echo "leak=$name"; fi
 }
+# A run that only has the wrapper sync the login, the agent doing nothing.
+[ -z "${PROBE_QUIET:-}" ] || exit 0
 echo "who=$who"
 t cat_key cat "$REPO/bench/manifest-go.yaml"
 t cat_glob sh -c 'cat "$REPO"/bench/manifest-*.yaml'
@@ -188,7 +193,9 @@ t codex_home_is_fresh sh -c '[ -n "$CODEX_HOME" ] && [ "$CODEX_HOME" != "$HOME/.
 t codex_home_auth cat "$CODEX_HOME/auth.json"
 t cat_codex_auth cat "$HOME/.codex/auth.json"
 t codex_home_auth_is_symlink sh -c '[ -L "$CODEX_HOME/auth.json" ]'
-td write_codex_auth sh -c 'echo REFRESHED >>"$CODEX_HOME/auth.json"'
+# A refreshed login saved the way codex 0.172 saves it: the link resolved, a temp file
+# written beside the file it leads to, renamed over it.
+td save_codex_auth sh -c 'f=$CODEX_HOME/auth.json; while [ -L "$f" ]; do l=$(readlink "$f"); case $l in /*) f=$l ;; *) f=${f%/*}/$l ;; esac; done; sed s/CODEX-AUTH/REFRESHED/ "$f" >"${f%/*}/.auth-probe" && mv -f "${f%/*}/.auth-probe" "$f"'
 t codex_home_no_sessions sh -c '[ -z "$(ls "$CODEX_HOME/sessions" 2>/dev/null)" ]'
 t codex_home_writable sh -c 'echo x >"$CODEX_HOME/new"'
 # Sockets that start processes as the operator, outside any sandbox.
@@ -538,14 +545,18 @@ for who in codex claude other; do
     done
 done
 
-# The chatgpt route binds the one credential file, writable, and nothing else of ~/.codex;
+# The chatgpt route binds the shared copy of the login, writable, and nothing else of
+# ~/.codex (not the real auth.json: a rename cannot replace a bind-mounted file);
 # a TMPDIR other than /tmp is masked, so another lens's scratch directory under it is
 # not visible.
 echo chatgpt >"$tree/bench/.sandbox-codex-auth"
 mkdir -p "$base/ptmp"
 (cd "$target" && env HOME="$home" TMPDIR="$base/ptmp" CLAUDE_CONFIG_DIR="$home/.claude" PATH="$base/lbin:$home/.local/bin:/usr/bin:/bin" \
     /bin/sh "$tree/bench/sandbox.sh" "$target" ro -- codex x) >"$base/l-chatgpt.out" 2>"$base/l-chatgpt.err" || fail "linux chatgpt route: the wrapper failed: $(cat "$base/l-chatgpt.err")"
-[ "$(grep -x -B1 -F "$home/.codex/auth.json" "$base/l-chatgpt.out" | head -1)" = "--bind" ] || fail "linux chatgpt route: the login is not bound writable"
+[ "$(grep -x -B1 -F "$home/.codex/.fixpoint-sandbox" "$base/l-chatgpt.out" | head -1)" = "--bind" ] || fail "linux chatgpt route: the shared login directory is not bound writable"
+expect "linux chatgpt route: the real login is not bound" "$base/l-chatgpt.out" "^$home/.codex/auth.json\$" !
+cmp -s "$home/.codex/auth.json" "$home/.codex/.fixpoint-sandbox/auth.json" || fail "linux chatgpt route: the shared copy does not match the real login"
+rm -rf "$home/.codex/.fixpoint-sandbox" "$home/.codex/auth.json.lock"
 expect "linux: a TMPDIR other than /tmp is masked" "$base/l-chatgpt.out" "^$(cd "$base/ptmp" && pwd -P)\$"
 rm -f "$tree/bench/.sandbox-codex-auth"
 
@@ -683,12 +694,34 @@ if [ "$can_confine" = 1 ]; then
     # any other binary), through a symlink in the fresh CODEX_HOME to the one file.
     echo chatgpt >"$tree/bench/.sandbox-codex-auth"
     run_probe codex ro "$base/codex-chatgpt.out"
-    # The entry in the fresh home is a symlink to the live file, and a write through it
-    # lands on the host's login (an in-place update; a rename is the known limitation).
+    # The entry in the fresh home is a symlink to the shared copy, and a refresh saved
+    # through it the way codex saves one (temp file and rename) reaches the host's login
+    # when the wrapper exits.
+    shared=$home/.codex/.fixpoint-sandbox/auth.json
     expect "codex: the fresh home's login is a symlink" "$base/codex-chatgpt.out" '^codex_home_auth_is_symlink=ok$'
-    expect "codex: a write through the symlink is allowed" "$base/codex-chatgpt.out" '^write_codex_auth=ok$'
-    grep -q REFRESHED "$home/.codex/auth.json" || fail "codex: a write through the symlink did not update the host's login"
-    echo 'CODEX-AUTH' >"$home/.codex/auth.json"
+    expect "codex: a refreshed login can be saved as codex saves it" "$base/codex-chatgpt.out" '^save_codex_auth=ok$'
+    grep -q REFRESHED "$home/.codex/auth.json" || fail "codex: the refreshed login did not reach the host's auth.json"
+    cmp -s "$home/.codex/auth.json" "$shared" || fail "codex: the shared copy and the host's login differ after the run"
+    quiet_codex() { (cd "$target" && penv PROBE_QUIET=1 TMPDIR="$base/ptmp" "$tree/bench/sandbox.sh" "$target" ro -- "$home/.local/bin/codex") >"$base/quiet.out" 2>&1 || fail "the quiet codex run failed: $(cat "$base/quiet.out")"; }
+    # A refresh a wrapper killed outright (a group SIGKILL on a timeout) left in the
+    # shared copy reaches the host at the next start.
+    codex_login acct-bench CODEX-AUTH 2026-11-01T00:00:00Z >"$home/.codex/auth.json"
+    mkdir -p "${shared%/*}"
+    codex_login acct-bench KILLED 2026-11-02T00:00:00Z >"$shared"
+    quiet_codex
+    grep -q '"KILLED"' "$home/.codex/auth.json" || fail "codex: a refresh a killed wrapper left behind did not reach the host's login"
+    # A login refreshed outside the bench replaces an older shared copy.
+    codex_login acct-bench OUTSIDE 2026-11-03T00:00:00Z >"$home/.codex/auth.json"
+    quiet_codex
+    grep -q '"OUTSIDE"' "$shared" || fail "codex: a login refreshed outside did not replace the shared copy"
+    # A newer login for ANOTHER account in the shared copy is not taken.
+    codex_login acct-other FOREIGN 2026-11-04T00:00:00Z >"$shared"
+    quiet_codex
+    grep -q '"OUTSIDE"' "$home/.codex/auth.json" || fail "codex: a login for another account replaced the host's"
+    cmp -s "$home/.codex/auth.json" "$shared" || fail "codex: the shared copy was not reset after a login for another account"
+    [ -z "$(ls -A "$home/.codex" | grep '^\.fixpoint-sandbox-auth\.')" ] || fail "codex: the login sync left temp files in ~/.codex"
+    rm -rf "$home/.codex/.fixpoint-sandbox" "$home/.codex/auth.json.lock"
+    codex_login acct-bench CODEX-AUTH 2026-11-01T00:00:00Z >"$home/.codex/auth.json"
     run_probe other ro "$base/other-chatgpt.out"
     rm -f "$tree/bench/.sandbox-codex-auth"
     # A route file that is not EXACTLY "chatgpt" and one newline hands nothing over: a

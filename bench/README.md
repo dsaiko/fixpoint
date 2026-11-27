@@ -91,9 +91,15 @@ state at all, and CLI state is **per invocation**:
 
 - **codex** gets a fresh `CODEX_HOME` in the scratch directory. On a route that
   authenticates with the operator's ChatGPT login the fresh home holds a *symlink*
-  to `~/.codex/auth.json`, and that one file is readable and writable (a token
-  refresh must persist); nothing is copied, so a killed wrapper leaves no
-  credential behind. Whether the route is a ChatGPT one is decided by `run.sh`,
+  to the shared copy of the login in `~/.codex/.fixpoint-sandbox/`, the one
+  fixpoint's own sandbox uses; that directory is readable and writable, so a token
+  refresh saves (codex writes a temp file there and renames it over the login).
+  The wrapper syncs the copy with the real `~/.codex/auth.json` under codex's own
+  lock (`auth.json.lock`) when the lens starts and when it ends, the newer
+  `last_refresh` winning and only for the same account, so parallel lenses and a
+  codex outside the bench do not lose each other's rotated refresh token. A wrapper
+  killed outright skips the second sync and the next start makes it. Nothing of the
+  login is written to scratch. Whether the route is a ChatGPT one is decided by `run.sh`,
   which knows the candidate (a codex agent that names a `model_provider` of its own
   carries its own key), and written to `bench/.sandbox-codex-auth` for the wrapper:
   `ollama-direct@`, `codex@` via OpenRouter and every other route with its own key
@@ -175,17 +181,13 @@ the goal above, or cost more than they protect):
   readable; the scorer's log check is what catches a read of the key there.
 - Section (a) of `bench/sandbox_test.sh` (the namespace runs) fails where `bwrap`
   cannot create a user namespace, instead of skipping.
-- A ChatGPT token refresh inside the wrapper cannot persist: codex writes a temp file
-  beside `auth.json` and renames it over, which the macOS profile (only that one path
-  is writable) and the Linux file bind both refuse. Refresh the login with a plain
-  `codex` call outside the bench before a ChatGPT-candidate sweep.
 - On macOS a lens can read the environment of same-user processes (the fixpoint
   parent's, through process-argument queries), so a key fixpoint left out of the
   agent's environment is still recoverable.
 - On Linux a claude candidate on a third-party route (OpenRouter, vLLM) still sees the
   operator's Anthropic `.credentials.json`.
-- The CLI state that stays writable and shared (`.claude.json`, `auth.json` on a
-  ChatGPT route) is a channel through which colluding lenses could pass findings to
+- The CLI state that stays writable and shared (`.claude.json`, the shared
+  `auth.json` copy on a ChatGPT route) is a channel through which colluding lenses could pass findings to
   each other; the scorer does not see it.
 - The group SIGKILL fixpoint uses on a timeout is not covered by a test (TERM is).
 

@@ -370,3 +370,35 @@ func TestBuiltinWrapperWritesNothingThroughTheSharedLogin(t *testing.T) {
 		t.Errorf("the next seat did not get the login back:\n%s", out)
 	}
 }
+
+// bench/sandbox.sh carries the same shared-login code (it predates fixpoint's own
+// sandbox and stays a separate file for bench integrity). Both must sync the ONE
+// shared copy in ~/.codex/.fixpoint-sandbox the same way, under the same lock: a
+// bench sweep and a review on the same host refresh the same login. The tests above
+// exercise this block; bench/sandbox_test.sh exercises it through the bench wrapper.
+func TestBenchWrapperSharesTheCodexLoginCode(t *testing.T) {
+	block := func(path string) string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(b)
+		i := strings.Index(s, "\n# THE SHARED CODEX LOGIN.")
+		if i < 0 {
+			t.Fatalf("%s: no THE SHARED CODEX LOGIN block", path)
+		}
+		s = s[i:]
+		end := "\nif [ \"${1-}\" = --codex-sync ]; then\n    shift\n    umask 077\n    cx_sync \"$@\"\n    exit\nfi\n"
+		j := strings.Index(s, end)
+		if j < 0 {
+			t.Fatalf("%s: the block does not end in the --codex-sync dispatch", path)
+		}
+		return s[:j+len(end)]
+	}
+	builtin := block(filepath.Join("..", "..", projectBundleDir, filepath.FromSlash(builtinSandboxRel)))
+	bench := block(filepath.Join("..", "..", "bench", "sandbox.sh"))
+	if builtin != bench {
+		t.Error("the shared codex login block in bench/sandbox.sh differs from config/sandbox/fixpoint-sandbox; copy it over")
+	}
+}

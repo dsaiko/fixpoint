@@ -43,12 +43,15 @@
 #               binaries under temporary dir" and carries on; harmless so far). On a
 #               route that authenticates with the operator's ChatGPT login (run.sh
 #               says so in bench/.sandbox-codex-auth; no file, no login) the only
-#               thing put in it is a SYMLINK to the real ~/.codex/auth.json. A route
-#               with its own key (ollama-direct@, codex@ via OpenRouter) is given
-#               no login at all. The symlink, not a copy, so no credential is ever
-#               written to scratch and a killed wrapper leaves none behind. The
-#               rest of the real ~/.codex (sessions, sqlite, config.toml) is
-#               unreadable and unwritable.
+#               thing put in it is a SYMLINK to the shared copy of the login in
+#               ~/.codex/.fixpoint-sandbox, the one fixpoint's own sandbox uses
+#               (THE SHARED CODEX LOGIN, below): that directory is writable, so a
+#               token refresh saves, and the wrapper syncs it with the real
+#               ~/.codex/auth.json under codex's own lock. A route with its own key
+#               (ollama-direct@, codex@ via OpenRouter) is given no login at all.
+#               Nothing of the login is written to scratch, so a killed wrapper
+#               leaves none behind. The rest of the real ~/.codex (sessions,
+#               sqlite, config.toml) is unreadable and unwritable.
 #       claude  the REAL config directory, with the transcripts unreadable and
 #               everything that is executable configuration read-only. A fresh
 #               CLAUDE_CONFIG_DIR does not work on macOS: the login lives in the
@@ -104,10 +107,128 @@ set -eu
 nl='
 '
 
+me=bench/sandbox.sh
+
 die() {
-    echo "bench/sandbox.sh: $*" >&2
+    echo "$me: $*" >&2
     exit 2
 }
+
+# This block is the same as in config/sandbox/fixpoint-sandbox, byte for byte
+# (internal/config checks it), so a bench lens and a fixpoint agent share one copy
+# of the login and one lock.
+# THE SHARED CODEX LOGIN. codex (0.172 and later) saves a refreshed login by
+# resolving the auth.json link, taking a commit lock beside the file it resolves to
+# (auth.json.lock), writing a temp file in that directory and renaming it over the
+# login. A link straight to the real ~/.codex/auth.json cannot work in here: the
+# real directory is not writable (and must not be: config.toml there runs
+# commands), and on Linux the file is a bind mount, which a rename cannot replace
+# (EBUSY). The save fails, codex reports `workspace routing discovery unauthorized
+# (401)`, and the refresh token the server has just rotated is lost.
+#
+# So every sandboxed codex shares ONE directory, $CODEX_HOME/.fixpoint-sandbox,
+# writable inside, holding a copy of the login: each seat's link resolves there,
+# its saves land there, and its commit lock is the same file for every seat and
+# every concurrent run. The wrapper syncs that copy with the real auth.json, the
+# newer last_refresh winning and only for the same account, under the commit lock
+# codex itself takes on the real login: before the agent starts, and again when the
+# wrapper exits. A wrapper killed outright (fixpoint ends a timed-out agent with a
+# group SIGKILL) skips the second sync; the next start makes it.
+#
+# The shared directory is writable by the agent, so nothing is ever written
+# THROUGH it: a copy out of it is read with head -c into a temp file in the real
+# CODEX_HOME (which no agent can reach) and checked there, and a copy into it is a
+# rename from such a temp file, which replaces a planted link instead of following
+# it.
+cx_acct() { sed -n 's/.*"account_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -n 1; }
+cx_when() { sed -n 's/.*"last_refresh"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -n 1; }
+# cx_older <a> <b>: is timestamp a strictly older than b? codex writes UTC
+# RFC 3339, which sorts as text; a missing one is the oldest.
+cx_older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | LC_ALL=C sort | head -n 1)" = "$1" ]; }
+
+# cx_sync <start|exit> <real auth.json> <shared copy> [<another candidate>]
+# Run only under the lock (cx_locked). The candidates are the shared copy and, at
+# exit, a login an older codex wrote over its own link in S. One that names
+# another account is refused (and said so at exit, when a lens wrote it); of the
+# rest the newest replaces the real login, a tie going to the sandbox side (it is
+# what was refreshed). Then the shared copy is made to match the real login.
+cx_sync() {
+    when=$1 real=$2 shared=$3 extra=${4-}
+    dir=${real%/*}
+    if [ ! -f "$real" ]; then
+        # Logged out (or never in): no copy of a login is kept for the sandbox.
+        rm -rf "$shared"
+        return 0
+    fi
+    want=$(cx_acct "$real")
+    newest=$(cx_when "$real")
+    best=
+    for c in "$shared" "$extra"; do
+        [ -n "$c" ] && [ -f "$c" ] && [ ! -L "$c" ] || continue
+        tmp=$(mktemp "$dir/.fixpoint-sandbox-auth.XXXXXX") || return 1
+        if ! head -c 65536 "$c" >"$tmp" 2>/dev/null || [ "$(wc -c <"$tmp" | tr -d ' ')" -ge 65536 ] ||
+            cmp -s "$tmp" "$real"; then
+            rm -f "$tmp"
+            continue
+        fi
+        got=$(cx_acct "$tmp")
+        if [ -z "$want" ] || [ "$got" != "$want" ]; then
+            [ "$when" != exit ] || [ -z "$got" ] ||
+                echo "$me: WARNING: codex wrote a login for a different account; NOT copied back to $real" >&2
+            rm -f "$tmp"
+            continue
+        fi
+        w=$(cx_when "$tmp")
+        if cx_older "$w" "$newest"; then
+            rm -f "$tmp"
+            continue
+        fi
+        [ -z "$best" ] || rm -f "$best"
+        best=$tmp newest=$w
+    done
+    if [ -n "$best" ]; then
+        mv -f "$best" "$real" || {
+            rm -f "$best"
+            echo "$me: WARNING: could not copy the refreshed codex login back to $real" >&2
+        }
+    fi
+    if [ ! -f "$shared" ] || [ -L "$shared" ] || ! cmp -s "$real" "$shared"; then
+        tmp=$(mktemp "$dir/.fixpoint-sandbox-auth.XXXXXX") || return 1
+        cp "$real" "$tmp" || {
+            rm -f "$tmp"
+            return 1
+        }
+        # A directory planted in its place would take the file INTO it.
+        if [ -d "$shared" ] && [ ! -L "$shared" ]; then rm -rf "$shared"; fi
+        mv -f "$tmp" "$shared" || {
+            rm -f "$tmp"
+            return 1
+        }
+    fi
+    return 0
+}
+
+# cx_locked <cx_sync args...>: cx_sync under codex's own commit lock on the real
+# login, so it is serialized with a codex running outside the sandbox (flock(2),
+# which both flock(1) and macOS's lockf(1) take).
+cx_locked() {
+    lock=${2%/*}/auth.json.lock
+    if command -v flock >/dev/null 2>&1; then
+        (umask 077 && flock -w 10 "$lock" /bin/sh "$0" --codex-sync "$@")
+    elif command -v lockf >/dev/null 2>&1; then
+        (umask 077 && lockf -k -t 10 "$lock" /bin/sh "$0" --codex-sync "$@")
+    else
+        echo "$me: WARNING: neither flock nor lockf found; syncing the codex login unlocked" >&2
+        (umask 077 && cx_sync "$@")
+    fi
+}
+
+if [ "${1-}" = --codex-sync ]; then
+    shift
+    umask 077
+    cx_sync "$@"
+    exit
+fi
 
 usage="usage: bench/sandbox.sh <target-dir> <ro|rw> -- <agent argv...>"
 [ $# -ge 4 ] || die "$usage"
@@ -221,6 +342,25 @@ if [ "$cli" = codex ] && [ -f "$repo/bench/.sandbox-codex-auth" ]; then
     want=$(printf 'chatgpt\nx')
     [ "$route" != "$want" ] || codex_auth=1
 fi
+# Logged out: nothing to hand over.
+[ -f "$codexdir/auth.json" ] || codex_auth=0
+
+# The shared copy of the login (THE SHARED CODEX LOGIN, above), brought up to date
+# before the lens starts. A refresh a killed wrapper left in it reaches the real
+# auth.json here.
+cxshared=$codexdir/.fixpoint-sandbox
+if [ "$codex_auth" = 1 ]; then
+    if [ -L "$cxshared" ] || { [ -e "$cxshared" ] && [ ! -d "$cxshared" ]; }; then
+        die "'$cxshared' is not a directory; remove it"
+    fi
+    (umask 077 && mkdir -p "$cxshared") || die "cannot create '$cxshared' for the codex login"
+    chmod 700 "$cxshared"
+    cx_locked start "$codexdir/auth.json" "$cxshared/auth.json" ||
+        die "cannot bring the codex login in '$cxshared' up to date"
+    [ -f "$cxshared/auth.json" ] || die "no codex login in '$cxshared' after syncing it"
+    # Temp files of a codex killed mid-save.
+    find "$cxshared" -maxdepth 1 -type f -name '.auth-*' -mmin +60 -exec rm -f {} + 2>/dev/null || true
+fi
 
 os=$(uname -s)
 case $os in
@@ -248,8 +388,15 @@ S=$(mktemp -d "$tb/bench-sandbox.XXXXXX") || die "cannot create a scratch direct
 # would leave the directory behind.
 # A CLI can leave a descendant still writing into S when the agent itself has exited
 # (codex's plugin clone did): a few tries, a second apart, so the directory is not
-# left behind on that race.
+# left behind on that race. A refreshed codex login is synced back first.
+codex_writeback() {
+    [ "$codex_auth" = 1 ] || return 0
+    [ -d "$cxshared" ] && [ ! -L "$cxshared" ] || return 0
+    cx_locked exit "$codexdir/auth.json" "$cxshared/auth.json" "$S/codex/auth.json" ||
+        echo "$me: WARNING: could not sync the codex login in $cxshared back to $codexdir/auth.json" >&2
+}
 cleanup() {
+    codex_writeback || true
     n=0
     while [ -e "$S" ] && [ "$n" -lt 5 ]; do
         rm -rf "$S" 2>/dev/null || true
@@ -267,7 +414,8 @@ chmod 700 "$S"
 child=
 # A signal is forwarded to the agent and the wait below resumes; EXIT removes S
 # whichever way the wrapper ends. (A SIGKILL cannot be trapped, which is why no
-# credential is ever copied into S: see the codex note above.)
+# credential is ever copied into S, and why the login is synced at start as well
+# as at exit: see the codex note above.)
 on_signal() {
     [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || true
 }
@@ -296,8 +444,8 @@ claude)
     ;;
 codex)
     mkdir "$S/codex"
-    if [ "$codex_auth" = 1 ] && [ -f "$codexdir/auth.json" ]; then
-        ln -s "$codexdir/auth.json" "$S/codex/auth.json"
+    if [ "$codex_auth" = 1 ]; then
+        ln -s "$cxshared/auth.json" "$S/codex/auth.json"
     fi
     CODEX_HOME=$inner/codex
     export CODEX_HOME
@@ -316,8 +464,10 @@ Darwin)
     #   /dev/null /dev/dtracehelper           shells and runtimes open them
     #   S                                     scratch, TMPDIR, the codex state
     #   the target, rw mode only              where an editing agent writes
-    #   codex: the real auth.json             so a token refresh persists, and only
-    #                                         on a route that authenticates with it
+    #   codex: ~/.codex/.fixpoint-sandbox/    the shared copy of the login, so a token
+    #                                         refresh saves (a temp file and a rename),
+    #                                         and only on a route that authenticates
+    #                                         with it
     #   claude: .claude.json and its siblings the CLI rewrites it on every start
     #
     # Other lenses running at the same time have scratch directories of their own
@@ -340,7 +490,7 @@ Darwin)
 (deny file-read* (subpath \"$codexdir\") (subpath \"$claudedir\") (literal \"$claudejson\"))"
         if [ "$codex_auth" = 1 ]; then
             prof="$prof
-(allow file-read* (literal \"$codexdir/auth.json\"))"
+(allow file-read* (subpath \"$cxshared\"))"
         fi
         ;;
     claude)
@@ -372,7 +522,7 @@ Darwin)
     codex)
         if [ "$codex_auth" = 1 ]; then
             prof="$prof
-(allow file-write* (literal \"$codexdir/auth.json\"))"
+(allow file-write* (prefix \"$cxshared/\"))"
         fi
         ;;
     claude)
@@ -440,10 +590,11 @@ Linux)
     IFS=$oldifs
     case $cli in
     codex)
-        # Only the credential is bound, writable so a token refresh persists; the
-        # fresh CODEX_HOME in S symlinks to it.
-        if [ "$codex_auth" = 1 ] && [ -f "$codexdir/auth.json" ]; then
-            set -- "$@" --bind "$codexdir/auth.json" "$codexdir/auth.json"
+        # Only the shared copy of the login is bound, writable so a token refresh
+        # saves (codex renames a temp file over it, which a bind-mounted FILE
+        # refuses with EBUSY); the fresh CODEX_HOME in S symlinks to it.
+        if [ "$codex_auth" = 1 ]; then
+            set -- "$@" --bind "$cxshared" "$cxshared"
         fi
         ;;
     claude)
