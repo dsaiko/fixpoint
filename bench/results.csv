@@ -425,3 +425,4 @@ run,task,target,model,repeat,sessions,errors,findings,matched_seeds,seeds,recall
 20261125-142428,code,csharp,ollama-direct@mimo-v2.6-flash:cloud,1,3,0,51,34,68,0.50,10,174124,60341,132608,316,145.01,993af70a5111,0,0,0
 20261125-142703,code,cpp,ollama-direct@mimo-v2.6-flash:cloud,1,3,0,57,42,64,0.66,4,113607,64430,77696,295,235.91,993af70a5111,0,0,0
 20261125-142937,code,python,ollama-direct@mimo-v2.6-flash:cloud,1,3,0,50,39,66,0.59,5,138778,56914,104192,277,199.29,993af70a5111,0,0,0
+20261126-085607,code,go,ollama-direct@hy4:cloud,1,3,0,78,46,56,0.82,6,609541,120351,488704,1291,63.02,993af70a5111,0,0,0

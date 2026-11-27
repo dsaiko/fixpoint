@@ -388,7 +388,7 @@ reviewer's pace, and a **contract failure** disqualifies regardless of score.
 | # | candidate | route | score | recall | total $ | per point | cached (this run) | per point (uncached-eq) | wall s | contract | timeouts |
 |--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|
 | 1 | `claude-fable-5-2` | anthropic | 404/484 | 83% | ~$25.41 | ~$0.063 | 74% | ~$0.093 | 2959 | 0 | 0 |
-| 2 | `ollama-direct@hy4:cloud` | ollama/codex | 389/484 | 80% | ~$2.97 | ~$0.008 | 77% | ~$0.012 | 8631 | 0 | 0 |
+| 2 | `ollama-direct@hy4:cloud` | ollama/codex | 389/484 | 80% | ~$3.39 | ~$0.009 | 78% | ~$0.015 | 9922 | 0 | 0 |
 | 3 | `claude` | cli | 377/484 | 78% | ~$14.12 | ~$0.037 | 74% | ~$0.050 | 3958 | 0 | 0 |
 | 4 | `claude-opus-5` | anthropic | 373/484 | 77% | ~$14.36 | ~$0.038 | 74% | ~$0.052 | 4152 | 0 | 0 |
 | 5 | `claude-opus-5-5` | anthropic | 371/484 | 77% | ~$10.02 | ~$0.027 | 72% | ~$0.038 | 2016 | 0 | 0 |

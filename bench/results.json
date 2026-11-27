@@ -24,11 +24,11 @@
  "possible": 484,
  "measured": {
   "first": "2026-08-20",
-  "last": "2026-11-25"
+  "last": "2026-11-26"
  },
  "totals": {
   "candidates": 51,
-  "sessions": 1225,
+  "sessions": 1228,
   "targets": 8,
   "contract_failures": 4,
   "timeouts": 3,
@@ -118,23 +118,23 @@
    "points": 389,
    "possible": 484,
    "incomplete": false,
-   "tokens": 1617111,
-   "points_per_mtok": 240.6,
-   "cost_usd": 2.97,
-   "cost_per_point_usd": 0.008,
+   "tokens": 1858299,
+   "points_per_mtok": 209.3,
+   "cost_usd": 3.39,
+   "cost_per_point_usd": 0.009,
    "notional": true,
    "caching_era": "cached",
-   "cached_input_share": 0.77,
-   "cost_per_point_uncached_usd": 0.012,
-   "seconds": 8631,
-   "sessions": 23,
+   "cached_input_share": 0.776,
+   "cost_per_point_uncached_usd": 0.015,
+   "seconds": 9922,
+   "sessions": 26,
    "errors": 0,
    "contract_failures": 0,
    "timeouts": 0,
    "other_failures": 0,
    "measured": {
     "first": "2026-11-24",
-    "last": "2026-11-24"
+    "last": "2026-11-26"
    },
    "by_target": {
     "design": {
